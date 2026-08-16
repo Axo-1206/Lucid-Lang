@@ -55,7 +55,7 @@ path writes it to an object file and invokes the system linker.
 ```
                     ┌─────────────────┐
                     │  Lucid Source   │
-                    │   (.luc)      │
+                    │   (.luc)        │
                     └────────┬────────┘
                              │
                     ┌────────▼────────┐

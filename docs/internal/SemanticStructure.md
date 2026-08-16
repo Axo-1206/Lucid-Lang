@@ -7,7 +7,7 @@ The Lucid semantic analyzer (`Sema`) is a multi-pass system that validates, reso
 
 ## File Layout
 
-```
+```cpp
 src/sema/
 ├── Sema.hpp                              # Public API (namespace sema)
 ├── Sema.cpp                              # analyze() entry point, phase orchestration
@@ -55,44 +55,40 @@ src/sema/
 
 ### Program Entry Points (`Sema.cpp`)
 
-The semantic analysis phase is orchestrated by the `analyze()` function,
- which serves as the main entry point for the semantic analyzer. 
- It operates in two distinct passes to ensure correct name resolution and type checking.
+The semantic analysis phase is orchestrated by the `analyze()` function, which serves as the main entry point for the semantic analyzer. It operates in two distinct passes to ensure correct name resolution and type checking.
 
 **Entry Point Overview**
 
-The `analyze()` function takes a vector of parsed modules and a `SemaContext` 
-(which holds all state including symbol tables, type cache, and diagnostics). 
-It performs two passes: first registering all top-level names, then resolving types and checking bodies.
+The `analyze()` function takes a vector of parsed modules and a `SemaContext` (which holds all state including symbol tables, type cache, and diagnostics). It performs two passes: first registering all top-level names, then resolving types and checking bodies.
 
 #### PHASE 1: Register ALL top-level names (No type resolution)
 
 ```cpp
-for each module:
+analyze(modules, ctx)
 │
-├── ctx.enterModule(module)
+├── for each module:
+│   │
+│   ├── ctx.enterModule(module)
+│   │
+│   └── registerTopLevelNames(module, ctx)
+│       │
+│       └── for each decl in module->decls:
+│           │
+│           └── registerDeclName(decl, ctx)
+│               │
+│               ├── ImportDecl   → registerImportName()
+│               ├── VarDecl      → registerVarName()
+│               ├── FuncDecl     → registerFuncName()
+│               ├── StructDecl   → registerStructName()
+│               │                    └── registerStructFieldNames()
+│               ├── EnumDecl     → registerEnumName()
+│               └── TraitDecl    → registerTraitName()
 │
-└── registerTopLevelNames(module, ctx)
-    │
-    └── for each decl in module->decls:
-        │
-        └── registerDeclName(decl, ctx)
-            │
-            ├── ImportDecl   → registerImportName()
-            ├── VarDecl      → registerVarName()
-            ├── FuncDecl     → registerFuncName()
-            ├── StructDecl   → registerStructName()
-            │                    └── registerStructFieldNames()
-            ├── EnumDecl     → registerEnumName()
-            └── TraitDecl    → registerTraitName()
+└── // After all modules registered, proceed to Phase 2
 ```
-> [!IMPORTANT]
-> Phase 1 ONLY registers top-level declarations
-> Local variables, parameters, and other scoped names are
-> registered during Phase 2 when we actually resolve the bodies
 
-During Phase 1, the analyzer walks through all modules and registers only the names of top-level declarations. 
-This phase does not resolve types or inspect function bodies.
+> [!IMPORTANT]
+> Phase 1 ONLY registers top-level declarations. Local variables, parameters, and other scoped names are registered during Phase 2 when we actually resolve the bodies.
 
 **Key Points:**
 - Only top-level names are registered (functions, structs, enums, traits, imports)
@@ -103,37 +99,39 @@ This phase does not resolve types or inspect function bodies.
 #### PHASE 2: Resolve ALL types, check bodies, AND evaluate consts
 
 ```cpp
-for each module:
+analyze() ─── continues to Phase 2
 │
-├── ctx.enterModule(module)
+├── for each module:
+│   │
+│   ├── ctx.enterModule(module)
+│   │
+│   └── resolveModuleDecls(module, ctx)
+│       │
+│       └── for each decl in module->decls:
+│           │
+│           └── resolveDecl(decl, ctx)
+│               │
+│               ├── if NOT at module level:
+│               │   ├── VarDecl/FuncDecl  → ctx.insertValue()
+│               │   └── Struct/Enum/Trait → ctx.insertType()
+│               │
+│               └── dispatch by kind:
+│                   │
+│                   ├── ImportDecl   → resolveImportDecl()
+│                   ├── VarDecl      → resolveVarDecl()
+│                   │                   └── ConstEvaluator::evaluateDecl()
+│                   ├── FuncDecl     → resolveFuncDecl()
+│                   │                   ├── registerParamName()
+│                   │                   ├── registerGenericParamName()
+│                   │                   └── resolveStmt(body)
+│                   ├── StructDecl   → resolveStructDecl()
+│                   │                   ├── resolveTraitRefs()
+│                   │                   └── resolveStructFields()
+│                   ├── EnumDecl     → resolveEnumDecl()
+│                   └── TraitDecl    → resolveTraitDecl()
 │
-└── resolveModuleDecls(module, ctx)
-    │
-    └── for each decl in module->decls:
-        │
-        └── resolveDecl(decl, ctx)
-            │
-            ├── If NOT at module level:
-            │   ├── VarDecl/FuncDecl  → ctx.insertValue()
-            │   └── Struct/Enum/Trait → ctx.insertType()
-            │
-            └── Dispatch by kind:
-                ├── ImportDecl   → resolveImportDecl()
-                ├── VarDecl      → resolveVarDecl()
-                │                   └── ConstEvaluator::evaluateDecl()
-                ├── FuncDecl     → resolveFuncDecl()
-                │                   ├── registerParamName()
-                │                   ├── registerGenericParamName()
-                │                   └── resolveStmt(body)
-                ├── StructDecl   → resolveStructDecl()
-                │                   ├── resolveTraitRefs()
-                │                   └── resolveStructFields()
-                ├── EnumDecl     → resolveEnumDecl()
-                └── TraitDecl    → resolveTraitDecl()
+└── // All declarations resolved
 ```
-
-During Phase 2, the analyzer resolves all types, checks function bodies, 
-evaluates const expressions, and registers nested declarations.
 
 **Key Points:**
 - Types are resolved using `resolveType()`
@@ -166,68 +164,52 @@ The `resolveDecl()` function serves as the entry point for resolving individual 
 - Coordinates type resolution, body checking, and const evaluation
 
 ```cpp
-resolveDecl(decl, ctx)                                       [Sema.cpp]
+resolveDecl(decl, ctx)
 │
 ├── // PHASE 2 REGISTRATION (Nested declarations only)
-│   ┌────────────────────────────────────────────────────────────────────────┐
-│   │  IMPORTANT: Top-level declarations are already registered in Phase 1   │
-│   │  Only nested declarations are registered during this phase             │
-│   └────────────────────────────────────────────────────────────────────────┘
-│   │
 │   └── if NOT at module level:
 │       ├── VarDecl/FuncDecl  → ctx.insertValue(decl->as<ValueDeclAST>())
 │       └── Struct/Enum/Trait → ctx.insertType(decl->as<TypeDeclAST>())
 │
-└── // DISPATCH BY KIND ─────────────────────────────────────────────────────
-│
+└── // DISPATCH BY KIND
+    │
     ├── ImportDecl
-    │   └── resolveImportDecl(decl, ctx)                     [SemaDecl.cpp]
+    │   └── resolveImportDecl(decl, ctx)
     │       ├── Validate imported module exists
-    │       └── No further resolution needed // (Phase 1 already registered)
+    │       └── No further resolution needed (Phase 1 already registered)
     │
     ├── VarDecl
-    │   └── resolveVarDecl(decl, ctx)                        [SemaDecl.cpp]
+    │   └── resolveVarDecl(decl, ctx)
     │       ├── resolveType(decl->type) → validate type exists
-    │       │   // const can't be 'nil' or 'err'
-    │       ├── if const: validateConstType() & validateConstInitializer() 
+    │       ├── if const: validateConstType() & validateConstInitializer()
     │       ├── if init: resolveExprWithTarget(init, type) → type check
-    │       ├── if const: ConstEvaluator::evaluateDecl()   → evaluate at compile time
-    │       └── if let: checkLetSelfReference(init, name)  → prevent self-reference
+    │       ├── if const: ConstEvaluator::evaluateDecl() → evaluate at compile time
+    │       └── if let: checkLetSelfReference(init, name) → prevent self-reference
     │
     ├── FuncDecl
-    │   └── resolveFuncDecl(decl, ctx)                       [SemaDecl.cpp]
-    │       ├── resolveFuncType(decl->funcType)     → validate function signature
+    │   └── resolveFuncDecl(decl, ctx)
+    │       ├── resolveFuncType(decl->funcType) → validate function signature
     │       ├── registerGenericParamName() for each generic parameter
-    │       │
     │       ├── for each param: resolveParam(param, ctx) → resolve parameter type
     │       │   └── registerParamName(param, ctx) → register in current scope
-    │       │
     │       ├── if body: resolveBlock(body, ctx) → analyze function body
-    │       │   ├── uses ctx.stack.currentReturnType() for return validation
-    │       │   └── uses SymbolScope and ScopedSemanticContext guards
-    │       │
-    │       ├── analyzeCaptures(func, ctx)                   [CaptureAnalysis.cpp]
-    │       │   └── Detect captured variables and validate capture rules
-    │       │
+    │       ├── analyzeCaptures(func, ctx) → detect captured variables
     │       └── if '@[foreign]': validateForeignFunction() → ABI & FFI checks
     │
     ├── StructDecl
-    │   └── resolveStructDecl(decl, ctx)                     [SemaDecl.cpp]
-    │       ├── resolveTraitRefs(traitRefs, ctx)    → resolve each trait reference
+    │   └── resolveStructDecl(decl, ctx)
+    │       ├── resolveTraitRefs(traitRefs, ctx) → resolve each trait reference
     │       ├── registerStructFieldNames(decl, ctx) → Phase 1 already did this
-    │       ├── ScopedTypeDefinition(ctx, decl)     → track for self-reference checks
-    │       └── resolveStructFields(decl, ctx)      → resolve each field's type
+    │       ├── ScopedTypeDefinition(ctx, decl) → track for self-reference checks
+    │       └── resolveStructFields(decl, ctx) → resolve each field's type
     │           ├── for each field:
     │           │   ├── resolveType(field->type) → validate type exists
     │           │   ├── validateBorrowedContext(field->type, ctx) → Downward Flow
     │           │   └── if const: validateConstType() & validateConstInitializer()
-    │           │
     │           └── validateAllTraitImplementations(structDecl, ctx)
-    │               ├── validateTraitImplementation() for each trait
-    │               └── checkTraitFieldConflicts() → detect conflicting fields
     │
     ├── EnumDecl
-    │   └── resolveEnumDecl(decl, ctx)                       [SemaDecl.cpp]
+    │   └── resolveEnumDecl(decl, ctx)
     │       ├── resolveType(decl->backingType) → validate backing type exists
     │       ├── check backing type is integer primitive
     │       └── for each variant:
@@ -235,7 +217,7 @@ resolveDecl(decl, ctx)                                       [Sema.cpp]
     │           └── ensure value fits in backing type
     │
     └── TraitDecl
-        └── resolveTraitDecl(decl, ctx)                      [SemaDecl.cpp]
+        └── resolveTraitDecl(decl, ctx)
             ├── registerGenericParamName() for each generic parameter
             └── for each field:
                 ├── resolveType(field->type) → validate type exists
@@ -267,7 +249,48 @@ resolveDecl(decl, ctx)                                       [Sema.cpp]
 
 ---
 
-### Statement Resolution (`resolveStmt`) — `SemaStmt.cpp`
+### Function Declaration Resolution (`resolveFuncDecl`)
+
+```cpp
+resolveFuncDecl(decl, ctx)
+│
+├── // 1. RESOLVE FUNCTION TYPE
+│   └── resolveFuncType(decl->funcType)
+│       ├── for each param: resolveType(param->type)
+│       └── if returnType: resolveType(returnType)
+│
+├── // 2. REGISTER GENERIC PARAMETERS
+│   └── for each genericParam: ctx.registerGenericParam(genericParam)
+│
+├── // 3. RESOLVE PARAMETERS
+│   └── for each param in funcType->params:
+│       ├── resolveType(param->type)
+│       └── ctx.registerParamName(param)
+│
+├── // 4. RESOLVE BODY (if present)
+│   └── if decl->body:
+│       ├── ScopedSemanticContext(ctx, FuncBody)
+│       ├── SymbolScope(ctx)
+│       └── resolveBlock(decl->body, ctx)
+│           ├── tracks return type via ctx.stack.currentReturnType()
+│           └── validates return statements match function return type
+│
+├── // 5. CAPTURE ANALYSIS
+│   └── analyzeCaptures(decl, ctx)
+│       ├── walk AST for identifier references from outer scopes
+│       └── validate no borrowed types captured
+│
+└── // 6. FOREIGN FUNCTION VALIDATION
+    └── if '@[foreign]' attribute:
+        └── validateForeignFunction(decl, attr, ctx)
+            ├── check symbol exists in FFI table
+            ├── check parameter types match C ABI
+            └── check return type matches C ABI
+```
+
+---
+
+### Statement Resolution (`resolveStmt`)
 
 The `resolveStmt()` function is the main entry point for resolving and validating statements during Phase 2. It dispatches to specific statement resolvers and manages control flow analysis.
 
@@ -280,21 +303,18 @@ The `resolveStmt()` function is the main entry point for resolving and validatin
 ```cpp
 resolveStmt(stmt, ctx)
 │
-├── // DISPATCH BY KIND ─────────────────────────────────────────────────────
+├── // DISPATCH BY KIND
 │
     ├── BlockStmt
     │   └── resolveBlock(stmt, ctx)
-    │       ├── if pending inverse narrowing: apply it (from standalone if)
+    │       ├── if pending inverse narrowing: apply it
     │       │   ├── ctx.stack.pushNarrowingLevel(true)
     │       │   └── ctx.stack.narrowVariable() for each narrowed variable
-    │       │
     │       ├── SymbolScope(ctx) → create new lexical scope
     │       ├── ScopedSemanticContext(ctx, Block) → push block context
-    │       │
     │       ├── for each stmt:
     │       │   ├── if transfers: warning (unreachable code)
     │       │   └── transfers = resolveStmt(stmt, ctx)
-    │       │
     │       ├── check for unresolved async/spawn operations
     │       │   ├── getPendingAsyncNames() → warn: unawaited async
     │       │   └── getPendingSpawnNames() → warn: unjoined spawn
@@ -305,27 +325,22 @@ resolveStmt(stmt, ctx)
     │       ├── ScopedSemanticContext(ctx, IfStmt) → push if context
     │       ├── ScopedIfCondition(ctx, hasElse) → enable narrowing detection
     │       ├── resolveExprWithTarget(condition, boolType) → type check
-    │       │
     │       ├── CONST EVALUATION: evaluate condition at compile time
-    │       │   ├── if condition is const true: only resolve then branch
-    │       │   └── if condition is const false: only resolve else branch
-    │       │
+    │       │   ├── if const true: only resolve then branch
+    │       │   └── if const false: only resolve else branch
     │       ├── info = ctx.stack.getPendingNarrowing() → capture narrowing info
-    │       │
     │       ├── THEN BRANCH:
     │       │   ├── SymbolScope(ctx) → new scope
     │       │   ├── if hasNarrowing && !info.isEquality:
     │       │   │   └── ScopedNarrowing(ctx, info.narrowings, false)
     │       │   └── thenReturns = resolveStmt(thenBranch, ctx)
-    │       │
     │       ├── ELSE BRANCH:
     │       │   ├── SymbolScope(ctx) → new scope
     │       │   ├── if hasNarrowing && info.isEquality:
     │       │   │   └── ScopedNarrowing(ctx, info.narrowings, true)
     │       │   └── elseReturns = resolveStmt(elseBranch, ctx)
-    │       │
     │       ├── if no else and thenReturns:
-    │       │   └── ctx.stack.setPendingInverseNarrowing(info) → store for block
+    │       │   └── ctx.stack.setPendingInverseNarrowing(info)
     │       └── return thenReturns && elseReturns
     │
     ├── SwitchStmt
@@ -333,9 +348,7 @@ resolveStmt(stmt, ctx)
     │       ├── resolveExprWithTarget(subject) → type check subject
     │       ├── isValidSwitchType(subjectType) → integer, enum, bool, char, string
     │       ├── ScopedSemanticContext(ctx, SwitchBody) → push switch context
-    │       │
     │       ├── CONST EVALUATION: evaluate subject at compile time
-    │       │
     │       ├── for each case:
     │       │   ├── for each value: resolveExprWithTarget(value, subjectType)
     │       │   ├── isSwitchCaseCompatible(value, subjectType) → validate
@@ -344,10 +357,8 @@ resolveStmt(stmt, ctx)
     │       │   │   ├── enum variants → check uniqueness
     │       │   │   └── ranges → check overlap
     │       │   └── resolveBlock(case->body) → resolve case body
-    │       │
     │       ├── if isEnumType(subjectType):
     │       │   └── switch_helpers::checkExhaustiveness() → ensure all variants covered
-    │       │
     │       ├── if defaultBody: resolveBlock(defaultBody) → resolve default
     │       └── return allCasesReturn && (defaultBody || !isEnumType)
     │
@@ -355,7 +366,6 @@ resolveStmt(stmt, ctx)
     │   └── resolveForStmt(stmt, ctx)
     │       ├── ScopedSemanticContext(ctx, LoopBody) → push loop context
     │       ├── SymbolScope(ctx) → new scope for loop variables
-    │       │
     │       ├── if range loop (no valueVar):
     │       │   ├── resolveRangeExpr(range) → validate range bounds
     │       │   ├── CONST EVALUATION: validate range at compile time
@@ -364,13 +374,11 @@ resolveStmt(stmt, ctx)
     │       │   │   └── if exclusive: lo < hi
     │       │   ├── if indexVar: ctx.insertValue(indexVar) → register index
     │       │   └── if step: resolveExprWithTarget(step, intType)
-    │       │
     │       ├── if collection loop (has valueVar):
     │       │   ├── resolveExpr(iterable) → resolve collection
     │       │   ├── if indexVar: ctx.insertValue(indexVar) → register index
     │       │   ├── if valueVar: ctx.insertValue(valueVar) → register value
     │       │   └── validate value type matches iterable element type
-    │       │
     │       ├── resolveBlock(body) → resolve loop body
     │       └── return false (loops dont guarantee return unless break/return)
     │
@@ -378,11 +386,9 @@ resolveStmt(stmt, ctx)
     │   └── resolveWhileStmt(stmt, ctx)
     │       ├── ScopedSemanticContext(ctx, LoopBody) → push loop context
     │       ├── resolveExprWithTarget(condition, boolType) → type check
-    │       │
     │       ├── CONST EVALUATION: check if condition is compile-time constant
-    │       │   ├── if condition is const false → warning (body unreachable)
-    │       │   └── if condition is const true → warning (infinite loop)
-    │       │
+    │       │   ├── if const false → warning (body unreachable)
+    │       │   └── if const true → warning (infinite loop)
     │       ├── resolveBlock(body) → resolve loop body
     │       └── return false (loops dont guarantee return)
     │
@@ -390,17 +396,14 @@ resolveStmt(stmt, ctx)
     │   └── resolveReturnStmt(stmt, ctx)
     │       ├── if !ctx.stack.insideFunction() → error (return outside function)
     │       ├── expectedType = ctx.stack.currentReturnType()
-    │       │
     │       ├── if stmt->value:
     │       │   ├── if !expectedType → error (return value in void function)
     │       │   ├── resolveExprWithTarget(value, expectedType) → type check
     │       │   ├── markClosureIfEscaping(value, ctx) → detect closure return
-    │       │   │   └── if returning closure: mark as escaping (heap-allocated)
     │       │   ├── if valueState == Err && !isFallibleType(expectedType) → error
     │       │   └── if valueState == Nil && !isNullableType(expectedType) → error
     │       ├── else:
     │       │   └── if expectedType → error (missing return value)
-    │       │
     │       └── return true (return guarantees control transfer)
     │
     ├── BreakStmt
@@ -418,8 +421,6 @@ resolveStmt(stmt, ctx)
     │       ├── resolveExpr(expr) → resolve and type check expression
     │       ├── if expr returns value and has no side effects:
     │       │   └── warning: discarded result (unused value)
-    │       ├── if expr is intrinsic void:
-    │       │   └── validate statement context
     │       └── return false (expression statements dont transfer control)
     │
     ├── DeclStmt
@@ -428,7 +429,7 @@ resolveStmt(stmt, ctx)
     │           └── return false (declarations dont transfer control)
     │
     ├── AsyncStmt
-    │   └── resolveAsyncStmt(stmt, ctx)                        [SemaConcurrency.cpp]
+    │   └── resolveAsyncStmt(stmt, ctx)
     │       ├── if !ctx.stack.insideFunction() → error
     │       ├── resolveType(binding->type) → must be FutureTypeAST
     │       ├── ctx.insertValue(binding) → register binding
@@ -436,35 +437,33 @@ resolveStmt(stmt, ctx)
     │       └── ctx.addPendingAsync(name, call, loc) → register for await
     │
     ├── AwaitStmt
-    │   └── resolveAwaitStmt(stmt, ctx)                        [SemaConcurrency.cpp]
+    │   └── resolveAwaitStmt(stmt, ctx)
     │       ├── if !ctx.stack.insideFunction() → error
-    │       │
     │       ├── for each target:
     │       │   ├── if hasPendingAsync(targetName):
     │       │   │   ├── unwrap FutureTypeAST → get innerType
-    │       │   │   ├── ctx.stack.narrowVariable(targetName, innerType) → narrow type
+    │       │   │   ├── ctx.stack.narrowVariable(targetName, innerType)
     │       │   │   └── ctx.resolveAsync(targetName) → remove from pending
     │       │   └── else: error (not a pending async)
     │       └── return false
     │
     ├── SpawnStmt
-    │   └── resolveSpawnStmt(stmt, ctx)                        [SemaConcurrency.cpp]
+    │   └── resolveSpawnStmt(stmt, ctx)
     │       ├── if !ctx.stack.insideFunction() → error
     │       ├── if binding:
     │       │   ├── resolveType(binding->type) → must be ThreadTypeAST
     │       │   ├── ctx.insertValue(binding) → register binding
-    │       │   ├── resolveExprWithTarget(call, innerType) → call must return inner type
+    │       │   ├── resolveExprWithTarget(call, innerType)
     │       │   └── ctx.addPendingSpawn(name, call, loc) → register for join
     │       └── else (discard pattern): resolveExpr(call) → fire-and-forget
     │
     └── JoinStmt
-        └── resolveJoinStmt(stmt, ctx)                         [SemaConcurrency.cpp]
+        └── resolveJoinStmt(stmt, ctx)
             ├── if !ctx.stack.insideFunction() → error
-            │
             ├── for each target:
             │   ├── if hasPendingSpawn(targetName):
             │   │   ├── unwrap ThreadTypeAST → get innerType
-            │   │   ├── ctx.stack.narrowVariable(targetName, innerType) → narrow type
+            │   │   ├── ctx.stack.narrowVariable(targetName, innerType)
             │   │   └── ctx.resolveSpawn(targetName) → remove from pending
             │   └── else: error (not a pending spawn)
             └── return false
@@ -494,9 +493,9 @@ resolveStmt(stmt, ctx)
 
 ---
 
-### Expression Resolution (`resolveExprWithTarget`) — `SemaExpr.cpp`
+### Expression Resolution (`resolveExprWithTarget`)
 
-The `resolveExprWithTarget()` function is the main entry point for resolving and type-checking expressions during Phase 2. It validates expressions against an optional target type and stores the resolved type directly on the AST node.
+The `resolveExprWithTarget()` function is the main entry point for resolving and type-checking expressions during Phase 2.
 
 **Purpose:**
 - Resolves the type of every expression in the AST
@@ -508,232 +507,207 @@ The `resolveExprWithTarget()` function is the main entry point for resolving and
 ```cpp
 resolveExprWithTarget(expr, targetType, ctx)
 │
-├── // DISPATCH BY KIND ─────────────────────────────────────────────────────
+├── // DISPATCH BY KIND
 │
-│   ┌── LiteralExpr ─────────────────────────────────────────────────────────┐
-│   │  resolveLiteralExpr(expr, targetType, ctx)                             │
-│   │  ├── True/False → boolType, ValueState::Definite, isLValue=false       │
-│   │  ├── Int/Hex/Binary → intType (or target if specified)                 │
-│   │  ├── Float → floatType (or target if specified)                        │
-│   │  ├── String → stringType, ValueState::Definite                         │
-│   │  ├── Char → charType, ValueState::Definite                             │
-│   │  ├── Nil → targetType if nullable, else UnknownType                    │
-│   │  └── Err → targetType if fallible, else UnknownType                    │
-│   └────────────────────────────────────────────────────────────────────────┘
+    ├── LiteralExpr
+    │   └── resolveLiteralExpr(expr, targetType, ctx)
+    │       ├── True/False → boolType, ValueState::Definite, isLValue=false
+    │       ├── Int/Hex/Binary → intType (or target if specified)
+    │       ├── Float → floatType (or target if specified)
+    │       ├── String → stringType, ValueState::Definite
+    │       ├── Char → charType, ValueState::Definite
+    │       ├── Nil → targetType if nullable, else UnknownType
+    │       └── Err → targetType if fallible, else UnknownType
+    │
+    ├── IdentifierExpr
+    │   └── resolveIdentifierExpr(expr, targetType, ctx)
+    │       ├── if name == "_": discard placeholder (UnknownType)
+    │       ├── if isGenericParam(name): error (type param used as value)
+    │       ├── lookupValue(name) → ValueDeclAST
+    │       │   └── if not found: error (undefined value)
+    │       ├── if pending future: error (await/join first)
+    │       ├── if isCaptured && isBorrowedType(declType): error
+    │       │   └── closures cannot capture &T or [_]T
+    │       ├── if genericArgs: validateGenericArguments()
+    │       ├── set isLValue, isConst from declaration keyword
+    │       │   ├── let → isLValue=true, isConst=false
+    │       │   └── const → isLValue=false, isConst=true
+    │       └── apply type narrowing from ContextStack
+    │           └── if getNarrowedType(name) → use narrowed type
+    │
+    ├── ArrayLiteralExpr
+    │   └── resolveArrayLiteralExpr(expr, targetType, ctx)
+    │       ├── if empty: use targetType element type or UnknownType
+    │       ├── resolve first element → firstType
+    │       ├── for each element: resolveExprWithTarget(elem, firstType)
+    │       │   └── if type mismatch: error (array elements must have same type)
+    │       └── getArrayType(kind, size, elementType) → cached array type
+    │
+    ├── StructLiteralExpr
+    │   └── resolveStructLiteralExpr(expr, targetType, ctx)
+    │       ├── lookupType(typeName) → StructDeclAST
+    │       ├── validateGenericArguments() → validate generic args
+    │       ├── for each field init:
+    │       │   ├── lookup field in struct → FieldDeclAST
+    │       │   ├── if const field: cannot assign nil/err
+    │       │   ├── resolveExprWithTarget(value, field->type)
+    │       │   └── if function field: must be function value
+    │       └── check missing required fields
+    │           ├── if field has default or nullable/fallible → optional
+    │           └── else: error (missing required field)
+    │
+    ├── BinaryExpr
+    │   └── resolveBinaryExpr(expr, targetType, ctx)
+    │       ├── resolve left and right operands
+    │       ├── if in if condition: detectNarrowingPattern()
+    │       │   └── if found: return boolType (narrowing info stored)
+    │       ├── Arithmetic (Add, Sub, Mul, Div, Pow, Mod):
+    │       │   ├── reject nullable/fallible operands (must narrow first)
+    │       │   ├── if numeric: promote int → float if mixed
+    │       │   └── else: error (arithmetic requires numeric operands)
+    │       ├── Comparison (Eq, Ne, Lt, Gt, Le, Ge):
+    │       │   ├── if numeric: allow mixed types (promotion)
+    │       │   ├── if non-numeric: must be same type
+    │       │   └── return boolType
+    │       ├── Logical (And, Or):
+    │       │   ├── reject nullable/fallible operands (must narrow first)
+    │       │   ├── require bool operands
+    │       │   └── return boolType
+    │       └── Bitwise (BitAnd, BitOr, BitXor, Shl, Shr):
+    │           ├── reject nullable/fallible operands (must narrow first)
+    │           ├── require integer operands
+    │           └── promote to larger integer type
+    │
+    ├── UnaryExpr
+    │   └── resolveUnaryExpr(expr, targetType, ctx)
+    │       ├── resolve operand
+    │       ├── Neg: require numeric, reject nullable/fallible
+    │       ├── Not: require bool, reject nullable/fallible
+    │       └── BitNot: require integer, reject nullable/fallible
+    │
+    ├── CallExpr
+    │   └── resolveCallExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(callee) → must be FuncTypeAST
+    │       ├── resolveCalleeOrError() → FuncDeclAST
+    │       ├── validateGenericArguments() if generic function
+    │       ├── check arg count with variadic support:
+    │       │   ├── requiredArgs = params before variadic
+    │       │   ├── if hasVariadic: args >= requiredArgs
+    │       │   └── if no variadic: args == param count
+    │       ├── for each arg: resolveExprWithTarget(arg, expectedType)
+    │       │   ├── if arg is Err → must be fallible expected type
+    │       │   └── if arg is Nil → must be nullable expected type
+    │       └── return funcType->returnType
+    │
+    ├── IntrinsicCallExpr
+    │   └── resolveIntrinsicCallExpr(expr, targetType, ctx)
+    │       ├── validateIntrinsicCall(expr, ctx)
+    │       │   ├── validateScopeExit() registers callback
+    │       │   └── validate argument count and types
+    │       ├── if void: return nullptr (statement-only intrinsic)
+    │       ├── getIntrinsicReturnType(expr, targetType, ctx)
+    │       └── set IntrinsicRegistry::llvmID for code generation
+    │
+    ├── IndexExpr
+    │   └── resolveIndexExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(target) → must be ArrayTypeAST
+    │       ├── reject nullable/fallible target (must narrow first)
+    │       ├── resolveExprWithTarget(index, intType) → index must be integer
+    │       ├── isLValue = target->isLValue (propagate l-value)
+    │       └── return arrayType->element
+    │
+    ├── SliceExpr
+    │   └── resolveSliceExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(target) → must be ArrayTypeAST
+    │       ├── reject nullable/fallible target (must narrow first)
+    │       ├── resolve start/end against intType (optional)
+    │       ├── result is always [_]T (slice)
+    │       └── isLValue=false (slices are never l-values)
+    │
+    ├── FieldAccessExpr
+    │   └── resolveFieldAccessExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(object) → NamedTypeAST
+    │       ├── reject nullable/fallible object (must narrow first)
+    │       ├── if generic type: isFieldAccessibleOnGenericType()
+    │       ├── lookupType(name) → StructDeclAST or EnumDeclAST
+    │       ├── find field in struct fields or enum variants
+    │       └── return field->type
+    │
+    ├── ModuleAccessExpr
+    │   └── resolveModuleAccessExpr(expr, targetType, ctx)
+    │       ├── lookupValueByAlias(moduleName, memberName)
+    │       ├── check isValueExported() → must have @[export]
+    │       ├── if generic: validateGenericArguments()
+    │       └── return decl->type
+    │
+    ├── NullCoalesceExpr
+    │   └── resolveNullCoalesceExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(value) → must be nullable or fallible
+    │       ├── unwrapNullable/Fallible() → get inner type
+    │       ├── resolveExprWithTarget(fallback, innerType)
+    │       └── return innerType (or fallback type)
+    │
+    ├── AssignExpr
+    │   └── resolveAssignExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(lhs) → get lhsType
+    │       ├── check lhs->isLValue → must be assignable
+    │       ├── check !lhs->isConst → cannot assign to const
+    │       ├── if compound assignment:
+    │       │   ├── reject nullable/fallible LHS (must narrow first)
+    │       │   └── validate operator type (numeric or integer)
+    │       └── return lhsType
+    │
+    ├── PipelineExpr
+    │   └── resolvePipelineExpr(expr, targetType, ctx)
+    │       ├── resolveExpr(seed) → get input type
+    │       └── for each step: resolvePipelineStep(step, currentType)
+    │           ├── resolveExpr(callable) → FuncTypeAST
+    │           ├── check first param matches inputType
+    │           └── currentType = funcType->returnType
+    │
+    ├── ComposeExpr
+    │   └── resolveComposeExpr(expr, targetType, ctx)
+    │       ├── resolveComposeOperand(left) → FuncTypeAST
+    │       └── for each operand:
+    │           ├── resolveComposeOperand(operand) → FuncTypeAST
+    │           ├── check prev output → next input assignable
+    │           └── currentFunc = nextFunc
+    │
+    ├── AnonFuncExpr
+    │   └── resolveAnonFuncExpr(expr, targetType, ctx)
+    │       ├── resolveFuncType(funcType) → validate signature
+    │       ├── pushScope() → new scope for parameters
+    │       ├── for each param: resolveParam(param, ctx)
+    │       │   └── registerParamName(param, ctx)
+    │       ├── ctx.stack.pushAnonFunction(expr, returnType)
+    │       ├── resolveBlock(body) → analyze body
+    │       ├── ctx.stack.pop() → pop function context
+    │       ├── analyzeCaptures(expr, ctx) → detect captures
+    │       │   ├── walk AST for identifier references
+    │       │   ├── check if variable is from outer scope
+    │       │   └── validate borrowed types cannot be captured
+    │       └── return funcType
+    │
+    ├── IfExpr
+    │   └── resolveIfExpr(expr, targetType, ctx)
+    │       ├── resolveExprWithTarget(condition, boolType)
+    │       ├── resolveExpr(thenBranch) → thenType
+    │       ├── resolveExpr(elseBranch) → elseType
+    │       ├── check isAssignable(thenType, elseType)
+    │       └── return thenType
+    │
+    └── RangeExpr
+        └── resolveRangeExpr(expr, targetType, ctx)
+            ├── resolveExprWithTarget(lo, intType)
+            ├── resolveExprWithTarget(hi, intType)
+            ├── if inclusive: lo <= hi
+            └── return loType (or intType)
 │
-│   ┌── IdentifierExpr ──────────────────────────────────────────────────────┐
-│   │  resolveIdentifierExpr(expr, targetType, ctx)                          │
-│   │  ├── if name == "_": discard placeholder (UnknownType)                 │
-│   │  ├── if isGenericParam(name): error (type param used as value)         │
-│   │  ├── lookupValue(name) → ValueDeclAST                                  │
-│   │  │   └── if not found: error (undefined value)                         │
-│   │  ├── if pending future: error (await/join first)                       │
-│   │  ├── if isCaptured && isBorrowedType(declType): error                  │
-│   │  │   └── closures cannot capture &T or [_]T                            │
-│   │  ├── if genericArgs: validateGenericArguments()                        │
-│   │  │   └── validate function instantiation                               │
-│   │  ├── set isLValue, isConst from declaration keyword                    │
-│   │  │   ├── let → isLValue=true, isConst=false                            │
-│   │  │   └── const → isLValue=false, isConst=true                          │
-│   │  └── apply type narrowing from ContextStack                            │
-│   │      └── if getNarrowedType(name) → use narrowed type                  │
-│   └────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── ArrayLiteralExpr ────────────────────────────────────────────────────┐
-│   │  resolveArrayLiteralExpr(expr, targetType, ctx)                        │
-│   │  ├── if empty: use targetType element type or UnknownType              │
-│   │  ├── resolve first element → firstType                                 │
-│   │  ├── for each element: resolveExprWithTarget(elem, firstType)          │
-│   │  │   └── if type mismatch: error (array elements must have same type)  │
-│   │  └── getArrayType(kind, size, elementType) → cached array type         │
-│   └────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── StructLiteralExpr ───────────────────────────────────────────────────┐
-│   │  resolveStructLiteralExpr(expr, targetType, ctx)                       │
-│   │  ├── lookupType(typeName) → StructDeclAST                              │
-│   │  │   └── if not found or not struct: error                             │
-│   │  ├── validateGenericArguments() → validate generic args                │
-│   │  ├── for each field init:                                              │
-│   │  │   ├── lookup field in struct → FieldDeclAST                         │
-│   │  │   ├── if const field: cannot assign nil/err                         │
-│   │  │   ├── resolveExprWithTarget(value, field->type)                     │
-│   │  │   └── if function field: must be function value                     │
-│   │  └── check missing required fields                                     │
-│   │      ├── if field has default or nullable/fallible → optional          │
-│   │      └── else: error (missing required field)                          │
-│   └────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── BinaryExpr ─────────────────────────────────────────────────────────┐
-│   │  resolveBinaryExpr(expr, targetType, ctx)                             │
-│   │  ├── resolve left and right operands                                  │
-│   │  ├── if in if condition: detectNarrowingPattern()                     │
-│   │  │   └── if found: return boolType (narrowing info stored)            │
-│   │  ├── // Arithmetic (Add, Sub, Mul, Div, Pow, Mod) ───────────────────│
-│   │  │   ├── reject nullable/fallible operands (must narrow first)        │
-│   │  │   ├── if numeric: promote int → float if mixed                     │
-│   │  │   │   └── getLargerIntegerType() for promotion                     │
-│   │  │   └── else: error (arithmetic requires numeric operands)           │
-│   │  ├── // Comparison (Eq, Ne, Lt, Gt, Le, Ge) ─────────────────────────│
-│   │  │   ├── if numeric: allow mixed types (promotion)                    │
-│   │  │   ├── if non-numeric: must be same type                            │
-│   │  │   └── return boolType                                              │
-│   │  ├── // Logical (And, Or) ───────────────────────────────────────────│
-│   │  │   ├── reject nullable/fallible operands (must narrow first)        │
-│   │  │   ├── require bool operands                                        │
-│   │  │   └── return boolType                                              │
-│   │  └── // Bitwise (BitAnd, BitOr, BitXor, Shl, Shr) ───────────────────│
-│   │      ├── reject nullable/fallible operands (must narrow first)        │
-│   │      ├── require integer operands                                     │
-│   │      └── promote to larger integer type                               │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── UnaryExpr ──────────────────────────────────────────────────────────┐
-│   │  resolveUnaryExpr(expr, targetType, ctx)                              │
-│   │  ├── resolve operand                                                  │
-│   │  ├── Neg: require numeric, reject nullable/fallible                   │
-│   │  ├── Not: require bool, reject nullable/fallible                      │
-│   │  └── BitNot: require integer, reject nullable/fallible                │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── CallExpr ───────────────────────────────────────────────────────────┐
-│   │  resolveCallExpr(expr, targetType, ctx)                               │
-│   │  ├── resolveExpr(callee) → must be FuncTypeAST                        │
-│   │  ├── resolveCalleeOrError() → FuncDeclAST                             │
-│   │  │   └── handles IdentifierExpr and ModuleAccessExpr                  │
-│   │  ├── validateGenericArguments() if generic function                   │
-│   │  ├── check arg count with variadic support:                           │
-│   │  │   ├── requiredArgs = params before variadic                        │
-│   │  │   ├── if hasVariadic: args >= requiredArgs                         │
-│   │  │   └── if no variadic: args == param count                          │
-│   │  ├── for each arg: resolveExprWithTarget(arg, expectedType)           │
-│   │  │   ├── if arg is Err → must be fallible expected type               │
-│   │  │   └── if arg is Nil → must be nullable expected type               │
-│   │  └── return funcType->returnType                                      │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── IntrinsicCallExpr ──────────────────────────────────────────────────┐
-│   │  resolveIntrinsicCallExpr(expr, targetType, ctx)                      │
-│   │  ├── validateIntrinsicCall(expr, ctx)                                 │
-│   │  │   ├── validateScopeExit() registers callback                       │
-│   │  │   └── validate argument count and types                            │
-│   │  ├── if void: return nullptr (statement-only intrinsic)               │
-│   │  ├── getIntrinsicReturnType(expr, targetType, ctx)                    │
-│   │  └── set IntrinsicRegistry::llvmID for code generation                │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── IndexExpr ──────────────────────────────────────────────────────────┐
-│   │  resolveIndexExpr(expr, targetType, ctx)                              │
-│   │  ├── resolveExpr(target) → must be ArrayTypeAST                       │
-│   │  ├── reject nullable/fallible target (must narrow first)              │
-│   │  ├── resolveExprWithTarget(index, intType) → index must be integer    │
-│   │  ├── isLValue = target->isLValue (propagate l-value)                  │
-│   │  └── return arrayType->element                                        │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── SliceExpr ──────────────────────────────────────────────────────────┐
-│   │  resolveSliceExpr(expr, targetType, ctx)                              │
-│   │  ├── resolveExpr(target) → must be ArrayTypeAST                       │
-│   │  ├── reject nullable/fallible target (must narrow first)              │
-│   │  ├── resolve start/end against intType (optional)                     │
-│   │  ├── result is always [_]T (slice)                                    │
-│   │  └── isLValue=false (slices are never l-values)                       │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── FieldAccessExpr ────────────────────────────────────────────────────┐
-│   │  resolveFieldAccessExpr(expr, targetType, ctx)                        │
-│   │  ├── resolveExpr(object) → NamedTypeAST                               │
-│   │  ├── reject nullable/fallible object (must narrow first)              │
-│   │  ├── if generic type: isFieldAccessibleOnGenericType()                │
-│   │  │   └── check trait constraints for field access                     │
-│   │  ├── lookupType(name) → StructDeclAST or EnumDeclAST                  │
-│   │  ├── find field in struct fields or enum variants                     │
-│   │  └── return field->type                                               │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── ModuleAccessExpr ───────────────────────────────────────────────────┐
-│   │  resolveModuleAccessExpr(expr, targetType, ctx)                       │
-│   │  ├── lookupValueByAlias(moduleName, memberName)                       │
-│   │  │   └── uses ctx.lookupImport() to find module                       │
-│   │  ├── check isValueExported() → must have @[export]                    │
-│   │  ├── if generic: validateGenericArguments()                           │
-│   │  └── return decl->type                                                │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── NullCoalesceExpr ───────────────────────────────────────────────────┐
-│   │  resolveNullCoalesceExpr(expr, targetType, ctx)                       │
-│   │  ├── resolveExpr(value) → must be nullable or fallible                │
-│   │  ├── unwrapNullable/Fallible() → get inner type                       │
-│   │  ├── resolveExprWithTarget(fallback, innerType)                       │
-│   │  └── return innerType (or fallback type)                              │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── AssignExpr ─────────────────────────────────────────────────────────┐
-│   │  resolveAssignExpr(expr, targetType, ctx)                             │
-│   │  ├── resolveExpr(lhs) → get lhsType                                   │
-│   │  ├── check lhs->isLValue → must be assignable                         │
-│   │  ├── check !lhs->isConst → cannot assign to const                     │
-│   │  ├── if compound assignment:                                          │
-│   │  │   ├── reject nullable/fallible LHS (must narrow first)             │
-│   │  │   └── validate operator type (numeric or integer)                  │
-│   │  └── return lhsType                                                   │
-│   └───────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── PipelineExpr ──────────────────────────────────────────────────────┐
-│   │  resolvePipelineExpr(expr, targetType, ctx)                          │
-│   │  ├── resolveExpr(seed) → get input type                              │
-│   │  └── for each step: resolvePipelineStep(step, currentType)           │
-│   │      ├── resolveExpr(callable) → FuncTypeAST                         │
-│   │      ├── check first param matches inputType                         │
-│   │      └── currentType = funcType->returnType                          │
-│   └──────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── ComposeExpr ───────────────────────────────────────────────────────┐
-│   │  resolveComposeExpr(expr, targetType, ctx)                           │
-│   │  ├── resolveComposeOperand(left) → FuncTypeAST                       │
-│   │  └── for each operand:                                               │
-│   │      ├── resolveComposeOperand(operand) → FuncTypeAST                │
-│   │      ├── check prev output → next input assignable                   │
-│   │      └── currentFunc = nextFunc                                      │
-│   └──────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── AnonFuncExpr ──────────────────────────────────────────────────────┐
-│   │  resolveAnonFuncExpr(expr, targetType, ctx)                          │
-│   │  ├── resolveFuncType(funcType) → validate signature                  │
-│   │  ├── pushScope() → new scope for parameters                          │
-│   │  ├── for each param: resolveParam(param, ctx)                        │
-│   │  │   └── registerParamName(param, ctx)                               │
-│   │  ├── ctx.stack.pushAnonFunction(expr, returnType)                    │
-│   │  ├── resolveBlock(body) → analyze body                               │
-│   │  ├── ctx.stack.pop() → pop function context                          │
-│   │  ├── analyzeCaptures(expr, ctx) → detect captures                    │
-│   │  │   ├── walk AST for identifier references                          │
-│   │  │   ├── check if variable is from outer scope                       │
-│   │  │   └── validate borrowed types cannot be captured                  │
-│   │  └── return funcType                                                 │
-│   └──────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── IfExpr ────────────────────────────────────────────────────────────┐
-│   │  resolveIfExpr(expr, targetType, ctx)                                │
-│   │  ├── resolveExprWithTarget(condition, boolType)                      │
-│   │  ├── resolveExpr(thenBranch) → thenType                              │
-│   │  ├── resolveExpr(elseBranch) → elseType                              │
-│   │  ├── check isAssignable(thenType, elseType)                          │
-│   │  └── return thenType                                                 │
-│   └──────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── RangeExpr ─────────────────────────────────────────────────────────┐
-│   │  resolveRangeExpr(expr, targetType, ctx)                             │
-│   │  ├── resolveExprWithTarget(lo, intType)                              │
-│   │  ├── resolveExprWithTarget(hi, intType)                              │
-│   │  ├── if inclusive: lo <= hi                                          │
-│   │  └── return loType (or intType)                                      │
-│   └──────────────────────────────────────────────────────────────────────┘
-│
-├── // VALIDATE AGAINST TARGET TYPE ──────────────────────────────────────
+├── // VALIDATE AGAINST TARGET TYPE
 │   └── if targetType && !isAssignable(targetType, result, ctx):
 │       └── error (type mismatch)
 │
-└── // STORE RESULT ON AST NODE ──────────────────────────────────────────
+└── // STORE RESULT ON AST NODE
     ├── expr->resolvedType = result
     ├── expr->valueState = ValueState (Definite/Nil/Err/Unknown)
     ├── expr->isLValue = boolean (can be assigned to)
@@ -774,9 +748,9 @@ resolveExprWithTarget(expr, targetType, ctx)
 
 ---
 
-### Type Resolution (`resolveType`) — `SemaResolve.cpp`
+### Type Resolution (`resolveType`)
 
-The `resolveType()` function is the main entry point for resolving type annotations to their semantic representations. It walks the type AST and converts each type node into a fully resolved semantic type, performing validation and generic argument resolution along the way.
+The `resolveType()` function is the main entry point for resolving type annotations to their semantic representations.
 
 **Purpose:**
 - Resolves every type annotation to a semantic representation
@@ -788,175 +762,111 @@ The `resolveType()` function is the main entry point for resolving type annotati
 ```cpp
 resolveType(type, ctx)
 │
-├── // DISPATCH BY KIND ───────────────────────────────────────────────────────
+├── // DISPATCH BY KIND
 │
-│   ┌── PrimitiveTypeAST ──────────────────────────────────────────────────────┐
-│   │  resolvePrimitiveType(type, ctx)                                         │
-│   │  ├── Primitive types are built-in and always valid                       │
-│   │  └── return type (no validation needed)                                  │
-│   └──────────────────────────────────────────────────────────────────────────┘
+    ├── PrimitiveTypeAST
+    │   └── resolvePrimitiveType(type, ctx)
+    │       ├── Primitive types are built-in and always valid
+    │       └── return type (no validation needed)
+    │
+    ├── NamedTypeAST
+    │   └── resolveNamedType(type, ctx)
+    │       ├── Step 1: Check if this is a generic parameter
+    │       │   └── if ctx.isGenericParam(name): return type (generic param)
+    │       ├── Step 2: Look up as concrete type
+    │       │   └── ctx.lookupType(name) → TypeDeclAST
+    │       │       ├── StructDeclAST  → struct type
+    │       │       ├── EnumDeclAST    → enum type
+    │       │       └── TraitDeclAST   → trait type
+    │       ├── Step 3: If not found → error (undefined type)
+    │       ├── Step 4: Validate generic arguments if present
+    │       │   ├── Check arity matches declaration parameters
+    │       │   ├── Resolve each generic argument type
+    │       │   └── validateGenericArguments(args, params, useSite)
+    │       └── Step 5: Return cached NamedTypeAST
+    │
+    ├── ModuleTypeAccessAST
+    │   └── resolveModuleTypeAccess(type, ctx)
+    │       ├── Step 1: Look up the module alias
+    │       │   └── ctx.lookupImport(moduleName) → ModuleAST
+    │       ├── Step 2: Look up the type in the module's table
+    │       │   └── ctx.lookupModuleTypeMember(module, memberName)
+    │       ├── Step 3: Check if the type is exported
+    │       │   └── if !ctx.isTypeExported(decl): error (private member)
+    │       ├── Step 4: Validate generic arguments if present
+    │       └── Step 5: Return resolved NamedTypeAST
+    │
+    ├── ArrayTypeAST
+    │   └── resolveArrayType(type, ctx)
+    │       ├── Step 1: Resolve the element type
+    │       │   └── resolveType(type->element) → must succeed
+    │       ├── Step 2: Validate element type
+    │       │   ├── if element is RefTypeAST: error (reference in array)
+    │       │   └── if element is ArrayTypeAST (slice): error (slice in array)
+    │       └── Step 3: Validate context if this is a slice type
+    │           └── if type->isSlice(): validateBorrowedContext(type, ctx)
+    │
+    ├── NullableTypeAST
+    │   └── resolveNullableType(type, ctx)
+    │       ├── Step 1: Resolve the inner type
+    │       │   └── resolveType(type->inner) → must succeed
+    │       ├── Step 2: Validate inner type cannot be function
+    │       │   └── if inner is FuncTypeAST: error (function cannot be nullable)
+    │       └── Step 3: Validate inner type cannot be array
+    │           └── if inner is ArrayTypeAST: error (array cannot be nullable)
+    │
+    ├── FallibleTypeAST
+    │   └── resolveFallibleType(type, ctx)
+    │       ├── Step 1: Resolve the inner type
+    │       ├── Step 2: Validate inner type cannot be function
+    │       └── Step 3: Validate inner type cannot be array
+    │
+    ├── CombinedTypeAST
+    │   └── resolveCombinedType(type, ctx)
+    │       ├── Step 1: Resolve the inner type
+    │       ├── Step 2: Validate inner type cannot be function
+    │       └── Step 3: Validate inner type cannot be array
+    │
+    ├── RefTypeAST
+    │   └── resolveRefType(type, ctx)
+    │       ├── Step 1: Resolve the inner type
+    │       ├── Step 2: Validate inner type cannot be trait
+    │       │   └── if isTraitType(inner, ctx): error (&Trait not allowed)
+    │       └── Step 3: Apply Downward Flow Rule
+    │           └── validateBorrowedContext(type, ctx)
+    │               ├── if in struct field: error (&T cannot be stored)
+    │               ├── if in array element: error (&T cannot be stored)
+    │               ├── if in function return: error (&T cannot escape upward)
+    │               └── if in closure capture: error (&T cannot be captured)
+    │
+    ├── PtrTypeAST
+    │   └── resolvePtrType(type, ctx)
+    │       ├── Step 1: Resolve the inner type
+    │       └── Step 2: Return type (always valid structurally)
+    │           └── Raw pointers are sealed conduits - FFI checks done separately
+    │
+    └── FuncTypeAST
+        └── resolveFuncType(type, ctx)
+            ├── Step 1: Resolve all parameter types
+            │   └── for each param: resolveType(param->type) → must succeed
+            ├── Step 2: Resolve return type (if present)
+            │   └── resolveType(type->returnType) → must succeed
+            ├── Step 3: Validate return type cannot be borrowed
+            │   ├── if isBorrowedType(returnType): error
+            │   └── if returnType is RefTypeAST: error
+            ├── Step 4: Validate return type cannot be trait
+            │   └── if isTraitType(returnType, ctx): error (trait cannot be returned)
+            └── Step 5: Recursively resolve curried return type
+                └── if returnType is FuncTypeAST: resolveFuncType(returnType)
 │
-│   ┌── NamedTypeAST ──────────────────────────────────────────────────────────┐
-│   │  resolveNamedType(type, ctx)                                             │
-│   │  │                                                                       │
-│   │  ├── Step 1: Check if this is a generic parameter                        │
-│   │  │   └── if ctx.isGenericParam(name): return type (generic param)        │
-│   │  │                                                                       │
-│   │  ├── Step 2: Look up as concrete type                                    │
-│   │  │   └── ctx.lookupType(name) → TypeDeclAST                              │
-│   │  │       ├── StructDeclAST  → struct type                                │
-│   │  │       ├── EnumDeclAST    → enum type                                  │
-│   │  │       └── TraitDeclAST   → trait type                                 │
-│   │  │                                                                       │
-│   │  ├── Step 3: If not found → error (undefined type)                       │
-│   │  │                                                                       │
-│   │  ├── Step 4: Validate generic arguments if present                       │
-│   │  │   ├── Check arity matches declaration parameters                      │
-│   │  │   ├── Resolve each generic argument type                              │
-│   │  │   └── validateGenericArguments(args, params, useSite)                 │
-│   │  │       ├── Check constraints (trait bounds)                            │
-│   │  │       └── Ensure arguments are not borrowed types                     │
-│   │  │                                                                       │
-│   │  └── Step 5: Return cached NamedTypeAST                                  │
-│   │      └── ctx.getNamedType(name) → canonicalized type pointer             │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── ModuleTypeAccessAST ───────────────────────────────────────────────────┐
-│   │  resolveModuleTypeAccess(type, ctx)                                      │
-│   │  │                                                                       │
-│   │  ├── Step 1: Look up the module alias                                    │
-│   │  │   └── ctx.lookupImport(moduleName) → ModuleAST                        │
-│   │  │       └── if not found: error (module not imported)                   │
-│   │  │                                                                       │
-│   │  ├── Step 2: Look up the type in the module's table                      │
-│   │  │   └── ctx.lookupModuleTypeMember(module, memberName)                  │
-│   │  │       └── if not found: error (type not found in module)              │
-│   │  │                                                                       │
-│   │  ├── Step 3: Check if the type is exported                               │
-│   │  │   └── if !ctx.isTypeExported(decl): error (private member)            │
-│   │  │                                                                       │
-│   │  ├── Step 4: Validate generic arguments if present                       │
-│   │  │   ├── Check if type is generic (has params)                           │
-│   │  │   ├── Check arity matches                                             │
-│   │  │   ├── Resolve each generic argument type                              │
-│   │  │   └── validateGenericArguments(args, params, useSite)                 │
-│   │  │                                                                       │
-│   │  └── Step 5: Return resolved NamedTypeAST                                │
-│   │      └── ctx.getNamedType(memberName) → canonicalized type pointer       │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── ArrayTypeAST ──────────────────────────────────────────────────────────┐
-│   │  resolveArrayType(type, ctx)                                             │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the element type                                    │
-│   │  │   └── resolveType(type->element) → must succeed                       │
-│   │  │                                                                       │
-│   │  ├── Step 2: Validate element type                                       │
-│   │  │   ├── if element is RefTypeAST: error (reference in array)            │
-│   │  │   │   └── Downward Flow Rule: &T cannot be stored                     │
-│   │  │   └── if element is ArrayTypeAST (slice): error (slice in array)      │
-│   │  │       └── Downward Flow Rule: [_]T cannot be stored                   │
-│   │  │                                                                       │
-│   │  └── Step 3: Validate context if this is a slice type                    │
-│   │      └── if type->isSlice(): validateBorrowedContext(type, ctx)          │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── NullableTypeAST ───────────────────────────────────────────────────────┐
-│   │  resolveNullableType(type, ctx)                                          │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the inner type                                      │
-│   │  │   └── resolveType(type->inner) → must succeed                         │
-│   │  │                                                                       │
-│   │  ├── Step 2: Validate inner type cannot be function                      │
-│   │  │   └── if inner is FuncTypeAST: error (function cannot be nullable)    │
-│   │  │                                                                       │
-│   │  └── Step 3: Validate inner type cannot be array                         │
-│   │      └── if inner is ArrayTypeAST: error (array cannot be nullable)      │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── FallibleTypeAST ───────────────────────────────────────────────────────┐
-│   │  resolveFallibleType(type, ctx)                                          │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the inner type                                      │
-│   │  │   └── resolveType(type->inner) → must succeed                         │
-│   │  │                                                                       │
-│   │  ├── Step 2: Validate inner type cannot be function                      │
-│   │  │   └── if inner is FuncTypeAST: error (function cannot be fallible)    │
-│   │  │                                                                       │
-│   │  └── Step 3: Validate inner type cannot be array                         │
-│   │      └── if inner is ArrayTypeAST: error (array cannot be fallible)      │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── CombinedTypeAST ───────────────────────────────────────────────────────┐
-│   │  resolveCombinedType(type, ctx)                                          │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the inner type                                      │
-│   │  │   └── resolveType(type->inner) → must succeed                         │
-│   │  │                                                                       │
-│   │  ├── Step 2: Validate inner type cannot be function                      │
-│   │  │   └── if inner is FuncTypeAST: error (function cannot be combined)    │
-│   │  │                                                                       │
-│   │  └── Step 3: Validate inner type cannot be array                         │
-│   │      └── if inner is ArrayTypeAST: error (array cannot be combined)      │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── RefTypeAST ────────────────────────────────────────────────────────────┐
-│   │  resolveRefType(type, ctx)                                               │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the inner type                                      │
-│   │  │   └── resolveType(type->inner) → must succeed                         │
-│   │  │                                                                       │
-│   │  ├── Step 2: Validate inner type cannot be trait                         │
-│   │  │   └── if isTraitType(inner, ctx): error (&Trait not allowed)          │
-│   │  │                                                                       │
-│   │  └── Step 3: Apply Downward Flow Rule                                    │
-│   │      └── validateBorrowedContext(type, ctx)                              │
-│   │          ├── if in struct field: error (&T cannot be stored)             │
-│   │          ├── if in array element: error (&T cannot be stored)            │
-│   │          ├── if in function return: error (&T cannot escape upward)      │
-│   │          └── if in closure capture: error (&T cannot be captured)        │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── PtrTypeAST ────────────────────────────────────────────────────────────┐
-│   │  resolvePtrType(type, ctx)                                               │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve the inner type                                      │
-│   │  │   └── resolveType(type->inner) → must succeed                         │
-│   │  │                                                                       │
-│   │  └── Step 2: Return type (always valid structurally)                     │
-│   │      └── Raw pointers are sealed conduits - FFI checks done separately   │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-│   ┌── FuncTypeAST ───────────────────────────────────────────────────────────┐
-│   │  resolveFuncType(type, ctx)                                              │
-│   │  │                                                                       │
-│   │  ├── Step 1: Resolve all parameter types                                 │
-│   │  │   └── for each param: resolveType(param->type) → must succeed         │
-│   │  │                                                                       │
-│   │  ├── Step 2: Resolve return type (if present)                            │
-│   │  │   └── resolveType(type->returnType) → must succeed                    │
-│   │  │                                                                       │
-│   │  ├── Step 3: Validate return type cannot be borrowed                     │
-│   │  │   ├── if isBorrowedType(returnType): error                            │
-│   │  │   │   └── Downward Flow Rule: &T and [_]T cannot escape upward        │
-│   │  │   └── if returnType is RefTypeAST: error                              │
-│   │  │                                                                       │
-│   │  ├── Step 4: Validate return type cannot be trait                        │
-│   │  │   └── if isTraitType(returnType, ctx): error (trait cannot be returned)│
-│   │  │                                                                       │
-│   │  └── Step 5: Recursively resolve curried return type                     │
-│   │      └── if returnType is FuncTypeAST: resolveFuncType(returnType)       │
-│   └──────────────────────────────────────────────────────────────────────────┘
-│
-├── // ERROR HANDLING ─────────────────────────────────────────────────────────
+├── // ERROR HANDLING
 │   └── On any error: report via ctx.diagnostics.error() and return nullptr
 │
-└── // RETURN VALUE CONVENTIONS ──────────────────────────────────────────────
+└── // RETURN VALUE CONVENTIONS
     ├── nullptr: Type does not exist (hard error)
     │   ├── Type lookup failed (undeclared)
     │   ├── Generic arity mismatch
     │   └── Module/type not found
-    │
     └── TypeAST*: Type exists (valid or invalid)
         ├── PrimitiveTypeAST: Built-in type
         ├── NamedTypeAST: User-defined type (cached)
@@ -998,7 +908,7 @@ resolveType(type, ctx)
 
 ### Capture Analysis (`CaptureAnalysis.cpp`)
 
-Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function). It validates that captured variables follow the language's safety rules and stores the capture information for code generation.
+Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function).
 
 **Purpose:**
 - Detects which variables are captured by closures and nested functions
@@ -1008,156 +918,107 @@ Capture analysis detects which variables from outer scopes are referenced inside
 - Marks closures as escaping when they are returned from functions
 
 ```cpp
-analyzeCaptures(expr, ctx)                             // Analyze anonymous function
+analyzeCaptures(expr, ctx)
 │
-├── // EARLY EXIT ──────────────────────────────────────────────────────────────
+├── // EARLY EXIT
 │   └── if expr->body is null: return
 │
-├── // COLLECT CAPTURES ────────────────────────────────────────────────────────
-│   │
+├── // COLLECT CAPTURES
 │   └── collectCaptures(body, ctx, expr)
 │       │
-│       └── // WALK AST ────────────────────────────────────────────────────────
+│       └── // WALK AST
 │           │
-│           ├── // IdentifierExpr ─────────────────────────────────────────────
+│           ├── // IdentifierExpr
 │           │   │   Check if this identifier is a capture
-│           │   │
 │           │   ├── if isGenericParam(name) → NOT CAPTURE
-│           │   │   └── Generic parameters are resolved at instantiation time
-│           │   │
 │           │   ├── if isInCurrentScope(name) → NOT CAPTURE
-│           │   │   └── Variables declared in the same function are local
-│           │   │
 │           │   ├── if isModuleMember(name) → NOT CAPTURE
-│           │   │   └── Module members are global, not captured
-│           │   │
 │           │   └── else → CAPTURE
-│           │       └── Variable from an outer function scope
 │           │
-│           ├── // Nested AnonFuncExpr ────────────────────────────────────────
-│           │   │   Recursively analyze nested closures
-│           │   │
+│           ├── // Nested AnonFuncExpr
 │           │   └── analyzeCaptures(nested, ctx)
-│           │       └── Nested closures have their own capture list
 │           │
-│           ├── // FuncDecl ────────────────────────────────────────────────────
+│           ├── // FuncDecl
 │           │   └── skip (captures analyzed separately)
 │           │
-│           └── // Other AST nodes ─────────────────────────────────────────────
-│               └── recurse into children (expressions, statements, etc.)
+│           └── // Other AST nodes
+│               └── recurse into children
 │
-├── // VALIDATE CAPTURES ──────────────────────────────────────────────────────
-│   │
+├── // VALIDATE CAPTURES
 │   └── for each capture:
-│       │
-│       ├── // Rule 1: No borrowed types ─────────────────────────────────────
+│       ├── // Rule 1: No borrowed types
 │       │   └── if isBorrowedType(decl->type):
 │       │       ├── error: closure cannot capture borrowed type
-│       │       ├── ctx.diagnostics.error(DiagCode::Sem_InvalidCapture)
-│       │       │   └── "closure cannot capture borrowed type 'x' (&T or [_]T)"
-│       │       ├── ctx.diagnostics.note()
-│       │       │   └── "Only owned values can be captured by closures"
-│       │       └── return (error already reported)
-│       │
-│       ├── // Rule 2: No linear types ──────────────────────────────────────
+│       │       └── note: "Only owned values can be captured by closures"
+│       ├── // Rule 2: No linear types
 │       │   └── if decl->type is FutureTypeAST or ThreadTypeAST:
 │       │       ├── error: closure cannot capture linear type
-│       │       ├── ctx.diagnostics.error(DiagCode::Sem_InvalidCapture)
-│       │       │   └── "closure cannot capture Future<T> or Thread<T>"
-│       │       └── return (error already reported)
-│       │
-│       └── // Add to capture list ──────────────────────────────────────────
+│       │       └── note: "Future<T> and Thread<T> cannot be captured"
+│       └── // Add to capture list
 │           └── expr->captures.push_back(capture)
 │
-└── // STORE RESULT ────────────────────────────────────────────────────────────
+└── // STORE RESULT
     └── expr->hasClosure = !expr->captures.empty()
 ```
 
 ```cpp
-markClosureIfEscaping(expr, ctx)                     // Detect escaping closures
+markClosureIfEscaping(expr, ctx)
 │
-├── // PURPOSE ─────────────────────────────────────────────────────────────────
+├── // PURPOSE
 │   │   Detects when a closure is returned from a function and must be
 │   │   heap-allocated because it outlives the function call.
-│   │
 │   └── Escaping closures are heap-allocated; non-escaping closures are stack-allocated
 │
-├── // CASE 1: IdentifierExpr ──────────────────────────────────────────────────
+├── // CASE 1: IdentifierExpr
 │   │   Returning a named function or closure variable
-│   │
 │   ├── lookupValue(name) → FuncDeclAST
-│   │   └── if not found: return (not a function)
-│   │
 │   ├── if func is nested (closureDepth > 0) and is const:
 │   │   └── func->isEscaping = true
-│   │       └── Nested const function returned → escapes
-│   │
 │   └── if func is AnonFuncExpr and is const:
 │       └── func->isEscaping = true
-│           └── Anonymous function returned → escapes
 │
-└── // CASE 2: AnonFuncExpr ────────────────────────────────────────────────────
+└── // CASE 2: AnonFuncExpr
     │   Directly returning an anonymous function literal
-    │
     └── expr->isEscaping = true
-        └── Always escapes when returned
 ```
 
 **Capture Detection Walkthrough:**
 
 ```cpp
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                      Capture Detection Example                                 │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  const makeCounter (start int) -> (int) -> int = {                      │   │
-│  │      let count int = start                                              │   │
-│  │                                                                         │   │
-│  │      return (step int) -> int {                                         │   │
-│  │          count += step                                                  │   │
-│  │          return count                                                   │   │
-│  │      }                                                                  │   │
-│  │  }                                                                      │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 1: analyzeCaptures() called on the inner anonymous function       │   │
-│  │                                                                         │   │
-│  │  ┌─────────────────────────────────────────────────────────────────┐    │   │
-│  │  │  Walk AST of the anonymous function body:                       │    │   │
-│  │  │                                                                 │    │   │
-│  │  │  ├── BinaryExpr (count += step)                                 │    │   │
-│  │  │  │   ├── left: IdentifierExpr("count")                          │    │   │
-│  │  │  │   │   ├── isInCurrentScope("count")? → false                 │    │   │
-│  │  │  │   │   ├── isModuleMember("count")? → false                   │    │   │
-│  │  │  │   │   └── → CAPTURE                                          │    │   │
-│  │  │  │   │       └── count is captured (from outer scope)           │    │   │
-│  │  │  │   │                                                          │    │   │
-│  │  │  │   └── right: IdentifierExpr("step")                          │    │   │
-│  │  │  │       ├── isInCurrentScope("step")? → true (parameter)       │    │   │
-│  │  │  │       └── → NOT CAPTURE                                      │    │   │
-│  │  │  │                                                              │    │   │
-│  │  │  └── ReturnStmt (return count)                                  │    │   │
-│  │  │      └── IdentifierExpr("count")                                │    │   │
-│  │  │          ├── isInCurrentScope("count")? → false                 │    │   │
-│  │  │          └── → CAPTURE (already captured)                       │    │   │
-│  │  └─────────────────────────────────────────────────────────────────┘    │   │
-│  │                                                                         │   │
-│  │  Step 2: Validate captures                                              │   │
-│  │  └── count is not borrowed type → valid capture                         │   │
-│  │                                                                         │   │
-│  │  Step 3: Store result                                                   │   │
-│  │  └── expr->captures = count, expr->hasClosure = true                    │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 4: markClosureIfEscaping() called on return expression            │   │
-│  │  └── expr is AnonFuncExpr → expr->isEscaping = true                     │   │
-│  │      └── Closure escapes → heap-allocated in code generation            │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+const makeCounter (start int) -> (int) -> int = {
+    let count int = start
+
+    return (step int) -> int {
+        count += step
+        return count
+    }
+}
+
+Step 1: analyzeCaptures() called on the inner anonymous function
+
+Walk AST of the anonymous function body:
+├── BinaryExpr (count += step)
+│   ├── left: IdentifierExpr("count")
+│   │   ├── isInCurrentScope("count")? → false
+│   │   ├── isModuleMember("count")? → false
+│   │   └── → CAPTURE (count is captured from outer scope)
+│   └── right: IdentifierExpr("step")
+│       ├── isInCurrentScope("step")? → true (parameter)
+│       └── → NOT CAPTURE
+└── ReturnStmt (return count)
+    └── IdentifierExpr("count")
+        ├── isInCurrentScope("count")? → false
+        └── → CAPTURE (already captured)
+
+Step 2: Validate captures
+└── count is not borrowed type → valid capture
+
+Step 3: Store result
+└── expr->captures = count, expr->hasClosure = true
+
+Step 4: markClosureIfEscaping() called on return expression
+└── expr is AnonFuncExpr → expr->isEscaping = true
+    └── Closure escapes → heap-allocated in code generation
 ```
 
 **Key Relationships:**
@@ -1188,7 +1049,6 @@ markClosureIfEscaping(expr, ctx)                     // Detect escaping closures
 ```cpp
 // AnonFuncExprAST fields for capture analysis
 struct AnonFuncExprAST {
-    // ...
     bool hasClosure = false;                    // true if captures any variables
     std::vector<CapturedVariable> captures;     // list of captured variables
     bool isEscaping = false;                    // true if returned from function
@@ -1196,7 +1056,6 @@ struct AnonFuncExprAST {
 
 // FuncDeclAST fields for capture analysis
 struct FuncDeclAST {
-    // ...
     bool hasClosure = false;                    // true if nested function captures
     std::vector<CapturedVariable> captures;     // list of captured variables
     bool isEscaping = false;                    // true if returned from function
@@ -1233,129 +1092,103 @@ struct CapturedVariable {
 
 ### Type Narrowing (`TypeNarrowHelpers.cpp`)
 
-Type narrowing is a flow-sensitive analysis that refines variable types 
-based on conditional checks and operations. It allows the compiler to understand 
-that after certain checks, a variable's type is more specific than its declared type.
+Type narrowing is a flow-sensitive analysis that refines variable types based on conditional checks and operations.
 
-```swift
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                         Type Narrowing Overview                               │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐  │
-│  │                    Narrowing Entry Points                               │  │
-│  ├─────────────────────────────────────────────────────────────────────────┤  │
-│  │                                                                         │  │
-│  │  ┌─────────────────────┐    ┌─────────────────────┐                     │  │
-│  │  │   If Statement      │    │   Await/Join        │                     │  │
-│  │  │   (Condition)       │    │   Statements        │                     │  │
-│  │  ├─────────────────────┤    ├─────────────────────┤                     │  │
-│  │  │ x != nil → direct   │    │ await x → Future<T> │                     │  │
-│  │  │ x == nil → inverse  │    │   narrows to T      │                     │  │
-│  │  │ x != err → direct   │    │ join x → Thread<T>  │                     │  │
-│  │  │ x == err → inverse  │    │   narrows to T      │                     │  │
-│  │  └─────────────────────┘    └─────────────────────┘                     │  │
-│  │                                                                         │  │
-│  └─────────────────────────────────────────────────────────────────────────┘  │
-│                                                                               │
-└───────────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 1. NARROWING ENTRY POINTS
-
-The narrowing system is triggered from two main entry points:
+**Narrowing Entry Points:**
 
 ```cpp
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                        Narrowing Entry Points                                 │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐  │
-│  │                      IF STATEMENT ENTRY                                 │  │
-│  ├─────────────────────────────────────────────────────────────────────────┤  │
-│  │                                                                         │  │
-│  │  resolveIfStmt()                                                        │  │
-│  │  │                                                                      │  │
-│  │  ├── ScopedIfCondition(ctx)  // Sets isIfConditionCtx = true            │  │
-│  │  │                                                                      │  │
-│  │  ├── resolveExprWithTarget(condition, boolType)                         │  │
-│  │  │   │                                                                  │  │
-│  │  │   └── resolveBinaryExpr()                                            │  │
-│  │  │       │                                                              │  │
-│  │  │       └── if ctx.stack.isIfConditionCtx():                           │  │
-│  │  │           │                                                          │  │
-│  │  │           └── info = detectNarrowingPattern(expr, ctx)               │  │
-│  │  │               │                                                      │  │
-│  │  │               └── ctx.stack.setPendingNarrowing(info)                │  │
-│  │  │                                                                      │  │
-│  │  ├── info = ctx.stack.getPendingNarrowing()                             │  │
-│  │  │                                                                      │  │
-│  │  ├── THEN BRANCH:                                                       │  │
-│  │  │   └── ScopedNarrowing(ctx, info.narrowings, false)                   │  │
-│  │  │       └── pushNarrowingLevel(false)                                  │  │
-│  │  │           └── narrowVariable(name, type)  // Apply each narrowing    │  │
-│  │  │                                                                      │  │
-│  │  └── ELSE BRANCH:                                                       │  │
-│  │      └── ScopedNarrowing(ctx, info.narrowings, true)                    │  │
-│  │          └── pushNarrowingLevel(true)                                   │  │
-│  │              └── narrowVariable(name, type)  // Apply each narrowing    │  │
-│  │                                                                         │  │
-│  └─────────────────────────────────────────────────────────────────────────┘  │
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────┐  │
-│  │                    AWAIT/JOIN STATEMENT ENTRY                           │  │
-│  ├─────────────────────────────────────────────────────────────────────────┤  │
-│  │                                                                         │  │
-│  │  resolveAwaitStmt() / resolveJoinStmt()                                 │  │
-│  │  │                                                                      │  │
-│  │  └── for each target:                                                   │  │
-│  │      │                                                                  │  │
-│  │      ├── if hasPendingAsync(targetName):                                │  │
-│  │      │   │                                                              │  │
-│  │      │   ├── futureType = decl->type->as<FutureTypeAST>()               │  │
-│  │      │   ├── innerType = futureType->inner                              │  │
-│  │      │   │                                                              │  │
-│  │      │   └── ctx.stack.narrowVariable(targetName, innerType)            │  │
-│  │      │       │                                                          │  │
-│  │      │       └── pushNarrowingLevel(false)                              │  │
-│  │      │           └── narrowedTypes[targetName] = innerType              │  │
-│  │      │                                                                  │  │
-│  │      └── ctx.resolveAsync(targetName)  // Remove from pending           │  │
-│  │                                                                         │  │
-│  └─────────────────────────────────────────────────────────────────────────┘  │
-│                                                                               │
-└───────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Narrowing Entry Points                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌───────────────────────────────────────┐  ┌─────────────────────────────┐ │
+│  │         If Statement (Condition)      │  │      Await/Join Statements  │ │
+│  ├───────────────────────────────────────┤  ├─────────────────────────────┤ │
+│  │  x != nil  → direct (THEN branch)     │  │  await x → Future<T> → T    │ │
+│  │  x == nil  → inverse (ELSE/rest)      │  │  join x  → Thread<T> → T    │ │
+│  │  x != err  → direct (THEN branch)     │  │                             │ │
+│  │  x == err  → inverse (ELSE/rest)      │  │                             │ │
+│  └───────────────────────────────────────┘  └─────────────────────────────┘ │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 2. CONDITION NARROWING EXTRACTION
+#### IF STATEMENT ENTRY
 
-The core narrowing detection happens in `extractNarrowingsFromCondition()`, which analyzes condition expressions to extract type narrowing information.
+```cpp
+resolveIfStmt()
+│
+├── ScopedIfCondition(ctx)  // Sets isIfConditionCtx = true
+│
+├── resolveExprWithTarget(condition, boolType)
+│   │
+│   └── resolveBinaryExpr()
+│       │
+│       └── if ctx.stack.isIfConditionCtx():
+│           │
+│           └── info = detectNarrowingPattern(expr, ctx)
+│               │
+│               └── ctx.stack.setPendingNarrowing(info)
+│
+├── info = ctx.stack.getPendingNarrowing()
+│
+├── THEN BRANCH:
+│   └── ScopedNarrowing(ctx, info.narrowings, false)
+│       └── pushNarrowingLevel(false)
+│           └── narrowVariable(name, type)  // Apply each narrowing
+│
+└── ELSE BRANCH:
+    └── ScopedNarrowing(ctx, info.narrowings, true)
+        └── pushNarrowingLevel(true)
+            └── narrowVariable(name, type)  // Apply each narrowing
+```
+
+#### AWAIT/JOIN STATEMENT ENTRY
+
+```cpp
+resolveAwaitStmt() / resolveJoinStmt()
+│
+└── for each target:
+    │
+    ├── if hasPendingAsync(targetName):
+    │   ├── futureType = decl->type->as<FutureTypeAST>()
+    │   ├── innerType = futureType->inner
+    │   └── ctx.stack.narrowVariable(targetName, innerType)
+    │       └── pushNarrowingLevel(false)
+    │           └── narrowedTypes[targetName] = innerType
+    │
+    └── ctx.resolveAsync(targetName)  // Remove from pending
+```
+
+#### CONDITION NARROWING EXTRACTION
 
 ```cpp
 extractNarrowingsFromCondition(expr, ctx, outIsValidMixed)
 │
-├── // 1. Handle `or` at top level ────────────────────────────────────────
+├── // 1. Handle `or` at top level
 │   Pattern: a == nil or b == nil
 │   ├── left = extractNarrowingsFromCondition(left)
 │   ├── right = extractNarrowingsFromCondition(right)
 │   ├── If both have narrowing and different isEquality → invalid (reject)
 │   └── Merge both narrowings (OR combines both possibilities)
 │
-├── // 2. Handle `and` at top level ───────────────────────────────────────
+├── // 2. Handle `and` at top level
 │   Pattern: a == nil and b == nil
 │   └── Return empty (no narrowing - unsound because inverse would be OR)
 │
-├── // 3. Handle simple binary comparison ─────────────────────────────────
+├── // 3. Handle simple binary comparison
 │   └── detectSingleNarrowing(expr)
 │       ├── x == nil → narrows x to inner type, isEquality = true
 │       ├── x != nil → narrows x to inner type, isEquality = false
 │       ├── x == err → narrows x to inner type, isEquality = true
 │       └── x != err → narrows x to inner type, isEquality = false
 │
-└── // 4. Handle `not x` ──────────────────────────────────────────────────
+└── // 4. Handle `not x`
     Pattern: not x
     └── Inverse narrowing: x is nil/false, isEquality = true
+```
 
+```cpp
 detectSingleNarrowing(binary, ctx)
 │
 ├── if binary->op != Eq and binary->op != Ne → return empty
@@ -1367,7 +1200,9 @@ detectSingleNarrowing(binary, ctx)
 └── Pattern: (nil == identifier) or (err == identifier)  // Reverse order
     └── if left is LiteralExpr and right is IdentifierExpr:
         └── detectIdentifierNarrowing(info, id, lit, isEquality, ctx)
+```
 
+```cpp
 detectIdentifierNarrowing(info, id, lit, isEquality, ctx)
 │
 ├── if lit->kind != Nil and lit->kind != Err → return
@@ -1385,146 +1220,84 @@ detectIdentifierNarrowing(info, id, lit, isEquality, ctx)
     info.narrowings[id->name] = innerType
 ```
 
-#### 3. NARROWING PATTERNS
+#### NARROWING PATTERNS
 
-The narrowing system supports three distinct patterns:
+**Pattern 1: Nullable/Fallible Checks**
 
-```cpp
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         Narrowing Patterns                                   │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                    Pattern 1: Nullable/ Fallible Checks               │   │
-│  ├───────────────────────────────────────────────────────────────────────┤   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x != nil   → Direct Narrowing (applies to THEN branch)        │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │
-│  │  │  │  let x int? = getValue()                                │   │   │   │
-│  │  │  │  if x != nil {                                          │   │   │   │
-│  │  │  │      // x is int (narrowed from int?)                   │   │   │   │
-│  │  │  │      use(x) // safe                                     │   │   │   │
-│  │  │  │  }                                                      │   │   │   │
-│  │  │  │  // x is int? (narrowing level popped)                  │   │   │   │
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x == nil   → Inverse Narrowing (applies to ELSE or rest)      │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │
-│  │  │  │  let x int? = getValue()                                │   │   │   │
-│  │  │  │  if x == nil {                                          │   │   │   │
-│  │  │  │      return                                             │   │   │   │
-│  │  │  │  }                                                      │   │   │   │
-│  │  │  │  // x is int (pending inverse narrowing applied)        │   │   │   │
-│  │  │  │  use(x) // safe                                         │   │   │   │
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x != err  → Direct Narrowing (applies to THEN branch)         │   │   │
-│  │  │  x == err  → Inverse Narrowing (applies to ELSE or rest)       │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                    Pattern 2: Combined Conditions                     │   │
-│  ├───────────────────────────────────────────────────────────────────────┤   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x != nil and y != nil  → All != checks (direct narrowing)     │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │
-│  │  │  │  if x != nil and y != nil {                             │   │   │   │
-│  │  │  │      // x is int, y is string (both narrowed)           │   │   │   │
-│  │  │  │  }                                                      │   │   │   │
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x == nil or y == nil   → All == checks (inverse narrowing)    │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │
-│  │  │  │  if x == nil or y == nil {                              │   │   │   │
-│  │  │  │      return                                             │   │   │   │
-│  │  │  │  }                                                      │   │   │   │
-│  │  │  │  // x is int OR y is string (both narrowed)             │   │   │   │
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  x != nil and y == nil  → ❌ REJECTED (mixed operators)        │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │   
-│  │  │  │  if x != nil and y == nil {                             │   │   │   │   
-│  │  │  │      // ERROR: mixed '!=' and '==' in condition         │   │   │   │   
-│  │  │  │      // Cannot determine narrowing semantics            │   │   │   │   
-│  │  │  │  }                                                      │   │   │   │   
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │   
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                    Pattern 3: Await/Join Narrowing                    │   │
-│  ├───────────────────────────────────────────────────────────────────────┤   │
-│  │                                                                       │   │
-│  │  ┌─────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  await x   → Narrow Future<T> → T (applies to rest of block)    │  │   │
-│  │  │  ┌──────────────────────────────────────────────────────────┐   │  │   │
-│  │  │  │  async result int = fetchValue() // result is Future<int>│   │  │   │
-│  │  │  │  await result                    // Narrow to int        │   │  │   │
-│  │  │  │  // result is int here                                   │   │  │   │
-│  │  │  │  use(result) // safe                                     │   │  │   │
-│  │  │  └──────────────────────────────────────────────────────────┘   │  │   │
-│  │  └─────────────────────────────────────────────────────────────────┘  │   │
-│  │                                                                       │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  join x    → Narrow Thread<T> → T (applies to rest of block)   │   │   │
-│  │  │  ┌─────────────────────────────────────────────────────────┐   │   │   │
-│  │  │  │  spawn result int = computeValue() // result is Thread<int> │   │   │
-│  │  │  │  join result                     // Narrow to int       │   │   │   │
-│  │  │  │  // result is int here                                  │   │   │   │
-│  │  │  │  use(result) // safe                                    │   │   │   │
-│  │  │  └─────────────────────────────────────────────────────────┘   │   │   │
-│  │  └────────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```
+x != nil  → Direct Narrowing (applies to THEN branch)
+x == nil  → Inverse Narrowing (applies to ELSE or rest)
+
+let x int? = getValue()
+if x != nil {
+    // x is int (narrowed from int?)
+    use(x) // safe
+}
+// x is int? (narrowing level popped)
 ```
 
-#### 4. NARROWING STACK MANAGEMENT
+```
+x != err  → Direct Narrowing (applies to THEN branch)
+x == err  → Inverse Narrowing (applies to ELSE or rest)
+```
+
+**Pattern 2: Combined Conditions**
+
+```
+x != nil and y != nil  → All != checks (direct narrowing)
+if x != nil and y != nil {
+    // x is int, y is string (both narrowed)
+}
+```
+
+```
+x == nil or y == nil  → All == checks (inverse narrowing)
+if x == nil or y == nil {
+    return
+}
+// x is int OR y is string (both narrowed)
+```
+
+```
+x != nil and y == nil  → ❌ REJECTED (mixed operators)
+if x != nil and y == nil {
+    // ERROR: mixed '!=' and '==' in condition
+    // Cannot determine narrowing semantics
+}
+```
+
+**Pattern 3: Await/Join Narrowing**
+
+```
+await x  → Narrow Future<T> → T (applies to rest of block)
+async result int = fetchValue()  // result is Future<int>
+await result                      // Narrow to int
+// result is int here
+use(result) // safe
+```
+
+```
+join x   → Narrow Thread<T> → T (applies to rest of block)
+spawn result int = computeValue()  // result is Thread<int>
+join result                         // Narrow to int
+// result is int here
+use(result) // safe
+```
+
+#### NARROWING STACK MANAGEMENT
 
 The narrowing stack tracks flow-sensitive type refinements across nested scopes.
 
-```swift
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                        Narrowing Stack Structure                               │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  Level 3 (innermost)  ──────────────────────────────────────┐           │   │
-│  │  { x: int, y: string }                                      │           │   │
-│  │                                                             │           │   │
-│  │  Level 2              ──────────────────────────────────────│──┐        │   │
-│  │  { x: int? }                                                │  │        │   │
-│  │                                                             │  │        │   │
-│  │  Level 1              ──────────────────────────────────────│──│──┐     │   │
-│  │  { }                                                        │  │  │     │   │
-│  │                                                             │  │  │     │   │
-│  │                                                             │  │  │     │   │
-│  │  Lookup "x" ────────────────────────────────────────────────┘  │  │     │   │
-│  │    → Level 3 has x → returns int                               │  │     │   │
-│  │                                                                │  │     │   │
-│  │  Lookup "y" ───────────────────────────────────────────────────┘  │     │   │
-│  │    → Level 3 has y → returns string                               │     │   │
-│  │                                                                   │     │   │
-│  │  Lookup "z" ──────────────────────────────────────────────────────┘     │   │
-│  │    → No level has z → returns nullptr                                   │   │
-│  │                                                                         │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+```cpp
+Narrowing Stack Structure:
+
+Level 3 (innermost)  { x: int, y: string }
+Level 2              { x: int? }
+Level 1              { }
+
+Lookup "x" → Level 3 has x → returns int
+Lookup "y" → Level 3 has y → returns string
+Lookup "z" → No level has z → returns nullptr
 ```
 
 ```cpp
@@ -1547,77 +1320,56 @@ ContextStack Narrowing Methods:
     └── Returns true if the current level is inverse narrowing
 ```
 
-#### 5. PENDING INVERSE NARROWING
+#### PENDING INVERSE NARROWING
 
 For standalone if statements with early exit (`if x == nil { return }`), the inverse narrowing is stored as pending and applied to the rest of the block.
 
 ```cpp
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                      Pending Inverse Narrowing Flow                           │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 1: Condition Analysis                                            │   │
-│  │  ┌─────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  if x == nil {                                                  │   │   │
-│  │  │      return                                                     │   │   │
-│  │  │  }                                                              │   │   │
-│  │  │  // Pending inverse narrowing captured: x → int                 │   │   │
-│  │  └─────────────────────────────────────────────────────────────────┘   │   │
-│  └────────────────────────────────────────────────────────────────────────┘   │
-│                                                                               │
-│  ┌────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 2: Store Pending Inverse Narrowing                               │   │
-│  │  ┌─────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  if !stmt->elseBranch && thenReturns &&                         │   │   │
-│  │  │     hasNarrowing && info.isEquality {                           │   │   │
-│  │  │      ctx.stack.setPendingInverseNarrowing(info)                 │   │   │
-│  │  │  }                                                              │   │   │
-│  │  └─────────────────────────────────────────────────────────────────┘   │   │
-│  └────────────────────────────────────────────────────────────────────────┘   │
-│                                                                               │
-│  ┌────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 3: Apply Pending Narrowing on Block Entry                        │   │
-│  │  ┌─────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  resolveBlock() {                                               │   │   │
-│  │  │      if ctx.stack.hasPendingInverseNarrowing() {                │   │   │
-│  │  │          info = ctx.stack.getPendingInverseNarrowing()          │   │   │
-│  │  │          ctx.stack.pushNarrowingLevel(true)                     │   │   │
-│  │  │          for (name, type : info.narrowings) {                   │   │   │
-│  │  │              ctx.stack.narrowVariable(name, type)               │   │   │
-│  │  │          }                                                      │   │   │
-│  │  │          ctx.stack.clearPendingInverseNarrowing()               │   │   │
-│  │  │      }                                                          │   │   │
-│  │  │      // ... resolve block statements ...                        │   │   │
-│  │  │  }                                                              │   │   │
-│  │  └─────────────────────────────────────────────────────────────────┘   │   │
-│  └────────────────────────────────────────────────────────────────────────┘   │
-│                                                                               │
-└───────────────────────────────────────────────────────────────────────────────┘
+Step 1: Condition Analysis
+if x == nil {
+    return
+}
+// Pending inverse narrowing captured: x → int
+
+Step 2: Store Pending Inverse Narrowing
+if !stmt->elseBranch && thenReturns &&
+   hasNarrowing && info.isEquality {
+    ctx.stack.setPendingInverseNarrowing(info)
+}
+
+Step 3: Apply Pending Narrowing on Block Entry
+resolveBlock() {
+    if ctx.stack.hasPendingInverseNarrowing() {
+        info = ctx.stack.getPendingInverseNarrowing()
+        ctx.stack.pushNarrowingLevel(true)
+        for (name, type : info.narrowings) {
+            ctx.stack.narrowVariable(name, type)
+        }
+        ctx.stack.clearPendingInverseNarrowing()
+    }
+    // ... resolve block statements ...
+}
 ```
 
-#### 6. EFFECTIVE TYPE LOOKUP
+#### EFFECTIVE TYPE LOOKUP
 
 When resolving an identifier, the compiler checks the narrowing stack for a narrowed type before falling back to the declaration's type.
 
 ```cpp
-getEffectiveType(decl, name)  [SemaContext]
+getEffectiveType(decl, name)
 │
-├── // Check if there's a narrowed type for this variable
 ├── narrowedType = stack.getNarrowedType(name)
 ├── if narrowedType:
 │   └── return narrowedType
 │
-└── // No narrowing active - use the declaration's type
-    return decl->type
+└── return decl->type
 
 Usage in resolveIdentifierExpr():
-│
-└── TypeAST* effectiveType = ctx.getEffectiveType(decl, name)
-    └── Returns narrowed type if available, otherwise decl->type
+TypeAST* effectiveType = ctx.getEffectiveType(decl, name)
+└── Returns narrowed type if available, otherwise decl->type
 ```
 
-#### 7. NARROWING RULES SUMMARY
+#### NARROWING RULES SUMMARY
 
 | Pattern                 | isEquality | Direction  | Effect                        |
 | ----------------------- | ---------- | ---------- | ----------------------------- |
@@ -1633,39 +1385,38 @@ Usage in resolveIdentifierExpr():
 | `x == nil or y != nil`  | N/A        | ❌ REJECTED | Mixed operators not supported |
 | `not x`                 | `true`     | Inverse    | `x` narrowed (nil/false)      |
 
+---
 
+### Const Evaluation (`ConstEvaluator`)
 
-### Const Evaluation (`ConstEvaluator`) — `ConstEvaluator.cpp`
+The const evaluator is responsible for evaluating expressions at compile-time. It is invoked during Phase 2 of semantic analysis when resolving `const` declarations.
 
-The const evaluator is responsible for evaluating expressions at compile-time. 
-It is invoked during Phase 2 of semantic analysis when resolving `const` declarations. 
-The evaluator handles both constant variables and constant functions, with support 
-for compile-time execution of functions.
-
-```swift
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          ConstEvaluator Overview                                │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────────┐  │
-│  │   Constant Values   │  │   Control Flow      │  │   Type System           │  │
-│  ├─────────────────────┤  ├─────────────────────┤  ├─────────────────────────┤  │
-│  │ • Bool (true/false) │  │ • if/else           │  │ • Int → int64           │  │
-│  │ • Int (int64)       │  │ • while loops       │  │ • Float → double        │  │
-│  │ • Float (double)    │  │ • for loops (range) │  │ • String                │  │
-│  │ • String            │  │ • switch/case       │  │ • Struct                │  │
-│  │ • Char              │  │ • return            │  │ • Array                 │  │
-│  │ • Nil / Err         │  │ • block scoping     │  │                         │  │
-│  │ • Struct / Array    │  │                     │  │                         │  │
-│  └─────────────────────┘  └─────────────────────┘  └─────────────────────────┘  │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 1. ENTRY POINTS
+**ConstEvaluator Overview:**
 
 ```cpp
-evaluateDecl(ctx, decl)                         // Evaluate const variable
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          ConstEvaluator Overview                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
+│  │   Constant Values   │  │   Control Flow      │  │   Type System       │  │
+│  ├─────────────────────┤  ├─────────────────────┤  ├─────────────────────┤  │
+│  │ • Bool (true/false) │  │ • if/else           │  │ • Int → int64       │  │
+│  │ • Int (int64)       │  │ • while loops       │  │ • Float → double    │  │
+│  │ • Float (double)    │  │ • for loops (range) │  │ • String            │  │
+│  │ • String            │  │ • switch/case       │  │ • Struct            │  │
+│  │ • Char              │  │ • return            │  │ • Array             │  │
+│  │ • Nil / Err         │  │ • block scoping     │  │                     │  │
+│  │ • Struct / Array    │  │                     │  │                     │  │
+│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### ENTRY POINTS
+
+```cpp
+evaluateDecl(ctx, decl)
 │
 ├── Check: decl->init exists
 ├── Check: circular dependency (m_evaluating.contains(decl))
@@ -1674,8 +1425,10 @@ evaluateDecl(ctx, decl)                         // Evaluate const variable
 ├── result = evaluate(ctx, decl->init, decl->type)
 ├── Pop: Scope
 └── Return: result
+```
 
-evaluate(ctx, expr, targetType)                 // Evaluate any expression
+```cpp
+evaluate(ctx, expr, targetType)
 │
 ├── Check: expr != nullptr
 ├── Check: recursionDepth < MAX_RECURSION (1000)
@@ -1704,7 +1457,7 @@ evaluate(ctx, expr, targetType)                 // Evaluate any expression
 └── Return: result
 ```
 
-#### 2. LITERAL EVALUATION
+#### LITERAL EVALUATION
 
 ```cpp
 evalLiteral(ctx, expr)
@@ -1719,16 +1472,16 @@ evalLiteral(ctx, expr)
 └── default           → ConstantValue::unknown()
 ```
 
-#### 3. IDENTIFIER EVALUATION
+#### IDENTIFIER EVALUATION
 
 ```cpp
 evalIdentifier(ctx, expr)
 │
-├── if name == "_" → return unknown() (discard placeholder)
+├── if name == "_" → return unknown()
 │
 ├── decl = ctx.lookupValue(name)
 │
-├── // Variable ─────────────────────────────────────────────────────────────
+├── // Variable
 │   if VarDecl:
 │       if var->init && var->init->isConst → return constValue
 │       if var->keyword == Const:
@@ -1736,26 +1489,26 @@ evalIdentifier(ctx, expr)
 │           return evaluate(ctx, var->init, var->type)
 │       return unknown() (non-const variable)
 │
-├── // Function ─────────────────────────────────────────────────────────────
+├── // Function
 │   if FuncDecl:
 │       if func->keyword != Const → return unknown()
 │       return ConstantValue(func)  (function pointer)
 │
-├── // Enum Variant ─────────────────────────────────────────────────────────
+├── // Enum Variant
 │   if EnumVariantAST:
 │       return ConstantValue(variant->value)
 │
-└── // Parameter ────────────────────────────────────────────────────────────
+└── // Parameter
     if ParamAST:
         return unknown() (value bound during execution)
 ```
 
-#### 4. BINARY EXPRESSION EVALUATION
+#### BINARY EXPRESSION EVALUATION
 
 ```cpp
 evalBinary(ctx, expr, targetType)
 │
-├── // Type Narrowing (if condition context) ──────────────────────────────
+├── // Type Narrowing (if condition context)
 │   if ctx.stack.isIfConditionCtx():
 │       info = detectNarrowingPattern(expr, ctx)
 │       if info.hasNarrowing:
@@ -1765,7 +1518,7 @@ evalBinary(ctx, expr, targetType)
 ├── left = evaluate(ctx, expr->left, targetType)
 │   if error/unknown → return
 │
-├── // Short-circuit Logic ─────────────────────────────────────────────────
+├── // Short-circuit Logic
 │   if expr->op == And and left.isBool() and !left.asBool() → return false
 │   if expr->op == Or  and left.isBool() and left.asBool()  → return true
 │
@@ -1773,10 +1526,12 @@ evalBinary(ctx, expr, targetType)
 │   if error/unknown → return
 │
 └── return evalBinaryOp(ctx, op, left, right, expr, targetType)
+```
 
+```cpp
 evalBinaryOp(ctx, op, left, right, node, targetType)
 │
-├── // Arithmetic (numeric promotion) ──────────────────────────────────────
+├── // Arithmetic (numeric promotion)
 │   if op in (Add, Sub, Mul, Div, Mod, Pow):
 │       if both numeric:
 │           promote int → float if mixed
@@ -1785,22 +1540,22 @@ evalBinaryOp(ctx, op, left, right, node, targetType)
 │           return result
 │       else error
 │
-├── // String Concatenation ────────────────────────────────────────────────
+├── // String Concatenation
 │   if op == Add and left.isString() and right.isString():
 │       return concat(left, right)
 │
-├── // Comparison ──────────────────────────────────────────────────────────
+├── // Comparison
 │   if op in (Eq, Ne, Lt, Gt, Le, Ge):
 │       if kinds match:
 │           return compare(left, right)
 │       else error
 │
-├── // Logical ─────────────────────────────────────────────────────────────
+├── // Logical
 │   if op in (And, Or):
 │       if both bool: return left && right or left || right
 │       else error
 │
-└── // Bitwise ─────────────────────────────────────────────────────────────
+└── // Bitwise
     if op in (BitAnd, BitOr, BitXor, Shl, Shr):
         if both int:
             check shift bounds (Shl/Shr)
@@ -1808,7 +1563,7 @@ evalBinaryOp(ctx, op, left, right, node, targetType)
         else error
 ```
 
-#### 5. UNARY EXPRESSION EVALUATION
+#### UNARY EXPRESSION EVALUATION
 
 ```cpp
 evalUnary(ctx, expr, targetType)
@@ -1826,7 +1581,7 @@ evalUnary(ctx, expr, targetType)
                  else error
 ```
 
-#### 6. CALL EXPRESSION (CONST FUNCTION)
+#### CALL EXPRESSION (CONST FUNCTION)
 
 ```cpp
 evalCall(ctx, expr)
@@ -1838,36 +1593,38 @@ evalCall(ctx, expr)
 │
 ├── if func has generics and no args → return unknown()
 │
-├── // Evaluate arguments ──────────────────────────────────────────────────
+├── // Evaluate arguments
 │   for each arg in expr->args:
 │       val = evaluate(ctx, arg)
 │       if error/unknown → return
 │
 └── return executeFunction(ctx, func, args)
+```
 
+```cpp
 executeFunction(ctx, func, args)
 │
-├── // Recursion guard ─────────────────────────────────────────────────────
+├── // Recursion guard
 │   if recursionDepth >= MAX_RECURSION (1000) → error
 │   recursionDepth++
 │   DepthGuard (auto-decrement on exit)
 │
-├── // Setup context ────────────────────────────────────────────────────────
+├── // Setup context
 │   ConstFunctionContext:
 │       ctx.stack.pushFunction(func, func->funcType->returnType)
 │       ctx.pushScope()
 │
-├── // Bind arguments ──────────────────────────────────────────────────────
+├── // Bind arguments
 │   for each parameter:
 │       param->type = getConstantType(args[index++])
 │
-├── // Execute body ────────────────────────────────────────────────────────
+├── // Execute body
 │   if func->body:
 │       result = executeStmt(ctx, func->body)
 │   else:
 │       error: const function has no body
 │
-├── // Check return type ──────────────────────────────────────────────────
+├── // Check return type
 │   if returnType != void:
 │       if result.isVoid() → error (non-void function returns nothing)
 │   else:
@@ -1876,7 +1633,7 @@ executeFunction(ctx, func, args)
 └── return result
 ```
 
-#### 7. STATEMENT EXECUTION (FOR CONST FUNCTIONS)
+#### STATEMENT EXECUTION (FOR CONST FUNCTIONS)
 
 ```cpp
 executeStmt(ctx, stmt)
@@ -1890,7 +1647,9 @@ executeStmt(ctx, stmt)
     ├── SwitchStmt    → executeSwitch()
     ├── ExprStmt      → executeExprStmt()
     └── DeclStmt      → executeDeclStmt()
+```
 
+```cpp
 executeBlock(ctx, block)
 │
 ├── ctx.pushScope()
@@ -1900,7 +1659,9 @@ executeBlock(ctx, block)
 │   └── if !result.isVoid() → break (return/break/continue)
 ├── ctx.popScope()
 └── return result
+```
 
+```cpp
 executeIf(ctx, stmt)
 │
 ├── ScopedIfCondition(ctx, stmt->elseBranch != nullptr)
@@ -1923,7 +1684,9 @@ executeIf(ctx, stmt)
         if info.hasNarrowing and info.isEquality:
             ScopedNarrowing(ctx, info.narrowings, true)
         return executeStmt(ctx, stmt->elseBranch)
+```
 
+```cpp
 executeWhile(ctx, stmt)
 │
 ├── iterations = 0
@@ -1941,25 +1704,23 @@ executeWhile(ctx, stmt)
     │   if result.isVoid() → continue
     │
     └── return result (non-void)
+```
 
+```cpp
 executeFor(ctx, stmt)
 │
 ├── if iterable is RangeExprAST:
 │   ├── lo = evaluateAsInt(ctx, range->lo)
 │   ├── hi = evaluateAsInt(ctx, range->hi)
 │   ├── if lo or hi missing → return unknown()
-│   │
 │   ├── if inclusive: validate lo <= hi
 │   ├── if exclusive: validate lo < hi
 │   │   if invalid → error
-│   │
 │   ├── step = 1
 │   │   if stmt->step:
 │   │       step = evaluateAsInt(ctx, stmt->step)
 │   │       if step missing or step <= 0 → error
-│   │
 │   ├── iterations = 0
-│   │
 │   └── for i = lo; condition; i += step:
 │       ├── if ++iterations > MAX_ITERATIONS → return unknown()
 │       ├── bind index variable (if present)
@@ -1970,7 +1731,9 @@ executeFor(ctx, stmt)
 └── else:
     ├── executeStmt(ctx, stmt->body)  // fallback
     └── return unknown()
+```
 
+```cpp
 executeSwitch(ctx, stmt)
 │
 ├── subject = evaluate(ctx, stmt->subject)
@@ -1982,7 +1745,7 @@ executeSwitch(ctx, stmt)
 │   if default: executeStmt(ctx, defaultBody)
 │   return unknown()
 │
-├── // Match cases ─────────────────────────────────────────────────────────
+├── // Match cases
 │   for each case:
 │       for each value:
 │           if value is RangeExprAST:
@@ -1999,11 +1762,13 @@ executeSwitch(ctx, stmt)
 │           if matches:
 │               return executeStmt(ctx, case->body)
 │
-└── // Default ─────────────────────────────────────────────────────────────
+└── // Default
     if defaultBody:
         return executeStmt(ctx, defaultBody)
     return voidValue()
+```
 
+```cpp
 executeReturn(ctx, stmt)
 │
 ├── if stmt->value:
@@ -2012,7 +1777,9 @@ executeReturn(ctx, stmt)
 │   return result
 │
 └── return voidValue()
+```
 
+```cpp
 executeDeclStmt(ctx, stmt)
 │
 ├── if VarDecl and const:
@@ -2026,427 +1793,167 @@ executeDeclStmt(ctx, stmt)
 └── error: mutable locals not allowed in const functions
 ```
 
-#### 8. STRUCT/ARRAY LITERAL EVALUATION
+#### RAII GUARDS
 
 ```cpp
-evalStructLiteral(ctx, expr)
-│
-├── typeDecl = ctx.lookupType(expr->typeName)
-│   if !typeDecl or not Struct → error
-│
-├── // Initialize with defaults ────────────────────────────────────────────
-│   for each field:
-│       if field->defaultVal:
-│           val = evaluate(ctx, field->defaultVal, field->type)
-│           if error/unknown → return
-│           fields[field->name] = val
-│
-├── // Override with explicit initializers ────────────────────────────────
-│   for each init in expr->inits:
-│       if field not found → error
-│       if const field assigned nil/err → error
-│       val = evaluate(ctx, init->value, field->type)
-│       if error/unknown → return
-│       fields[init->name] = val
-│
-├── // Check missing required fields ──────────────────────────────────────
-│   for each field:
-│       if field not in fields:
-│           if field->defaultVal → continue
-│           if nullable/fallible → continue (optional)
-│           → error: missing required field
-│
-└── return ConstantValue(Struct, fields)
-
-evalArrayLiteral(ctx, expr)
-│
-├── // Evaluate all elements ──────────────────────────────────────────────
-│   for each elem in expr->elements:
-│       val = evaluate(ctx, elem)
-│       if error/unknown → return
-│
-├── // Check type consistency ─────────────────────────────────────────────
-│   firstType = elements[0].type
-│   for each subsequent element:
-│       if !typesEqual(elem.type, firstType) → error
-│
-└── return ConstantValue(Array, elements)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             RAII Guards Overview                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────┐  ┌──────────────────────┐  ┌─────────────────────┐ │
+│  │   EvaluationGuard   │  │ ConstFunctionContext │  │     DepthGuard      │ │
+│  ├─────────────────────┤  ├──────────────────────┤  ├─────────────────────┤ │
+│  │ Prevents circular   │  │ Sets up function     │  │ Prevents infinite   │ │
+│  │ dependencies in     │  │ context for const    │  │ recursion in const  │ │
+│  │ const declarations  │  │ function execution   │  │ function evaluation │ │
+│  └─────────────────────┘  └──────────────────────┘  └─────────────────────┘ │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-#### 9. FIELD ACCESS & NULL COALESCE
 
 ```cpp
-evalFieldAccess(ctx, expr)
-│
-├── obj = evaluate(ctx, expr->object)
-│   if error/unknown → return
-│
-├── if !obj.isStruct() → error
-│
-└── return obj.asStruct()[expr->fieldName] (or error if not found)
-
-evalNullCoalesce(ctx, expr)
-│
-├── val = evaluate(ctx, expr->value)
-│   if error → return
-│
-├── if val.isNil() or val.isErr():
-│   return evaluate(ctx, expr->fallback)
-│
-└── if val.isUnknown(): return unknown()
-    else: return val
-```
-
-#### 10. IF EXPRESSION & RANGE EVALUATION
-
-```cpp
-evalIfExpr(ctx, expr)
-│
-├── cond = evaluate(ctx, expr->condition)
-│   if error/unknown → return
-│   if !cond.isBool() → error
-│
-└── if cond.asBool():
-        return evaluate(ctx, expr->thenBranch)
-    else:
-        return evaluate(ctx, expr->elseBranch)
-
-evalRangeExpr(ctx, expr)
-│
-├── lo = evaluate(ctx, expr->lo)
-│   hi = evaluate(ctx, expr->hi)
-│   if error/unknown → return
-│
-├── if !lo.isInt() or !hi.isInt() → return unknown()
-│
-├── if inclusive: lo <= hi
-│   if exclusive: lo < hi
-│   if invalid → error
-│
-└── return unknown() (range value not representable)
-```
-
-#### 11. DEPENDENCY ANALYSIS
-
-```cpp
-buildDependencyGraph(ctx)
-│
-├── // Collect const declarations ──────────────────────────────────────────
-│   for each module:
-│       for each decl:
-│           if VarDecl with Const → add to m_constDecls
-│           if FuncDecl with Const → add to m_constDecls
-│
-├── // Build dependencies ──────────────────────────────────────────────────
-│   for each decl in m_constDecls:
-│       if VarDecl: collectDeps(ctx, var->init, deps)
-│       if FuncDecl: collectDepsFromStmt(ctx, func->body, deps)
-│       m_deps[decl] = deps
-│
-└── topologicalSort(ctx, m_deps)
-
-topologicalSort(ctx, deps)
-│
-├── // Kahn's Algorithm ────────────────────────────────────────────────────'
-│   Initialize inDegree for all decls
-│   for each (decl, depsList):
-│       for each dep in depsList:
-│           graph[decl].push_back(dep)
-│           inDegree[dep]++
-│
-│   queue = all decls with inDegree == 0
-│   while queue not empty:
-│       decl = queue.pop()
-│       result.push_back(decl)
-│       for each dep in graph[decl]:
-│           inDegree[dep]--
-│           if inDegree[dep] == 0: queue.push(dep)
-│
-└── // Cycle detection ─────────────────────────────────────────────────────
-    if result.size() != deps.size():
-        Find cycle participants (inDegree > 0)
-        Report circular dependency error
-
-collectDeps(ctx, expr, deps)
-│
-└── Walk expression tree:
-    ├── IdentifierExpr:
-    │   └── decl = ctx.lookupValue(name)
-    │       ├── if VarDecl with Const → deps.push_back(var)
-    │       └── if FuncDecl with Const → deps.push_back(func)
-    │
-    ├── BinaryExpr: collectDeps(left) + collectDeps(right)
-    ├── UnaryExpr: collectDeps(operand)
-    ├── CallExpr: collectDeps(callee) + collectDeps(all args)
-    ├── FieldAccessExpr: collectDeps(object)
-    ├── StructLiteralExpr: collectDeps(all field inits)
-    └── ArrayLiteralExpr: collectDeps(all elements)
-
-collectDepsFromStmt(ctx, stmt, deps)
-│
-└── Walk statement tree:
-    ├── BlockStmt: collectDepsFromStmt(each stmt)
-    ├── ExprStmt: collectDeps(expr)
-    ├── ReturnStmt: collectDeps(value)
-    ├── IfStmt: collectDeps(condition) + collectDepsFromStmt(then/else)
-    ├── WhileStmt: collectDeps(condition) + collectDepsFromStmt(body)
-    └── DeclStmt: if const VarDecl: collectDeps(init)
-```
-
-#### 12. RAII GUARDS
-
-```swift
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                             RAII Guards Overview                                 │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌─────────────────────┐  ┌──────────────────────┐  ┌─────────────────────────┐  │
-│  │   EvaluationGuard   │  │ ConstFunctionContext │  │       DepthGuard        │  │
-│  ├─────────────────────┤  ├──────────────────────┤  ├─────────────────────────┤  │
-│  │ Prevents circular   │  │ Sets up function     │  │ Prevents infinite       │  │
-│  │ dependencies in     │  │ context for const    │  │ recursion in const      │  │
-│  │ const declarations  │  │ function execution   │  │ function evaluation     │  │
-│  └─────────────────────┘  └──────────────────────┘  └─────────────────────────┘  │
-│                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘
-
 EvaluationGuard
 │
-├── // Purpose ─────────────────────────────────────────────────────────────────
+├── // Purpose
 │   Prevents infinite recursion in circular dependencies between const
 │   declarations. Tracks which declarations are currently being evaluated.
 │
-├── // Construction ────────────────────────────────────────────────────────────
+├── // Construction
 │   EvaluationGuard(m_evaluating, decl)
 │   ├── m_evaluating.insert(decl)
 │   └── (decl is now marked as "currently evaluating")
 │
-├── // Destruction ─────────────────────────────────────────────────────────────
+├── // Destruction
 │   ~EvaluationGuard()
 │   └── m_evaluating.erase(decl)
 │
-└── // Usage ──────────────────────────────────────────────────────────────────
+└── // Usage
     In evaluateDecl():
-    │
     ├── if m_evaluating.contains(decl):
     │   └── Report circular dependency error
-    │
     └── EvaluationGuard guard(m_evaluating, decl)
         // ... evaluate the declaration ...
         // Automatically removed when guard goes out of scope
 
     In evalIdentifier():
-    │
     └── if m_evaluating.contains(var):
         └── Report circular dependency error
+```
 
+```cpp
 ConstFunctionContext
 │
-├── // Purpose ─────────────────────────────────────────────────────────────────
+├── // Purpose
 │   Sets up the semantic context for executing a const function. Pushes
 │   a function context (for return validation) and a scope (for parameters).
 │
-├── // Construction ────────────────────────────────────────────────────────────
+├── // Construction
 │   ConstFunctionContext(ctx, func)
 │   ├── ctx.stack.pushFunction(func, func->funcType->returnType)
 │   └── ctx.pushScope()
 │
-├── // Destruction ─────────────────────────────────────────────────────────────
+├── // Destruction
 │   ~ConstFunctionContext()
 │   ├── ctx.popScope()
 │   └── ctx.stack.pop()
 │
-└── // Usage ──────────────────────────────────────────────────────────────────
+└── // Usage
     In executeFunction():
-    │
     └── ConstFunctionContext context(ctx, func)
         // ... bind parameters and execute body ...
         // Automatically cleaned up when context goes out of scope
+```
 
+```cpp
 DepthGuard
 │
-├── // Purpose ─────────────────────────────────────────────────────────────────
+├── // Purpose
 │   Prevents infinite recursion in const function calls by tracking the
 │   call stack depth.
 │
-├── // Construction ────────────────────────────────────────────────────────────
+├── // Construction
 │   DepthGuard depthGuard{m_recursionDepth}
 │   └── m_recursionDepth++
 │
-├── // Destruction ─────────────────────────────────────────────────────────────
+├── // Destruction
 │   ~DepthGuard()
 │   └── m_recursionDepth--
 │
-└── // Usage ──────────────────────────────────────────────────────────────────
+└── // Usage
     In executeFunction():
-    │
     ├── if m_recursionDepth >= MAX_RECURSION (1000):
     │   └── Error: exceeded maximum recursion depth
-    │
     └── DepthGuard depthGuard{m_recursionDepth}
         // ... execute function body ...
         // Automatically decremented when guard goes out of scope
 ```
 
-#### 13. INTERNAL STATE
+#### INTERNAL STATE
 
-```swift
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          Internal State Overview                               │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ┌──────────────────────────┐  ┌──────────────────────────┐                     │
-│  │      m_constDecls        │  │         m_deps           │                     │
-│  ├──────────────────────────┤  ├──────────────────────────┤                     │
-│  │ All const declarations   │  │ Dependency graph:        │                     │
-│  │ (VarDecl + FuncDecl)     │  │ decl → [dependencies]    │                     │
-│  └──────────────────────────┘  └──────────────────────────┘                     │
-│                                                                                 │
-│  ┌──────────────────────────┐  ┌──────────────────────────┐                     │
-│  │    m_evaluatedExprs      │  │      m_evaluating        │                     │
-│  ├──────────────────────────┤  ├──────────────────────────┤                     │
-│  │ Cache of evaluated       │  │ Set of declarations      │                     │
-│  │ expressions (avoid       │  │ currently being          │                     │
-│  │ re-evaluation)           │  │ evaluated (cycle         │                     │
-│  │                          │  │ detection)              │                     │
-│  └──────────────────────────┘  └──────────────────────────┘                     │
-│                                                                                 │
-│  ┌──────────────────────────┐                                                   │
-│  │     m_recursionDepth     │                                                   │
-│  ├──────────────────────────┤                                                   │
-│  │ Current call stack depth │                                                   │
-│  │ for const functions      │                                                   │
-│  │ (MAX_RECURSION = 1000)   │                                                   │
-│  └──────────────────────────┘                                                   │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+```cpp
+Internal State Overview:
 
-m_constDecls : vector<DeclAST*>
-│
-├── // Purpose ─────────────────────────────────────────────────────────────────
-│   Stores all const declarations (variables and functions) in the program.
-│   Used by buildDependencyGraph() to build the dependency graph.
-│
-└── // Populated by ────────────────────────────────────────────────────────────
-    buildDependencyGraph():
-    │
-    └── for each module:
-        └── for each decl:
-            ├── if VarDecl with Const → add to m_constDecls
-            └── if FuncDecl with Const → add to m_constDecls
+┌──────────────────────────┐  ┌──────────────────────────┐
+│      m_constDecls        │  │         m_deps           │
+├──────────────────────────┤  ├──────────────────────────┤
+│ All const declarations   │  │ Dependency graph:        │
+│ (VarDecl + FuncDecl)     │  │ decl → [dependencies]    │
+└──────────────────────────┘  └──────────────────────────┘
 
-m_deps : unordered_map<DeclAST*, vector<DeclAST*>>
-│
-├── // Purpose ─────────────────────────────────────────────────────────────────
-│   Dependency graph for const declarations. Maps each declaration to the
-│   list of declarations it depends on.
-│
-└── // Populated by ────────────────────────────────────────────────────────────
-    buildDependencyGraph():
-    │
-    └── for each decl in m_constDecls:
-        ├── if VarDecl: collectDeps(ctx, var->init, deps)
-        ├── if FuncDecl: collectDepsFromStmt(ctx, func->body, deps)
-        └── m_deps[decl] = deps
+┌──────────────────────────┐  ┌──────────────────────────┐
+│    m_evaluatedExprs      │  │      m_evaluating        │
+├──────────────────────────┤  ├──────────────────────────┤
+│ Cache of evaluated       │  │ Set of declarations      │
+│ expressions (avoid       │  │ currently being          │
+│ re-evaluation)           │  │ evaluated (cycle         │
+│                          │  │ detection)               │
+└──────────────────────────┘  └──────────────────────────┘
 
-m_evaluatedExprs : unordered_set<ExprAST*>
-│
-├── // Purpose ─────────────────────────────────────────────────────────────────
-│   Cache of expressions that have already been evaluated. Prevents
-│   re-evaluation of the same expression in different contexts.
-│
-└── // Populated by ────────────────────────────────────────────────────────────
-    evaluate():
-    │
-    └── if result.isEvaluated() and !result.isError():
-        └── m_evaluatedExprs.insert(expr)
-
-m_evaluating : unordered_set<DeclAST*>
-│
-├── // Purpose ─────────────────────────────────────────────────────────────────
-│   Tracks which declarations are currently being evaluated. Used for
-│   circular dependency detection.
-│
-├── // Populated by ────────────────────────────────────────────────────────────
-│   EvaluationGuard (construction): m_evaluating.insert(decl)
-│   EvaluationGuard (destruction):  m_evaluating.erase(decl)
-│
-└── // Checked by ──────────────────────────────────────────────────────────────
-    evaluateDecl():
-    │
-    └── if m_evaluating.contains(decl):
-        └── Report circular dependency error
-
-    evalIdentifier():
-    │
-    └── if m_evaluating.contains(var):
-        └── Report circular dependency error
-
-m_recursionDepth : size_t
-│
-├── // Purpose ─────────────────────────────────────────────────────────────────
-│   Tracks the current call stack depth for const function evaluation.
-│   Prevents infinite recursion.
-│
-├── // Modified by ─────────────────────────────────────────────────────────────
-│   DepthGuard (construction): m_recursionDepth++
-│   DepthGuard (destruction):  m_recursionDepth--
-│
-├── // Constants ───────────────────────────────────────────────────────────────
-│   MAX_RECURSION = 1000  // Maximum allowed recursion depth
-│   MAX_ITERATIONS = 10000 // Maximum loop iterations in const evaluation
-│
-└── // Checked by ──────────────────────────────────────────────────────────────
-    evaluate():
-    │
-    └── if m_recursionDepth >= MAX_RECURSION:
-        └── return ConstantValue::unknown()
-
-    executeFunction():
-    │
-    └── if m_recursionDepth >= MAX_RECURSION:
-        └── Error: exceeded maximum recursion depth
+┌──────────────────────────┐
+│     m_recursionDepth     │
+├──────────────────────────┤
+│ Current call stack depth │
+│ for const functions      │
+│ (MAX_RECURSION = 1000)   │
+└──────────────────────────┘
 ```
 
-#### 14. CONSTANT VALUE TYPES
+#### CONSTANT VALUE TYPES
 
-```swift
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                         ConstantValue Structure                                │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                        ConstantValue                                    │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  kind  : Kind enum (Bool, Int, Float, String, Char, Nil, Err, ...)      │   │
-│  │  value : variant (bool, int64_t, double, InternedString, ...)           │   │
-│  │  type  : TypeAST* (cached semantic type)                                │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                           Kind Enum                                      │  │
-│  ├──────────────────────────────────────────────────────────────────────────┤  │
-│  │  bool    │ Boolean (true/false)                                          │  │
-│  │  Int     │ 64-bit integer                                                │  │
-│  │  Float   │ 64-bit floating point                                         │  │
-│  │  String  │ Interned string                                               │  │
-│  │  Char    │ Single character                                              │  │
-│  │  Nil     │ Null value (for nullable types)                               │  │
-│  │  Err     │ Error value (for fallible types)                              │  │
-│  │  Struct  │ Struct literal (field name → value)                           │  │
-│  │  Array   │ Array literal (list of values)                                │  │
-│  │  Func    │ Function pointer (for const functions)                        │  │
-│  │  Void    │ No value (void functions)                                     │  │
-│  │  Unknown │ Unknown value (could not evaluate)                            │  │
-│  │  Error   │ Evaluation error                                              │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
 ```
+ConstantValue Structure:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        ConstantValue                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  kind  : Kind enum (Bool, Int, Float, String, Char, Nil, Err, ...)          │
+│  value : variant (bool, int64_t, double, InternedString, ...)               │
+│  type  : TypeAST* (cached semantic type)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Kind Enum                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  bool    │ Boolean (true/false)                                             │
+│  Int     │ 64-bit integer                                                   │
+│  Float   │ 64-bit floating point                                            │
+│  String  │ Interned string                                                  │
+│  Char    │ Single character                                                 │
+│  Nil     │ Null value (for nullable types)                                  │
+│  Err     │ Error value (for fallible types)                                 │
+│  Struct  │ Struct literal (field name → value)                              │
+│  Array   │ Array literal (list of values)                                   │
+│  Func    │ Function pointer (for const functions)                           │
+│  Void    │ No value (void functions)                                        │
+│  Unknown │ Unknown value (could not evaluate)                               │
+│  Error   │ Evaluation error                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ```cpp
 ConstantValue Methods:
 │
-├── // Constructors ────────────────────────────────────────────────────────────
+├── // Constructors
 │   ConstantValue(bool)              // Bool
 │   ConstantValue(int64_t)           // Int
 │   ConstantValue(double)            // Float
@@ -2455,14 +1962,14 @@ ConstantValue Methods:
 │   ConstantValue(StructFields)      // Struct
 │   ConstantValue(ArrayElements)     // Array
 │
-├── // Static Factory Methods ──────────────────────────────────────────────────
+├── // Static Factory Methods
 │   ConstantValue::nil()             // Nil
 │   ConstantValue::err()             // Err
 │   ConstantValue::voidValue()       // Void
 │   ConstantValue::unknown()         // Unknown
 │   ConstantValue::error()           // Error
 │
-└── // Predicates ──────────────────────────────────────────────────────────────
+└── // Predicates
     bool isBool() const
     bool isInt() const
     bool isFloat() const
@@ -2479,92 +1986,85 @@ ConstantValue Methods:
     bool isEvaluated() const  // !isUnknown() && !isError()
 ```
 
-#### 15. EVALUATION CATEGORIES
+#### EVALUATION CATEGORIES
 
-```swift
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                      Evaluation Categories Summary                             │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Basic Literal Evaluation                             │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Input          │ Output          │ Notes                               │   │
-│  │  true/false     │ Bool            │ Direct conversion                   │   │
-│  │  42, 0xFF, 0b10 │ Int             │ std::stoll with base detection      │   │
-│  │  3.14           │ Float           │ std::stod                           │   │
-│  │  "hello"        │ String          │ Interned string                     │   │
-│  │  'a'            │ Char            │ Single character                    │   │
-│  │  nil            │ Nil             │ Null value                          │   │
-│  │  err            │ Err             │ Error value                         │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Identifier Resolution                                │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Scenario                     │ Result                                  │   │
-│  │  const X = 42                 │ Returns 42                              │   │
-│  │  let X = 42                   │ Unknown (non-const)                     │   │
-│  │  X (currently evaluating)     │ Error (circular dependency)             │   │
-│  │  X (const function)           │ Func pointer                            │   │
-│  │  _ (discard)                  │ Unknown                                 │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Binary Operations                                    │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Category         │ Supported Types           │ Notes                   │   │
-│  │  Arithmetic       │ Int, Float                │ Overflow checks         │   │
-│  │  String Concat    │ String + String           │ Interned result         │   │
-│  │  Comparison       │ All comparable types      │ Type mismatch error     │   │
-│  │  Logical          │ Bool                      │ Short-circuit           │   │
-│  │  Bitwise          │ Int                       │ Shift bounds check      │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Unary Operations                                     │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Operation        │ Supported Types         │ Notes                     │   │
-│  │  - (negate)       │ Int, Float              │ INT64_MIN overflow check  │   │
-│  │  not              │ Bool                    │ Logical negation          │   │
-│  │  ~ (bitwise not)  │ Int                     │ Bitwise complement        │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Control Flow                                         │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Construct        │ Support      │ Notes                                │   │
-│  │  if/else          │ Full         │ Type narrowing, branch selection     │   │
-│  │  while loops      │ Full         │ MAX_ITERATIONS limit (10000)         │   │
-│  │  for loops        │ Range only   │ Index variable binding               │   │
-│  │  switch/case      │ Full         │ Range cases, exhaustiveness          │   │
-│  │  return           │ Full         │ Type checking, early exit            │   │
-│  │  blocks           │ Full         │ Scoping, local declarations          │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Composite Types                                      │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Type             │ Support      │ Notes                                │   │
-│  │  Struct literals  │ Full         │ Default values, field validation     │   │
-│  │  Array literals   │ Full         │ Type consistency check               │   │
-│  │  Field access     │ Full         │ Struct field lookup                  │   │
-│  │  Null coalesce    │ Full         │ nil/err fallback                     │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    Const Functions                                      │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │  Feature          │ Support      │ Notes                                │   │
-│  │  Function calls   │ Full         │ Recursion limit (1000)               │   │
-│  │  Parameters       │ Full         │ Type binding                         │   │
-│  │  Return values    │ Full         │ Type checking                        │   │
-│  │  Local variables  │ Const only   │ Mutable vars not allowed             │   │
-│  │  Generic functions│ Limited      │ Must provide explicit args           │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+```cpp
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      Evaluation Categories Summary                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Basic Literal Evaluation                           │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Input          │ Output          │ Notes                             │  │
+│  │  true/false     │ Bool            │ Direct conversion                 │  │
+│  │  42, 0xFF, 0b10 │ Int             │ std::stoll with base detection    │  │
+│  │  3.14           │ Float           │ std::stod                         │  │
+│  │  "hello"        │ String          │ Interned string                   │  │
+│  │  'a'            │ Char            │ Single character                  │  │
+│  │  nil            │ Nil             │ Null value                        │  │
+│  │  err            │ Err             │ Error value                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Identifier Resolution                              │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Scenario                     │ Result                                │  │
+│  │  const X = 42                 │ Returns 42                            │  │
+│  │  let X = 42                   │ Unknown (non-const)                   │  │
+│  │  X (currently evaluating)     │ Error (circular dependency)           │  │
+│  │  X (const function)           │ Func pointer                          │  │
+│  │  _ (discard)                  │ Unknown                               │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Binary Operations                                  │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Category         │ Supported Types           │ Notes                 │  │
+│  │  Arithmetic       │ Int, Float                │ Overflow checks       │  │
+│  │  String Concat    │ String + String           │ Interned result       │  │
+│  │  Comparison       │ All comparable types      │ Type mismatch error   │  │
+│  │  Logical          │ Bool                      │ Short-circuit         │  │
+│  │  Bitwise          │ Int                       │ Shift bounds check    │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Control Flow                                       │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Construct        │ Support      │ Notes                              │  │
+│  │  if/else          │ Full         │ Type narrowing, branch selection   │  │
+│  │  while loops      │ Full         │ MAX_ITERATIONS limit (10000)       │  │
+│  │  for loops        │ Range only   │ Index variable binding             │  │
+│  │  switch/case      │ Full         │ Range cases, exhaustiveness        │  │
+│  │  return           │ Full         │ Type checking, early exit          │  │
+│  │  blocks           │ Full         │ Scoping, local declarations        │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Composite Types                                    │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Type             │ Support      │ Notes                              │  │
+│  │  Struct literals  │ Full         │ Default values, field validation   │  │
+│  │  Array literals   │ Full         │ Type consistency check             │  │
+│  │  Field access     │ Full         │ Struct field lookup                │  │
+│  │  Null coalesce    │ Full         │ nil/err fallback                   │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Const Functions                                    │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │  Feature          │ Support      │ Notes                              │  │
+│  │  Function calls   │ Full         │ Recursion limit (1000)             │  │
+│  │  Parameters       │ Full         │ Type binding                       │  │
+│  │  Return values    │ Full         │ Type checking                      │  │
+│  │  Local variables  │ Const only   │ Mutable vars not allowed           │  │
+│  │  Generic functions│ Limited      │ Must provide explicit args         │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
 
 ## Precedence and Rules
 
@@ -2613,6 +2113,8 @@ Borrowed types (`&T`, `[_]T`) cannot appear in:
 | Module members     | Never captured (global)                    |
 | Local variables    | Captured if referenced from inner function |
 | Generic parameters | Never captured                             |
+
+---
 
 ## Helper Functions
 
