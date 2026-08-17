@@ -4,7 +4,7 @@
 #include "ModuleLoader.hpp"
 #include "../support/InterpreterError.hpp"
 #include "codegen/CodeGen.hpp"
-#include "../dynlink/DynamicLinker.hpp"  // <-- Include DynamicLinker
+#include "../dynlink/DynamicLinker.hpp"
 #include "llvm/IR/Module.h"
 
 #include <algorithm>
@@ -69,38 +69,35 @@ bool loadOrReloadModules(InterpreterContext& ctx,
     // ─── 5. Load or reload modules ──────────────────────────────────────
     for (size_t i = 0; i < modules.size(); ++i) {
         ModuleAST* module = modules[i];
-        InternedString baseName = moduleNames[i];
+        InternedString name = moduleNames[i];
         auto& irModule = irModules[i];
 
         if (isHotReload) {
             // ─── Hot Reload Path ──────────────────────────────────────────
-            uint64_t newVersion = ctx.moduleRegistry.incrementVersion(baseName);
-            std::string nameStr = ctx.pool.lookup(baseName);
-            std::string versionedName = nameStr + "_v" + std::to_string(newVersion);
-            InternedString versionedNameInterned = ctx.pool.intern(versionedName);
-
-            ctx.jit.addModule(std::move(irModule), versionedNameInterned);
-
-            if (ctx.jit.hasModule(baseName)) {
-                ctx.jit.removeModule(baseName);
+            // Remove old version if it exists (same name)
+            if (ctx.jit.hasModule(name)) {
+                ctx.jit.removeModule(name);
             }
-
-            ctx.moduleRegistry.registerModule(versionedNameInterned, module);
-            ctx.moduleRegistry.setDependencies(versionedNameInterned, moduleDeps[i]);
+            
+            // Add new version (same name, replaces old)
+            ctx.jit.addModule(std::move(irModule), name);
+            
+            // Update registry (overwrites old AST)
+            ctx.moduleRegistry.registerModule(name, module);
+            ctx.moduleRegistry.setDependencies(name, moduleDeps[i]);
 
             if (ctx.options.verbose) {
-                std::cout << "Hot-reloaded module: " << nameStr << " -> " 
-                          << versionedName << "\n";
+                std::cout << "Hot-reloaded module: " << ctx.pool.lookup(name) << "\n";
             }
         } else {
             // ─── Initial Load Path ────────────────────────────────────────
-            ctx.jit.addModule(std::move(irModule), baseName);
+            ctx.jit.addModule(std::move(irModule), name);
 
-            ctx.moduleRegistry.registerModule(baseName, module);
-            ctx.moduleRegistry.setDependencies(baseName, moduleDeps[i]);
+            ctx.moduleRegistry.registerModule(name, module);
+            ctx.moduleRegistry.setDependencies(name, moduleDeps[i]);
 
             if (ctx.options.verbose) {
-                std::cout << "Loaded module: " << ctx.pool.lookup(baseName) << "\n";
+                std::cout << "Loaded module: " << ctx.pool.lookup(name) << "\n";
             }
         }
     }
@@ -261,13 +258,6 @@ std::vector<InternedString> extractModuleDependencies(
     // This is a placeholder - actual implementation depends on
     // how imports are stored in your AST
     
-    // Example: if you have ImportDeclAST
-    // for (DeclAST* decl : module->decls) {
-    //     if (auto* import = decl->as<ImportDeclAST>()) {
-    //         dependencies.push_back(import->moduleName);
-    //     }
-    // }
-
     return dependencies;
 }
 

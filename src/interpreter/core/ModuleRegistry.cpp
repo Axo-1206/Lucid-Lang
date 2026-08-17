@@ -1,23 +1,17 @@
 /// @file core/ModuleRegistry.cpp
-/// @brief Implementation of the module registry.
+/// @brief Implementation of the module registry - NO VERSIONS.
 
 #include "ModuleRegistry.hpp"
 
 #include <algorithm>
-#include <iostream>
 #include <stdexcept>
 #include <queue>
+#include <set>
+#include <functional>
 
 namespace interpreter {
 
 // ─── ModuleInfo ─────────────────────────────────────────────────────────
-
-InternedString ModuleInfo::getFullName() const {
-    if (version == 0) {
-        return name;
-    }
-    return name;  // Version is tracked separately
-}
 
 bool ModuleInfo::dependsOn(InternedString other) const {
     for (const auto& dep : dependencies) {
@@ -47,17 +41,18 @@ ModuleInfo& ModuleRegistry::registerModule(InternedString name, ModuleAST* ast) 
 
     auto it = m_modules.find(name.id);
     if (it != m_modules.end()) {
-        // Update existing module
+        // ─── Update existing module ─────────────────────────────────────
+        // Keep the same name and dependencies, just update the AST.
+        // This is what happens on hot-reload.
         it->second.ast = ast;
         it->second.isActive = true;
         return it->second;
     }
 
-    // Create new module entry
+    // ─── Create new module entry ──────────────────────────────────────
     ModuleInfo info;
     info.name = name;
     info.ast = ast;
-    info.version = 0;
     info.isActive = true;
 
     auto result = m_modules.emplace(name.id, info);
@@ -182,32 +177,6 @@ void ModuleRegistry::clear() {
     m_activeModuleName = InternedString();
 }
 
-uint64_t ModuleRegistry::incrementVersion(InternedString name) {
-    if (!name.isValid()) {
-        throw std::invalid_argument("Cannot increment version for invalid name");
-    }
-
-    auto it = m_modules.find(name.id);
-    if (it == m_modules.end()) {
-        throw std::runtime_error("Cannot increment version: module not found");
-    }
-
-    return ++it->second.version;
-}
-
-uint64_t ModuleRegistry::getVersion(InternedString name) const {
-    if (!name.isValid()) {
-        return 0;
-    }
-
-    auto it = m_modules.find(name.id);
-    if (it == m_modules.end()) {
-        return 0;
-    }
-
-    return it->second.version;
-}
-
 void ModuleRegistry::setDependencies(InternedString name, 
                                      const std::vector<InternedString>& deps) {
     auto it = m_modules.find(name.id);
@@ -234,7 +203,7 @@ void ModuleRegistry::setDependencies(InternedString name,
         depIt->second.dependents.insert(name);
     }
 
-    // ─── 3. Update dependency graph and validate ────────────────────────
+    // ─── 3. Validate the graph ───────────────────────────────────────────
     updateDependencyGraph(name);
 }
 
@@ -318,40 +287,29 @@ std::vector<ModuleInfo*> ModuleRegistry::getAffectedModules(InternedString chang
 }
 
 void ModuleRegistry::updateDependencyGraph(InternedString name) {
-    // ─── 1. Validate the dependency graph for cycles ──────────────────────
-    // This is called after dependencies are updated to ensure consistency
-    
-    // ─── 2. Rebuild any internal data structures if needed ───────────────
-    // Currently, the graph is stored as adjacency lists (dependencies and dependents)
-    // which are updated in real-time. This function serves as a hook for
-    // future optimizations like pre-computing transitive closures.
-    
-    // ─── 3. Verify graph integrity ────────────────────────────────────────
-    // Check that all dependencies are still valid and no stale references exist
+    // ─── 1. Fix any inconsistencies ──────────────────────────────────────
     for (const auto& pair : m_modules) {
         const ModuleInfo& info = pair.second;
         
-        // Verify each dependency exists and has this module in its dependents
         for (const auto& dep : info.dependencies) {
             auto depIt = m_modules.find(dep.id);
             if (depIt == m_modules.end()) {
                 throw std::runtime_error("Dependency graph corruption: missing module " +
                                          m_pool.lookup(dep));
             }
+            // Ensure reverse link exists
             if (depIt->second.dependents.find(info.name) == depIt->second.dependents.end()) {
-                // Fix the inconsistency by adding this module to the dependent's dependents
                 depIt->second.dependents.insert(info.name);
             }
         }
         
-        // Verify each dependent exists and has this module in its dependencies
         for (const auto& depName : info.dependents) {
             auto depIt = m_modules.find(depName.id);
             if (depIt == m_modules.end()) {
                 throw std::runtime_error("Dependency graph corruption: missing dependent " +
                                          m_pool.lookup(depName));
             }
-            // Check if this module is listed in the dependent's dependencies
+            // Ensure forward link exists
             bool found = false;
             for (const auto& dep : depIt->second.dependencies) {
                 if (dep == info.name) {
@@ -360,21 +318,17 @@ void ModuleRegistry::updateDependencyGraph(InternedString name) {
                 }
             }
             if (!found) {
-                // Fix the inconsistency by adding this module to the dependent's dependencies
                 depIt->second.dependencies.push_back(info.name);
             }
         }
     }
     
-    // ─── 4. Cycle detection ──────────────────────────────────────────────
-    // Call validateDependencyGraph() which already does cycle detection
+    // ─── 2. Detect cycles ──────────────────────────────────────────────
     validateDependencyGraph();
 }
 
 void ModuleRegistry::validateDependencyGraph() const {
-    // Check for cycles in the dependency graph
-    // Simple DFS-based cycle detection
-    
+    // DFS-based cycle detection
     std::set<uint32_t> visited;
     std::set<uint32_t> recursionStack;
 
