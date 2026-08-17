@@ -3,7 +3,6 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
-#include "CodeGenGeneric.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
@@ -24,6 +23,7 @@
 #include <llvm/IR/IRBuilder.h>
 
 #include <cmath>
+#include <cassert>
 #include <unordered_map>
 
 namespace codegen {
@@ -579,18 +579,13 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    llvm::Function* callee = nullptr;
     llvm::Value* calleeVal = lowerExpression(expr->callee, ctx);
-    if (calleeVal) {
-        callee = llvm::dyn_cast<llvm::Function>(calleeVal);
-    }
-
-    if (!callee) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, expr->callee->loc,
-                                "callee is not callable");
+    if (!calleeVal) {
         return nullptr;
     }
 
+    // ─── Lower arguments ───────────────────────────────────────────────────
+    // Shared by both the closure-value and plain-function call paths below.
     std::vector<llvm::Value*> args;
     for (ExprAST* arg : expr->args) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
@@ -607,6 +602,54 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             if (!argVal) return nullptr;
         }
         args.push_back(argVal);
+    }
+
+    // ─── Closure value call ────────────────────────────────────────────────
+    // A closure value is the { funcPtr, envPtr } fat pointer struct built by
+    // lowerClosure (CodeGenClosure.cpp). getType() on a FuncTypeAST returns
+    // the callable *signature* (llvm::FunctionType), not this runtime shape,
+    // so we can't discriminate the two cases from expr->callee's Lucid-level
+    // type - we check the actual lowered value's LLVM type instead, which
+    // matches what CodeGenClosure.cpp really builds.
+    if (calleeVal->getType()->isStructTy()) {
+        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(calleeVal, 0, "closure_func");
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(calleeVal, 1, "closure_env");
+
+        // NOTE: if this call's own result is itself a closure (a curried
+        // return, e.g. f(1)()), expr->resolvedType is a FuncTypeAST, and
+        // getType() on a FuncTypeAST hands back a bare llvm::FunctionType -
+        // not a valid LLVM return/value type on its own, and not the same
+        // thing as the fat-pointer struct a closure value actually needs.
+        // There's no canonical closure-value LLVM type registered anywhere
+        // in CodeGenType.cpp to substitute here yet, so that case is
+        // explicitly left unhandled (rather than silently passed through
+        // to fail an opaque LLVM assertion inside emitClosureCall).
+        assert((!expr->resolvedType || !expr->resolvedType->isa<FuncTypeAST>()) &&
+               "calling a closure that itself returns a closure (curried "
+               "return) is not supported yet - see note in lowerCallExpr");
+
+        llvm::Type* returnType = expr->resolvedType
+            ? getType(ctx, expr->resolvedType)
+            : nullptr;
+        if (!returnType) {
+            returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
+        }
+
+        llvm::Value* result = emitClosureCall(funcPtr, envPtr, args, returnType, ctx);
+        expr->llvmValue = result;
+        return result;
+    }
+
+    // ─── Plain named-function call ──────────────────────────────────────────
+    llvm::Function* callee = llvm::dyn_cast<llvm::Function>(calleeVal);
+    // Sema (resolveCallExpr) already guarantees expr->callee resolves to a
+    // FuncTypeAST - a value that's neither the closure struct shape above
+    // nor a plain llvm::Function here means CodeGen and Sema have gone out
+    // of sync, not that the user wrote something uncallable.
+    assert(callee && "call callee is neither a closure value nor an llvm::Function - "
+                      "Sema should have caught this");
+    if (!callee) {
+        return nullptr;
     }
 
     llvm::Value* result = ctx.builder.CreateCall(callee, args, "call");
@@ -1092,11 +1135,14 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
 llvm::Value* lowerAnonFuncExpr(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    if (expr->hasClosure || !expr->captures.empty()) {
-        return lowerClosure(expr, ctx);
-    }
-
-    return llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0));
+    // lowerClosure now uniformly returns a { funcPtr, envPtr } fat pointer
+    // for every anonymous function, capturing or not (a non-capturing one
+    // just gets a null env pointer and skips the heap allocation). This
+    // used to special-case the no-captures path here and return a bare
+    // null pointer constant instead of actually compiling the function -
+    // that made every non-capturing closure used as a value silently
+    // uncallable. See CodeGenClosure.cpp for the uniform-shape rationale.
+    return lowerClosure(expr, ctx);
 }
 
 // =============================================================================

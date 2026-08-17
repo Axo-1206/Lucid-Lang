@@ -3,9 +3,11 @@
 
 #include "LucidIntrinsicEmitter.hpp"
 #include "../CodeGenType.hpp"
+#include "../closure/CodeGenClosure.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "../support/LLVMHelpers.hpp"
+#include "codegen/CodeGen.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
@@ -15,6 +17,7 @@
 #include <llvm/IR/DerivedTypes.h>
 
 #include <unordered_set>
+#include <cassert>
 
 namespace codegen {
 
@@ -613,8 +616,9 @@ llvm::Value* emitLucidControlIntrinsic(
     // ─── scope_exit ──────────────────────────────────────────────────────
     if (name == "scope_exit") {
         // scope_exit is handled in Sema and stored on BlockStmtAST.
-        // CodeGenStmt.cpp emits these callbacks.
-        // No runtime code is generated at the call site.
+        // emitScopeExitCallback (below) emits these callbacks from
+        // lowerBlockStmt, in LIFO order, at each block's exit point.
+        // No runtime code is generated at the call site itself.
         return nullptr;
     }
 
@@ -633,6 +637,105 @@ llvm::Value* emitLucidControlIntrinsic(
     ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
                             "unknown control intrinsic '#", name, "'");
     return nullptr;
+}
+
+// ─── Scope Exit Callback Emission ────────────────────────────────────────
+//
+// Relocated from CodeGenStmt.cpp: this is the codegen half of #scope_exit,
+// so it belongs alongside emitLucidControlIntrinsic rather than in the
+// generic statement-lowering file.
+
+void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx) {
+    if (!reg) return;
+
+    // ─── Plain function-reference callback ────────────────────────────────
+    if (reg->callback) {
+        llvm::Value* callback = ctx.lookupFunction(reg->callback);
+        if (!callback) {
+            callback = reg->callback->llvmFunction;
+        }
+        // Sema (validateScopeExit) guarantees a plain function-reference
+        // callback resolves to a real declaration. If it didn't, that's a
+        // Sema bug, not something CodeGen should diagnose at runtime.
+        assert(callback && "scope_exit callback not found - Sema should have caught this");
+        if (!callback) {
+            return;
+        }
+
+        std::vector<llvm::Value*> args;
+        for (ExprAST* arg : reg->args) {
+            llvm::Value* argVal = lowerExpression(arg, ctx);
+            if (!argVal) {
+                return;
+            }
+            if (arg->isLValue) {
+                llvm::Type* elemType = getType(ctx, arg->resolvedType);
+                // Sema guarantees resolvedType is set
+                assert(elemType && "Argument has no type in CodeGen");
+                argVal = loadIfNeeded(argVal, elemType, ctx);
+            }
+            args.push_back(argVal);
+        }
+
+        llvm::Function* callee = llvm::dyn_cast<llvm::Function>(callback);
+        assert(callee && "scope_exit callback value is not an llvm::Function");
+        if (!callee) {
+            return;
+        }
+
+        ctx.builder.CreateCall(callee, args);
+        return;
+    }
+
+    // ─── Closure callback ──────────────────────────────────────────────────
+    // reg->callback is null, meaning the argument wasn't a plain function
+    // reference - it's a closure literal or a closure-typed expression.
+    // reg->callExpr is the original #scope_exit(...) call; its first
+    // argument is the callee slot, same convention used for its location
+    // in diagnostics elsewhere in this function.
+    assert(reg->callExpr && !reg->callExpr->args.empty() &&
+           "scope_exit closure registration missing callee expression");
+    if (!reg->callExpr || reg->callExpr->args.empty()) {
+        return;
+    }
+
+    ExprAST* closureExpr = reg->callExpr->args[0];
+    llvm::Value* closureVal = lowerExpression(closureExpr, ctx);
+    if (!closureVal) {
+        return;
+    }
+    if (closureExpr->isLValue) {
+        llvm::Type* elemType = getType(ctx, closureExpr->resolvedType);
+        assert(elemType && "Closure argument has no type in CodeGen");
+        closureVal = loadIfNeeded(closureVal, elemType, ctx);
+    }
+
+    // Closure value is the { i8* func, i8* env } fat pointer built in
+    // lowerClosure (CodeGenClosure.cpp) - unpack it for emitClosureCall.
+    llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
+        closureVal, 0, "scope_exit_closure_func");
+    llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+        closureVal, 1, "scope_exit_closure_env");
+
+    std::vector<llvm::Value*> closureArgs;
+    for (ExprAST* arg : reg->args) {
+        llvm::Value* argVal = lowerExpression(arg, ctx);
+        if (!argVal) {
+            return;
+        }
+        if (arg->isLValue) {
+            llvm::Type* elemType = getType(ctx, arg->resolvedType);
+            assert(elemType && "Argument has no type in CodeGen");
+            argVal = loadIfNeeded(argVal, elemType, ctx);
+        }
+        closureArgs.push_back(argVal);
+    }
+
+    // emitClosureCall now takes the return type explicitly (the FIXME that
+    // used to hardcode void inside it is fixed). scope_exit callbacks are
+    // registered as a void intrinsic, so void is genuinely correct here -
+    // not a placeholder like it was before.
+    emitClosureCall(funcPtr, envPtr, closureArgs, llvm::Type::getVoidTy(ctx.llvmCtx), ctx);
 }
 
 } // namespace codegen

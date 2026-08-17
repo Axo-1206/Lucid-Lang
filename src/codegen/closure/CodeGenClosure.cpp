@@ -37,7 +37,6 @@
 #include "CodeGenClosure.hpp"
 #include "../CodeGen.hpp"
 #include "../CodeGenType.hpp"
-#include "../CodeGenGeneric.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "debug/DebugUtils.hpp"
@@ -82,16 +81,17 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
 llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    // ─── 1. Validate closure state ──────────────────────────────────────────
-    if (expr->captures.empty() && !expr->hasClosure) {
-        // No captures and not explicitly marked as closure - just return a
-        // plain function pointer. This is an optimization for non-capturing
-        // anonymous functions.
-        LOG_CODEGEN("Closure with no captures, returning plain function pointer");
-        return lowerAnonFuncExpr(expr, ctx);
-    }
+    const bool hasCaptures = !expr->captures.empty();
 
-    // ─── 2. Build the closure environment struct ──────────────────────────
+    // ─── 1. Build the closure environment struct ──────────────────────────
+    // buildClosureEnvironment already returns a valid (empty) struct type
+    // when there are no captures, so this is safe to call unconditionally -
+    // every closure value gets the same { funcPtr, envPtr } shape, whether
+    // or not it captures anything. A uniform shape matters because
+    // lowerCallExpr (CodeGenExpr.cpp) distinguishes "closure value" from
+    // "plain named function" purely by checking whether the lowered value
+    // is a struct - a non-capturing closure that fell back to a bare
+    // pointer would silently be uncallable through that path.
     llvm::StructType* envType = buildClosureEnvironment(expr, ctx);
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -99,7 +99,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── 3. Create the closure function ───────────────────────────────────
+    // ─── 2. Create the closure function ───────────────────────────────────
     llvm::Function* closureFunc = createClosureFunction(expr, ctx);
     if (!closureFunc) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -107,107 +107,124 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── 4. Store the closure function on the AST node ────────────────────
+    // ─── 3. Store the closure function on the AST node ────────────────────
     expr->closureFunction = closureFunc;
     expr->environmentType = envType;
 
-    // ─── 5. Allocate the environment ──────────────────────────────────────
-    // The environment is heap-allocated (refcounted). We call a runtime
-    // function to allocate the environment.
-    llvm::Function* allocEnv = ctx.getRuntimeFunction("__lucid_alloc_env");
-    if (!allocEnv) {
-        // Declare the alloc_env function: void* __lucid_alloc_env(uint64_t size)
-        llvm::FunctionType* allocType = llvm::FunctionType::get(
-            llvm::PointerType::get(ctx.llvmCtx, 0),
-            {llvm::Type::getInt64Ty(ctx.llvmCtx)},
-            false
-        );
-        allocEnv = llvm::Function::Create(
-            allocType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_alloc_env",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_alloc_env", allocEnv);
-    }
+    llvm::Value* envPtr = nullptr;
 
-    // ─── 6. Get the size of the environment ──────────────────────────────
-    llvm::DataLayout dl(ctx.module);
-    uint64_t envSize = dl.getTypeAllocSize(envType);
-
-    // ─── 7. Allocate the environment ──────────────────────────────────────
-    llvm::Value* envSizeVal = llvm::ConstantInt::get(
-        llvm::Type::getInt64Ty(ctx.llvmCtx),
-        envSize
-    );
-    llvm::Value* envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal}, "env_ptr");
-
-    // ─── 8. Cast to the environment type ──────────────────────────────────
-    llvm::Value* typedEnvPtr = ctx.builder.CreatePointerCast(
-        envPtr,
-        llvm::PointerType::get(envType, 0),
-        "typed_env"
-    );
-
-    // ─── 9. Fill the environment with captured variables ──────────────────
-    for (const CapturedVariable& capture : expr->captures) {
-        if (!capture.decl) continue;
-
-        // Look up the captured variable's value
-        llvm::Value* capturedValue = ctx.lookupValue(capture.decl);
-        if (!capturedValue) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
-                                    "captured variable '", 
-                                    ctx.pool.lookup(capture.decl->name),
-                                    "' has no LLVM value");
-            continue;
+    if (hasCaptures) {
+        // ─── 4. Allocate the environment ───────────────────────────────────
+        // The environment is heap-allocated (refcounted). We call a runtime
+        // function to allocate the environment.
+        llvm::Function* allocEnv = ctx.getRuntimeFunction("__lucid_alloc_env");
+        if (!allocEnv) {
+            // Declare the alloc_env function: void* __lucid_alloc_env(uint64_t size)
+            llvm::FunctionType* allocType = llvm::FunctionType::get(
+                llvm::PointerType::get(ctx.llvmCtx, 0),
+                {llvm::Type::getInt64Ty(ctx.llvmCtx)},
+                false
+            );
+            allocEnv = llvm::Function::Create(
+                allocType,
+                llvm::Function::ExternalLinkage,
+                "__lucid_alloc_env",
+                ctx.module
+            );
+            ctx.setRuntimeFunction("__lucid_alloc_env", allocEnv);
         }
 
-        // ─── Handle by-value vs by-reference captures ────────────────────
-        if (!capture.byReference) {
-            // By value: load the value and store it in the environment
-            llvm::Type* declType = getType(ctx, capture.decl->type);
-            if (declType) {
-                // Use the proper loadIfNeeded with explicit element type
-                capturedValue = loadIfNeeded(capturedValue, declType, ctx);
-            } else {
+        // ─── 5. Get the size of the environment ────────────────────────────
+        llvm::DataLayout dl(ctx.module);
+        uint64_t envSize = dl.getTypeAllocSize(envType);
+
+        // ─── 6. Allocate the environment ───────────────────────────────────
+        llvm::Value* envSizeVal = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(ctx.llvmCtx),
+            envSize
+        );
+        envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal}, "env_ptr");
+
+        // ─── 7. Cast to the environment type ───────────────────────────────
+        llvm::Value* typedEnvPtr = ctx.builder.CreatePointerCast(
+            envPtr,
+            llvm::PointerType::get(envType, 0),
+            "typed_env"
+        );
+
+        // ─── 8. Fill the environment with captured variables ───────────────
+        for (const CapturedVariable& capture : expr->captures) {
+            if (!capture.decl) continue;
+
+            // Look up the captured variable's value
+            llvm::Value* capturedValue = ctx.lookupValue(capture.decl);
+            if (!capturedValue) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
                                         "captured variable '", 
                                         ctx.pool.lookup(capture.decl->name),
-                                        "' has invalid type");
+                                        "' has no LLVM value");
                 continue;
             }
-        } else {
-            // By reference: store the address (pointer) in the environment
-            // The capturedValue should already be a pointer to the variable
-            // (either stack or heap allocated). We store this pointer directly.
-            // Note: If the variable is on the stack and the closure escapes,
-            // this would be unsafe. Sema should have promoted such variables
-            // to heap allocation before we get here.
-            if (!capturedValue->getType()->isPointerTy()) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
-                                        "by-reference capture of '",
-                                        ctx.pool.lookup(capture.decl->name),
-                                        "' requires a pointer, got non-pointer value");
-                continue;
+
+            // ─── Handle by-value vs by-reference captures ───────────────────
+            if (!capture.byReference) {
+                // By value: load the value and store it in the environment
+                llvm::Type* declType = getType(ctx, capture.decl->type);
+                if (declType) {
+                    // Use the proper loadIfNeeded with explicit element type
+                    capturedValue = loadIfNeeded(capturedValue, declType, ctx);
+                } else {
+                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
+                                            "captured variable '", 
+                                            ctx.pool.lookup(capture.decl->name),
+                                            "' has invalid type");
+                    continue;
+                }
+            } else {
+                // By reference: store the address (pointer) in the environment
+                // The capturedValue should already be a pointer to the variable
+                // (either stack or heap allocated). We store this pointer directly.
+                // Note: If the variable is on the stack and the closure escapes,
+                // this would be unsafe. Sema should have promoted such variables
+                // to heap allocation before we get here.
+                if (!capturedValue->getType()->isPointerTy()) {
+                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
+                                            "by-reference capture of '",
+                                            ctx.pool.lookup(capture.decl->name),
+                                            "' requires a pointer, got non-pointer value");
+                    continue;
+                }
             }
+
+            // ─── Get the field pointer in the environment ───────────────────
+            llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+                envType,
+                typedEnvPtr,
+                capture.index,
+                "env_field_" + ctx.pool.lookup(capture.decl->name)
+            );
+
+            // ─── Store the captured value ────────────────────────────────────
+            ctx.builder.CreateStore(capturedValue, fieldPtr);
         }
-
-        // ─── Get the field pointer in the environment ────────────────────
-        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
-            envType,
-            typedEnvPtr,
-            capture.index,
-            "env_field_" + ctx.pool.lookup(capture.decl->name)
-        );
-
-        // ─── Store the captured value ────────────────────────────────────
-        ctx.builder.CreateStore(capturedValue, fieldPtr);
+    } else {
+        // ─── No captures: skip heap allocation entirely ────────────────────
+        // There's nothing to store, so there's no reason to round-trip
+        // through __lucid_alloc_env for an empty struct. The closure
+        // function still takes an env-pointer first argument (uniform ABI,
+        // see createClosureFunction/emitClosureCall), it just never
+        // dereferences it, since expr->captures is empty and the
+        // capture-loading loop in emitClosureBody does zero iterations.
+        envPtr = llvm::ConstantPointerNull::get(
+            llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
-    // ─── 10. Create the closure value (fat pointer) ──────────────────────
+    // ─── 9. Create the closure value (fat pointer) ─────────────────────────
     // A closure is { function pointer, environment pointer }
-    // We use a struct { i8*, i8* } for the fat pointer.
+    // We use a struct { i8*, i8* } for the fat pointer. This is built the
+    // same way whether or not there are captures, so every closure value -
+    // capturing or not - has the same LLVM shape and can be called through
+    // the same path in lowerCallExpr (CodeGenExpr.cpp).
     llvm::StructType* closureType = llvm::StructType::create(
         ctx.llvmCtx,
         {
@@ -230,7 +247,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
         1
     );
 
-    // ─── 11. Store the closure value on the AST node ──────────────────────
+    // ─── 10. Store the closure value on the AST node ───────────────────────
     expr->llvmValue = closure;
 
     LOG_CODEGEN("Lowered closure with ", expr->captures.size(), " captures");
@@ -490,6 +507,7 @@ llvm::Value* emitClosureCall(
     llvm::Value* funcPtr,
     llvm::Value* envPtr,
     llvm::ArrayRef<llvm::Value*> args,
+    llvm::Type* returnType,
     CodeGenContext& ctx
 ) {
     if (!funcPtr || !envPtr) return nullptr;
@@ -504,14 +522,13 @@ llvm::Value* emitClosureCall(
         paramTypes.push_back(arg->getType());
     }
 
-    // ─── 2. Determine return type ──────────────────────────────────────────
-    // We need to infer the return type. For closures, the return type
-    // should be known from the function declaration. Since we don't have
-    // the original function type here, we use void by default.
-    // 
-    // FIXME: The caller should provide the function type, or we should
-    //        store it in the closure value. For now, we use void.
-    llvm::Type* returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
+    // ─── 2. Return type ─────────────────────────────────────────────────────
+    // Supplied by the caller, derived from the call expression's own
+    // resolved type (sema already computes this in resolveCallExpr as
+    // funcType->returnType) - callers should not have to guess it here.
+    if (!returnType) {
+        returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
+    }
 
     llvm::FunctionType* fnType = llvm::FunctionType::get(
         returnType,

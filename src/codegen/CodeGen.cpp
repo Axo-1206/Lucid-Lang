@@ -129,33 +129,4 @@ void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx) {
     }
 }
 
-// =============================================================================
-// Closure Lowering (Stubs - Implemented in CodeGenClosure.cpp)
-// =============================================================================
-
-llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
-    // Implemented in CodeGenClosure.cpp
-    return nullptr;
-}
-
-llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr, CodeGenContext& ctx) {
-    // Implemented in CodeGenClosure.cpp
-    return nullptr;
-}
-
-llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx) {
-    // Implemented in CodeGenClosure.cpp
-    return nullptr;
-}
-
-llvm::Value* emitClosureCall(
-    llvm::Value* funcPtr,
-    llvm::Value* envPtr,
-    llvm::ArrayRef<llvm::Value*> args,
-    CodeGenContext& ctx
-) {
-    // Implemented in CodeGenClosure.cpp
-    return nullptr;
-}
-
 } // namespace codegen

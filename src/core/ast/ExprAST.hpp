@@ -292,6 +292,34 @@ struct CallExprAST : ExprAST {
         : ExprAST(ASTKind::CallExpr), hasArgPack(a) {}
 };
 
+/// @brief A compiler‑builtin call invoked with the '#' prefix.
+/// 
+/// @example
+///   #sizeof(T)      – compile‑time size of a type in bytes
+///   #memcpy(d,s,l)  – memory copy intrinsic
+///   #sqrt(x)        – hardware‑accelerated sqrt
+/// 
+/// The semantic pass validates arguments and sets resolvedType.
+/// Codegen maps intrinsicName to the corresponding intrinsic operation.
+/// 
+/// @field intrinsicName  The intrinsic name ("sizeof", "memcpy", "sqrt", etc.).
+/// @field intrinsicID    The LLVM intrinsic ID (set during semantic analysis).
+/// @field args           Value arguments in order.
+struct IntrinsicCallExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
+
+    const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
+    ArenaSpan<ExprAST*> args;                      // value arguments in order
+    
+    // LLVM intrinsic ID - set during semantic analysis
+    // Use std::optional because not all intrinsics map to LLVM intrinsics
+    // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
+    std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
+
+    IntrinsicCallExprAST(InternedString n) 
+        : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
+};
+
 /// @brief Array element access.
 /// 
 /// @example
@@ -714,32 +742,4 @@ struct RangeExprAST : ExprAST {
 
     RangeExprAST(bool ex) 
         : ExprAST(ASTKind::RangeExpr), isExclusive(ex) {}
-};
-
-/// @brief A compiler‑builtin call invoked with the '#' prefix.
-/// 
-/// @example
-///   #sizeof(T)      – compile‑time size of a type in bytes
-///   #memcpy(d,s,l)  – memory copy intrinsic
-///   #sqrt(x)        – hardware‑accelerated sqrt
-/// 
-/// The semantic pass validates arguments and sets resolvedType.
-/// Codegen maps intrinsicName to the corresponding intrinsic operation.
-/// 
-/// @field intrinsicName  The intrinsic name ("sizeof", "memcpy", "sqrt", etc.).
-/// @field intrinsicID    The LLVM intrinsic ID (set during semantic analysis).
-/// @field args           Value arguments in order.
-struct IntrinsicCallExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
-
-    const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<ExprAST*> args;                      // value arguments in order
-    
-    // LLVM intrinsic ID - set during semantic analysis
-    // Use std::optional because not all intrinsics map to LLVM intrinsics
-    // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
-    std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
-
-    IntrinsicCallExprAST(InternedString n) 
-        : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
 };

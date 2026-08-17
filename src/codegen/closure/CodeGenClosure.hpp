@@ -78,12 +78,18 @@ llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx
 /// @param funcPtr The closure function pointer.
 /// @param envPtr The environment pointer.
 /// @param args The arguments.
+/// @param returnType The LLVM return type, derived by the caller from the
+///        call expression's resolved type (sema sets this in resolveCallExpr
+///        as funcType->returnType). Pass void's LLVM type explicitly for
+///        void-returning calls (e.g. #scope_exit callbacks) - there is no
+///        implicit default anymore.
 /// @param ctx The code generation context.
 /// @return The LLVM value.
 llvm::Value* emitClosureCall(
     llvm::Value* funcPtr,
     llvm::Value* envPtr,
     llvm::ArrayRef<llvm::Value*> args,
+    llvm::Type* returnType,
     CodeGenContext& ctx
 );
 

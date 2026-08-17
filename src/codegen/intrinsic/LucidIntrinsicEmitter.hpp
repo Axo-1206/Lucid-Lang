@@ -13,6 +13,7 @@
 
 #include "../context/CodeGenContext.hpp"
 #include "core/ast/ExprAST.hpp"
+#include "core/ast/StmtAST.hpp"
 #include <llvm/IR/Value.h>
 #include <string>
 #include <vector>
@@ -83,6 +84,16 @@ llvm::Value* emitLucidControlIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
+    CodeGenContext& ctx
+);
+
+/// @brief Emit the call for a single registered #scope_exit callback.
+/// Invoked by lowerBlockStmt at block exit, in LIFO order, for each
+/// registration collected by validateScopeExit during Sema.
+/// @param reg The scope-exit registration (callback decl or closure expr, plus args).
+/// @param ctx The code generation context.
+void emitScopeExitCallback(
+    const ScopeExitRegistration* reg,
     CodeGenContext& ctx
 );
 

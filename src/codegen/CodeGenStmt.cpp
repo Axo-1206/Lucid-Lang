@@ -16,6 +16,7 @@
 #include "support/CodeGenPanic.hpp"
 #include "support/LLVMHelpers.hpp"
 #include "debug/DebugUtils.hpp"
+#include "intrinsic/LucidIntrinsicEmitter.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -97,53 +98,9 @@ void lowerStatement(StmtAST* stmt, CodeGenContext& ctx) {
 // Block Statement
 // =============================================================================
 
-void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx) {
-    if (!reg) return;
-
-    // ─── Get the callback function ──────────────────────────────────────
-    llvm::Value* callback = nullptr;
-    if (reg->callback) {
-        callback = ctx.lookupFunction(reg->callback);
-        if (!callback) {
-            callback = reg->callback->llvmFunction;
-        }
-    } else {
-        // It's a closure - we need to evaluate the callable expression
-        // For now, just warn and return
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, reg->callExpr->loc,
-                                  "scope_exit with closure callback not fully implemented");
-        return;
-    }
-
-    if (!callback) {
-        // Sema should have validated this, but we handle it gracefully
-        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, reg->callExpr->loc,
-                                "scope_exit callback not found");
-        return;
-    }
-
-    // ─── Lower arguments ──────────────────────────────────────────────────
-    std::vector<llvm::Value*> args;
-    for (ExprAST* arg : reg->args) {
-        llvm::Value* argVal = lowerExpression(arg, ctx);
-        if (!argVal) {
-            return;
-        }
-        if (arg->isLValue) {
-            llvm::Type* elemType = getType(ctx, arg->resolvedType);
-            // Sema guarantees resolvedType is set
-            assert(elemType && "Argument has no type in CodeGen");
-            argVal = loadIfNeeded(argVal, elemType, ctx);
-        }
-        args.push_back(argVal);
-    }
-
-    // ─── Create the call ──────────────────────────────────────────────────
-    ctx.builder.CreateCall(
-        llvm::dyn_cast<llvm::Function>(callback),
-        args
-    );
-}
+// emitScopeExitCallback moved to intrinsic/LucidIntrinsicEmitter.cpp -
+// it's the codegen half of the #scope_exit intrinsic, so it belongs
+// alongside emitLucidControlIntrinsic rather than here.
 
 void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
     if (!block) return;
