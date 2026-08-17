@@ -7,7 +7,7 @@ The Lucid semantic analyzer (`Sema`) is a multi-pass system that validates, reso
 
 ## File Layout
 
-```cpp
+```
 src/sema/
 ├── Sema.hpp                              # Public API (namespace sema)
 ├── Sema.cpp                              # analyze() entry point, phase orchestration
@@ -748,9 +748,9 @@ resolveExprWithTarget(expr, targetType, ctx)
 
 ---
 
-### Type Resolution (`resolveType`)
+### Type Resolution (`resolveType`) — `SemaResolve.cpp`
 
-The `resolveType()` function is the main entry point for resolving type annotations to their semantic representations.
+The `resolveType()` function is the main entry point for resolving type annotations to their semantic representations. It walks the type AST and converts each type node into a fully resolved semantic type, performing validation and generic argument resolution along the way.
 
 **Purpose:**
 - Resolves every type annotation to a semantic representation
@@ -759,7 +759,7 @@ The `resolveType()` function is the main entry point for resolving type annotati
 - Enforces the Downward Flow Rule for borrowed types
 - Caches resolved types for fast equality comparison
 
-```cpp
+```
 resolveType(type, ctx)
 │
 ├── // DISPATCH BY KIND
@@ -906,258 +906,415 @@ resolveType(type, ctx)
 
 ---
 
-### Capture Analysis (`CaptureAnalysis.cpp`)
+### Type Comparison and Assignability (`SemaCompare.cpp`)
 
-Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function). It also performs escape analysis to determine if closures must be heap-allocated.
+The `SemaCompare` module provides type equality checking, assignability validation, and type predicate functions used throughout semantic analysis.
 
 **Purpose:**
-- Detects which variables are captured by closures and nested functions
-- Validates that captured variables are not borrowed types (`&T`, `[_]T`)
-- Validates that captured variables are not linear types (`Future<T>`, `Thread<T>`)
-- Stores capture information on the AST node for code generation
-- Marks closures as returned when they escape via function return
+- Compares two types for structural equality
+- Determines if a value of one type can be assigned to another
+- Provides type predicate functions (`isIntegerType`, `isNullableType`, etc.)
+- Validates switch case compatibility and FFI type compatibility
 
-```cpp
-analyzeCaptures(expr, ctx)           // Analyze anonymous function
-│
-├── // EARLY EXIT
-│   └── if expr->body is null: return
-│
-├── // COLLECT CAPTURES
-│   └── walkStmt(expr->body)
-│       │
-│       └── // WALK AST with localScopes tracking
-│           │
-│           ├── // BlockStmt: pushLocalScope() / popLocalScope()
-│           │
-│           ├── // DeclStmt: register var after walking init → declareLocal()
-│           │
-│           ├── // ForStmt: pushLocalScope() for binders
-│           │
-│           ├── // IdentifierExpr
-│           │   │   Check if this identifier is a capture
-│           │   ├── if ctx.isModuleMember(name) → NOT CAPTURE
-│           │   ├── if isOwnParam(name) → NOT CAPTURE
-│           │   ├── if isLocallyDeclared(name) → NOT CAPTURE
-│           │   ├── if ctx.isGenericParam(name) → NOT CAPTURE
-│           │   ├── if !ctx.lookupValue(name) → NOT CAPTURE
-│           │   └── else → CAPTURE
-│           │
-│           └── // AnonFuncExpr (nested closure)
-│               │   Propagate captures upward
-│               └── propagateCapture(childCapture)
-│
-├── // VALIDATE CAPTURES (validateAndAddCapture)
-│   └── for each capture:
-│       ├── // Deduplicate: if seenCaptures.contains(name) → skip
-│       ├── // Rule 1: No borrowed types
-│       │   └── if isBorrowedType(decl->type):
-│       │       └── error: closure cannot capture borrowed type
-│       ├── // Rule 2: No linear types
-│       │   └── if decl->type is FutureTypeAST or ThreadTypeAST:
-│       │       └── error: closure cannot capture linear type
-│       └── // Add to capture list
-│           └── CapturedVariable{decl, byReference, index}
-│
-└── // STORE RESULT
-    └── expr->captures = captureSpan, expr->hasClosure = true
+---
+
+#### Type Equality (`typesEqual`)
+
 ```
-
-```cpp
-analyzeCaptures(FuncDeclAST* func, ctx)    // Analyze nested function
+typesEqual(a, b)
 │
-├── // EARLY EXIT
-│   ├── if !func || !func->body → return
-│   └── if ctx.getClosureDepth() == 0 → return (top-level function cannot capture)
+├── if (a == b) return true
+├── if (!a || !b) return false
+├── if (a->kind != b->kind) return false
 │
-├── // COLLECT CAPTURES (same as anonymous function)
-│   └── walkStmt(func->body)
-│
-└── // STORE RESULT
-    └── func->captures = captureSpan, func->hasClosure = true
-```
-
-```cpp
-markClosureIfEscaping(expr, ctx)         // Detect closures returned from functions
-│
-├── // PURPOSE
-│   │   Detects when a closure is returned from a function and must be
-│   │   heap-allocated because it outlives the function call.
-│   └── Uses `isReturned` field (not `isEscaping`)
-│
-├── // DISPATCH BY EXPRESSION KIND
-│
-    ├── AnonFuncExpr
-    │   └── expr->isReturned = true
+└── switch (a->kind)
+    ├── PrimitiveType → compare primitiveKind
     │
-    ├── IdentifierExpr
-    │   ├── if !ctx.isModuleMember(id->name):
-    │   │   └── funcDecl->isReturned = true
-    │   └── else: return (module members are static)
+    ├── NamedType → compare name, genericArgs recursively
     │
-    ├── ModuleAccessExpr
-    │   └── return (static member - no escaping needed)
+    ├── NullableType/FallibleType/CombinedType/RefType/PtrType
+    │   └── compare inner types recursively
     │
-    ├── FieldAccessExpr
-    │   └── if object is module member: return
-    │       else: conservative mark
+    ├── ArrayType → compare arrayKind, size, element recursively
     │
-    ├── CallExpr
-    │   └── resolveCalleeOrError() → may return closure
-    │
-    ├── BinaryExpr → recurse into left and right
-    ├── IfExpr → recurse into then and else
-    ├── ArrayLiteralExpr → recurse into all elements
-    ├── StructLiteralExpr → recurse into all field inits
-    ├── PipelineExpr → recurse into seed and steps
-    └── ComposeExpr → recurse into left and operands
+    └── FuncType → compare params (name, variadic, const, type), returnType
 ```
 
-**Capture Detection Walkthrough:**
+---
 
-```cpp
-const makeCounter (start int) -> (int) -> int = {
-    let count int = start
+#### Type Unwrapping
 
-    return (step int) -> int {
-        count += step
-        return count
-    }
-}
+```
+unwrapNullable(type)
+├── if type->isa<NullableTypeAST>() → return type->inner
+├── if type->isa<CombinedTypeAST>() → return type->inner
+└── return type
 
-Step 1: analyzeCaptures() called on the inner anonymous function
-
-Walk AST of the anonymous function body:
-├── BinaryExpr (count += step)
-│   ├── left: IdentifierExpr("count")
-│   │   ├── ctx.isModuleMember("count")? → false
-│   │   ├── isOwnParam("count")? → false
-│   │   ├── isLocallyDeclared("count")? → false (no let/const in body)
-│   │   ├── ctx.isGenericParam("count")? → false
-│   │   ├── ctx.lookupValue("count")? → true (from outer scope)
-│   │   └── → CAPTURE
-│   └── right: IdentifierExpr("step")
-│       ├── isOwnParam("step")? → true (parameter)
-│       └── → NOT CAPTURE
-└── ReturnStmt (return count)
-    └── IdentifierExpr("count")
-        ├── isOwnParam("count")? → false
-        ├── isLocallyDeclared("count")? → false
-        └── → CAPTURE (already captured)
-
-Step 2: Validate captures
-└── count is not borrowed type → valid capture
-
-Step 3: Store result
-└── expr->captures = count, expr->hasClosure = true
-
-Step 4: markClosureIfEscaping() called on return expression
-└── expr is AnonFuncExpr → expr->isReturned = true
-    └── Closure escapes → heap-allocated in code generation
+unwrapFallible(type)
+├── if type->isa<FallibleTypeAST>() → return type->inner
+├── if type->isa<CombinedTypeAST>() → return type->inner
+└── return type
 ```
 
-**Transitive Capture Propagation (Multi-Level Closures):**
+---
 
-```cpp
-// Example: three-level nested closure
-const outer () -> (int) -> int = {
-    let x int = 10
-    return (a int) -> int {
-        // This closure captures x (from outer) → stored in its capture list
-        return (b int) -> int {
-            // This innermost closure captures x (from outer's outer)
-            // It DOES NOT see x in its own capture list - it's not in its
-            // immediate outer closure's parameters or locals.
-            // 
-            // propagateCapture() pulls x from the intermediate closure's
-            // capture list and adds it to the intermediate closure's own
-            // capture list, so CodeGen can properly build all environments.
-            return x + a + b
-        }
-    }
-}
+#### Assignability (`isAssignable`)
+
+```
+isAssignable(target, source, ctx)
+│
+├── // 1. Identical types
+├── if (typesEqual(target, source)) return true
+│
+├── // 2. Numeric conversions
+├── // 2a. Integer → Float (safe, always allowed)
+├── if (isFloatType(target) && isIntegerType(source)) return true
+│
+├── // 2b. Integer → Integer (different sizes, safe promotion only)
+├── if (isIntegerType(target) && isIntegerType(source))
+│   └── return isIntegerPromotionSafe(target, source, ctx)
+│
+├── // 2c. Float → Integer (unsafe, reject)
+├── if (isIntegerType(target) && isFloatType(source)) return false
+│
+├── // 3. T → T? (widening to nullable)
+├── if (target->isa<NullableTypeAST>())
+│   └── return isAssignable(target->inner, source, ctx)
+│
+├── // 4. T → T! (widening to fallible)
+├── if (target->isa<FallibleTypeAST>())
+│   └── return isAssignable(target->inner, source, ctx)
+│
+├── // 5. T → T?! (widening to combined)
+├── if (target->isa<CombinedTypeAST>())
+│   ├── return isAssignable(target->inner, source, ctx)
+│   ├── if (source->isa<NullableTypeAST>() && isAssignable(inner, source->inner)) return true
+│   └── if (source->isa<FallibleTypeAST>() && isAssignable(inner, source->inner)) return true
+│
+└── // 6. Trait conformance
+    if (isTraitType(target, ctx) && !isTraitType(source, ctx))
+        └── return isTraitConformant(source, traitDecl, ctx)
 ```
 
-**Transitive Propagation Flow:**
+**Assignability Rules Summary:**
+
+| Source → Target    | Allowed? | Notes                        |
+| ------------------ | -------- | ---------------------------- |
+| `int` → `float`    | ✅ Yes    | Safe widening                |
+| `int8` → `int32`   | ✅ Yes    | Safe promotion               |
+| `int32` → `int8`   | ❌ No     | Requires explicit conversion |
+| `float` → `int`    | ❌ No     | Requires explicit conversion |
+| `T` → `T?`         | ✅ Yes    | Widening to nullable         |
+| `T` → `T!`         | ✅ Yes    | Widening to fallible         |
+| `T` → `T?!`        | ✅ Yes    | Widening to combined         |
+| `T?` → `T?!`       | ✅ Yes    | Widening to combined         |
+| `T!` → `T?!`       | ✅ Yes    | Widening to combined         |
+| `Struct` → `Trait` | ✅ Yes    | If struct implements trait   |
+| `Trait` → `Struct` | ❌ No     | Cannot narrow from trait     |
+
+---
+
+#### Numeric Type Helpers
+
 ```
-1. Innermost closure captures x from outer's outer
-2. Inner closure's capture list has x (from its analysis)
-3. Outer closure's walk sees AnonFuncExpr (inner)
-4. propagateCapture(x) adds x to outer's capture list
-5. All closures have the variables they need in their own capture lists
+getIntegerBitWidth(type)
+├── PrimitiveKind::Int8/Uint8/Byte/Ubyte → 8
+├── PrimitiveKind::Int16/Uint16/Short/Ushort → 16
+├── PrimitiveKind::Int32/Uint32/Int/Uint → 32
+├── PrimitiveKind::Int64/Uint64/Long/Ulong → 64
+└── default → 0
+
+getLargerIntegerType(a, b, ctx)
+├── if (!isIntegerType(a) || !isIntegerType(b)) return nullptr
+└── return the type with larger bit width
+
+isIntegerPromotionSafe(target, source, ctx)
+├── if (!isIntegerType(target) || !isIntegerType(source)) return false
+└── return targetBits >= sourceBits
 ```
 
-**Capture Storage on AST Nodes:**
+---
 
-```cpp
-// AnonFuncExprAST fields for capture analysis
-struct AnonFuncExprAST {
-    bool hasClosure = false;                    // true if captures any variables
-    ArenaSpan<CapturedVariable> captures;       // list of captured variables
-    bool isReturned = false;                    // true if returned from function
-};
+#### Type Predicates
 
-// FuncDeclAST fields for capture analysis
-struct FuncDeclAST {
-    bool hasClosure = false;                    // true if nested function captures
-    ArenaSpan<CapturedVariable> captures;       // list of captured variables
-    bool isReturned = false;                    // true if returned from function
-};
-
-// CapturedVariable structure (actual implementation)
-struct CapturedVariable {
-    ValueDeclAST* decl;                         // variable declaration
-    bool byReference;                           // true if captured by reference
-    size_t index;                               // position in environment struct
-};
+```
+Type Predicates:
+├── isNullableType(type)      → type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>()
+├── isFallibleType(type)      → type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>()
+├── isReferenceType(type)     → type->isa<RefTypeAST>()
+├── isPointerType(type)       → type->isa<PtrTypeAST>()
+├── isPrimitiveType(type)     → type->isa<PrimitiveTypeAST>()
+├── isBoolType(type)          → PrimitiveKind::Bool
+├── isIntegerType(type)       → PrimitiveKind in integer set
+├── isFloatType(type)         → PrimitiveKind in float set
+├── isNumericType(type)       → isIntegerType() || isFloatType()
+├── isStringType(type)        → PrimitiveKind::String
+├── isCharType(type)          → PrimitiveKind::Char
+│
+├── isStructType(type, ctx)   → NamedType resolves to StructDecl
+├── isEnumType(type, ctx)     → NamedType resolves to EnumDecl
+├── isTraitType(type, ctx)    → NamedType resolves to TraitDecl
+├── isGenericParamType(type, ctx) → NamedType is a generic parameter
+│
+├── isValidSwitchType(type, ctx)
+│   └── isIntegerType() || isBoolType() || isCharType() || isStringType() || isEnumType()
+│
+└── isSwitchCaseCompatible(value, subjectType, ctx)
+    ├── Enum → FieldAccessExpr matching an enum variant
+    ├── Integer → Int/Hex/Binary literal
+    ├── Bool → True/False literal
+    ├── Char → Char literal
+    └── String → String/RawString literal
 ```
 
-**Key Relationships:**
+---
 
-| Component                              | Responsibility                                 | Called From                                     |
-| -------------------------------------- | ---------------------------------------------- | ----------------------------------------------- |
-| `analyzeCaptures()`                    | Main entry point for capture analysis          | `resolveAnonFuncExpr()`, `resolveFuncDecl()`    |
-| `walkStmt()` / `walkExpr()`            | Walks AST to find identifier references        | `analyzeCaptures()`                             |
-| `isCapture()`                          | Determines if identifier is a capture          | `processIdentifier()`                           |
-| `isLocallyDeclared()`                  | Checks if variable is declared in closure body | `isCapture()`                                   |
-| `pushLocalScope()` / `popLocalScope()` | Tracks block-scoped declarations               | `walkStmt()` for BlockStmt, ForStmt             |
-| `declareLocal()`                       | Registers a local variable in current scope    | `walkStmt()` for DeclStmt, AsyncStmt, SpawnStmt |
-| `validateAndAddCapture()`              | Validates capture rules and adds to list       | `processIdentifier()`, `propagateCapture()`     |
-| `propagateCapture()`                   | Propagates captures upward through nesting     | `walkExpr()` for nested AnonFuncExpr            |
-| `markClosureIfEscaping()`              | Detects escaping closures for heap allocation  | `resolveReturnStmt()`                           |
+#### FFI Compatibility (`isValidFFIType`)
 
-**Important Rules:**
+```
+isValidFFIType(type, ctx)
+│
+├── PrimitiveType → true
+│
+├── PtrTypeAST → 
+│   ├── if inner is FuncTypeAST: validate params and return recursively
+│   ├── if inner is ArrayTypeAST: false
+│   ├── if inner is nullable/fallible: false
+│   ├── if inner is RefTypeAST: false
+│   └── return isValidFFIType(inner, ctx)
+│
+├── NamedTypeAST →
+│   ├── TraitDeclAST → false
+│   ├── StructDeclAST → validate all fields recursively
+│   └── EnumDeclAST → true
+│
+├── ArrayTypeAST → isValidFFIType(element, ctx)
+│
+├── NullableType/FallibleType → false
+├── FuncTypeAST → false
+├── RefTypeAST → false
+│
+└── default → false
+```
 
-| Rule                      | Description                                                     | Example                                                                          |
-| ------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| **No Borrowed Types**     | Closures cannot capture `&T` or `[_]T`                          | `let x &int = ...; return (y int) -> int { return *x + y }` ❌                    |
-| **No Linear Types**       | Closures cannot capture `Future<T>` or `Thread<T>`              | `async result int = fetch(); return () -> int { return await result }` ❌         |
-| **Module Members**        | Module-level globals are not captured (they're global)          | `const PI f64 = 3.14; return (r f64) -> f64 { return PI * r * r }` ✅             |
-| **Generic Parameters**    | Generic parameters are not captured (resolved at instantiation) | `<T> const id (v T) -> (T) -> T = { return (x T) -> T { return x } }` ✅          |
-| **Local Variables**       | Variables from outer function scopes are captured               | `let count int = 0; return () -> int { return count }` ✅                         |
-| **Escaping Closures**     | Closures returned from functions are heap-allocated             | `return (x int) -> int { return x + 1 }` → heap allocated (`isReturned = true`)  |
-| **Non-Escaping Closures** | Closures used locally are stack-allocated                       | `let f (int) -> int = (x int) -> int { return x + 1 }; use(f)` → stack allocated |
+**FFI-Compatible Types:**
 
-**Key Implementation Notes:**
+| Type                                      | FFI Compatible? | Notes                            |
+| ----------------------------------------- | --------------- | -------------------------------- |
+| Primitives (`int`, `float`, `bool`, etc.) | ✅ Yes           | C-compatible                     |
+| `*T` (raw pointer)                        | ✅ Yes           | Opaque pointer                   |
+| `struct` (with FFI-compatible fields)     | ✅ Yes           | Layout matches C                 |
+| `enum`                                    | ✅ Yes           | Integer backing                  |
+| `[*]T` (dynamic array)                    | ✅ Yes           | Pointer to data                  |
+| `[N]T` (fixed array)                      | ✅ Yes           | Contiguous layout                |
+| `T?`, `T!`, `T?!`                         | ❌ No            | Tagged types not FFI-compatible  |
+| `&T` (reference)                          | ❌ No            | Borrowed types                   |
+| `(T) -> R` (function)                     | ❌ No            | Function pointers not supported  |
+| `trait`                                   | ❌ No            | Trait objects not FFI-compatible |
 
-1. **Capture Detection**: The analyzer walks the AST recursively, checking every `IdentifierExpr` node to determine if it references a variable from an outer scope.
+---
 
-2. **Scope Determination**: A variable is considered a capture if it is:
-   - Not a module member (global)
-   - Not a parameter of the current function/closure (`isOwnParam`)
-   - Not declared within the body being walked (`isLocallyDeclared`)
-   - Not a generic parameter
-   - Found in some outer scope via `ctx.lookupValue()`
+### Type Validation (`SemaValidate.cpp`)
 
-3. **Local Scope Tracking**: `localScopes` is a stack of block-scoped frames that tracks variable declarations within the closure body. This is necessary because capture analysis runs as a second pass after the first pass's scopes have been popped. Without this, a name declared inside the body that shadows an outer variable would incorrectly resolve to the outer one.
+The `SemaValidate` module provides validation rules for declarations and constructs that require more complex checks than simple type resolution.
 
-4. **Transitive Capture Propagation**: When a nested closure captures a variable, the enclosing closure must also capture it (even if it doesn't reference it directly) so CodeGen's flat value map has the correct value when building the nested closure's environment.
+**Purpose:**
+- Validates const declarations (must be definite, have initializer)
+- Validates trait implementations (field existence, type compatibility, conflicts)
+- Validates generic arguments (arity, constraints)
+- Validates foreign function declarations (ABI, FFI compatibility)
 
-5. **Validation Rules**: Captures are validated immediately when detected:
-   - Borrowed types (`&T`, `[_]T`) are rejected with a clear error message
-   - Linear types (`Future<T>`, `Thread<T>`) are rejected
+---
 
-6. **Escape Analysis**: `markClosureIfEscaping()` is called during return statement resolution to detect closures that outlive the function call and must be heap-allocated. Uses `isReturned` field, not `isEscaping`.
+#### Const Validation
+
+```
+validateConstType(type, name, kind, ctx)
+│
+├── if (isNullableType(type) || isFallibleType(type))
+│   └── error: const must be definite (not nullable or fallible)
+│
+├── if (type->isa<CombinedTypeAST>())
+│   └── error: const cannot be combined (T?!)
+│
+└── if (isBorrowedType(type))
+    └── error: const cannot be borrowed (&T or [_]T)
+
+validateConstInitializer(hasInit, name, kind, ctx)
+├── if (!hasInit)
+│   └── error: const must have an initializer
+└── return true
+```
+
+**Const Validation Rules:**
+
+| Rule                      | Description                          |
+| ------------------------- | ------------------------------------ |
+| **Must Be Definite**      | Const cannot be `T?`, `T!`, or `T?!` |
+| **Cannot Be Borrowed**    | Const cannot be `&T` or `[_]T`       |
+| **Must Have Initializer** | Const must be assigned a value       |
+
+---
+
+#### Trait Validation
+
+```
+validateTraitImplementation(structDecl, traitDecl, ctx)
+│
+├── Build map of struct fields by name
+│
+├── for each traitField in traitDecl->fields:
+│   ├── // 1. Field exists in struct
+│   ├── if field not found in structFields
+│   │   └── error: struct is missing field required by trait
+│   │
+│   ├── // 2. Const-ness compatibility
+│   ├── if traitField is const and structField is not const
+│   │   └── error: trait requires const, struct declares mutable
+│   │
+│   ├── // 3. Type compatibility
+│   ├── if traitField is const:
+│   │   └── require typesEqual(structField->type, traitField->type)
+│   └── if traitField is not const:
+│       └── require isAssignable(traitField->type, structField->type, ctx)
+│
+└── return isValid
+```
+
+```
+validateAllTraitImplementations(structDecl, ctx)
+│
+├── if structDecl->traitRefs.empty() → return true
+│
+├── // 1. Check for field conflicts across traits
+├── conflicts = checkTraitFieldConflictsInternal(structDecl, ctx)
+│
+├── // 2. Validate each trait implementation
+├── for each traitRef in structDecl->traitRefs:
+│   ├── trait = resolveTraitRef(traitRef, ctx)
+│   ├── if !trait → continue
+│   └── if !validateSingleTraitImplementationInternal(structDecl, trait, ctx)
+│       └── allValid = false
+│
+└── return allValid && !conflicts
+```
+
+```
+checkTraitFieldConflictsInternal(structDecl, ctx)
+│
+├── Build map: fieldName → vector of {trait, isConst, type}
+│
+├── for each conflict where fieldName has multiple requirements:
+│   ├── if const-ness differs
+│   │   └── error: field has conflicting const requirements
+│   ├── if types differ
+│   │   └── error: field has conflicting types across traits
+│   └── hasConflict = true
+│
+└── return !hasConflict
+```
+
+**Trait Implementation Rules:**
+
+| Rule                   | Description                                                              |
+| ---------------------- | ------------------------------------------------------------------------ |
+| **Field Exists**       | Struct must have every field defined in the trait                        |
+| **Const Matching**     | Const trait fields require const struct fields                           |
+| **Type Compatibility** | Non-const fields require assignability; const fields require exact match |
+| **No Conflicts**       | Same field name across multiple traits must have compatible requirements |
+| **No Borrowed Types**  | Trait fields cannot be borrowed types (`&T`, `[_]T`)                     |
+
+---
+
+#### Generic Validation
+
+```
+validateGenericArguments(args, params, useSite, ctx)
+│
+├── if (args.size() != params.size())
+│   └── error: expected N generic arguments, got M
+│
+├── for each i in args:
+│   ├── resolvedArg = resolveType(args[i], ctx)
+│   ├── if !resolvedArg → error: invalid generic argument
+│   │
+│   ├── // Generic arguments cannot be borrowed types
+│   ├── if (isBorrowedType(resolvedArg))
+│   │   └── error: generic argument cannot be borrowed type
+│   │
+│   └── if !validateParamConstraints(resolvedArg, params[i], ctx)
+│       └── error: type does not implement trait constraint
+│
+└── return allValid
+```
+
+```
+validateGenericParameterUsage(params, types, useSite, ctx)
+│
+├── // Collect all generic parameter references in types
+├── for each type in types:
+│   └── findParams(type) → collect used parameter names
+│
+├── for each param in params:
+│   └── if param not in usedParams
+│       └── error: generic parameter not used in declaration
+│
+└── return allUsed
+```
+
+**Generic Validation Rules:**
+
+| Rule                  | Description                                             |
+| --------------------- | ------------------------------------------------------- |
+| **Arity Match**       | Number of arguments must match number of parameters     |
+| **No Borrowed Types** | Generic arguments cannot be `&T` or `[_]T`              |
+| **Trait Constraints** | Arguments must satisfy all trait constraints            |
+| **All Params Used**   | Every generic parameter must be used in the declaration |
+
+---
+
+#### FFI Validation (`validateForeignFunction`)
+
+```
+validateForeignFunction(decl, foreignAttr, ctx)
+│
+├── // 1. Validate ABI
+├── if foreignAttr->args.empty()
+│   └── error: @[foreign] requires ABI argument
+├── abi = getStringLiteral(foreignAttr->args[0])
+├── if abi != "C"
+│   └── error: only "C" ABI is supported
+│
+├── // 2. Function must have no body
+├── if (decl->body)
+│   └── error: foreign function must have no body
+│
+├── // 3. Validate parameter types
+├── for each param in funcType->params:
+│   └── if !isValidFFIType(param->type, ctx)
+│       └── error: parameter type is not FFI-compatible
+│
+├── // 4. Validate return type
+├── if (returnType && !isValidFFIType(returnType, ctx))
+│   └── error: return type is not FFI-compatible
+│
+└── // 5. No generic parameters
+    if !decl->genericParams.empty()
+        └── error: foreign function cannot have generic parameters
+```
+
+**Foreign Function Validation Rules:**
+
+| Rule                     | Description                                           |
+| ------------------------ | ----------------------------------------------------- |
+| **ABI Must Be "C"**      | Only C ABI is supported                               |
+| **No Body**              | Foreign functions are external implementations        |
+| **FFI-Compatible Types** | All parameters and return type must be FFI-compatible |
+| **No Generics**          | Foreign functions cannot be generic                   |
+| **No Variadic**          | Variadic parameters are not supported                 |
+| **No Const**             | Foreign functions cannot be `const` (compile-time)    |
+
+---
 
 ### Type Narrowing (`TypeNarrowHelpers.cpp`)
 
@@ -1453,6 +1610,261 @@ TypeAST* effectiveType = ctx.getEffectiveType(decl, name)
 | `x != nil and y == nil` | N/A        | ❌ REJECTED | Mixed operators not supported |
 | `x == nil or y != nil`  | N/A        | ❌ REJECTED | Mixed operators not supported |
 | `not x`                 | `true`     | Inverse    | `x` narrowed (nil/false)      |
+
+---
+
+### Capture Analysis (`CaptureAnalysis.cpp`)
+
+Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function). It also performs escape analysis to determine if closures must be heap-allocated.
+
+**Purpose:**
+- Detects which variables are captured by closures and nested functions
+- Validates that captured variables are not borrowed types (`&T`, `[_]T`)
+- Validates that captured variables are not linear types (`Future<T>`, `Thread<T>`)
+- Stores capture information on the AST node for code generation
+- Marks closures as returned when they escape via function return
+
+```cpp
+analyzeCaptures(expr, ctx)           // Analyze anonymous function
+│
+├── // EARLY EXIT
+│   └── if expr->body is null: return
+│
+├── // COLLECT CAPTURES
+│   └── walkStmt(expr->body)
+│       │
+│       └── // WALK AST with localScopes tracking
+│           │
+│           ├── // BlockStmt: pushLocalScope() / popLocalScope()
+│           │
+│           ├── // DeclStmt: register var after walking init → declareLocal()
+│           │
+│           ├── // ForStmt: pushLocalScope() for binders
+│           │
+│           ├── // IdentifierExpr
+│           │   │   Check if this identifier is a capture
+│           │   ├── if ctx.isModuleMember(name) → NOT CAPTURE
+│           │   ├── if isOwnParam(name) → NOT CAPTURE
+│           │   ├── if isLocallyDeclared(name) → NOT CAPTURE
+│           │   ├── if ctx.isGenericParam(name) → NOT CAPTURE
+│           │   ├── if !ctx.lookupValue(name) → NOT CAPTURE
+│           │   └── else → CAPTURE
+│           │
+│           └── // AnonFuncExpr (nested closure)
+│               │   Propagate captures upward
+│               └── propagateCapture(childCapture)
+│
+├── // VALIDATE CAPTURES (validateAndAddCapture)
+│   └── for each capture:
+│       ├── // Deduplicate: if seenCaptures.contains(name) → skip
+│       ├── // Rule 1: No borrowed types
+│       │   └── if isBorrowedType(decl->type):
+│       │       └── error: closure cannot capture borrowed type
+│       ├── // Rule 2: No linear types
+│       │   └── if decl->type is FutureTypeAST or ThreadTypeAST:
+│       │       └── error: closure cannot capture linear type
+│       └── // Add to capture list
+│           └── CapturedVariable{decl, byReference, index}
+│
+└── // STORE RESULT
+    └── expr->captures = captureSpan, expr->hasClosure = true
+```
+
+```cpp
+analyzeCaptures(FuncDeclAST* func, ctx)    // Analyze nested function
+│
+├── // EARLY EXIT
+│   ├── if !func || !func->body → return
+│   └── if ctx.getClosureDepth() == 0 → return (top-level function cannot capture)
+│
+├── // COLLECT CAPTURES (same as anonymous function)
+│   └── walkStmt(func->body)
+│
+└── // STORE RESULT
+    └── func->captures = captureSpan, func->hasClosure = true
+```
+
+```cpp
+markClosureIfEscaping(expr, ctx)         // Detect closures returned from functions
+│
+├── // PURPOSE
+│   │   Detects when a closure is returned from a function and must be
+│   │   heap-allocated because it outlives the function call.
+│   └── Uses `isReturned` field (not `isEscaping`)
+│
+├── // DISPATCH BY EXPRESSION KIND
+│
+    ├── AnonFuncExpr
+    │   └── expr->isReturned = true
+    │
+    ├── IdentifierExpr
+    │   ├── if !ctx.isModuleMember(id->name):
+    │   │   └── funcDecl->isReturned = true
+    │   └── else: return (module members are static)
+    │
+    ├── ModuleAccessExpr
+    │   └── return (static member - no escaping needed)
+    │
+    ├── FieldAccessExpr
+    │   └── if object is module member: return
+    │       else: conservative mark
+    │
+    ├── CallExpr
+    │   └── resolveCalleeOrError() → may return closure
+    │
+    ├── BinaryExpr → recurse into left and right
+    ├── IfExpr → recurse into then and else
+    ├── ArrayLiteralExpr → recurse into all elements
+    ├── StructLiteralExpr → recurse into all field inits
+    ├── PipelineExpr → recurse into seed and steps
+    └── ComposeExpr → recurse into left and operands
+```
+
+**Capture Detection Walkthrough:**
+
+```cpp
+const makeCounter (start int) -> (int) -> int = {
+    let count int = start
+
+    return (step int) -> int {
+        count += step
+        return count
+    }
+}
+
+Step 1: analyzeCaptures() called on the inner anonymous function
+
+Walk AST of the anonymous function body:
+├── BinaryExpr (count += step)
+│   ├── left: IdentifierExpr("count")
+│   │   ├── ctx.isModuleMember("count")? → false
+│   │   ├── isOwnParam("count")? → false
+│   │   ├── isLocallyDeclared("count")? → false (no let/const in body)
+│   │   ├── ctx.isGenericParam("count")? → false
+│   │   ├── ctx.lookupValue("count")? → true (from outer scope)
+│   │   └── → CAPTURE
+│   └── right: IdentifierExpr("step")
+│       ├── isOwnParam("step")? → true (parameter)
+│       └── → NOT CAPTURE
+└── ReturnStmt (return count)
+    └── IdentifierExpr("count")
+        ├── isOwnParam("count")? → false
+        ├── isLocallyDeclared("count")? → false
+        └── → CAPTURE (already captured)
+
+Step 2: Validate captures
+└── count is not borrowed type → valid capture
+
+Step 3: Store result
+└── expr->captures = count, expr->hasClosure = true
+
+Step 4: markClosureIfEscaping() called on return expression
+└── expr is AnonFuncExpr → expr->isReturned = true
+    └── Closure escapes → heap-allocated in code generation
+```
+
+**Transitive Capture Propagation (Multi-Level Closures):**
+
+```cpp
+// Example: three-level nested closure
+const outer () -> (int) -> int = {
+    let x int = 10
+    return (a int) -> int {
+        // This closure captures x (from outer) → stored in its capture list
+        return (b int) -> int {
+            // This innermost closure captures x (from outer's outer)
+            // It DOES NOT see x in its own capture list - it's not in its
+            // immediate outer closure's parameters or locals.
+            // 
+            // propagateCapture() pulls x from the intermediate closure's
+            // capture list and adds it to the intermediate closure's own
+            // capture list, so CodeGen can properly build all environments.
+            return x + a + b
+        }
+    }
+}
+```
+
+**Transitive Propagation Flow:**
+```
+1. Innermost closure captures x from outer's outer
+2. Inner closure's capture list has x (from its analysis)
+3. Outer closure's walk sees AnonFuncExpr (inner)
+4. propagateCapture(x) adds x to outer's capture list
+5. All closures have the variables they need in their own capture lists
+```
+
+**Capture Storage on AST Nodes:**
+
+```cpp
+// AnonFuncExprAST fields for capture analysis
+struct AnonFuncExprAST {
+    bool hasClosure = false;                    // true if captures any variables
+    ArenaSpan<CapturedVariable> captures;       // list of captured variables
+    bool isReturned = false;                    // true if returned from function
+};
+
+// FuncDeclAST fields for capture analysis
+struct FuncDeclAST {
+    bool hasClosure = false;                    // true if nested function captures
+    ArenaSpan<CapturedVariable> captures;       // list of captured variables
+    bool isReturned = false;                    // true if returned from function
+};
+
+// CapturedVariable structure (actual implementation)
+struct CapturedVariable {
+    ValueDeclAST* decl;                         // variable declaration
+    bool byReference;                           // true if captured by reference
+    size_t index;                               // position in environment struct
+};
+```
+
+**Key Relationships:**
+
+| Component                              | Responsibility                                 | Called From                                     |
+| -------------------------------------- | ---------------------------------------------- | ----------------------------------------------- |
+| `analyzeCaptures()`                    | Main entry point for capture analysis          | `resolveAnonFuncExpr()`, `resolveFuncDecl()`    |
+| `walkStmt()` / `walkExpr()`            | Walks AST to find identifier references        | `analyzeCaptures()`                             |
+| `isCapture()`                          | Determines if identifier is a capture          | `processIdentifier()`                           |
+| `isLocallyDeclared()`                  | Checks if variable is declared in closure body | `isCapture()`                                   |
+| `pushLocalScope()` / `popLocalScope()` | Tracks block-scoped declarations               | `walkStmt()` for BlockStmt, ForStmt             |
+| `declareLocal()`                       | Registers a local variable in current scope    | `walkStmt()` for DeclStmt, AsyncStmt, SpawnStmt |
+| `validateAndAddCapture()`              | Validates capture rules and adds to list       | `processIdentifier()`, `propagateCapture()`     |
+| `propagateCapture()`                   | Propagates captures upward through nesting     | `walkExpr()` for nested AnonFuncExpr            |
+| `markClosureIfEscaping()`              | Detects escaping closures for heap allocation  | `resolveReturnStmt()`                           |
+
+**Important Rules:**
+
+| Rule                      | Description                                                     | Example                                                                          |
+| ------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **No Borrowed Types**     | Closures cannot capture `&T` or `[_]T`                          | `let x &int = ...; return (y int) -> int { return *x + y }` ❌                    |
+| **No Linear Types**       | Closures cannot capture `Future<T>` or `Thread<T>`              | `async result int = fetch(); return () -> int { return await result }` ❌         |
+| **Module Members**        | Module-level globals are not captured (they're global)          | `const PI f64 = 3.14; return (r f64) -> f64 { return PI * r * r }` ✅             |
+| **Generic Parameters**    | Generic parameters are not captured (resolved at instantiation) | `<T> const id (v T) -> (T) -> T = { return (x T) -> T { return x } }` ✅          |
+| **Local Variables**       | Variables from outer function scopes are captured               | `let count int = 0; return () -> int { return count }` ✅                         |
+| **Escaping Closures**     | Closures returned from functions are heap-allocated             | `return (x int) -> int { return x + 1 }` → heap allocated (`isReturned = true`)  |
+| **Non-Escaping Closures** | Closures used locally are stack-allocated                       | `let f (int) -> int = (x int) -> int { return x + 1 }; use(f)` → stack allocated |
+
+**Key Implementation Notes:**
+
+1. **Capture Detection**: The analyzer walks the AST recursively, checking every `IdentifierExpr` node to determine if it references a variable from an outer scope.
+
+2. **Scope Determination**: A variable is considered a capture if it is:
+   - Not a module member (global)
+   - Not a parameter of the current function/closure (`isOwnParam`)
+   - Not declared within the body being walked (`isLocallyDeclared`)
+   - Not a generic parameter
+   - Found in some outer scope via `ctx.lookupValue()`
+
+3. **Local Scope Tracking**: `localScopes` is a stack of block-scoped frames that tracks variable declarations within the closure body. This is necessary because capture analysis runs as a second pass after the first pass's scopes have been popped. Without this, a name declared inside the body that shadows an outer variable would incorrectly resolve to the outer one.
+
+4. **Transitive Capture Propagation**: When a nested closure captures a variable, the enclosing closure must also capture it (even if it doesn't reference it directly) so CodeGen's flat value map has the correct value when building the nested closure's environment.
+
+5. **Validation Rules**: Captures are validated immediately when detected:
+   - Borrowed types (`&T`, `[_]T`) are rejected with a clear error message
+   - Linear types (`Future<T>`, `Thread<T>`) are rejected
+
+6. **Escape Analysis**: `markClosureIfEscaping()` is called during return statement resolution to detect closures that outlive the function call and must be heap-allocated. Uses `isReturned` field, not `isEscaping`.
 
 ---
 
@@ -2135,6 +2547,446 @@ ConstantValue Methods:
 
 ---
 
+### Intrinsic and Attribute Validation (`registry/`)
+
+The validation of intrinsics and attributes is performed during semantic analysis to ensure correctness before code generation. These validators are pure functions that operate on the AST and report diagnostics via `SemaContext`.
+
+---
+
+#### Intrinsic Validation (`IntrinsicValidator`)
+
+Intrinsic validation checks that intrinsic calls (`#name(...)`) have correct argument counts, argument types, and semantics specific to each intrinsic.
+
+**Purpose:**
+- Validates argument counts against intrinsic signatures
+- Validates argument types (numeric, pointer, string, etc.)
+- Performs semantic validation for specific intrinsics (e.g., `#scope_exit`, atomic ordering)
+- Computes return types and value states for intrinsics
+
+```cpp
+validateIntrinsicCall(expr, ctx)
+│
+├── // 1. Look up intrinsic in registry
+├── info = IntrinsicRegistry.getInfo(expr->intrinsicName)
+├── if (!info) → error "unknown intrinsic"
+│
+├── // 2. Validate argument count
+├── if (!validateIntrinsicArgCount(name, args.size(), ctx))
+│   └── error: expects N argument(s), got M
+│
+├── // 3. Dispatch to specific validator by name category
+├── if (name in FLOATING_POINT_OPS)   → validateFloatingPoint(expr, ctx)
+├── if (name in MEMORY_OPS)           → validateMemoryOp(expr, ctx)
+├── if (name == "fence")              → validateFence(expr, ctx)
+├── if (name in STRING_OPS)           → validateStringOp(expr, ctx)
+├── if (name in POINTER_OPS)          → validatePointerOp(expr, ctx)
+├── if (name == "scope_exit")         → validateScopeExit(expr, ctx)
+├── if (name starts with "atomic_")   → validateAtomicOp(expr, ctx)
+├── if (name starts with "simd_")     → validateSIMD(expr, ctx)
+├── if (name in MEMORY_MGMT_OPS)      → validateMemoryManagement(expr, ctx)
+├── if (name in BIT_OPS)              → validateIntArg(args[0], "value", ctx)
+├── if (name in PREFETCH_OPS)         → validatePtrArg(args[0], "ptr", ctx)
+├── if (name in LIKELY_OPS)           → validateBoolArg(args[0], "condition", ctx)
+├── if (name == "pause")              → return true
+└── if (name in INSPECTION_OPS)       → return true (minimal validation)
+```
+
+**Intrinsic Categories:**
+
+| Category            | Intrinsics                                                                                                                                                 | Validator                    |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Floating-Point Math | `sqrt`, `abs`, `fma`, `ceil`, `floor`, `round`, `pow`, `min`, `max`                                                                                        | `validateFloatingPoint()`    |
+| Memory Operations   | `memcpy`, `memmove`, `memset`                                                                                                                              | `validateMemoryOp()`         |
+| String Operations   | `str_len`, `str_ptr`, `str_from_ptr`, `str_concat`, `str_eq`, `str_slice`, `str_byte_at`                                                                   | `validateStringOp()`         |
+| Pointer Operations  | `addrof`, `toRef`, `toPtr`, `ptrOffset`, `ptrDiff`                                                                                                         | `validatePointerOp()`        |
+| Atomic Operations   | `atomic_load`, `atomic_store`, `atomic_add`, `atomic_sub`, `atomic_and`, `atomic_or`, `atomic_xor`, `atomic_cas`                                           | `validateAtomicOp()`         |
+| SIMD Operations     | `simd_add`, `simd_sub`, `simd_mul`, `simd_div`, `simd_fma`, `simd_min`, `simd_max`, `simd_splat`, `simd_load`, `simd_store`, `simd_extract`, `simd_insert` | `validateSIMD()`             |
+| Memory Management   | `alloc`, `free`, `arena_create`, `arena_alloc`, `arena_reset`, `arena_free`                                                                                | `validateMemoryManagement()` |
+| Type Inspection     | `sizeof`, `alignof`, `typeof`, `nameof`, `tostr`, `ptrstr`, `bitcast`                                                                                      | Minimal validation           |
+| Control Flow        | `likely`, `unlikely`, `scope_exit`                                                                                                                         | `validateScopeExit()`        |
+
+---
+
+#### `#scope_exit` Validation
+
+The `#scope_exit` intrinsic has the most complex validation because it registers a callback to be executed when the current scope exits.
+
+```cpp
+validateScopeExit(expr, ctx)
+│
+├── // 1. Must be inside a function body
+├── if (!ctx.stack.insideFunction())
+│   └── error: #scope_exit only valid inside function body
+│
+├── // 2. Must have at least one argument (the function to call)
+├── if (expr->args.empty())
+│   └── error: expects at least 1 argument
+│
+├── // 3. Resolve and validate the callback function
+├── funcType = resolveExpr(funcArg)
+├── if (!funcType || !funcType->isa<FuncTypeAST>())
+│   └── error: expects a function as the first argument
+│
+├── // 4. Validate generic instantiation
+├── if (funcDecl has generic params && no generic args provided)
+│   └── error: generic parameters require explicit arguments
+├── if (funcDecl has no generic params && generic args provided)
+│   └── error: function is not generic
+│
+├── // 5. The function must have exactly one parameter group (not curried)
+├── if (func->isCurried())
+│   └── error: curried functions not allowed (use a wrapper closure)
+│
+├── // 6. The function must return void
+├── if (func->returnType)
+│   └── error: callback must return void (cannot return during unwinding)
+│
+├── // 7. No variadic parameters
+├── if (any param->isVariadic)
+│   └── error: variadic parameters not supported in cleanup callbacks
+│
+├── // 8. Validate argument count matches function parameters
+├── if (callbackArgs != paramCount)
+│   └── error: callback expects N argument(s), got M
+│
+├── // 9. Validate each argument type against callback parameters
+├── for each arg:
+│   ├── argType = resolveExprWithTarget(arg, expectedType)
+│   ├── if (arg->valueState == Nil && !isNullableType(expectedType))
+│   │   └── error: cannot pass nil to non-nullable parameter
+│   └── if (arg->valueState == Err && !isFallibleType(expectedType))
+│       └── error: cannot pass err to non-fallible parameter
+│
+├── // 10. Check for field access capture issues (warning)
+├── if (funcArg is FieldAccessExprAST)
+│   └── warning: function reference from struct field may capture lifetime
+│
+├── // 11. Get the current block and register the exit callback
+├── currentBlock = ctx.stack.currentBlock()
+├── registration = ctx.arena.make<ScopeExitRegistration>()
+├── registration->callExpr = expr
+├── registration->callback = funcDecl
+├── registration->args = argsBuilder.build()
+│
+└── // 12. Append to current block's scopeExits
+    currentBlock->scopeExits.push_back(registration)
+```
+
+**Validation Rules for `#scope_exit`:**
+
+| Rule                     | Description                                                              |
+| ------------------------ | ------------------------------------------------------------------------ |
+| **Inside Function**      | `#scope_exit` is only valid inside a function body (not at module scope) |
+| **Callback is Function** | The first argument must be a function type                               |
+| **Not Curried**          | The callback must have exactly one parameter group                       |
+| **Returns Void**         | The callback must return void (cannot return during unwinding)           |
+| **No Variadic**          | The callback cannot have variadic parameters                             |
+| **Arg Count Match**      | The number of arguments must match the callback's parameter count        |
+| **Type Match**           | Each argument must be assignable to the corresponding parameter type     |
+| **Nil/Err Handling**     | Cannot pass `nil` to non-nullable or `err` to non-fallible parameters    |
+
+---
+
+#### Return Type and Value State
+
+```cpp
+getIntrinsicReturnType(expr, targetType, ctx)
+│
+├── // Void intrinsics
+├── if (name in VOID_INTRINSICS) return nullptr
+├── if (name == "scope_exit") return nullptr
+│
+├── // Type/Value Inspection
+├── if (name == "sizeof" || name == "alignof") → ctx.getIntType()
+├── if (name == "typeof" || name == "nameof" || name == "tostr" || name == "ptrstr")
+│   → ctx.getStringType()
+├── if (name == "addrof") → PtrTypeAST(inner type)
+├── if (name == "toRef") → RefTypeAST(inner type)
+├── if (name == "toPtr") → PtrTypeAST(inner type)
+├── if (name == "bitcast") → targetType
+│
+├── // String Operations
+├── if (name in STRING_RETURN_OPS) → ctx.getStringType()
+├── if (name == "str_ptr") → PtrTypeAST(intType)
+├── if (name == "str_eq") → ctx.getBoolType()
+├── if (name == "str_byte_at") → ctx.getIntType()
+│
+├── // Memory Management
+├── if (name == "alloc" || name == "arena_alloc")
+│   → PtrTypeAST(intType)
+├── if (name == "arena_create") → targetType (ArenaDescriptor)
+│
+└── // SIMD (simd_store returns void)
+    if (name == "simd_store") return nullptr
+    else return targetType
+```
+
+```cpp
+getIntrinsicValueState(expr, ctx)
+│
+├── if (isIntrinsicVoid(name) || name == "scope_exit") → ValueState::None
+├── if (name == "alloc" || name == "arena_alloc") → ValueState::Unknown
+├── if (name == "toRef") → ValueState::Definite
+├── if (name == "fence" || name == "pause") → ValueState::Definite
+└── default → ValueState::Definite
+```
+
+---
+
+#### Argument Type Validators
+
+The following helpers validate that an argument has a specific type:
+
+```cpp
+validatePtrArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !arg->resolvedType->isa<PtrTypeAST>())
+│   └── error: argument 'name' expects pointer type
+└── return true
+
+validateNumericArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !isNumericType(arg->resolvedType))
+│   └── error: argument 'name' expects numeric type
+└── return true
+
+validateIntArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !isIntegerType(arg->resolvedType))
+│   └── error: argument 'name' expects integer type
+└── return true
+
+validateStringArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !isStringType(arg->resolvedType))
+│   └── error: argument 'name' expects string type
+└── return true
+
+validateBoolArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !isBoolType(arg->resolvedType))
+│   └── error: argument 'name' expects boolean type
+└── return true
+
+validateRefArg(arg, argName, ctx)
+├── if (!arg->resolvedType || !arg->resolvedType->isa<RefTypeAST>())
+│   └── error: argument 'name' expects reference type
+└── return true
+```
+
+---
+
+#### Attribute Validation (`AttributeValidator`)
+
+Attribute validation checks that attributes (`@[name]`) are correctly applied to declarations.
+
+**Purpose:**
+- Validates that attributes are allowed on the declaration kind
+- Validates argument counts and types
+- Performs semantic validation for specific attributes
+- Detects duplicate attributes
+
+```cpp
+validateAllAttributes(decl, ctx)
+│
+├── // Validate each attribute
+├── for each attr in decl->attributes:
+│   └── if (!validateAttribute(attr, decl, ctx)) allValid = false
+│
+├── // Check for duplicate attributes
+├── for each attr in decl->attributes:
+│   if (seen.contains(attr->name))
+│       → error: duplicate attribute '@name'
+│   seen.insert(attr->name)
+│
+└── return allValid
+```
+
+```cpp
+validateAttribute(attr, owner, ctx)
+│
+├── // 1. Look up attribute in registry
+├── info = AttributeRegistry.getInfo(attr->name)
+├── if (!info) → error: unknown attribute
+│
+├── // 2. Check: Is this attribute allowed on this declaration kind?
+├── if (!isAllowedOnDecl(attr->name, owner->kind))
+│   └── error: attribute cannot be applied to this declaration kind
+│
+├── // 3. Check: Is this attribute only for generic declarations?
+├── if (info->appliesToGenericOnly && !isGeneric(owner))
+│   └── error: attribute can only be applied to generic declarations
+│
+├── // 4. Dispatch to specific validator
+├── if (name == "export")     → validateExport(attr, owner, ctx)
+├── if (name == "foreign")    → validateForeign(attr, owner, ctx)
+├── if (name == "link")       → validateLink(attr, owner, ctx)
+├── if (name == "deprecated") → validateDeprecated(attr, owner, ctx)
+├── if (name == "inline" || name == "noinline")
+│   → validateInlineHint(attr, owner, ctx)
+├── if (name == "specialize") → validateSpecialize(attr, owner, ctx)
+│
+└── // Generic validation
+    ├── validateArgCount(attr, info->minArgs, info->maxArgs, ctx)
+    └── if (info->requiresStringArgs)
+        └── for each arg: validateStringArg(arg, ctx)
+```
+
+---
+
+#### Individual Attribute Validators
+
+```cpp
+validateExport(attr, owner, ctx)
+│
+├── // 1. No arguments
+├── if (!attr->args.empty())
+│   └── error: '@[export]' takes no arguments
+│
+└── // 2. Only at module level
+    if (!isModuleLevelDeclaration(owner, ctx))
+        └── error: '@[export]' is only legal at module level
+```
+
+```cpp
+validateForeign(attr, owner, ctx)
+│
+├── // 1. Only on functions
+├── if (!owner->isa<FuncDeclAST>())
+│   └── error: '@[foreign]' is only legal on functions
+│
+├── // 2. Exactly one argument
+├── if (!validateArgCount(attr, 1, 1, ctx)) return false
+│
+├── // 3. Validate ABI string
+├── if (!validateStringArg(attr->args[0], "ABI", ctx)) return false
+│
+├── // 4. Must be "C"
+├── abi = ctx.pool.lookup(lit->value)
+├── if (abi != "C")
+│   └── error: only "C" ABI is supported
+│
+└── // 5. Warn if function has a body
+    if (func->body)
+        └── warning: foreign function has a body (will be ignored)
+```
+
+```cpp
+validateLink(attr, owner, ctx)
+│
+├── // 1. Only at module level or on functions
+├── if (!isModuleLevelDeclaration(owner, ctx) && !owner->isa<FuncDeclAST>())
+│   └── error: '@[link]' is only legal at module level or on functions
+│
+├── // 2. At least one argument
+├── if (attr->args.empty())
+│   └── error: expects at least 1 argument (library name or file path)
+│
+├── // 3. Validate each argument is a non-empty string literal
+├── for each arg:
+│   ├── if (!arg is LiteralExpr of String/RawString)
+│   │   └── error: must be a string literal
+│   ├── if (value.empty())
+│   │   └── error: cannot be an empty string
+│   └── // Warnings about common mistakes
+│       ├── if (value contains space) → warning: library names should not contain spaces
+│       ├── if (value starts with "./") → warning: prefer absolute paths
+│       └── if (value has no extension) → warning: prefer '.lib' or '.dll' on Windows
+│
+└── return allValid
+```
+
+```cpp
+validateDeprecated(attr, owner, ctx)
+│
+├── // 1. At most one argument
+├── if (attr->args.size() > 1)
+│   └── error: expects at most 1 argument (the message)
+│
+└── // 2. Validate optional message argument
+    if (!attr->args.empty() && !validateStringArg(attr->args[0], "message", ctx))
+        └── return false
+```
+
+```cpp
+validateInlineHint(attr, owner, ctx)
+│
+├── // 1. Only on functions
+├── if (!owner->isa<FuncDeclAST>())
+│   └── error: '@[inline]'/'@[noinline]' is only legal on functions
+│
+├── // 2. No arguments
+├── if (!attr->args.empty())
+│   └── error: takes no arguments
+│
+├── // 3. Warn on foreign functions
+├── if (owner has @[foreign] attribute)
+│   └── warning: foreign function cannot be inlined
+│
+└── // 4. Store flag on function
+    func->isInline = (name == "inline")
+    func->isNoInline = (name == "noinline")
+```
+
+```cpp
+validateSpecialize(attr, owner, ctx)
+│
+├── // 1. Only on generic declarations
+├── if (!isGeneric(owner))
+│   └── error: can only be applied to generic declarations
+│
+├── // 2. No arguments
+├── if (!attr->args.empty())
+│   └── error: takes no arguments
+│
+└── // 3. Mark as needing specialization
+    if (owner->isa<FuncDeclAST>())
+        func->shouldSpecialize = true
+    if (owner->isa<StructDeclAST>())
+        struct->shouldSpecialize = true
+```
+
+---
+
+#### Attribute Registry Information
+
+The attribute registry defines which declarations each attribute can attach to:
+
+| Attribute       | Allowed Declaration Kinds                                    | Applies to Generic Only | Min Args | Max Args | Requires String Args |
+| --------------- | ------------------------------------------------------------ | ----------------------- | -------- | -------- | -------------------- |
+| `@[export]`     | `VarDecl`, `FuncDecl`, `StructDecl`, `EnumDecl`, `TraitDecl` | No                      | 0        | 0        | No                   |
+| `@[foreign]`    | `FuncDecl`                                                   | No                      | 1        | 1        | Yes                  |
+| `@[link]`       | `VarDecl`, `FuncDecl`, `StructDecl`, `EnumDecl`, `TraitDecl` | No                      | 1        | 0        | Yes                  |
+| `@[deprecated]` | All declarations                                             | No                      | 0        | 1        | Yes                  |
+| `@[inline]`     | `FuncDecl`                                                   | No                      | 0        | 0        | No                   |
+| `@[noinline]`   | `FuncDecl`                                                   | No                      | 0        | 0        | No                   |
+| `@[specialize]` | `FuncDecl`, `StructDecl`                                     | Yes                     | 0        | 0        | No                   |
+
+---
+
+#### Helper Functions
+
+```cpp
+// ─── Argument Type Validators ─────────────────────────────────────────────
+validateStringArg(arg, argName, ctx)
+validateArgCount(attr, min, max, ctx)
+isModuleLevelDeclaration(decl, ctx)
+supportsAttributes(decl)
+
+// ─── Duplicate Detection ──────────────────────────────────────────────────
+// AttributeValidator checks for duplicate attributes by name on the same
+// declaration and reports an error if found.
+```
+
+---
+
+#### File Structure
+
+```
+src/sema/registry/
+├── AttributeValidator.hpp         # Public API for attribute validation
+├── AttributeValidator.cpp         # Implementation
+├── IntrinsicValidator.hpp         # Public API for intrinsic validation
+└── IntrinsicValidator.cpp         # Implementation
+```
+
+---
+
 ## Precedence and Rules
 
 ### Type Narrowing Rules
@@ -2184,73 +3036,3 @@ Borrowed types (`&T`, `[_]T`) cannot appear in:
 | Generic parameters | Never captured                             |
 
 ---
-
-## Helper Functions
-
-### Type Predicates (`SemaCompare.hpp`)
-
-```cpp
-bool typesEqual(a, b);                    // Deep structural equality
-bool isAssignable(target, source, ctx);    // Assignability check
-bool isNullableType(type);                // T? or T?!
-bool isFallibleType(type);                // T! or T?!
-bool isReferenceType(type);               // &T
-bool isPointerType(type);                 // *T
-bool isPrimitiveType(type);               // Any built-in type
-bool isIntegerType(type);                 // int, uint, int8, etc.
-bool isFloatType(type);                   // float, double, decimal
-bool isNumericType(type);                 // Integer or float
-bool isBoolType(type);                    // bool
-bool isStringType(type);                  // string
-bool isCharType(type);                    // char
-bool isStructType(type, ctx);             // Named type → StructDecl
-bool isEnumType(type, ctx);               // Named type → EnumDecl
-bool isTraitType(type, ctx);              // Named type → TraitDecl
-bool isBorrowedType(type);                // &T or [_]T
-```
-
-### Type Resolution (`SemaResolve.hpp`)
-
-```cpp
-TypeAST* resolveType(type, ctx);                             // Main entry
-TypeAST* resolvePrimitiveType(type, ctx);                    // Built-in types
-TypeAST* resolveNamedType(type, ctx);                        // User-defined types
-TypeAST* resolveModuleTypeAccess(type, ctx);                 // module:Type
-TypeAST* resolveArrayType(type, ctx);                        // [N]T, [*]T, [_]T
-TypeAST* resolveNullableType(type, ctx);                     // T?
-TypeAST* resolveFallibleType(type, ctx);                     // T!
-TypeAST* resolveCombinedType(type, ctx);                     // T?!
-TypeAST* resolveRefType(type, ctx);                          // &T
-TypeAST* resolvePtrType(type, ctx);                          // *T
-TypeAST* resolveFuncType(type, ctx);                         // (T) -> R
-```
-
-### Semantic Validation (`SemaValidate.hpp`)
-
-```cpp
-bool validateConstType(type, name, kind, ctx);               // Must be definite
-bool validateConstInitializer(hasInit, name, kind, ctx);    // Must have init
-bool validateTraitImplementation(structDecl, traitDecl, ctx); // Field matching
-bool validateAllTraitImplementations(structDecl, ctx);       // All traits
-bool validateGenericArguments(args, params, useSite, ctx);   // Arity + constraints
-bool validateBorrowedContext(type, ctx);                     // Downward Flow
-bool validateForeignFunction(decl, attr, ctx);               // ABI + FFI
-```
-
-### Const Evaluation (`ConstEvaluator.hpp`)
-
-```cpp
-ConstantValue evaluateDecl(ctx, decl);                       // Evaluate const decl
-ConstantValue evaluate(ctx, expr, targetType);              // Evaluate expression
-bool isConstExpr(ctx, expr, targetType);                    // Check constness
-std::optional<int64_t> evaluateAsInt(ctx, expr);           // Evaluate as int
-std::optional<bool> evaluateAsBool(ctx, expr);             // Evaluate as bool
-```
-
-### Capture Analysis (`CaptureAnalysis.hpp`)
-
-```cpp
-void analyzeCaptures(AnonFuncExprAST* expr, ctx);           // Closure captures
-void analyzeCaptures(FuncDeclAST* func, ctx);               // Nested function captures
-void markClosureIfEscaping(ExprAST* expr, ctx);             // Escape analysis
-```
