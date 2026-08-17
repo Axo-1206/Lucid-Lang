@@ -3,7 +3,7 @@
 The Lucid semantic analyzer (`Sema`) is a multi-pass system that validates, resolves, and annotates the Abstract Syntax Tree (AST). It transforms a syntactically correct AST into a semantically validated one, ready for code generation.
 
 > [!NOTE]
-> All code block here are `pseudo code` (or `cpp`), we use the `\```cpp` or `\```swift` for color effects
+> All code block here are `pseudo code` (or `cpp`), we use the `\```cpp` or `\```swift` for color effects, you will see some `.` or `,` or `;` at weird and inconsistent places, it's not typo but i keep them there so the color can be rendered
 
 ## File Layout
 
@@ -51,9 +51,624 @@ src/sema/
     └── Helpers.hpp/cpp                   # General helpers
 ```
 
-## Dispatch Graph
+## Context Management (`context/`)
 
-### Program Entry Points (`Sema.cpp`)
+The context management subsystem provides the runtime state tracking for semantic analysis. It answers three key questions during AST resolution:
+
+1. **Where are we?** — What context are we in (function, loop, if, switch, block)?
+2. **What symbols are in scope?** — Variables, types, and generic parameters.
+3. **What types have been narrowed?** — Flow-sensitive type refinement.
+
+---
+
+### Architecture Overview
+
+```cpp
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          ContextStack                                      │
+│                                                                            │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐  │
+│  │  Context Stack   │  │ Narrowing Stack  │  │  Return Stack            │  │
+│  │  (where are we?) │  │ (what's narrow?) │  │  (what's expected RT?)   │  │
+│  ├──────────────────┤  ├──────────────────┤  ├──────────────────────────┤  │
+│  │ FuncBody         │  │ { x → int }      │  │ int                      │  │
+│  │ LoopBody         │  │ { }              │  │ (int) → int              │  │
+│  │ IfStmt           │  │ { }              │  └──────────────────────────┘  │
+│  │ Block            │  └──────────────────┘                                │
+│  └──────────────────┘                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**The Three Stacks:**
+
+| Stack               | Purpose                                           | Key Operations                                                    |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------------------------- |
+| **Context Stack**   | Tracks syntactic context for validation rules     | `push()`, `pop()`, `insideFunction()`, `insideLoop()`             |
+| **Narrowing Stack** | Tracks flow-sensitive type refinements            | `pushNarrowingLevel()`, `popNarrowingLevel()`, `narrowVariable()` |
+| **Return Stack**    | Tracks expected return types for nested functions | `pushReturnType()`, `popReturnType()`, `currentReturnType()`      |
+
+---
+
+### ContextStack (`ContextStack.hpp/cpp`)
+
+The `ContextStack` manages the current semantic state during AST analysis. It is embedded in `SemaContext` and provides all context queries.
+
+**Context Kinds:**
+
+```cpp
+ContextKind enum:
+├── TopLevel      → Module-level declarations
+├── FuncBody      → Inside a function body, (return allowed)
+├── LoopBody      → Inside a loop body, (break/continue allowed)
+├── SwitchBody    → Inside a switch body, (case/default allowed)
+├── IfStmt        → Inside an if statement, (for type narrowing)
+└── Block         → Inside a block statement, (for pending inverse narrowing)
+```
+
+**Push/Pop Operations:**
+
+```cpp
+push(ContextKind kind, BaseAST* node)
+│
+├── Creates a ContextFrame with the given kind and node
+├── If kind == FuncBody → also pushes return type onto ReturnStack
+└── Appends to m_stack
+
+pushFunction(FuncDeclAST* node, TypeAST* returnType)
+│
+├── Creates FuncBody frame
+├── Stores expectedReturnType
+└── m_returnStack.push(returnType)
+
+pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType)
+│
+├── Same as pushFunction but for anonymous functions
+└── node is AnonFuncExprAST (not FuncDeclAST)
+
+pushLoop(StmtAST* loopStmt)
+│
+├── Creates LoopBody frame
+└── Stores loopStmt for break/continue resolution
+
+pushSwitch(SwitchStmtAST* switchStmt)
+│
+├── Creates SwitchBody frame
+└── Stores switchStmt for case/default validation
+
+pushBlock(BlockStmtAST* block)
+│
+├── Creates Block frame
+└── Used for pending inverse narrowing storage
+
+pop()
+│
+├── If current frame is FuncBody → m_returnStack.pop()
+└── Removes last frame from m_stack
+```
+
+**Context Queries:**
+
+```cpp
+current() → ContextKind
+│
+└── Returns m_stack.empty() ? TopLevel : m_stack.back().kind;
+
+isInside(kind) → bool
+│
+└── Searches m_stack for any frame with matching kind;
+
+insideFunction() → bool
+│
+└── isInside(ContextKind::FuncBody)
+
+insideLoop() → bool
+│
+└── isInside(ContextKind::LoopBody)
+
+insideSwitch() → bool
+│
+└── isInside(ContextKind::SwitchBody)
+
+currentFunction() → FuncDeclAST*
+│
+└── Searches m_stack from top for FuncBody with FuncDeclAST node;
+
+currentLoop() → StmtAST*
+│
+└── Searches m_stack from top for LoopBody frame;
+
+currentSwitch() → SwitchStmtAST*
+│
+└── Searches m_stack from top for SwitchBody frame;
+
+currentBlock() → BlockStmtAST*
+│
+└── Searches m_stack from top for Block frame
+```
+
+**Return Stack:**
+
+```cpp
+ReturnStack
+│
+├── push(TypeAST* returnType) → m_stack.push_back(returnType)
+├── pop() → if (!m_stack.empty()) m_stack.pop_back()
+├── current() → m_stack.empty() ? nullptr : m_stack.back()
+└── empty() → m_stack.empty()
+
+// Used for curried functions:
+// (a int) -> (int) -> int
+// Stack: [ (int) -> int, int ]
+```
+
+---
+
+### Type Narrowing (`ContextStack` Narrowing Methods)
+
+Type narrowing is a flow-sensitive analysis that refines variable types based on conditional checks and operations.
+
+**Narrowing Stack Structure:**
+
+```cpp
+NarrowingLevel {
+    std::unordered_map<InternedString, TypeAST*> narrowedTypes;
+    bool isInverse = false;
+};
+
+Narrowing Stack:
+Level 3 (innermost)  { x: int, y: string }
+Level 2              { x: int? }
+Level 1              { }
+
+Lookup "x" → Level 3 has x → returns int
+Lookup "y" → Level 3 has y → returns string
+Lookup "z" → No level has z → returns nullptr
+```
+
+**Narrowing Operations:**
+
+```cpp
+pushNarrowingLevel(bool isInverse = false)
+│
+└── Creates new NarrowingLevel on m_narrowing stack;
+
+popNarrowingLevel()
+│
+└── Removes innermost NarrowingLevel;
+
+narrowVariable(InternedString name, TypeAST* type)
+│
+└── Adds narrowing to current (innermost) level;
+
+getNarrowedType(InternedString name) → TypeAST*
+│
+└── Searches m_narrowing from innermost to outermost
+    └── Returns first match, or nullptr if none found;
+
+isNarrowingInverse() → bool
+│
+└── Returns m_narrowing.back().isInverse (if any)
+```
+
+**If Condition Context:**
+
+```cpp
+isIfConditionCtx() → bool
+│
+└── Returns true if we're currently analyzing an if condition;
+
+setIfConditionCtx(bool isIfCtx)
+│
+└── Sets the flag on the innermost IfStmt frame;
+
+setHasElse(bool hasElse)
+│
+└── Sets whether the if statement has an else branch;
+
+hasElse() → bool
+│
+└── Returns whether the innermost if has an else branch;
+
+setPendingNarrowing(const NarrowingInfo& info)
+│
+└── Stores narrowing info from condition on innermost IfStmt frame;
+
+getPendingNarrowing() → const NarrowingInfo&
+│
+└── Returns pending narrowing from innermost IfStmt frame;
+
+clearPendingNarrowing()
+│
+└── Clears pending narrowing from innermost IfStmt frame
+```
+
+**Pending Inverse Narrowing (Standalone If):**
+
+```cpp
+setPendingInverseNarrowing(const NarrowingInfo& info)
+│
+├── Finds innermost Block frame
+└── Stores info as pending inverse narrowing;
+
+hasPendingInverseNarrowing() → bool
+│
+└── Checks innermost Block frame for pending inverse narrowing;
+
+getPendingInverseNarrowing() → const NarrowingInfo&
+│
+└── Returns pending inverse narrowing from innermost Block frame;
+
+clearPendingInverseNarrowing()
+│
+└── Clears pending inverse narrowing from innermost Block frame
+```
+
+**NarrowingInfo Structure:**
+
+```cpp
+struct NarrowingInfo {
+    bool hasNarrowing = false;                      // True if valid
+    std::unordered_map<InternedString, TypeAST*> narrowings;  // var → narrowed type
+    bool isEquality = false;                        // True for ==, await, join
+};
+```
+
+**Narrowing Limitations:**
+
+| Pattern                 | Supported? | Notes                             |
+| ----------------------- | ---------- | --------------------------------- |
+| `x != nil and y != nil` | ✅ Yes      | All != checks (direct narrowing)  |
+| `x == nil or y == nil`  | ✅ Yes      | All == checks (inverse narrowing) |
+| `x != nil and y == nil` | ❌ No       | Mixed != and == rejected          |
+| `x != nil or y == nil`  | ❌ No       | Mixed != and == rejected          |
+
+---
+
+### SemaContext (`SemaContext.hpp`)
+
+The `SemaContext` is the **central hub** for semantic analysis. It holds all state needed to resolve types, validate declarations, and perform flow-sensitive analysis.
+
+**Architecture:**
+
+```cpp
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           SemaContext                                      │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        Shared Resources                             │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │   │
+│  │  │ StringPool  │  │ ASTArena    │  │  DiagnosticEngine           │  │   │
+│  │  │ (interned   │  │ (memory     │  │  (error reporting)          │  │   │
+│  │  │  strings)   │  │ allocation) │  │                             │  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        State Management                             │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │   │
+│  │  │ ContextStack │  │ ModuleTables │  │ TypeCache                 │  │   │
+│  │  │ (context,    │  │ (module      │  │ (type canonicalization)   │  │   │
+│  │  │  narrowing)  │  │  symbols)    │  │                           │  │   │
+│  │  └──────────────┘  └──────────────┘  └───────────────────────────┘  │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │   │
+│  │  │ Scopes Stack │  │ DefiningTypes│  │ Pending Concurrency       │  │   │
+│  │  │ (local       │  │ (self-ref    │  │ (async/spawn tracking)    │  │   │
+│  │  │  symbols)    │  │  detection)  │  │                           │  │   │
+│  │  └──────────────┘  └──────────────┘  └───────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### ModuleTable
+
+The `ModuleTable` stores all symbols for a single module (source file).
+
+```cpp
+ModuleTable {
+    ModuleAST* module;
+    std::unordered_map<InternedString, ValueDeclAST*> values;
+    std::unordered_map<InternedString, TypeDeclAST*> types;
+    std::unordered_map<InternedString, ModuleAST*> importAliases;
+};
+```
+
+**Symbol Namespaces:**
+
+| Namespace          | Stores                                                  | Examples                       |
+| ------------------ | ------------------------------------------------------- | ------------------------------ |
+| **Values**         | Variables, functions, parameters, fields, enum variants | `add`, `PI`, `result`, `North` |
+| **Types**          | Structs, enums, traits                                  | `Vec2`, `Color`, `Named`       |
+| **Import Aliases** | Module aliases                                          | `math`, `io`                   |
+
+**Lookup Priority:**
+
+1. **Local scopes** (`scopes`) — innermost first
+2. **Module table** (`currentModuleTable`) — current module's symbols
+3. **Import aliases** — symbols from imported modules
+
+---
+
+### TypeCache
+
+The `TypeCache` is a **canonicalization cache** for type nodes. It ensures that semantically equivalent types share the same AST node pointer, enabling fast type comparison via pointer equality.
+
+**Cached Types:**
+
+| Cache         | Key                       | Value               | Notes               |
+| ------------- | ------------------------- | ------------------- | ------------------- |
+| `boolType`    | N/A                       | `PrimitiveTypeAST*` | Built-in bool       |
+| `intType`     | N/A                       | `PrimitiveTypeAST*` | Built-in int        |
+| `floatType`   | N/A                       | `PrimitiveTypeAST*` | Built-in float      |
+| `stringType`  | N/A                       | `PrimitiveTypeAST*` | Built-in string     |
+| `charType`    | N/A                       | `PrimitiveTypeAST*` | Built-in char       |
+| `unknownType` | N/A                       | `UnknownTypeAST*`   | Error recovery type |
+| `namedTypes`  | `{ name }`                | `NamedTypeAST*`     | User-defined types  |
+| `arrayTypes`  | `{ kind, size, element }` | `ArrayTypeAST*`     | Array types         |
+
+**Why Canonicalization?**
+
+Without canonicalization, two identical type annotations would produce two different AST nodes. With canonicalization, both resolve to the same pointer:
+
+```cpp
+// Both resolve to the SAME NamedTypeAST pointer
+let x Vec2 = ...  // → ctx.getNamedType("Vec2")
+let y Vec2 = ...  // → ctx.getNamedType("Vec2") returns cached pointer
+// typesEqual(x->type, y->type) → pointer equality ✅
+```
+
+---
+
+### Symbol Management
+
+**Insertion:**
+
+```cpp
+insertValue(ValueDeclAST* decl)
+├── if isAtModuleLevel():
+│   └── currentModuleTable->values[decl->name] = decl
+└── else:
+    └── currentScope().values[decl->name] = decl
+
+insertType(TypeDeclAST* decl)
+├── if isAtModuleLevel():
+│   └── currentModuleTable->types[decl->name] = decl
+└── else:
+    └── currentScope().types[decl->name] = decl
+
+insertGenericParam(GenericParamDeclAST* param)
+├── assert(!isAtModuleLevel())
+└── currentScope().genericParams[param->name] = param
+```
+
+**Lookup:**
+
+```cpp
+lookupValue(InternedString name) → ValueDeclAST*
+├── Search, scopes (innermost to outermost)
+│   └── if found → return decl (decl->type is NEVER mutated by narrowing)
+├── Search currentModuleTable->values
+│   └── if found → return decl
+└── return nullptr
+
+lookupType(InternedString name) → TypeDeclAST*
+├── Search scopes (innermost to outermost)
+│   ├── if generic param found → return nullptr (hides type lookup)
+│   └── if type found → return decl
+├── Search currentModuleTable->types
+└── return nullptr
+
+lookupImport(InternedString alias) → ModuleAST*
+└── currentModuleTable->importAliases[alias]
+```
+
+**Effective Type (with Narrowing):**
+
+```cpp
+getEffectiveType(ValueDeclAST* decl, InternedString name) → TypeAST*
+├── if (!decl) return nullptr
+│
+├── // Check if there's a narrowed type for this variable
+├── narrowedType = stack.getNarrowedType(name)
+├── if (narrowedType) return const_cast<TypeAST*>(narrowedType)
+│
+└── return decl->type  // decl->type is ALWAYS the parser-written type
+```
+
+**Key Design Principle:** `decl->type` is never mutated. Narrowing is tracked entirely on the `ContextStack`'s narrowing stack, never by writing back into the declaration itself. This maintains a clear separation between the declaration's static type and the flow-sensitive refined type.
+
+---
+
+### Concurrency Tracking
+
+```cpp
+addPendingAsync(name, call, loc)
+├── if. isAtModuleLevel() → return
+└── currentScope().pendingAsync[name] = {name, call, loc}
+
+addPendingSpawn(name, call, loc)
+├── if isAtModuleLevel() → return
+└── currentScope().pendingSpawn[name] = {name, call, loc}
+
+hasPendingAsync(name) → bool
+└── currentScope().pendingAsync.find(name) != end
+
+hasPendingSpawn(name) → bool
+└── currentScope().pendingSpawn.find(name) != end
+
+resolveAsync(name) → currentScope().pendingAsync.erase(name)
+resolveSpawn(name) → currentScope().pendingSpawn.erase(name)
+
+getPendingAsyncNames() → vector<InternedString>
+getPendingSpawnNames() → vector<InternedString>
+```
+
+**Usage in Statement Resolution:**
+
+```cpp
+// In resolveAsyncStmt:
+ctx.addPendingAsync(binding->name, call, loc)
+
+// In resolveAwaitStmt:
+if (ctx.hasPendingAsync(targetName)) {
+    ctx.resolveAsync(targetName);
+    ctx.stack.narrowVariable(targetName, innerType);
+}
+
+// In resolveBlock (check for unresolved ops):
+for (name : ctx.getPendingAsyncNames()) {
+    diagnostics.warning(Warn_UnawaitedAsync, ...);
+}
+```
+
+---
+
+### RAII Guards
+
+RAII guards provide automatic cleanup for semantic analysis state.
+
+```cpp
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           RAII Guards                                      │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    ScopedSemanticContext                            │   │
+│  │  Pushes/pops a context frame on the ContextStack                    │   │
+│  │  Usage: Entering a function, loop, switch, or block                 │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        ScopedIfCondition                            │   │
+│  │  Sets up if condition context for narrowing detection               │   │
+│  │  Usage: Analyzing the condition of an if statement                  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         SymbolScope                                 │   │
+│  │  Pushes/pops a lexical scope for symbol storage                     │   │
+│  │  Usage: Entering a block, function body, or loop body               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                       ScopedNarrowing                               │   │
+│  │  Pushes/pops a narrowing level for type refinement                  │   │
+│  │  Usage: Entering the then/else branch of an if statement            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                      ScopedTypeDefinition                           │   │
+│  │  Tracks the type currently being defined for self-reference checks  │   │
+│  │  Usage: Resolving a struct, enum, or trait declaration              │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Guard Reference:**
+
+| Guard                   | Constructor                                   | Effect                                                     |
+| ----------------------- | --------------------------------------------- | ---------------------------------------------------------- |
+| `ScopedSemanticContext` | `ScopedSemanticContext(ctx, kind, node)`      | Pushes context frame, pops on destruction                  |
+| `ScopedIfCondition`     | `ScopedIfCondition(ctx, hasElse)`             | Enables narrowing detection, clears pending on destruction |
+| `SymbolScope`           | `SymbolScope(ctx)`                            | Pushes lexical scope, pops on destruction                  |
+| `ScopedNarrowing`       | `ScopedNarrowing(ctx, narrowings, isInverse)` | Pushes narrowing level, pops on destruction                |
+| `ScopedTypeDefinition`  | `ScopedTypeDefinition(ctx, decl)`             | Tracks defining type for self-refs, pops on destruction    |
+
+**Guard Composition Example:**
+
+```cpp
+bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx) {
+    // 1. Push if context for narrowing tracking
+    ScopedSemanticContext context(ctx, ContextKind::IfStmt, stmt);
+
+    // 2. Set up if condition context
+    ScopedIfCondition ifCtx(ctx, stmt->elseBranch != nullptr);
+
+    // 3. Resolve condition (captures narrowing info)
+    resolveExpr(stmt->condition, ctx);
+
+    // 4. Get captured narrowing info
+    NarrowingInfo info = ctx.stack.getPendingNarrowing();
+
+    // 5. Push scope for then branch
+    SymbolScope scope(ctx);
+
+    // 6. Apply narrowing to then branch
+    ScopedNarrowing narrowing(ctx, info.narrowings, false);
+
+    // 7. Resolve then branch
+    resolveStmt(stmt->thenBranch, ctx);
+
+    // All guards automatically pop in reverse order:
+    // 1. narrowing pops
+    // 2. scope pops
+    // 3. ifCtx pops (clears pending narrowing)
+    // 4. context pops
+    return ...;
+}
+```
+
+---
+
+### API Reference
+
+| Method                                         | Description                                         |
+| ---------------------------------------------- | --------------------------------------------------- |
+| **ContextStack**                               |                                                     |
+| `push(kind, node)`                             | Pushes a context frame                              |
+| `pushFunction(node, returnType)`               | Pushes a function context                           |
+| `pushAnonFunction(node, returnType)`           | Pushes an anonymous function context                |
+| `pushLoop(loopStmt)`                           | Pushes a loop context                               |
+| `pushSwitch(switchStmt)`                       | Pushes a switch context                             |
+| `pushBlock(block)`                             | Pushes a block context                              |
+| `pop()`                                        | Pops the innermost context frame                    |
+| `insideFunction()`                             | Returns true if inside a function                   |
+| `insideLoop()`                                 | Returns true if inside a loop                       |
+| `insideSwitch()`                               | Returns true if inside a switch                     |
+| `currentFunction()`                            | Returns the current function declaration            |
+| `currentLoop()`                                | Returns the current loop statement                  |
+| `currentSwitch()`                              | Returns the current switch statement                |
+| `currentBlock()`                               | Returns the current block statement                 |
+| `currentReturnType()`                          | Returns the expected return type                    |
+| `isIfConditionCtx()`                           | Returns true if analyzing an if condition           |
+| `pushNarrowingLevel(isInverse)`                | Pushes a narrowing level                            |
+| `popNarrowingLevel()`                          | Pops the innermost narrowing level                  |
+| `narrowVariable(name, type)`                   | Narrows a variable in the current level             |
+| `getNarrowedType(name)`                        | Gets the narrowed type of a variable                |
+| `setPendingInverseNarrowing(info)`             | Stores pending inverse narrowing                    |
+| `hasPendingInverseNarrowing()`                 | Returns true if pending inverse narrowing exists    |
+| `getPendingInverseNarrowing()`                 | Gets pending inverse narrowing                      |
+| `clearPendingInverseNarrowing()`               | Clears pending inverse narrowing                    |
+| `getClosureDepth()`                            | Returns the current closure nesting depth           |
+| **SemaContext**                                |                                                     |
+| `enterModule(module)`                          | Enters a module for symbol resolution               |
+| `pushScope()` / `popScope()`                   | Pushes/pops a lexical scope                         |
+| `insertValue(decl)`                            | Inserts a value declaration                         |
+| `insertType(decl)`                             | Inserts a type declaration                          |
+| `insertGenericParam(param)`                    | Inserts a generic parameter                         |
+| `lookupValue(name)`                            | Looks up a value declaration                        |
+| `lookupType(name)`                             | Looks up a type declaration                         |
+| `lookupImport(alias)`                          | Looks up an import alias                            |
+| `getEffectiveType(decl, name)`                 | Gets the currently-applicable type (with narrowing) |
+| `addPendingAsync(name, call, loc)`             | Registers a pending async operation                 |
+| `addPendingSpawn(name, call, loc)`             | Registers a pending spawn operation                 |
+| `hasPendingAsync(name)`                        | Checks if a name has a pending async                |
+| `hasPendingSpawn(name)`                        | Checks if a name has a pending spawn                |
+| `resolveAsync(name)`                           | Resolves a pending async operation                  |
+| `resolveSpawn(name)`                           | Resolves a pending spawn operation                  |
+| `getPendingAsyncNames()`                       | Gets all pending async names                        |
+| `getPendingSpawnNames()`                       | Gets all pending spawn names                        |
+| `getBoolType()` / `getIntType()` / etc.        | Gets cached primitive types                         |
+| `getNamedType(name)`                           | Gets or creates a cached named type                 |
+| `getArrayType(kind, size, element)`            | Gets or creates a cached array type                 |
+| `getUnknownType()`                             | Gets the error recovery type                        |
+| `pushDefiningType(decl)` / `popDefiningType()` | Tracks the type being defined                       |
+| `isDefiningType(decl)`                         | Checks if a type is being defined                   |
+| `currentDefiningType()`                        | Gets the type currently being defined               |
+
+---
+
+## Program Entry Points (`Sema.cpp`)
 
 The semantic analysis phase is orchestrated by the `analyze()` function, which serves as the main entry point for the semantic analyzer. It operates in two distinct passes to ensure correct name resolution and type checking.
 
@@ -61,7 +676,7 @@ The semantic analysis phase is orchestrated by the `analyze()` function, which s
 
 The `analyze()` function takes a vector of parsed modules and a `SemaContext` (which holds all state including symbol tables, type cache, and diagnostics). It performs two passes: first registering all top-level names, then resolving types and checking bodies.
 
-#### PHASE 1: Register ALL top-level names (No type resolution)
+## PHASE 1: Register ALL top-level names (No type resolution)
 
 ```cpp
 analyze(modules, ctx)
@@ -96,7 +711,7 @@ analyze(modules, ctx)
 - Local variables and parameters are not registered until Phase 2
 - Struct field names are registered as part of `registerStructName()`
 
-#### PHASE 2: Resolve ALL types, check bodies, AND evaluate consts
+## PHASE 2: Resolve ALL types, check bodies, AND evaluate consts
 
 ```cpp
 analyze() ─── continues to Phase 2
@@ -140,7 +755,7 @@ analyze() ─── continues to Phase 2
 - Nested declarations are registered as they are encountered
 - All errors are collected in the `DiagnosticEngine`
 
-#### Key Relationships
+### Key Relationships
 
 | Component                 | Responsibility                                | Called From                    |
 | ------------------------- | --------------------------------------------- | ------------------------------ |
@@ -154,7 +769,7 @@ analyze() ─── continues to Phase 2
 
 ---
 
-### Declaration Dispatch (`resolveDecl`)
+## Declaration Dispatch (`resolveDecl`)
 
 The `resolveDecl()` function serves as the entry point for resolving individual declarations during Phase 2. It handles both registering nested declarations and dispatching to the appropriate resolver for each declaration kind.
 
@@ -176,7 +791,7 @@ resolveDecl(decl, ctx)
     ├── ImportDecl
     │   └── resolveImportDecl(decl, ctx)
     │       ├── Validate imported module exists
-    │       └── No further resolution needed (Phase 1 already registered)
+    │       └── No further 'resolution' needed (Phase 1 already registered)
     │
     ├── VarDecl
     │   └── resolveVarDecl(decl, ctx)
@@ -249,7 +864,7 @@ resolveDecl(decl, ctx)
 
 ---
 
-### Function Declaration Resolution (`resolveFuncDecl`)
+## Function Declaration Resolution (`resolveFuncDecl`)
 
 ```cpp
 resolveFuncDecl(decl, ctx)
@@ -290,7 +905,7 @@ resolveFuncDecl(decl, ctx)
 
 ---
 
-### Statement Resolution (`resolveStmt`)
+## Statement Resolution (`resolveStmt`)
 
 The `resolveStmt()` function is the main entry point for resolving and validating statements during Phase 2. It dispatches to specific statement resolvers and manages control flow analysis.
 
@@ -493,7 +1108,7 @@ resolveStmt(stmt, ctx)
 
 ---
 
-### Expression Resolution (`resolveExprWithTarget`)
+## Expression Resolution (`resolveExprWithTarget`)
 
 The `resolveExprWithTarget()` function is the main entry point for resolving and type-checking expressions during Phase 2.
 
@@ -748,7 +1363,7 @@ resolveExprWithTarget(expr, targetType, ctx)
 
 ---
 
-### Type Resolution (`resolveType`) — `SemaResolve.cpp`
+## Type Resolution (`resolveType`) — `SemaResolve.cpp`
 
 The `resolveType()` function is the main entry point for resolving type annotations to their semantic representations. It walks the type AST and converts each type node into a fully resolved semantic type, performing validation and generic argument resolution along the way.
 
@@ -759,7 +1374,7 @@ The `resolveType()` function is the main entry point for resolving type annotati
 - Enforces the Downward Flow Rule for borrowed types
 - Caches resolved types for fast equality comparison
 
-```
+```cpp
 resolveType(type, ctx)
 │
 ├── // DISPATCH BY KIND
@@ -906,7 +1521,7 @@ resolveType(type, ctx)
 
 ---
 
-### Type Comparison and Assignability (`SemaCompare.cpp`)
+## Type Comparison and Assignability (`SemaCompare.cpp`)
 
 The `SemaCompare` module provides type equality checking, assignability validation, and type predicate functions used throughout semantic analysis.
 
@@ -918,9 +1533,9 @@ The `SemaCompare` module provides type equality checking, assignability validati
 
 ---
 
-#### Type Equality (`typesEqual`)
+### Type Equality (`typesEqual`)
 
-```
+```cpp
 typesEqual(a, b)
 │
 ├── if (a == b) return true
@@ -942,9 +1557,9 @@ typesEqual(a, b)
 
 ---
 
-#### Type Unwrapping
+### Type Unwrapping
 
-```
+```cpp
 unwrapNullable(type)
 ├── if type->isa<NullableTypeAST>() → return type->inner
 ├── if type->isa<CombinedTypeAST>() → return type->inner
@@ -958,9 +1573,9 @@ unwrapFallible(type)
 
 ---
 
-#### Assignability (`isAssignable`)
+### Assignability (`isAssignable`)
 
-```
+```cpp
 isAssignable(target, source, ctx)
 │
 ├── // 1. Identical types
@@ -1014,9 +1629,9 @@ isAssignable(target, source, ctx)
 
 ---
 
-#### Numeric Type Helpers
+### Numeric Type Helpers
 
-```
+```cpp
 getIntegerBitWidth(type)
 ├── PrimitiveKind::Int8/Uint8/Byte/Ubyte → 8
 ├── PrimitiveKind::Int16/Uint16/Short/Ushort → 16
@@ -1035,9 +1650,9 @@ isIntegerPromotionSafe(target, source, ctx)
 
 ---
 
-#### Type Predicates
+### Type Predicates
 
-```
+```cpp
 Type Predicates:
 ├── isNullableType(type)      → type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>()
 ├── isFallibleType(type)      → type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>()
@@ -1069,9 +1684,9 @@ Type Predicates:
 
 ---
 
-#### FFI Compatibility (`isValidFFIType`)
+### FFI Compatibility (`isValidFFIType`)
 
-```
+```cpp
 isValidFFIType(type, ctx)
 │
 ├── PrimitiveType → true
@@ -1114,7 +1729,7 @@ isValidFFIType(type, ctx)
 
 ---
 
-### Type Validation (`SemaValidate.cpp`)
+## Type Validation (`SemaValidate.cpp`)
 
 The `SemaValidate` module provides validation rules for declarations and constructs that require more complex checks than simple type resolution.
 
@@ -1126,19 +1741,19 @@ The `SemaValidate` module provides validation rules for declarations and constru
 
 ---
 
-#### Const Validation
+### Const Validation
 
-```
+```cpp
 validateConstType(type, name, kind, ctx)
 │
 ├── if (isNullableType(type) || isFallibleType(type))
-│   └── error: const must be definite (not nullable or fallible)
+│   └── error: const must be definite, (not nullable or fallible)
 │
 ├── if (type->isa<CombinedTypeAST>())
-│   └── error: const cannot be combined (T?!)
+│   └── error: const cannot be combined, (T?!)
 │
 └── if (isBorrowedType(type))
-    └── error: const cannot be borrowed (&T or [_]T)
+    └── error: const cannot be borrowed, (&T or [_]T)
 
 validateConstInitializer(hasInit, name, kind, ctx)
 ├── if (!hasInit)
@@ -1156,9 +1771,9 @@ validateConstInitializer(hasInit, name, kind, ctx)
 
 ---
 
-#### Trait Validation
+### Trait Validation
 
-```
+```cpp
 validateTraitImplementation(structDecl, traitDecl, ctx)
 │
 ├── Build map of struct fields by name
@@ -1181,7 +1796,7 @@ validateTraitImplementation(structDecl, traitDecl, ctx)
 └── return isValid
 ```
 
-```
+```cpp
 validateAllTraitImplementations(structDecl, ctx)
 │
 ├── if structDecl->traitRefs.empty() → return true
@@ -1199,7 +1814,7 @@ validateAllTraitImplementations(structDecl, ctx)
 └── return allValid && !conflicts
 ```
 
-```
+```cpp
 checkTraitFieldConflictsInternal(structDecl, ctx)
 │
 ├── Build map: fieldName → vector of {trait, isConst, type}
@@ -1226,9 +1841,9 @@ checkTraitFieldConflictsInternal(structDecl, ctx)
 
 ---
 
-#### Generic Validation
+### Generic Validation
 
-```
+```cpp
 validateGenericArguments(args, params, useSite, ctx)
 │
 ├── if (args.size() != params.size())
@@ -1248,7 +1863,7 @@ validateGenericArguments(args, params, useSite, ctx)
 └── return allValid
 ```
 
-```
+```cpp
 validateGenericParameterUsage(params, types, useSite, ctx)
 │
 ├── // Collect all generic parameter references in types
@@ -1273,9 +1888,9 @@ validateGenericParameterUsage(params, types, useSite, ctx)
 
 ---
 
-#### FFI Validation (`validateForeignFunction`)
+### FFI Validation (`validateForeignFunction`)
 
-```
+```cpp
 validateForeignFunction(decl, foreignAttr, ctx)
 │
 ├── // 1. Validate ABI
@@ -1316,7 +1931,7 @@ validateForeignFunction(decl, foreignAttr, ctx)
 
 ---
 
-### Type Narrowing (`TypeNarrowHelpers.cpp`)
+## Type Narrowing (`TypeNarrowHelpers.cpp`)
 
 Type narrowing is a flow-sensitive analysis that refines variable types based on conditional checks and operations.
 
@@ -1339,7 +1954,7 @@ Type narrowing is a flow-sensitive analysis that refines variable types based on
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### IF STATEMENT ENTRY
+### IF STATEMENT ENTRY
 
 ```cpp
 resolveIfStmt()
@@ -1369,7 +1984,7 @@ resolveIfStmt()
             └── narrowVariable(name, type)  // Apply each narrowing
 ```
 
-#### AWAIT/JOIN STATEMENT ENTRY
+### AWAIT/JOIN STATEMENT ENTRY
 
 ```cpp
 resolveAwaitStmt() / resolveJoinStmt()
@@ -1386,7 +2001,7 @@ resolveAwaitStmt() / resolveJoinStmt()
     └── ctx.resolveAsync(targetName)  // Remove from pending
 ```
 
-#### CONDITION NARROWING EXTRACTION
+### CONDITION NARROWING EXTRACTION
 
 ```cpp
 extractNarrowingsFromCondition(expr, ctx, outIsValidMixed)
@@ -1446,7 +2061,7 @@ detectIdentifierNarrowing(info, id, lit, isEquality, ctx)
     info.narrowings[id->name] = innerType
 ```
 
-#### NARROWING PATTERNS
+### NARROWING PATTERNS
 
 **Pattern 1: Nullable/Fallible Checks**
 
@@ -1510,7 +2125,7 @@ join result                         // Narrow to int
 use(result) // safe
 ```
 
-#### NARROWING STACK MANAGEMENT
+### NARROWING STACK MANAGEMENT
 
 The narrowing stack tracks flow-sensitive type refinements across nested scopes.
 
@@ -1546,7 +2161,7 @@ ContextStack Narrowing Methods:
     └── Returns true if the current level is inverse narrowing
 ```
 
-#### PENDING INVERSE NARROWING
+### PENDING INVERSE NARROWING
 
 For standalone if statements with early exit (`if x == nil { return }`), the inverse narrowing is stored as pending and applied to the rest of the block.
 
@@ -1577,7 +2192,7 @@ resolveBlock() {
 }
 ```
 
-#### EFFECTIVE TYPE LOOKUP
+### EFFECTIVE TYPE LOOKUP
 
 When resolving an identifier, the compiler checks the narrowing stack for a narrowed type before falling back to the declaration's type.
 
@@ -1595,7 +2210,7 @@ TypeAST* effectiveType = ctx.getEffectiveType(decl, name)
 └── Returns narrowed type if available, otherwise decl->type
 ```
 
-#### NARROWING RULES SUMMARY
+### NARROWING RULES SUMMARY
 
 | Pattern                 | isEquality | Direction  | Effect                        |
 | ----------------------- | ---------- | ---------- | ----------------------------- |
@@ -1613,7 +2228,7 @@ TypeAST* effectiveType = ctx.getEffectiveType(decl, name)
 
 ---
 
-### Capture Analysis (`CaptureAnalysis.cpp`)
+## Capture Analysis (`CaptureAnalysis.cpp`)
 
 Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function). It also performs escape analysis to determine if closures must be heap-allocated.
 
@@ -1868,7 +2483,7 @@ struct CapturedVariable {
 
 ---
 
-### Const Evaluation (`ConstEvaluator`)
+## Const Evaluation (`ConstEvaluator`)
 
 The const evaluator is responsible for evaluating expressions at compile-time. It is invoked during Phase 2 of semantic analysis when resolving `const` declarations.
 
@@ -1894,7 +2509,7 @@ The const evaluator is responsible for evaluating expressions at compile-time. I
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### ENTRY POINTS
+### ENTRY POINTS
 
 ```cpp
 evaluateDecl(ctx, decl)
@@ -1938,7 +2553,7 @@ evaluate(ctx, expr, targetType)
 └── Return: result
 ```
 
-#### LITERAL EVALUATION
+### LITERAL EVALUATION
 
 ```cpp
 evalLiteral(ctx, expr)
@@ -1953,7 +2568,7 @@ evalLiteral(ctx, expr)
 └── default           → ConstantValue::unknown()
 ```
 
-#### IDENTIFIER EVALUATION
+### IDENTIFIER EVALUATION
 
 ```cpp
 evalIdentifier(ctx, expr)
@@ -1984,7 +2599,7 @@ evalIdentifier(ctx, expr)
         return unknown() (value bound during execution)
 ```
 
-#### BINARY EXPRESSION EVALUATION
+### BINARY EXPRESSION EVALUATION
 
 ```cpp
 evalBinary(ctx, expr, targetType)
@@ -2044,7 +2659,7 @@ evalBinaryOp(ctx, op, left, right, node, targetType)
         else error
 ```
 
-#### UNARY EXPRESSION EVALUATION
+### UNARY EXPRESSION EVALUATION
 
 ```cpp
 evalUnary(ctx, expr, targetType)
@@ -2062,7 +2677,7 @@ evalUnary(ctx, expr, targetType)
                  else error
 ```
 
-#### CALL EXPRESSION (CONST FUNCTION)
+### CALL EXPRESSION (CONST FUNCTION)
 
 ```cpp
 evalCall(ctx, expr)
@@ -2114,7 +2729,7 @@ executeFunction(ctx, func, args)
 └── return result
 ```
 
-#### STATEMENT EXECUTION (FOR CONST FUNCTIONS)
+### STATEMENT EXECUTION (FOR CONST FUNCTIONS)
 
 ```cpp
 executeStmt(ctx, stmt)
@@ -2274,7 +2889,7 @@ executeDeclStmt(ctx, stmt)
 └── error: mutable locals not allowed in const functions
 ```
 
-#### RAII GUARDS
+### RAII GUARDS
 
 ```cpp
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -2369,7 +2984,7 @@ DepthGuard
         // Automatically decremented when guard goes out of scope
 ```
 
-#### INTERNAL STATE
+### INTERNAL STATE
 
 ```cpp
 Internal State Overview:
@@ -2399,7 +3014,7 @@ Internal State Overview:
 └──────────────────────────┘
 ```
 
-#### CONSTANT VALUE TYPES
+### CONSTANT VALUE TYPES
 
 ```
 ConstantValue Structure:
@@ -2467,7 +3082,7 @@ ConstantValue Methods:
     bool isEvaluated() const  // !isUnknown() && !isError()
 ```
 
-#### EVALUATION CATEGORIES
+### EVALUATION CATEGORIES
 
 ```cpp
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -2547,13 +3162,13 @@ ConstantValue Methods:
 
 ---
 
-### Intrinsic and Attribute Validation (`registry/`)
+## Intrinsic and Attribute Validation (`registry/`)
 
 The validation of intrinsics and attributes is performed during semantic analysis to ensure correctness before code generation. These validators are pure functions that operate on the AST and report diagnostics via `SemaContext`.
 
 ---
 
-#### Intrinsic Validation (`IntrinsicValidator`)
+### Intrinsic Validation (`IntrinsicValidator`)
 
 Intrinsic validation checks that intrinsic calls (`#name(...)`) have correct argument counts, argument types, and semantics specific to each intrinsic.
 
@@ -2607,7 +3222,7 @@ validateIntrinsicCall(expr, ctx)
 
 ---
 
-#### `#scope_exit` Validation
+### `#scope_exit` Validation
 
 The `#scope_exit` intrinsic has the most complex validation because it registers a callback to be executed when the current scope exits.
 
@@ -2687,7 +3302,7 @@ validateScopeExit(expr, ctx)
 
 ---
 
-#### Return Type and Value State
+### Return Type and Value State
 
 ```cpp
 getIntrinsicReturnType(expr, targetType, ctx)
@@ -2733,7 +3348,7 @@ getIntrinsicValueState(expr, ctx)
 
 ---
 
-#### Argument Type Validators
+### Argument Type Validators
 
 The following helpers validate that an argument has a specific type:
 
@@ -2771,7 +3386,7 @@ validateRefArg(arg, argName, ctx)
 
 ---
 
-#### Attribute Validation (`AttributeValidator`)
+### Attribute Validation (`AttributeValidator`)
 
 Attribute validation checks that attributes (`@[name]`) are correctly applied to declarations.
 
@@ -2829,7 +3444,7 @@ validateAttribute(attr, owner, ctx)
 
 ---
 
-#### Individual Attribute Validators
+### Individual Attribute Validators
 
 ```cpp
 validateExport(attr, owner, ctx)
@@ -2943,7 +3558,7 @@ validateSpecialize(attr, owner, ctx)
 
 ---
 
-#### Attribute Registry Information
+### Attribute Registry Information
 
 The attribute registry defines which declarations each attribute can attach to:
 
@@ -2959,7 +3574,7 @@ The attribute registry defines which declarations each attribute can attach to:
 
 ---
 
-#### Helper Functions
+### Helper Functions
 
 ```cpp
 // ─── Argument Type Validators ─────────────────────────────────────────────
@@ -2975,7 +3590,7 @@ supportsAttributes(decl)
 
 ---
 
-#### File Structure
+### File Structure
 
 ```
 src/sema/registry/
@@ -2989,7 +3604,7 @@ src/sema/registry/
 
 ## Precedence and Rules
 
-### Type Narrowing Rules
+## Type Narrowing Rules
 
 | Pattern    | Effect                              | isEquality |
 | ---------- | ----------------------------------- | ---------- |
@@ -3000,7 +3615,7 @@ src/sema/registry/
 | `await x`  | `Future<T>` → `T` in rest of block  | `true`     |
 | `join x`   | `Thread<T>` → `T` in rest of block  | `true`     |
 
-### Downward Flow Rule
+## Downward Flow Rule
 
 Borrowed types (`&T`, `[_]T`) cannot appear in:
 1. Struct fields
@@ -3008,7 +3623,7 @@ Borrowed types (`&T`, `[_]T`) cannot appear in:
 3. Function returns
 4. Closure captures
 
-### Const Evaluation Rules
+## Const Evaluation Rules
 
 | Construct      | Const Evaluable? | Notes                                           |
 | -------------- | ---------------- | ----------------------------------------------- |
@@ -3025,7 +3640,7 @@ Borrowed types (`&T`, `[_]T`) cannot appear in:
 | Range          | ✅                | If bounds are const                             |
 | Intrinsic      | ⚠️                | Only deterministic intrinsics                   |
 
-### Capture Rules
+## Capture Rules
 
 | Rule               | Description                                |
 | ------------------ | ------------------------------------------ |
