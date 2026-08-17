@@ -86,37 +86,21 @@ void JITSession::setupTarget() {
 }
 
 void JITSession::setupPlatformLibraries() {
-    // Load platform-specific libraries that may be needed for runtime symbols.
-    // This is primarily for things like malloc, free, printf, etc.
-    
+    // Load platform-specific libraries
 #ifdef _WIN32
-    // On Windows, we need to load the CRT
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 #else
-    // On Unix-like systems, load the dynamic linker
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 #endif
 
-    // Add the current process's symbols to the JIT's search path
-    // Note: DynamicLibrarySearchGenerator::GetForCurrentProcess returns an Expected
+    // Get the generator for the current process
     auto Generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         m_jit->getDataLayout().getGlobalPrefix());
-    
-    if (Generator) {
-        // Move the generator into the JIT
-        if (auto Err = m_jit->getMainJITDylib().addGenerator(std::move(*Generator))) {
-            llvm::handleAllErrors(std::move(Err), [](const llvm::ErrorInfoBase& EI) {
-                std::cerr << "Warning: Failed to add current process symbols: " 
-                          << EI.message() << "\n";
-            });
-        }
-    } else {
-        // Handle the error
-        llvm::handleAllErrors(Generator.takeError(), [](const llvm::ErrorInfoBase& EI) {
-            std::cerr << "Warning: Failed to create process symbol generator: "
-                      << EI.message() << "\n";
-        });
-    }
+
+    // Unwrap the Expected and directly add the unique_ptr to the JITDylib
+    m_jit->getMainJITDylib().addGenerator(
+        llvm::cantFail(std::move(Generator))
+    );
 }
 
 void JITSession::registerLibrarySymbols(const std::string& path, const std::string& name) {
@@ -180,9 +164,6 @@ void JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString 
     module->setDataLayout(m_jit->getDataLayout());
 
     // Create a ThreadSafeModule with its own context
-    // Note: LLVM modules don't have setContext in newer versions.
-    // The context is set when the module is created, or we can pass
-    // the context to ThreadSafeModule constructor.
     auto moduleContext = std::make_unique<llvm::LLVMContext>();
     auto threadSafeModule = llvm::orc::ThreadSafeModule(std::move(module), std::move(moduleContext));
 

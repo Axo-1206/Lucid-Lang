@@ -2,10 +2,10 @@
 /// @brief Implementation of type mapping from Lucid AST types to LLVM types.
 
 #include "CodeGenType.hpp"
-#include "CodeGenGeneric.hpp"  // For GenericSubstitution
+#include "generic/CodeGenGeneric.hpp"  // For GenericSubstitution
+#include "generic/GenericMangledName.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
-#include "support/MangledName.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Type.h>
