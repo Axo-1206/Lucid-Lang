@@ -4,13 +4,56 @@
 #include "Interpreter.hpp"
 #include "support/InterpreterError.hpp"
 #include "execution/ModuleLoader.hpp"
-#include "execution/SymbolResolver.hpp"
 #include "dynlink/DynamicLinker.hpp"
 
 #include <chrono>
 #include <iostream>
 
 namespace interpreter {
+
+// ─── Internal Helpers ────────────────────────────────────────────────────
+
+/// @brief Check if a function is exported (@[export] attribute).
+static bool isFunctionExported(FuncDeclAST* func, InterpreterContext& ctx) {
+    if (!func) return false;
+    
+    InternedString exportName = ctx.pool.intern("export");
+    for (AttributePtr attr : func->attributes) {
+        if (attr->name == exportName) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Find the entry point in loaded modules.
+static InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint) {
+    // 1. If a specific entry point was requested, look for it first
+    if (entryPoint.isValid()) {
+        // Scan all loaded modules using ModuleRegistry
+        for (ModuleInfo* info : ctx.moduleRegistry.getAllModules()) {
+            ModuleAST* module = info->ast;
+            if (!module) continue;
+            
+            for (DeclAST* decl : module->decls) {
+                if (FuncDeclAST* func = decl->as<FuncDeclAST>()) {
+                    // Check if this function matches the entry point name
+                    if (func->name == entryPoint) {
+                        // Check if it's exported
+                        if (isFunctionExported(func, ctx)) {
+                            return entryPoint;
+                        }
+                    }
+                }
+            }
+        }
+        return InternedString(); // Not found
+    }
+
+    // 2. No specific entry point - look for "main"
+    InternedString mainName = ctx.pool.intern("main");
+    return findEntryPoint(ctx, mainName);
+}
 
 // ─── Initialization ──────────────────────────────────────────────────────
 
@@ -92,13 +135,12 @@ ExecutionResult runModules(InterpreterContext& ctx,
 
     try {
         // ─── 1. Load or reload modules ─────────────────────────────────
-        // Delegate to ModuleLoader
         if (!loadOrReloadModules(ctx, modules, isHotReload)) {
             return ExecutionResult{1, false, "Failed to load modules"};
         }
 
-        // ─── 2. Determine entry point ──────────────────────────────────
-        // Delegate to SymbolResolver
+        // ─── 2. Find entry point ──────────────────────────────────────
+        // If no entry point specified, default to "main"
         if (!entryPoint.isValid()) {
             entryPoint = ctx.pool.intern("main");
         }
@@ -108,14 +150,13 @@ ExecutionResult runModules(InterpreterContext& ctx,
         if (!foundEntry.isValid()) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
                                   "entry point '", ctx.pool.lookup(entryPoint), 
-                                  "' not found");
+                                  "' not found in any loaded module");
             throw InterpreterError(InterpreterErrorKind::EntryPointNotFound,
-                                   "Entry point not found: " + 
-                                   ctx.pool.lookup(entryPoint));
+                                   "Entry point '" + ctx.pool.lookup(entryPoint) + 
+                                   "' not found in any loaded module");
         }
 
         // ─── 3. Execute entry point ────────────────────────────────────
-        // Delegate to JITSession for symbol lookup
         std::string foundName = ctx.pool.lookup(foundEntry);
         void* fnPtr = ctx.jit.lookupSymbol(foundName);
         if (!fnPtr) {
@@ -174,26 +215,22 @@ ExecutionResult runModules(InterpreterContext& ctx,
 
 bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
                      InternedString name) {
-    // Delegate to ModuleLoader
     return ::interpreter::hotReloadModule(ctx, module, name);
 }
 
 bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
                      const std::string& name) {
-    // Delegate to ModuleLoader
     return ::interpreter::hotReloadModule(ctx, module, name);
 }
 
 // ─── Convenience Accessors ─────────────────────────────────────────────
 
 std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx) {
-    // Delegate to ModuleRegistry
     return ctx.moduleRegistry.getAllModules();
 }
 
 std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
                                             InternedString changedModule) {
-    // Delegate to ModuleRegistry
     return ctx.moduleRegistry.getAffectedModules(changedModule);
 }
 
