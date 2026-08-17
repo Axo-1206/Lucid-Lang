@@ -3,7 +3,7 @@
 > This document describes the internal architecture of the Lucid Code Generation phase: how validated AST is lowered to LLVM IR, how the major subsystems are structured, and how each file in the codegen folder fits into that flow.
 
 > [!NOTE]
-> All code block here are `pseudo code` (or `cpp`), we use the `\```cpp` or `\```swift` for color effects
+> All code block here are `pseudo code` (or `cpp`), we use the `\```cpp` or `\```swift` for color effects, you will see some `.` or `,` or `;` at weird and inconsistent places, it's not typo but i keep them there so the color can be rendered
 
 ## File Layout
 
@@ -77,103 +77,13 @@ The CodeGen phase is the final stage of the Lucid frontend. It walks the semanti
 
 ---
 
-## 2. Execution Pipeline
-
-A complete walk through what happens when CodeGen processes a module:
-
-**Step 1 — Module Creation**
-`generate()` creates a `CodeGenContext` for each module and instantiates an `llvm::Module` with the module's file path as its name.
-
-**Step 2 — Phase 1: Lower Declarations**
-`lowerModuleDeclarations()` walks all top-level declarations and:
-- Creates `llvm::Function` prototypes for all function declarations (no bodies)
-- Creates LLVM struct types for all struct declarations
-- Creates LLVM integer constants for enum variants
-- Creates global variables for module-level variables
-- **Does NOT** generate function bodies
-
-This phase enables forward references — a function can be called before it is defined because its prototype already exists.
-
-**Step 3 — Phase 2: Lower Function Bodies**
-`lowerModuleBodies()` walks all function declarations and:
-- Creates entry blocks for each function
-- Lower all parameters (create allocas, store arguments)
-- Generate IR for the function body statements and expressions
-- Verify the function with `llvm::verifyFunction()`
-
-**Step 4 — Module Verification**
-`llvm::verifyModule()` validates the generated IR. If verification fails, a diagnostic is reported and `nullptr` is returned.
-
-```cpp
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                         CodeGen Pipeline Walkthrough                           │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 1: generate()                                                     │   │
-│  │  ├── For each module AST:                                               │   │
-│  │  │   ├── ctx = CodeGenContext(p, d, context)                            │   │
-│  │  │   ├── ctx.module = new llvm::Module(name, context)                   │   │
-│  │  │   └── generateModule(module, ctx)                                    │   │
-│  │  └── Return vector<unique_ptr<llvm::Module>>                            │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │  Step 2: generateModule()                                               │   │
-│  │  ├── Phase 1: lowerModuleDeclarations(module, ctx)                      │   │
-│  │  │   └── For each decl: lowerDeclaration(decl, ctx)                     │   │
-│  │  │       ├── FuncDecl → lowerFunctionDecl() → Create prototype          │   │
-│  │  │       ├── StructDecl → lowerStructDecl() → Create LLVM struct        │   │
-│  │  │       ├── EnumDecl → lowerEnumDecl() → Create integer constants      │   │
-│  │  │       └── VarDecl → lowerVarDecl() → Create global variable          │   │
-│  │  ├── Phase 2: lowerModuleBodies(module, ctx)                            │   │
-│  │  │   └── For each FuncDecl: lowerFunctionBody(decl, ctx)                │   │
-│  │  │       ├── lowerFunctionBodyInternal() → Create entry block           │   │
-│  │  │       ├── lowerParam() for each parameter → Create allocas           │   │
-│  │  │       ├── lowerStatement(body) → Generate IR                         │   │
-│  │  │       └── llvm::verifyFunction() → Validate function                 │   │
-│  │  └── llvm::verifyModule() → Validate module                             │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Core Architecture
-
-### 3.1 Two-Phase Function Lowering
-
-Lucid supports forward references — a function can be called before it is defined. To enable this, function lowering is split into two passes:
-
-| Phase       | What Happens                                                                   | Why                                                                                          |
-| ----------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| **Phase 1** | Create `llvm::Function` prototypes for all functions. No bodies are generated. | Function prototypes are available for call resolution even before the function body is seen. |
-| **Phase 2** | Generate the actual IR for each function body.                                 | By now, all symbols are declared and can be resolved.                                        |
-
-```cpp
-// Phase 1: Only prototypes
-lowerFunctionDecl(FuncDeclAST* decl, ctx) {
-    // Create llvm::Function with ExternalLinkage
-    // No body - function is empty
-    ctx.storeFunction(decl, func);
-}
-
-// Phase 2: Bodies
-lowerFunctionBody(FuncDeclAST* decl, ctx) {
-    llvm::Function* func = ctx.lookupFunction(decl);
-    // Create entry block, lower parameters, generate body
-    lowerFunctionBodyInternal(decl, func, ctx);
-}
-```
-
-### 3.2 CodeGenContext
+## CodeGenContext (`context/`)
 
 The `CodeGenContext` is the central state container for the code generation phase. It holds all LLVM-related state, symbol tables, caches, and control flow information needed during IR lowering.
 
-#### 3.2.1 State Categories
+### Architecture Overview
 
-```swift
+```cpp
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                         CodeGenContext State Categories                    │
 ├────────────────────────────────────────────────────────────────────────────┤
@@ -236,7 +146,7 @@ The `CodeGenContext` is the central state container for the code generation phas
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.2.2 Type Cache Lookup Flow
+### Type Cache Lookup Flow
 
 ```cpp
 getType(ctx, type, subst) {
@@ -269,7 +179,7 @@ getType(ctx, type, subst) {
 
 When a generic substitution is present, the same `TypeAST*` with different type arguments yields different LLVM types. Substituted types are cached via the `GenericRegistry` using `GenericInstantiationKey`.
 
-#### 3.2.3 Symbol Tables
+### Symbol Tables
 
 ```cpp
 values: ValueDeclAST* → llvm::Value*
@@ -311,7 +221,7 @@ lowerParam(ParamAST* param, ctx) {
 }
 ```
 
-#### 3.2.4 Control Flow Context
+### Control Flow Context
 
 ```cpp
 LoopInfo Structure:
@@ -331,7 +241,7 @@ Break/Continue Resolution:
 └── lowerContinueStmt()  → builder.CreateBr(loop->continueTarget)
 ```
 
-#### 3.2.5 Runtime Function Cache
+### Runtime Function Cache
 
 ```cpp
 runtimeFunctions: string → llvm::Function*
@@ -350,7 +260,7 @@ getOrCreateRuntimeFunction(name, type) {
 }
 ```
 
-#### 3.2.6 Generic Registry
+### Generic Registry
 
 ```cpp
 GenericInstantiationKey:
@@ -373,7 +283,7 @@ struct GenericRegistry {
 };
 ```
 
-#### 3.2.7 String Type and Literal Creation
+### String Type and Literal Creation
 
 ```cpp
 String Type Layout:
@@ -402,7 +312,7 @@ createStringLiteral(str) {
 }
 ```
 
-#### 3.2.8 API Reference
+### API Reference
 
 | Method                                         | Description                                        |
 | ---------------------------------------------- | -------------------------------------------------- |
@@ -424,7 +334,7 @@ createStringLiteral(str) {
 | `getTypeSize(llvm::Type*)`                     | Gets the size of a type in bytes                   |
 | `getTypeAlign(llvm::Type*)`                    | Gets the alignment of a type in bytes              |
 
-#### 3.2.9 Invariants
+### Invariants
 
 | Invariant             | Description                                                     |
 | --------------------- | --------------------------------------------------------------- |
@@ -438,9 +348,13 @@ createStringLiteral(str) {
 
 ---
 
-## 4. Module-Level Orchestration
+## Program Entry Points (`CodeGen.cpp`)
 
-The module-level orchestration is the entry point for code generation. It coordinates the two-phase lowering process and module verification.
+The CodeGen phase is orchestrated by the `generate()` function, which serves as the main entry point for code generation. It operates in two phases to ensure forward references work correctly.
+
+### Entry Point Overview
+
+The `generate()` function takes a vector of validated modules and a `CodeGenContext` (which holds all LLVM state including module, builder, and symbol tables). It performs two passes: first lowering all declarations (prototypes, types, globals), then lowering function bodies.
 
 ```cpp
 generate(modules, p, d, context)
@@ -453,6 +367,8 @@ generate(modules, p, d, context)
 │
 └── return result
 ```
+
+### Single Module Generation (`generateModule`)
 
 ```cpp
 generateModule(module, ctx)
@@ -481,11 +397,11 @@ generateModule(module, ctx)
 
 ---
 
-## 5. Type Mapping
+## Type Mapping (`CodeGenType.cpp`)
 
 Type mapping converts Lucid type annotations to LLVM types. Types are cached in `CodeGenContext` for performance.
 
-### 5.1 Primitive Types
+### Primitive Types
 
 | Lucid Type                      | LLVM Type              |
 | ------------------------------- | ---------------------- |
@@ -499,7 +415,7 @@ Type mapping converts Lucid type annotations to LLVM types. Types are cached in 
 | `decimal`                       | `fp128`                |
 | `string`                        | `ptr` (opaque pointer) |
 
-### 5.2 Composite Types
+### Composite Types
 
 | Lucid Type             | LLVM Type              |
 | ---------------------- | ---------------------- |
@@ -515,7 +431,7 @@ Type mapping converts Lucid type annotations to LLVM types. Types are cached in 
 | `Thread<T>`            | `{ T, i8 }`            |
 | Function type          | `llvm::FunctionType`   |
 
-### 5.3 Self-Referential Structs
+### Self-Referential Structs
 
 Structs that reference themselves (e.g., linked lists) require special handling:
 
@@ -543,9 +459,9 @@ lowerStructDecl(StructDeclAST* decl, ctx) {
 
 ---
 
-## 6. Declaration Lowering
+## Declaration Lowering (`CodeGenDecl.cpp`)
 
-### 6.1 Function Declarations
+### Function Declarations
 
 Function declarations are lowered in two phases. Phase 1 creates the prototype, Phase 2 generates the body.
 
@@ -588,7 +504,7 @@ Phase 2: lowerFunctionBody() - Generate body
     └── llvm::verifyFunction(func)
 ```
 
-### 6.2 Variable Declarations
+### Variable Declarations
 
 Variables can be module-level (globals) or local (allocas).
 
@@ -623,7 +539,7 @@ lowerVarDecl(VarDeclAST* decl, ctx) {
 }
 ```
 
-### 6.3 Struct Declarations
+### Struct Declarations
 
 Struct declarations are lowered to LLVM struct types.
 
@@ -659,7 +575,7 @@ lowerStructDecl(StructDeclAST* decl, ctx) {
 }
 ```
 
-### 6.4 Enum Declarations
+### Enum Declarations
 
 Enums are lowered to integer constants with a backing type.
 
@@ -681,9 +597,9 @@ lowerEnumDecl(EnumDeclAST* decl, ctx) {
 
 ---
 
-## 7. Statement Lowering
+## Statement Lowering (`CodeGenStmt.cpp`)
 
-### 7.1 Control Flow Statements
+### Control Flow Statements
 
 ```cpp
 If Statement
@@ -740,7 +656,7 @@ Switch Statement
 └── builder.SetInsertPoint(mergeBlock)
 ```
 
-### 7.2 Loops
+### Loops
 
 ```cpp
 For Loop (Range-based)
@@ -818,7 +734,7 @@ While Loop
 └── builder.CreateBr(headerBlock)
 ```
 
-### 7.3 Concurrency Statements
+### Concurrency Statements
 
 ```cpp
 Async Statement
@@ -874,9 +790,9 @@ Join Statement
 
 ---
 
-## 8. Expression Lowering
+## Expression Lowering (`CodeGenExpr.cpp`)
 
-### 8.1 Literals and Identifiers
+### Literals and Identifiers
 
 ```cpp
 Literals
@@ -922,7 +838,7 @@ Identifiers
 └── return value
 ```
 
-### 8.2 Binary Operators
+### Binary Operators
 
 ```cpp
 lowerBinaryExpr(expr, ctx) {
@@ -957,7 +873,7 @@ lowerBinaryExpr(expr, ctx) {
 }
 ```
 
-### 8.3 Calls and Intrinsics
+### Calls and Intrinsics
 
 ```cpp
 Call Expression
@@ -986,7 +902,7 @@ Intrinsic Call Expression
 // → call @llvm.sqrt.f32(float %x)
 ```
 
-### 8.4 Arrays and Slices
+### Arrays and Slices
 
 ```cpp
 Index Expression
@@ -1036,7 +952,7 @@ Slice Expression
 └── return slice
 ```
 
-### 8.5 Pipeline and Composition
+### Pipeline and Composition
 
 ```cpp
 Pipeline Expression
@@ -1075,7 +991,7 @@ Pipeline Step
 
 ---
 
-## 9. Generic Instantiation
+## Generic Instantiation (`generic/`)
 
 Generic instantiation is the process of creating concrete versions of generic functions and structs with specific type arguments. Lucid supports two strategies for generics: **monomorphization** (via `@[specialize]`) and **type erasure** (default).
 
@@ -1108,7 +1024,7 @@ Generic instantiation is the process of creating concrete versions of generic fu
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9.1 Detection Helpers
+### Detection Helpers
 
 The detection helpers determine whether a declaration is generic and how it should be handled.
 
@@ -1127,7 +1043,7 @@ shouldSpecialize(DeclAST* decl)
 └── return false
 ```
 
-### 9.2 Generic Substitution Context
+### Generic Substitution Context
 
 The `GenericSubstitution` struct maps generic parameter names to concrete type arguments.
 
@@ -1156,7 +1072,7 @@ struct GenericSubstitution {
 };
 ```
 
-### 9.3 Specialized Instantiation Creation
+### Specialized Instantiation Creation
 
 ```cpp
 createSpecializedFunction()
@@ -1198,7 +1114,7 @@ createSpecializedStruct()
 └── 6. Return llvm::Type*
 ```
 
-### 9.4 Type-Erased Generic Generation
+### Type-Erased Generic Generation
 
 ```cpp
 TaggedSlot Type:
@@ -1238,7 +1154,7 @@ generateErasedGenericStruct()
 └── 5. Return llvm::Type*
 ```
 
-### 9.5 Public Registry API
+### Public Registry API
 
 ```cpp
 getOrCreateSpecializedFunction()
@@ -1265,7 +1181,7 @@ getOrCreateSpecializedFunction()
 └── return specialized
 ```
 
-### 9.6 Mangled Name Generation
+### Mangled Name Generation
 
 ```cpp
 Mangled Name Format:
@@ -1297,7 +1213,7 @@ Examples:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9.7 Comparison of Generic Strategies
+### Comparison of Generic Strategies
 
 | Aspect                    | Type Erasure (Default)           | Monomorphization (@[specialize])       |
 | ------------------------- | -------------------------------- | -------------------------------------- |
@@ -1310,7 +1226,7 @@ Examples:
 
 ---
 
-## 10. Support Helpers
+## Support Helpers (`support/`)
 
 The CodeGen phase relies on a set of helper utilities that provide low-level LLVM IR construction primitives, type introspection, memory allocation, and runtime panic handling.
 
@@ -1345,7 +1261,7 @@ The CodeGen phase relies on a set of helper utilities that provide low-level LLV
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 10.1 Memory Allocation and Basic Blocks (`CodeGenAlloca`)
+### Memory Allocation and Basic Blocks (`CodeGenAlloca`)
 
 ```cpp
 createAlloca(name, type, ctx)
@@ -1381,7 +1297,7 @@ loadIfNeeded(value, elemType, ctx)
 └── return value
 ```
 
-### 10.2 General CodeGen Helpers (`CodeGenHelpers`)
+### General CodeGen Helpers (`CodeGenHelpers`)
 
 ```cpp
 getArrayLength(target, arrayType, ctx)
@@ -1405,7 +1321,7 @@ getArrayLength(target, arrayType, ctx)
 │ }
 ```
 
-### 10.3 Runtime Panic and Safety Checks (`CodeGenPanic`)
+### Runtime Panic and Safety Checks (`CodeGenPanic`)
 
 ```cpp
 emitPanic(kind, ctx)
@@ -1486,7 +1402,7 @@ emitBoundsCheck(index, length, ctx)
 └── return phi
 ```
 
-### 10.4 LLVM Type Helpers (`LLVMHelpers`)
+### LLVM Type Helpers (`LLVMHelpers`)
 
 ```cpp
 Type Predicates:
@@ -1517,7 +1433,7 @@ Type Constants:
 └── getStringType(ctx)     → llvm::StructType::get(ctx, {i8Ptr, i64, i64})
 ```
 
-### 10.5 Runtime Error Registry (`RuntimeError`)
+### Runtime Error Registry (`RuntimeError`)
 
 ```cpp
 RuntimeErrorKind enum:
@@ -1533,16 +1449,16 @@ RuntimeErrorKind enum:
 │   UnwrappedNil, UnwrappedErr, TagMismatch
 └── // Concurrency Errors
     AwaitOnNonFuture, JoinOnNonThread, FutureAlreadyConsumed, ThreadAlreadyJoined
-.
+
 getRuntimeErrorMessage(kind)
 └── returns the error message string for the given kind
-.
+
 toDiagCode(kind)
 └── maps RuntimeErrorKind to compile-time DiagCode
     └── Same error at runtime and compile-time shows the SAME diagnostic code
 ```
 
-### 10.6 Helper Usage Across CodeGen
+### Helper Usage Across CodeGen
 
 ```cpp
 CodeGenDecl.cpp
@@ -1567,7 +1483,7 @@ CodeGenType.cpp
 
 ---
 
-## 11. Closure Lowering
+## Closure Lowering (`closure/`)
 
 Closure lowering is the process of translating anonymous functions that capture variables from their enclosing scope into LLVM IR.
 
@@ -1608,7 +1524,7 @@ Closure lowering is the process of translating anonymous functions that capture 
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.1 Capture Handling
+### Capture Handling
 
 ```cpp
 Capture Types:
@@ -1635,7 +1551,7 @@ Capture Rules:
     └── Escaping: heap-allocated (returned from function)
 ```
 
-### 11.2 Closure Lowering Steps
+### Closure Lowering Steps
 
 ```cpp
 lowerClosure(expr, ctx)
@@ -1679,7 +1595,7 @@ lowerClosure(expr, ctx)
     └── expr->llvmValue = closure
 ```
 
-### 11.3 Environment Struct Building
+### Environment Struct Building
 
 ```cpp
 buildClosureEnvironment(expr, ctx)
@@ -1703,7 +1619,7 @@ buildClosureEnvironment(expr, ctx)
     return envType
 ```
 
-### 11.4 Closure Function Creation
+### Closure Function Creation
 
 ```cpp
 createClosureFunction(expr, ctx)
@@ -1730,7 +1646,7 @@ createClosureFunction(expr, ctx)
     └── emitClosureBody(expr, closureFunc, envPtr, ctx)
 ```
 
-### 11.5 Closure Call Emission
+### Closure Call Emission
 
 ```cpp
 emitClosureCall(funcPtr, envPtr, args, ctx)
@@ -1750,7 +1666,7 @@ emitClosureCall(funcPtr, envPtr, args, ctx)
 
 ---
 
-## 12. Intrinsic Emission
+## Intrinsic Emission (`intrinsic/`)
 
 Intrinsic emission is the process of translating Lucid intrinsic calls (`#name(...)`) into LLVM IR.
 
@@ -1783,7 +1699,7 @@ Intrinsic emission is the process of translating Lucid intrinsic calls (`#name(.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 12.1 Intrinsic Dispatcher
+### Intrinsic Dispatcher
 
 ```cpp
 emitIntrinsicFromAST(expr, ctx)
@@ -1816,7 +1732,7 @@ emitIntrinsicFromAST(expr, ctx)
 └── error("unknown intrinsic")
 ```
 
-### 12.2 LLVM Math Intrinsics
+### LLVM Math Intrinsics
 
 ```cpp
 emitLLVMMathIntrinsic(name, args, expr, ctx)
@@ -1864,7 +1780,7 @@ emitLLVMMathIntrinsic(name, args, expr, ctx)
 | `#round(x)`     | `@llvm.round.f32(float %x)`                           |
 | `#abs(x)`       | `@llvm.abs.i32(i32 %x)` or `@llvm.fabs.f32(float %x)` |
 
-### 12.3 LLVM Memory Intrinsics
+### LLVM Memory Intrinsics
 
 ```cpp
 emitLLVMMemoryIntrinsic(name, args, expr, ctx)
@@ -1885,7 +1801,7 @@ emitLLVMMemoryIntrinsic(name, args, expr, ctx)
 └── return builder.CreateCall(intrinsic, args)
 ```
 
-### 12.4 LLVM Bit Manipulation Intrinsics
+### LLVM Bit Manipulation Intrinsics
 
 ```cpp
 emitLLVMBitIntrinsic(name, args, expr, ctx)
@@ -1907,7 +1823,7 @@ emitLLVMBitIntrinsic(name, args, expr, ctx)
 └── return builder.CreateCall(intrinsic, args)
 ```
 
-### 12.5 LLVM Atomic Intrinsics
+### LLVM Atomic Intrinsics
 
 ```cpp
 emitLLVMAtomicIntrinsic(name, args, expr, ctx)
@@ -1956,7 +1872,7 @@ emitLLVMAtomicIntrinsic(name, args, expr, ctx)
 | `"acq_rel"`    | `AtomicOrdering::AcquireRelease`         |
 | `"seq_cst"`    | `AtomicOrdering::SequentiallyConsistent` |
 
-### 12.6 LLVM SIMD Intrinsics
+### LLVM SIMD Intrinsics
 
 ```cpp
 SIMD Arithmetic:
@@ -1985,7 +1901,7 @@ SIMD Load/Store:
 └── simd_store → builder.CreateStore(val, ptr)
 ```
 
-### 12.7 LLVM CPU Hint Intrinsics
+### LLVM CPU Hint Intrinsics
 
 ```cpp
 prefetch / prefetch_r / prefetch_w
@@ -2005,7 +1921,7 @@ pause
 └── builder.CreateFence(SequentiallyConsistent)
 ```
 
-### 12.8 Lucid Type Inspection Intrinsics
+### Lucid Type Inspection Intrinsics
 
 ```cpp
 sizeof(T)
@@ -2024,7 +1940,7 @@ nameof(x)
 └── return ctx.createStringLiteral(nameStr)
 ```
 
-### 12.9 Lucid Pointer Intrinsics
+### Lucid Pointer Intrinsics
 
 ```cpp
 toPtr(ref) → return args[0]
@@ -2043,7 +1959,7 @@ ptrDiff(p1, p2)
 └── return diffBytes
 ```
 
-### 12.10 Lucid Memory Management Intrinsics
+### Lucid Memory Management Intrinsics
 
 ```cpp
 alloc(T, count)
@@ -2074,7 +1990,7 @@ arena_free(arena)
 └── getOrCreateRuntimeFunction("__lucid_arena_free")({args[0]})
 ```
 
-### 12.11 Lucid String Intrinsics
+### Lucid String Intrinsics
 
 ```cpp
 str_len(s)      → builder.CreateExtractValue(args[0], 1)
@@ -2102,7 +2018,7 @@ str_byte_at(s, i)
 └── return builder.CreateLoad(i8, bytePtr)
 ```
 
-### 12.12 Lucid Control Flow Intrinsics
+### Lucid Control Flow Intrinsics
 
 ```cpp
 scope_exit
