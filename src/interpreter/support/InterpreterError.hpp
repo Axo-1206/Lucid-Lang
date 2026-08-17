@@ -1,11 +1,12 @@
 /// @file support/InterpreterError.hpp
-/// @brief Interpreter-specific error integration with the diagnostic system.
+/// @brief Interpreter-specific exceptions and error types.
+///
+/// This file defines errors that can occur during interpreter operations
+/// (JIT compilation, module loading, hot-reload, symbol lookup, etc.).
+/// These are compiler-time errors, not runtime panics (see RuntimeError.hpp
+/// in codegen for those).
 
 #pragma once
-
-#include "core/diagnostics/Diagnostic.hpp"
-#include "core/ast/BaseAST.hpp"
-#include "core/memory/InternedString.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -13,112 +14,61 @@
 
 namespace interpreter {
 
-/// @brief Exception thrown when interpreter operations fail.
+/// @brief Enumeration of all interpreter error kinds.
 ///
-/// This exception integrates with the existing DiagnosticEngine system.
-/// Errors are reported via diagnostics and then wrapped in an exception
-/// for control flow.
-class InterpreterError : public std::runtime_error {
-public:
-    enum class Kind {
-        InitFailed,          // Interpreter initialization failed
-        ModuleLoadFailed,    // Failed to load module
-        ModuleNotFound,      // Module not found
-        EntryPointNotFound,  // Entry point not found
-        ExecutionFailed,     // Runtime execution failed
-        HotReloadFailed,     // Hot-reload operation failed
-        LibraryLoadFailed,   // Foreign library load failed
-        SymbolLookupFailed,  // Symbol lookup failed
-        InvalidIR,           // Invalid LLVM IR
-        JITError,            // JIT compilation error
-        EmptyModuleList,     // No modules provided
-    };
-
-    InterpreterError(Kind kind, const std::string& msg)
-        : std::runtime_error(msg), m_kind(kind), m_code(DiagCode(0)) {}
-
-    InterpreterError(Kind kind, DiagCode code, const std::string& msg)
-        : std::runtime_error(msg), m_kind(kind), m_code(code) {}
-
-    InterpreterError(Kind kind, DiagCode code, BaseAST* node, const std::string& msg)
-        : std::runtime_error(msg), m_kind(kind), m_code(code), m_node(node) {}
-
-    Kind getKind() const { return m_kind; }
-    DiagCode getCode() const { return m_code; }
-    BaseAST* getNode() const { return m_node; }
-
-    /// @brief Report this error to a diagnostic engine.
-    void report(DiagnosticEngine& diagnostics) const {
-        if (m_code != DiagCode(0)) {
-            diagnostics.error(m_code, m_node, m_code != DiagCode(0) ? what() : "");
-        } else {
-            diagnostics.errorAt(DiagCode::Backend_CodegenError, 
-                                m_node ? m_node->loc : SourceLocation(), 
-                                what());
-        }
-    }
-
-    /// @brief Check if this error has an associated diagnostic code.
-    bool hasCode() const { return m_code != DiagCode(0); }
-
-private:
-    Kind m_kind;
-    DiagCode m_code = DiagCode(0);
-    BaseAST* m_node = nullptr;
+/// These are errors that can occur during interpreter operations.
+/// Each error has a unique name and is used to categorize exceptions.
+enum class InterpreterErrorKind {
+    InitFailed,          ///< Interpreter initialization failed
+    ModuleLoadFailed,    ///< Failed to load module
+    ModuleNotFound,      ///< Module not found
+    EntryPointNotFound,  ///< Entry point not found
+    ExecutionFailed,     ///< Runtime execution failed
+    HotReloadFailed,     ///< Hot-reload operation failed
+    LibraryLoadFailed,   ///< Foreign library load failed
+    SymbolLookupFailed,  ///< Symbol lookup failed
+    InvalidIR,           ///< Invalid LLVM IR
+    JITError,            ///< JIT compilation error
+    EmptyModuleList,     ///< No modules provided
 };
 
-/// @brief Convert error kind to string.
-inline std::string_view interpreterErrorKindToString(InterpreterError::Kind kind) {
-    using Kind = InterpreterError::Kind;
+/// @brief Convert an interpreter error kind to a string.
+inline std::string_view interpreterErrorKindToString(InterpreterErrorKind kind) {
     switch (kind) {
-        case Kind::InitFailed:          return "InitFailed";
-        case Kind::ModuleLoadFailed:    return "ModuleLoadFailed";
-        case Kind::ModuleNotFound:      return "ModuleNotFound";
-        case Kind::EntryPointNotFound:  return "EntryPointNotFound";
-        case Kind::ExecutionFailed:     return "ExecutionFailed";
-        case Kind::HotReloadFailed:     return "HotReloadFailed";
-        case Kind::LibraryLoadFailed:   return "LibraryLoadFailed";
-        case Kind::SymbolLookupFailed:  return "SymbolLookupFailed";
-        case Kind::InvalidIR:           return "InvalidIR";
-        case Kind::JITError:            return "JITError";
-        case Kind::EmptyModuleList:     return "EmptyModuleList";
-        default:                        return "Unknown";
+        case InterpreterErrorKind::InitFailed:          return "InitFailed";
+        case InterpreterErrorKind::ModuleLoadFailed:    return "ModuleLoadFailed";
+        case InterpreterErrorKind::ModuleNotFound:      return "ModuleNotFound";
+        case InterpreterErrorKind::EntryPointNotFound:  return "EntryPointNotFound";
+        case InterpreterErrorKind::ExecutionFailed:     return "ExecutionFailed";
+        case InterpreterErrorKind::HotReloadFailed:     return "HotReloadFailed";
+        case InterpreterErrorKind::LibraryLoadFailed:   return "LibraryLoadFailed";
+        case InterpreterErrorKind::SymbolLookupFailed:  return "SymbolLookupFailed";
+        case InterpreterErrorKind::InvalidIR:           return "InvalidIR";
+        case InterpreterErrorKind::JITError:            return "JITError";
+        case InterpreterErrorKind::EmptyModuleList:     return "EmptyModuleList";
+        default:                                        return "Unknown";
     }
 }
 
-// ─── Interpreter-Specific Diagnostic Helpers ──────────────────────────────
+/// @brief Exception thrown when interpreter operations fail.
+///
+/// This is a lightweight exception type for control flow in the interpreter.
+/// Error messages are already reported via DiagnosticEngine before throwing.
+/// The exception exists only to unwind the stack to a catch point.
+class InterpreterError : public std::runtime_error {
+public:
+    InterpreterError(InterpreterErrorKind kind, const std::string& msg)
+        : std::runtime_error(msg), m_kind(kind) {}
 
-/// @brief Report a module load failure.
-inline void reportModuleLoadError(DiagnosticEngine& diagnostics, 
-                                  InternedString moduleName,
-                                  const std::string& reason) {
-    diagnostics.error(DiagCode::Sem_UndefinedModule, nullptr,
-                      "failed to load module '", 
-                      StringPool::instance().lookup(moduleName),
-                      "': ", reason);
-}
+    InterpreterErrorKind getKind() const { return m_kind; }
 
-/// @brief Report an entry point not found.
-inline void reportEntryPointNotFound(DiagnosticEngine& diagnostics,
-                                     const std::string& entryPoint) {
-    diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
-                      "entry point '", entryPoint, "' not found in any loaded module");
-}
+    /// @brief Get the error kind as a string (for debugging).
+    std::string_view kindToString() const {
+        return interpreterErrorKindToString(m_kind);
+    }
 
-/// @brief Report a library load failure.
-inline void reportLibraryLoadError(DiagnosticEngine& diagnostics,
-                                   const std::string& libraryName,
-                                   const std::string& reason) {
-    diagnostics.error(DiagCode::Ffi_LibraryNotFound, nullptr,
-                      "failed to load library '", libraryName, "': ", reason);
-}
-
-/// @brief Report a symbol lookup failure.
-inline void reportSymbolLookupError(DiagnosticEngine& diagnostics,
-                                    const std::string& symbolName,
-                                    const std::string& reason) {
-    diagnostics.error(DiagCode::Ffi_UnknownSymbol, nullptr,
-                      "symbol '", symbolName, "' not found: ", reason);
-}
+private:
+    InterpreterErrorKind m_kind;
+};
 
 } // namespace interpreter

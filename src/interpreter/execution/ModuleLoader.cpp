@@ -109,17 +109,22 @@ std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* mo
     }
 
     // ─── Use the CodeGen module to generate IR ──────────────────────────
-    llvm::LLVMContext llvmCtx;
-    auto modules = codegen::generate({module}, llvmCtx);
+    // codegen::generate takes: modules, StringPool&, DiagnosticEngine&, LLVMContext&
+    auto generatedModules = codegen::generate(
+        std::vector<ModuleAST*>{module},
+        ctx.pool,
+        ctx.diagnostics,
+        ctx.jit.getContext()
+    );
     
-    if (modules.empty() || !modules[0]) {
+    if (generatedModules.empty() || !generatedModules[0]) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, module,
                               "failed to generate IR for module '",
                               ctx.pool.lookup(module->filePath), "'");
         return nullptr;
     }
 
-    return std::move(modules[0]);
+    return std::move(generatedModules[0]);
 }
 
 std::unique_ptr<llvm::Module> lowerModules(
@@ -131,26 +136,24 @@ std::unique_ptr<llvm::Module> lowerModules(
         return nullptr;
     }
 
-    // ─── For multiple modules, we combine them into one LLVM module ────
-    // This is a simplified implementation
-    
-    // If only one module, just lower it
-    if (modules.size() == 1) {
-        return lowerModule(ctx, modules[0]);
-    }
-
-    // For multiple modules, we need to combine them
-    // TODO: Implement proper multi-module lowering
-    // The codegen::generate function may already handle multiple modules
-    llvm::LLVMContext llvmCtx;
-    auto generatedModules = codegen::generate(modules, llvmCtx);
+    // ─── Use the CodeGen module to generate IR ──────────────────────────
+    // codegen::generate takes: modules, StringPool&, DiagnosticEngine&, LLVMContext&
+    auto generatedModules = codegen::generate(
+        modules,
+        ctx.pool,
+        ctx.diagnostics,
+        ctx.jit.getContext()
+    );
     
     if (generatedModules.empty() || !generatedModules[0]) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, modules[0],
-                              "failed to generate IR for multiple modules");
+                              "failed to generate IR for modules");
         return nullptr;
     }
 
+    // If multiple modules were generated, we need to combine them
+    // For now, we return the first one
+    // TODO: Merge multiple modules into one
     return std::move(generatedModules[0]);
 }
 
@@ -174,8 +177,7 @@ void reportErrors(InterpreterContext& ctx, const std::vector<ModuleAST*>& module
 }
 
 void registerModuleLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
-    // Delegate to the registerLibraries function from Interpreter.cpp
-    // This is declared in Interpreter.hpp
+    // Delegate to the registerLibraries function from Interpreter.hpp
     registerLibraries(ctx, modules);
 }
 

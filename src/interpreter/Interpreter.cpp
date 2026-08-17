@@ -12,10 +12,7 @@ namespace interpreter {
 
 // ─── Forward Declarations ──────────────────────────────────────────────
 
-/// @brief Helper to lower a module to LLVM IR (stub).
 static std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* module);
-
-/// @brief Helper to find the entry point.
 static InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint);
 
 // ─── Initialization ──────────────────────────────────────────────────────
@@ -39,7 +36,7 @@ void initialize(InterpreterContext& ctx, const InterpreterOptions& options) {
     } catch (const std::exception& e) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
                               "interpreter initialization failed: ", e.what());
-        throw InterpreterError(InterpreterError::Kind::InitFailed, e.what());
+        throw InterpreterError(InterpreterErrorKind::InitFailed, e.what());
     }
 }
 
@@ -52,7 +49,7 @@ bool isInitialized(const InterpreterContext& ctx) {
 ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module,
                           InternedString entryPoint) {
     if (!module) {
-        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+        throw InterpreterError(InterpreterErrorKind::EmptyModuleList,
                                "Cannot run null module");
     }
     return runModules(ctx, std::vector<ModuleAST*>{module}, entryPoint);
@@ -70,19 +67,19 @@ ExecutionResult runModules(InterpreterContext& ctx,
                            const std::vector<ModuleAST*>& modules,
                            InternedString entryPoint) {
     if (!ctx.jit.isInitialized()) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
+        throw InterpreterError(InterpreterErrorKind::InitFailed,
                                "Interpreter not initialized");
     }
 
     if (modules.empty()) {
-        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+        throw InterpreterError(InterpreterErrorKind::EmptyModuleList,
                                "Cannot run empty module list");
     }
 
     // ─── Validate modules ──────────────────────────────────────────────
     for (ModuleAST* module : modules) {
         if (!module) {
-            throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+            throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                    "Cannot run null module in list");
         }
         if (module->hasErrors) {
@@ -107,23 +104,27 @@ ExecutionResult runModules(InterpreterContext& ctx,
         // 3. Determine entry point
         InternedString actualEntryPoint = entryPoint;
         if (!actualEntryPoint.isValid()) {
-            // Default to "main" if no entry point specified
             actualEntryPoint = ctx.pool.intern("main");
         }
 
         InternedString foundEntry = findEntryPoint(ctx, actualEntryPoint);
         
         if (!foundEntry.isValid()) {
-            reportEntryPointNotFound(ctx.diagnostics, ctx.pool.lookup(actualEntryPoint));
-            return ExecutionResult{1, false, "Entry point not found"};
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
+                                  "entry point '", ctx.pool.lookup(actualEntryPoint), 
+                                  "' not found");
+            throw InterpreterError(InterpreterErrorKind::EntryPointNotFound,
+                                   "Entry point not found: " + ctx.pool.lookup(actualEntryPoint));
         }
 
         // 4. Execute entry point
         std::string foundName = ctx.pool.lookup(foundEntry);
         void* fnPtr = lookupSymbol(ctx, foundName);
         if (!fnPtr) {
-            reportSymbolLookupError(ctx.diagnostics, foundName, "symbol not found in JIT");
-            return ExecutionResult{1, false, "Symbol lookup failed"};
+            ctx.diagnostics.error(DiagCode::Ffi_UnknownSymbol, nullptr,
+                                  "symbol '", foundName, "' not found in JIT");
+            throw InterpreterError(InterpreterErrorKind::SymbolLookupFailed,
+                                   "Symbol lookup failed: " + foundName);
         }
 
         int exitCode = 0;
@@ -152,14 +153,12 @@ ExecutionResult runModules(InterpreterContext& ctx,
         return result;
 
     } catch (const InterpreterError& e) {
-        if (e.hasCode()) {
-            e.report(ctx.diagnostics);
-        }
+        // Error was already reported via DiagnosticEngine
         throw;
     } catch (const std::exception& e) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
                               "execution failed: ", e.what());
-        throw InterpreterError(InterpreterError::Kind::ExecutionFailed, e.what());
+        throw InterpreterError(InterpreterErrorKind::ExecutionFailed, e.what());
     }
 }
 
@@ -176,7 +175,7 @@ ExecutionResult runModules(InterpreterContext& ctx,
 
 bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
     if (!module) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                "Cannot load null module");
     }
 
@@ -209,7 +208,9 @@ bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
     // Lower to IR and compile
     auto irModule = lowerModule(ctx, module);
     if (!irModule) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        ctx.diagnostics.error(DiagCode::Backend_CodegenError, module,
+                              "failed to lower module '", moduleName, "' to IR");
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                "Failed to lower module to LLVM IR");
     }
 
@@ -228,7 +229,7 @@ bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
 
 bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
     if (modules.empty()) {
-        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+        throw InterpreterError(InterpreterErrorKind::EmptyModuleList,
                                "Cannot load empty module list");
     }
 
@@ -249,12 +250,12 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
 
 bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString name) {
     if (!ctx.jit.isInitialized()) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
+        throw InterpreterError(InterpreterErrorKind::InitFailed,
                                "JIT not initialized");
     }
 
     if (!module) {
-        throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+        throw InterpreterError(InterpreterErrorKind::HotReloadFailed,
                                "Cannot reload null module");
     }
 
@@ -266,7 +267,7 @@ bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString 
     }
 
     if (!ctx.options.enableHotReload) {
-        throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+        throw InterpreterError(InterpreterErrorKind::HotReloadFailed,
                                "Hot-reload is not enabled");
     }
 
@@ -283,7 +284,9 @@ bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString 
         // 3. Lower the module
         auto irModule = lowerModule(ctx, module);
         if (!irModule) {
-            throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+            ctx.diagnostics.error(DiagCode::Backend_CodegenError, module,
+                                  "failed to lower module '", nameStr, "' for hot-reload");
+            throw InterpreterError(InterpreterErrorKind::HotReloadFailed,
                                    "Failed to lower module to LLVM IR");
         }
 
@@ -305,10 +308,12 @@ bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString 
 
         return true;
 
+    } catch (const InterpreterError& e) {
+        throw;
     } catch (const std::exception& e) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
                               "hot-reload failed: ", e.what());
-        throw InterpreterError(InterpreterError::Kind::HotReloadFailed, e.what());
+        throw InterpreterError(InterpreterErrorKind::HotReloadFailed, e.what());
     }
 }
 
@@ -327,8 +332,10 @@ void registerLibrary(InterpreterContext& ctx, const std::string& name) {
         ctx.linker.load(name);
         ctx.linker.registerWithJIT(ctx.jit);
     } catch (const std::exception& e) {
-        reportLibraryLoadError(ctx.diagnostics, name, e.what());
-        throw InterpreterError(InterpreterError::Kind::LibraryLoadFailed, e.what());
+        ctx.diagnostics.error(DiagCode::Ffi_LibraryNotFound, nullptr,
+                              "failed to load library '", name, "': ", e.what());
+        throw InterpreterError(InterpreterErrorKind::LibraryLoadFailed,
+                               "Failed to load library: " + name);
     }
 }
 
@@ -349,7 +356,7 @@ void registerLibrariesFromModule(InterpreterContext& ctx, ModuleAST* module) {
                         if (!isPath) {
                             try {
                                 registerLibrary(ctx, libName);
-                            } catch (const std::exception& e) {
+                            } catch (const InterpreterError& e) {
                                 if (ctx.options.verbose) {
                                     std::cerr << "Warning: " << e.what() << "\n";
                                 }
@@ -382,8 +389,10 @@ void* lookupSymbol(InterpreterContext& ctx, const std::string& name) {
     try {
         return ctx.jit.lookupSymbol(name);
     } catch (const std::exception& e) {
-        reportSymbolLookupError(ctx.diagnostics, name, e.what());
-        return nullptr;
+        ctx.diagnostics.error(DiagCode::Ffi_UnknownSymbol, nullptr,
+                              "symbol '", name, "' lookup failed: ", e.what());
+        throw InterpreterError(InterpreterErrorKind::SymbolLookupFailed,
+                               "Symbol lookup failed: " + name);
     }
 }
 
