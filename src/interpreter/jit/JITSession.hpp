@@ -71,6 +71,11 @@ public:
     /// @brief Look up a symbol by InternedString.
     void* lookupSymbol(InternedString name);
 
+    /// @brief Register a dynamic library's symbols with the JIT.
+    /// @param path The library path.
+    /// @param name The library name.
+    void registerLibrarySymbols(const std::string& path, const std::string& name);
+
     /// @brief Get the LLVM context.
     llvm::LLVMContext& getContext() { return *m_context; }
 
@@ -92,7 +97,6 @@ private:
 
     void setupTarget();
     void setupPlatformLibraries();
-    void registerLibrarySymbols(const std::string& path, const std::string& name);
     std::string internedToString(InternedString name) const;
 };
 

@@ -16,7 +16,7 @@ namespace interpreter {
 
 bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
     if (!module) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                "Cannot load null module");
     }
     return loadModules(ctx, std::vector<ModuleAST*>{module});
@@ -24,19 +24,19 @@ bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
 
 bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
     if (!ctx.jit.isInitialized()) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
+        throw InterpreterError(InterpreterErrorKind::InitFailed,
                                "JIT not initialized");
     }
 
     if (modules.empty()) {
-        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+        throw InterpreterError(InterpreterErrorKind::EmptyModuleList,
                                "Cannot load empty module list");
     }
 
     // ─── 1. Validate modules ──────────────────────────────────────────────
     for (ModuleAST* module : modules) {
         if (!module) {
-            throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+            throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                    "Cannot load null module in list");
         }
         if (module->hasErrors) {
@@ -56,7 +56,7 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
     // ─── 4. Lower modules to LLVM IR ────────────────────────────────────
     auto irModule = lowerModules(ctx, modules, moduleName);
     if (!irModule) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                                "Failed to lower modules to LLVM IR");
     }
 
@@ -121,7 +121,9 @@ std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* mo
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, module,
                               "failed to generate IR for module '",
                               ctx.pool.lookup(module->filePath), "'");
-        return nullptr;
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
+                               "Failed to generate IR for module: " + 
+                               ctx.pool.lookup(module->filePath));
     }
 
     return std::move(generatedModules[0]);
@@ -148,7 +150,8 @@ std::unique_ptr<llvm::Module> lowerModules(
     if (generatedModules.empty() || !generatedModules[0]) {
         ctx.diagnostics.error(DiagCode::Backend_CodegenError, modules[0],
                               "failed to generate IR for modules");
-        return nullptr;
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
+                               "Failed to generate IR for modules");
     }
 
     // If multiple modules were generated, we need to combine them

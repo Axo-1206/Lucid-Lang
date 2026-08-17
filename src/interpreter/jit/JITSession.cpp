@@ -3,6 +3,8 @@
 
 #include "JITSession.hpp"
 
+#include "../support/InterpreterError.hpp"
+
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/Verifier.h"
@@ -96,11 +98,22 @@ void JITSession::setupPlatformLibraries() {
 #endif
 
     // Add the current process's symbols to the JIT's search path
-    if (auto Err = m_jit->getMainJITDylib().addGenerator(
-            llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-                m_jit->getDataLayout().getGlobalPrefix()))) {
-        llvm::handleAllErrors(std::move(Err), [](const llvm::ErrorInfoBase& EI) {
-            std::cerr << "Warning: Failed to add current process symbols: " 
+    // Note: DynamicLibrarySearchGenerator::GetForCurrentProcess returns an Expected
+    auto Generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+        m_jit->getDataLayout().getGlobalPrefix());
+    
+    if (Generator) {
+        // Move the generator into the JIT
+        if (auto Err = m_jit->getMainJITDylib().addGenerator(std::move(*Generator))) {
+            llvm::handleAllErrors(std::move(Err), [](const llvm::ErrorInfoBase& EI) {
+                std::cerr << "Warning: Failed to add current process symbols: " 
+                          << EI.message() << "\n";
+            });
+        }
+    } else {
+        // Handle the error
+        llvm::handleAllErrors(Generator.takeError(), [](const llvm::ErrorInfoBase& EI) {
+            std::cerr << "Warning: Failed to create process symbol generator: "
                       << EI.message() << "\n";
         });
     }
@@ -108,15 +121,41 @@ void JITSession::setupPlatformLibraries() {
 
 void JITSession::registerLibrarySymbols(const std::string& path, const std::string& name) {
     // Register symbols from a dynamic library with the JIT
-    // This is a stub - actual implementation would use dlopen/LoadLibrary
-    // and register the symbols with the JIT's symbol table
+    // Load the library and add its symbols to the JIT's search path
     
-    // For now, we rely on the current process's symbols being available
+    // First, try to load the library using the system dynamic loader
+    // This makes the symbols available to the JIT's symbol resolver
+    
+#ifdef _WIN32
+    // On Windows, use LoadLibrary to load the DLL
+    HMODULE handle = LoadLibraryA(path.c_str());
+    if (handle) {
+        // The DLL is now loaded in the process. The JIT will find symbols
+        // through the process's symbol table.
+        // We don't need to keep the handle - the DLL will stay loaded.
+    } else {
+        std::cerr << "Warning: Failed to load library for JIT: " << path 
+                  << " (error: " << GetLastError() << ")\n";
+    }
+#else
+    // On Unix, use dlopen with RTLD_GLOBAL to make symbols available
+    void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (handle) {
+        // The library is now loaded and its symbols are global.
+        // The JIT will find them through the process's symbol table.
+    } else {
+        const char* error = dlerror();
+        std::cerr << "Warning: Failed to load library for JIT: " << path 
+                  << " (error: " << (error ? error : "unknown") << ")\n";
+    }
+#endif
+
+    // Note: The JIT already has the current process's symbols via
+    // DynamicLibrarySearchGenerator::GetForCurrentProcess() in setupPlatformLibraries().
+    // Any library we load with the system loader will have its symbols
+    // automatically available to the JIT.
     (void)path;
     (void)name;
-    
-    // TODO: Implement proper dynamic library loading and symbol registration
-    // using llvm::orc::DynamicLibrarySearchGenerator
 }
 
 void JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString name) {
@@ -140,8 +179,12 @@ void JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString 
     module->setTargetTriple(m_jit->getTargetTriple().str());
     module->setDataLayout(m_jit->getDataLayout());
 
-    // Create a ThreadSafeModule
-    auto threadSafeModule = llvm::orc::ThreadSafeModule(std::move(module), m_context);
+    // Create a ThreadSafeModule with its own context
+    // Note: LLVM modules don't have setContext in newer versions.
+    // The context is set when the module is created, or we can pass
+    // the context to ThreadSafeModule constructor.
+    auto moduleContext = std::make_unique<llvm::LLVMContext>();
+    auto threadSafeModule = llvm::orc::ThreadSafeModule(std::move(module), std::move(moduleContext));
 
     // Add the module to the JIT
     auto tracker = m_jit->getMainJITDylib().createResourceTracker();
@@ -196,7 +239,7 @@ void* JITSession::lookupSymbol(const std::string& name) {
     }
 
     // Convert to a function pointer
-    return reinterpret_cast<void*>(symbol->getAddress());
+    return reinterpret_cast<void*>((*symbol).getValue());
 }
 
 void* JITSession::lookupSymbol(InternedString name) {
@@ -207,9 +250,6 @@ void* JITSession::lookupSymbol(InternedString name) {
 }
 
 std::string JITSession::internedToString(InternedString name) const {
-    // Use the string pool to convert InternedString to std::string
-    // The StringPool class would need a lookup method
-    // For now, we assume a method exists
     return m_stringPool.lookup(name);
 }
 

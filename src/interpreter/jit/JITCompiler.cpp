@@ -8,6 +8,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iostream>
 
 namespace interpreter {
 
@@ -17,12 +18,12 @@ JITCompiler::JITCompiler(JITSession& session)
 
 void JITCompiler::compile(std::unique_ptr<llvm::Module> module, InternedString name) {
     if (!module) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                               "Cannot compile null module");
     }
 
     if (!name.isValid()) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                               "Cannot compile module with invalid name");
     }
 
@@ -40,10 +41,10 @@ void JITCompiler::compile(std::unique_ptr<llvm::Module> module, InternedString n
         // Add the module to the JIT
         m_session.addModule(std::move(module), name);
     } catch (const JITError& e) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::JITError,
                               std::string("Compilation failed: ") + e.what());
     } catch (const std::exception& e) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
                               std::string("Compilation failed: ") + e.what());
     }
 }
