@@ -1,5 +1,5 @@
 /// @file execution/ModuleLoader.hpp
-/// @brief Module loading functions - procedural style.
+/// @brief Module loading functions - internal implementation.
 
 #pragma once
 
@@ -15,67 +15,57 @@ class Module;
 
 namespace interpreter {
 
-// ─── Module Loading ──────────────────────────────────────────────────────
+// ─── Core Loading Functions ─────────────────────────────────────────────
 
-/// @brief Load a single module into the interpreter.
-/// @param ctx The interpreter context.
-/// @param module The AST module to load.
-/// @return true on success.
-/// @throws InterpreterError if loading fails.
+/// @brief Load or reload modules into the interpreter.
+bool loadOrReloadModules(InterpreterContext& ctx, 
+                         const std::vector<ModuleAST*>& modules,
+                         bool isHotReload = false);
+
+/// @brief Load a single module (convenience wrapper).
 bool loadModule(InterpreterContext& ctx, ModuleAST* module);
 
-/// @brief Load multiple modules (in dependency order).
-/// @param ctx The interpreter context.
-/// @param modules The AST modules to load.
-/// @return true on success.
-/// @throws InterpreterError if loading fails.
+/// @brief Load multiple modules (convenience wrapper).
 bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
 
-/// @brief Check if a module is loaded by name.
-/// @param ctx The interpreter context.
-/// @param name The module name.
-/// @return true if the module is loaded.
+/// @brief Hot-reload a module and all affected modules.
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     InternedString name);
+
+/// @brief Hot-reload with string name.
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     const std::string& name);
+
+/// @brief Check if a module is loaded.
 bool isModuleLoaded(const InterpreterContext& ctx, InternedString name);
 
 /// @brief Get the active module.
-/// @param ctx The interpreter context.
-/// @return The active module AST, or nullptr if none.
 ModuleAST* getActiveModule(const InterpreterContext& ctx);
 
-// ─── Internal Helpers ────────────────────────────────────────────────────
+/// @brief Get modules affected by a change.
+std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
+                                            InternedString changedModule);
+
+// ─── Internal Helpers ───────────────────────────────────────────────────
 
 /// @brief Generate a unique module name from an AST.
-/// @param ctx The interpreter context.
-/// @param module The module AST.
-/// @return The generated name.
 InternedString generateModuleName(InterpreterContext& ctx, ModuleAST* module);
 
 /// @brief Lower a single module to LLVM IR.
-/// @param ctx The interpreter context.
-/// @param module The AST module.
-/// @return The LLVM module.
-/// @throws InterpreterError if lowering fails.
 std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* module);
 
-/// @brief Lower multiple modules to a single LLVM IR module.
-/// @param ctx The interpreter context.
-/// @param modules The AST modules.
-/// @param moduleName The name for the combined module.
-/// @return The LLVM module.
-/// @throws InterpreterError if lowering fails.
-std::unique_ptr<llvm::Module> lowerModules(
+/// @brief Lower multiple modules to separate LLVM IR modules.
+std::vector<std::unique_ptr<llvm::Module>> lowerModulesSeparately(
     InterpreterContext& ctx,
-    const std::vector<ModuleAST*>& modules,
-    InternedString moduleName
-);
+    const std::vector<ModuleAST*>& modules);
 
-/// @brief Check if any module has errors.
-bool hasErrors(const std::vector<ModuleAST*>& modules);
-
-/// @brief Report errors from modules.
-void reportErrors(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
+/// @brief Extract module dependencies from AST.
+std::vector<InternedString> extractModuleDependencies(
+    InterpreterContext& ctx,
+    ModuleAST* module);
 
 /// @brief Register foreign libraries from modules.
-void registerModuleLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
+void registerModuleLibraries(InterpreterContext& ctx, 
+                            const std::vector<ModuleAST*>& modules);
 
 } // namespace interpreter

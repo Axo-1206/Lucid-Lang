@@ -1,5 +1,9 @@
 /// @file Interpreter.hpp
 /// @brief Main interpreter API - procedural style.
+///
+/// This is the PUBLIC API for the interpreter. It orchestrates the
+/// loading, compilation, and execution of Lucid modules.
+/// All heavy lifting is delegated to specialized modules.
 
 #pragma once
 
@@ -9,108 +13,69 @@
 #include "support/ExecutionResult.hpp"
 
 #include <vector>
-#include <memory>
 
 namespace interpreter {
 
 // ─── Initialization ─────────────────────────────────────────────────────
 
 /// @brief Initialize the interpreter context.
-/// @param ctx The interpreter context.
-/// @param options Configuration options.
-/// @throws InterpreterError if initialization fails.
-void initialize(InterpreterContext& ctx, const InterpreterOptions& options = InterpreterOptions{});
+void initialize(InterpreterContext& ctx, 
+                const InterpreterOptions& options = InterpreterOptions{});
 
 /// @brief Check if initialized.
 bool isInitialized(const InterpreterContext& ctx);
 
 // ─── Execution ──────────────────────────────────────────────────────────
 
-/// @brief Run a single module.
+/// @brief Run modules with optional hot-reload support.
 /// @param ctx The interpreter context.
-/// @param module The AST module to run.
-/// @param entryPoint Override entry point (empty = use options).
+/// @param modules The AST modules to run (in dependency order).
+/// @param entryPoint The entry point name.
+/// @param isHotReload Whether this is a hot-reload operation.
 /// @return Execution result.
 /// @throws InterpreterError if execution fails.
+ExecutionResult runModules(InterpreterContext& ctx,
+                           const std::vector<ModuleAST*>& modules,
+                           InternedString entryPoint = InternedString(),
+                           bool isHotReload = false);
+
+/// @brief Run modules with string entry point.
+ExecutionResult runModules(InterpreterContext& ctx,
+                           const std::vector<ModuleAST*>& modules,
+                           const std::string& entryPoint = "",
+                           bool isHotReload = false);
+
+/// @brief Run a single module.
 ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module, 
-                          InternedString entryPoint = InternedString());
+                          InternedString entryPoint = InternedString(),
+                          bool isHotReload = false);
 
 /// @brief Run a single module with string entry point.
 ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module, 
-                          const std::string& entryPoint = "");
-
-/// @brief Run multiple modules.
-/// @param ctx The interpreter context.
-/// @param modules The AST modules to run (in dependency order).
-/// @param entryPoint Override entry point (empty = use options).
-/// @return Execution result.
-/// @throws InterpreterError if execution fails.
-ExecutionResult runModules(InterpreterContext& ctx, 
-                           const std::vector<ModuleAST*>& modules,
-                           InternedString entryPoint = InternedString());
-
-/// @brief Run multiple modules with string entry point.
-ExecutionResult runModules(InterpreterContext& ctx,
-                           const std::vector<ModuleAST*>& modules,
-                           const std::string& entryPoint = "");
-
-// ─── Loading ────────────────────────────────────────────────────────────
-
-/// @brief Load a module without executing.
-/// @param ctx The interpreter context.
-/// @param module The AST module to load.
-/// @return true on success.
-/// @throws InterpreterError if loading fails.
-bool loadModule(InterpreterContext& ctx, ModuleAST* module);
-
-/// @brief Load multiple modules.
-/// @param ctx The interpreter context.
-/// @param modules The AST modules to load.
-/// @return true on success.
-/// @throws InterpreterError if loading fails.
-bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
+                          const std::string& entryPoint = "",
+                          bool isHotReload = false);
 
 // ─── Hot-Reload ─────────────────────────────────────────────────────────
 
-/// @brief Hot-reload a module.
+/// @brief Hot-reload a module and all affected modules.
 /// @param ctx The interpreter context.
-/// @param module The new AST module.
-/// @param name The module name to replace.
+/// @param module The updated AST module.
+/// @param name The module name.
 /// @return true on success.
-/// @throws InterpreterError if hot-reload fails.
-bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString name);
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     InternedString name);
 
 /// @brief Hot-reload with string name.
-bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, const std::string& name);
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     const std::string& name);
 
-// ─── Foreign Libraries ─────────────────────────────────────────────────
+// ─── Convenience Accessors ─────────────────────────────────────────────
 
-/// @brief Register a foreign library.
-/// @param ctx The interpreter context.
-/// @param name The library name.
-/// @throws InterpreterError if loading fails.
-void registerLibrary(InterpreterContext& ctx, const std::string& name);
-
-/// @brief Register libraries from a module.
-void registerLibraries(InterpreterContext& ctx, ModuleAST* module);
-
-/// @brief Register libraries from multiple modules.
-void registerLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
-
-// ─── Symbol Lookup ──────────────────────────────────────────────────────
-
-/// @brief Look up a symbol in the JIT.
-/// @param ctx The interpreter context.
-/// @param name The symbol name.
-/// @return Pointer to the symbol, or nullptr if not found.
-void* lookupSymbol(InterpreterContext& ctx, const std::string& name);
-
-/// @brief Look up a symbol by InternedString.
-void* lookupSymbol(InterpreterContext& ctx, InternedString name);
-
-// ─── Accessors ──────────────────────────────────────────────────────────
-
-/// @brief Get the loaded modules.
+/// @brief Get the loaded modules (delegates to ModuleRegistry).
 std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx);
+
+/// @brief Get modules affected by a change (delegates to ModuleRegistry).
+std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
+                                            InternedString changedModule);
 
 } // namespace interpreter

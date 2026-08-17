@@ -15,13 +15,11 @@
 
 #include <unordered_map>
 #include <memory>
+#include <vector>
 
 namespace interpreter {
 
 /// @brief Central context for the interpreter.
-///
-/// Holds shared state and dependencies, following the same pattern
-/// as SemaContext and CodeGenContext. Contains no behavior - just state.
 struct InterpreterContext {
     // ─── Resources ──────────────────────────────────────────────────────
     StringPool& pool;
@@ -32,9 +30,6 @@ struct InterpreterContext {
     PanicHandler panicHandler;
     DynamicLinker linker;
     JITSession jit;
-
-    // ─── Module Tracking ──────────────────────────────────────────────
-    // Registry for tracking loaded modules and their versions
     ModuleRegistry moduleRegistry;
 
     // ─── Constructor ────────────────────────────────────────────────────
@@ -50,29 +45,29 @@ struct InterpreterContext {
 
     // ─── Convenience Accessors ────────────────────────────────────────
 
-    /// @brief Get the active module.
     ModuleInfo* getActiveModule() {
         return moduleRegistry.getActiveModule();
     }
 
-    /// @brief Get the active module (const).
     const ModuleInfo* getActiveModule() const {
         return moduleRegistry.getActiveModule();
     }
 
-    /// @brief Check if a module is loaded.
     bool hasModule(InternedString name) const {
         return moduleRegistry.hasModule(name);
     }
 
-    /// @brief Get module info by name.
     ModuleInfo* getModuleInfo(InternedString name) {
         return moduleRegistry.getModuleInfo(name);
     }
 
-    /// @brief Get module info by name (const).
     const ModuleInfo* getModuleInfo(InternedString name) const {
         return moduleRegistry.getModuleInfo(name);
+    }
+    
+    /// @brief Check if any modules have semantic errors.
+    bool hasErrorModules() const {
+        return moduleRegistry.hasErrorModules();
     }
 };
 

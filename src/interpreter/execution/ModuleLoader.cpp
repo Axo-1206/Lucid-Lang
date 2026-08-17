@@ -4,25 +4,21 @@
 #include "ModuleLoader.hpp"
 #include "../support/InterpreterError.hpp"
 #include "codegen/CodeGen.hpp"
-#include "interpreter/Interpreter.hpp"
+#include "../dynlink/DynamicLinker.hpp"  // <-- Include DynamicLinker
 #include "llvm/IR/Module.h"
 
 #include <algorithm>
 #include <iostream>
+#include <queue>
+#include <set>
 
 namespace interpreter {
 
-// ─── Module Loading ──────────────────────────────────────────────────────
+// ─── Core Loading Functions ─────────────────────────────────────────────
 
-bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
-    if (!module) {
-        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
-                               "Cannot load null module");
-    }
-    return loadModules(ctx, std::vector<ModuleAST*>{module});
-}
-
-bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
+bool loadOrReloadModules(InterpreterContext& ctx, 
+                         const std::vector<ModuleAST*>& modules,
+                         bool isHotReload) {
     if (!ctx.jit.isInitialized()) {
         throw InterpreterError(InterpreterErrorKind::InitFailed,
                                "JIT not initialized");
@@ -50,30 +46,129 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
     // ─── 2. Register foreign libraries ──────────────────────────────────
     registerModuleLibraries(ctx, modules);
 
-    // ─── 3. Generate module name ─────────────────────────────────────────
-    InternedString moduleName = generateModuleName(ctx, modules[0]);
+    // ─── 3. Generate module names and extract dependencies ──────────────
+    std::vector<InternedString> moduleNames;
+    moduleNames.reserve(modules.size());
+    
+    std::vector<std::vector<InternedString>> moduleDeps;
+    moduleDeps.reserve(modules.size());
+
+    for (ModuleAST* module : modules) {
+        InternedString name = generateModuleName(ctx, module);
+        moduleNames.push_back(name);
+        moduleDeps.push_back(extractModuleDependencies(ctx, module));
+    }
 
     // ─── 4. Lower modules to LLVM IR ────────────────────────────────────
-    auto irModule = lowerModules(ctx, modules, moduleName);
-    if (!irModule) {
+    auto irModules = lowerModulesSeparately(ctx, modules);
+    if (irModules.size() != modules.size()) {
         throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
-                               "Failed to lower modules to LLVM IR");
+                               "Failed to lower all modules to LLVM IR");
     }
 
-    // ─── 5. Add to JIT ──────────────────────────────────────────────────
-    ctx.jit.addModule(std::move(irModule), moduleName);
+    // ─── 5. Load or reload modules ──────────────────────────────────────
+    for (size_t i = 0; i < modules.size(); ++i) {
+        ModuleAST* module = modules[i];
+        InternedString baseName = moduleNames[i];
+        auto& irModule = irModules[i];
 
-    // ─── 6. Track loaded modules using ModuleRegistry ───────────────────
-    for (ModuleAST* module : modules) {
-        ctx.moduleRegistry.registerModule(moduleName, module);
-    }
-    ctx.moduleRegistry.setActiveModule(moduleName);
+        if (isHotReload) {
+            // ─── Hot Reload Path ──────────────────────────────────────────
+            uint64_t newVersion = ctx.moduleRegistry.incrementVersion(baseName);
+            std::string nameStr = ctx.pool.lookup(baseName);
+            std::string versionedName = nameStr + "_v" + std::to_string(newVersion);
+            InternedString versionedNameInterned = ctx.pool.intern(versionedName);
 
-    if (ctx.options.verbose) {
-        std::cout << "Loaded module: " << ctx.pool.lookup(moduleName) << "\n";
+            ctx.jit.addModule(std::move(irModule), versionedNameInterned);
+
+            if (ctx.jit.hasModule(baseName)) {
+                ctx.jit.removeModule(baseName);
+            }
+
+            ctx.moduleRegistry.registerModule(versionedNameInterned, module);
+            ctx.moduleRegistry.setDependencies(versionedNameInterned, moduleDeps[i]);
+
+            if (ctx.options.verbose) {
+                std::cout << "Hot-reloaded module: " << nameStr << " -> " 
+                          << versionedName << "\n";
+            }
+        } else {
+            // ─── Initial Load Path ────────────────────────────────────────
+            ctx.jit.addModule(std::move(irModule), baseName);
+
+            ctx.moduleRegistry.registerModule(baseName, module);
+            ctx.moduleRegistry.setDependencies(baseName, moduleDeps[i]);
+
+            if (ctx.options.verbose) {
+                std::cout << "Loaded module: " << ctx.pool.lookup(baseName) << "\n";
+            }
+        }
     }
+
+    // ─── 6. Set active module ────────────────────────────────────────────
+    ctx.moduleRegistry.setActiveModule(moduleNames[0]);
 
     return true;
+}
+
+// ─── Convenience Wrappers ──────────────────────────────────────────────
+
+bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
+    if (!module) {
+        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
+                               "Cannot load null module");
+    }
+    return loadModules(ctx, std::vector<ModuleAST*>{module});
+}
+
+bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
+    return loadOrReloadModules(ctx, modules, false);
+}
+
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     InternedString name) {
+    if (!module) {
+        throw InterpreterError(InterpreterErrorKind::HotReloadFailed,
+                               "Cannot reload null module");
+    }
+
+    if (module->hasErrors) {
+        ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
+                              "module '", ctx.pool.lookup(module->filePath),
+                              "' has semantic errors");
+        return false;
+    }
+
+    if (!ctx.options.enableHotReload) {
+        throw InterpreterError(InterpreterErrorKind::HotReloadFailed,
+                               "Hot-reload is not enabled");
+    }
+
+    // Get all affected modules (dependents)
+    std::vector<ModuleInfo*> affectedModules = getAffectedModules(ctx, name);
+    
+    // Build list of modules to reload (changed + dependents)
+    std::vector<ModuleAST*> modulesToReload;
+    modulesToReload.push_back(module);
+    
+    for (ModuleInfo* info : affectedModules) {
+        if (info && info->ast) {
+            modulesToReload.push_back(info->ast);
+        }
+    }
+
+    if (ctx.options.verbose) {
+        std::cout << "Hot-reloading " << modulesToReload.size() 
+                  << " module(s) (changed + dependents)\n";
+    }
+
+    return loadOrReloadModules(ctx, modulesToReload, true);
+}
+
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
+                     const std::string& name) {
+    InternedString nameInterned = ctx.pool.intern(name);
+    return hotReloadModule(ctx, module, nameInterned);
 }
 
 bool isModuleLoaded(const InterpreterContext& ctx, InternedString name) {
@@ -85,17 +180,21 @@ ModuleAST* getActiveModule(const InterpreterContext& ctx) {
     return info ? info->ast : nullptr;
 }
 
+std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
+                                            InternedString changedModule) {
+    return ctx.moduleRegistry.getAffectedModules(changedModule);
+}
+
 // ─── Internal Helpers ────────────────────────────────────────────────────
 
 InternedString generateModuleName(InterpreterContext& ctx, ModuleAST* module) {
     if (!module || !module->filePath.isValid()) {
-        // Generate a unique name based on pointer
-        std::string name = "module_" + std::to_string(reinterpret_cast<uintptr_t>(module));
+        std::string name = "module_" + 
+                          std::to_string(reinterpret_cast<uintptr_t>(module));
         return ctx.pool.intern(name);
     }
 
     std::string name = ctx.pool.lookup(module->filePath);
-    // Replace path separators and dots with underscores
     std::replace(name.begin(), name.end(), '/', '_');
     std::replace(name.begin(), name.end(), '\\', '_');
     std::replace(name.begin(), name.end(), '.', '_');
@@ -103,13 +202,12 @@ InternedString generateModuleName(InterpreterContext& ctx, ModuleAST* module) {
     return ctx.pool.intern(name);
 }
 
-std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* module) {
+std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, 
+                                          ModuleAST* module) {
     if (!module) {
         return nullptr;
     }
 
-    // ─── Use the CodeGen module to generate IR ──────────────────────────
-    // codegen::generate takes: modules, StringPool&, DiagnosticEngine&, LLVMContext&
     auto generatedModules = codegen::generate(
         std::vector<ModuleAST*>{module},
         ctx.pool,
@@ -129,59 +227,59 @@ std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* mo
     return std::move(generatedModules[0]);
 }
 
-std::unique_ptr<llvm::Module> lowerModules(
+std::vector<std::unique_ptr<llvm::Module>> lowerModulesSeparately(
     InterpreterContext& ctx,
-    const std::vector<ModuleAST*>& modules,
-    InternedString moduleName
-) {
-    if (modules.empty()) {
-        return nullptr;
-    }
-
-    // ─── Use the CodeGen module to generate IR ──────────────────────────
-    // codegen::generate takes: modules, StringPool&, DiagnosticEngine&, LLVMContext&
-    auto generatedModules = codegen::generate(
-        modules,
-        ctx.pool,
-        ctx.diagnostics,
-        ctx.jit.getContext()
-    );
+    const std::vector<ModuleAST*>& modules) {
     
-    if (generatedModules.empty() || !generatedModules[0]) {
-        ctx.diagnostics.error(DiagCode::Backend_CodegenError, modules[0],
-                              "failed to generate IR for modules");
-        throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
-                               "Failed to generate IR for modules");
-    }
+    std::vector<std::unique_ptr<llvm::Module>> result;
+    result.reserve(modules.size());
 
-    // If multiple modules were generated, we need to combine them
-    // For now, we return the first one
-    // TODO: Merge multiple modules into one
-    return std::move(generatedModules[0]);
-}
-
-bool hasErrors(const std::vector<ModuleAST*>& modules) {
-    for (const ModuleAST* module : modules) {
-        if (module && module->hasErrors) {
-            return true;
+    for (ModuleAST* module : modules) {
+        auto irModule = lowerModule(ctx, module);
+        if (!irModule) {
+            throw InterpreterError(InterpreterErrorKind::ModuleLoadFailed,
+                                   "Failed to lower module: " + 
+                                   ctx.pool.lookup(module->filePath));
         }
+        result.push_back(std::move(irModule));
     }
-    return false;
+
+    return result;
 }
 
-void reportErrors(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
-    for (const ModuleAST* module : modules) {
-        if (module && module->hasErrors) {
-            // The module's errors are already in the diagnostic engine
-            // We just need to ensure they are displayed
-            ctx.diagnostics.dump(std::cerr);
-        }
+std::vector<InternedString> extractModuleDependencies(
+    InterpreterContext& ctx,
+    ModuleAST* module) {
+    
+    std::vector<InternedString> dependencies;
+    
+    if (!module) {
+        return dependencies;
     }
+
+    // Look for import declarations in the module
+    // This is a placeholder - actual implementation depends on
+    // how imports are stored in your AST
+    
+    // Example: if you have ImportDeclAST
+    // for (DeclAST* decl : module->decls) {
+    //     if (auto* import = decl->as<ImportDeclAST>()) {
+    //         dependencies.push_back(import->moduleName);
+    //     }
+    // }
+
+    return dependencies;
 }
 
-void registerModuleLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
-    // Delegate to the registerLibraries function from Interpreter.hpp
-    registerLibraries(ctx, modules);
+void registerModuleLibraries(InterpreterContext& ctx, 
+                            const std::vector<ModuleAST*>& modules) {
+    // Delegate to DynamicLinker with explicit dependencies
+    ctx.linker.registerLibrariesFromModules(
+        ctx.diagnostics,
+        ctx.pool,
+        ctx.options.verbose,
+        modules
+    );
 }
 
 } // namespace interpreter

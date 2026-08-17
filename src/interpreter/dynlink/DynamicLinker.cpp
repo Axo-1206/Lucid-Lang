@@ -4,6 +4,8 @@
 #include "DynamicLinker.hpp"
 #include "../jit/JITSession.hpp"
 #include "../support/InterpreterError.hpp"
+#include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -44,7 +46,7 @@ std::string DynamicLinker::getLibraryPath(const std::string& name) const {
     return getLibraryFileName(name);
 }
 
-// ─── DynamicLinker ──────────────────────────────────────────────────────
+// ─── Library Loading ──────────────────────────────────────────────────
 
 bool DynamicLinker::load(const std::string& name) {
     if (isLoaded(name)) {
@@ -112,6 +114,50 @@ bool DynamicLinker::unload(const std::string& name) {
     return true;
 }
 
+void DynamicLinker::registerLibrariesFromModule(DiagnosticEngine& diagnostics,
+                                                StringPool& pool,
+                                                bool verbose,
+                                                ModuleAST* module) {
+    if (!module) return;
+
+    InternedString linkName = pool.intern("link");
+    for (DeclAST* decl : module->decls) {
+        for (AttributePtr attr : decl->attributes) {
+            if (attr->name == linkName) {
+                for (LiteralExprAST* arg : attr->args) {
+                    if (arg->kind == LiteralKind::String || 
+                        arg->kind == LiteralKind::RawString) {
+                        std::string libName = pool.lookup(arg->value);
+                        bool isPath = libName.find('/') != std::string::npos ||
+                                      libName.find('\\') != std::string::npos ||
+                                      libName.find('.') != std::string::npos;
+                        if (!isPath) {
+                            try {
+                                load(libName);
+                            } catch (const InterpreterError& e) {
+                                if (verbose) {
+                                    std::cerr << "Warning: " << e.what() << "\n";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void DynamicLinker::registerLibrariesFromModules(DiagnosticEngine& diagnostics,
+                                                 StringPool& pool,
+                                                 bool verbose,
+                                                 const std::vector<ModuleAST*>& modules) {
+    for (ModuleAST* module : modules) {
+        registerLibrariesFromModule(diagnostics, pool, verbose, module);
+    }
+}
+
+// ─── Symbol Lookup ──────────────────────────────────────────────────────
+
 void* DynamicLinker::getSymbol(const std::string& name) const {
     // Check cache first
     if (m_cacheDirty) {
@@ -138,11 +184,7 @@ void* DynamicLinker::getSymbol(const std::string& name) const {
 }
 
 void* DynamicLinker::getSymbol(InternedString name) const {
-    // Note: This needs a StringPool to convert. 
-    // For now, we assume the caller handles the conversion.
-    // This is a placeholder - the actual implementation would need
-    // access to a StringPool.
-    return nullptr;
+    return nullptr;  // Needs StringPool access
 }
 
 std::unordered_map<std::string, void*> DynamicLinker::getAllSymbols() const {
@@ -162,18 +204,14 @@ std::unordered_map<std::string, void*> DynamicLinker::getLibrarySymbols(
         return symbols;
     }
 
-    // Note: We cannot enumerate all symbols in a dynamic library
-    // without platform-specific code. This is a limitation.
-    // The caller should use getSymbol for specific symbols they need.
-    
     return symbols;
 }
+
+// ─── JIT Integration ──────────────────────────────────────────────────
 
 void DynamicLinker::registerWithJIT(JITSession& jit) {
     for (const auto& [name, handle] : m_libraries) {
         if (handle && handle->isLoaded()) {
-            // Register this library's symbols with the JIT
-            // The JITSession will handle the actual registration
             jit.registerLibrarySymbols(handle->getPath(), name);
         }
     }
@@ -188,6 +226,8 @@ bool DynamicLinker::registerLibraryWithJIT(JITSession& jit, const std::string& n
     jit.registerLibrarySymbols(it->second->getPath(), name);
     return true;
 }
+
+// ─── Query ─────────────────────────────────────────────────────────────
 
 bool DynamicLinker::isLoaded(const std::string& name) const {
     auto it = m_libraries.find(name);
@@ -210,19 +250,10 @@ std::vector<std::string> DynamicLinker::getLoadedLibraries() const {
     return result;
 }
 
+// ─── Private Helpers ──────────────────────────────────────────────────
+
 void DynamicLinker::rebuildCache() const {
     m_symbolCache.clear();
-
-    for (const auto& [name, handle] : m_libraries) {
-        if (!handle || !handle->isLoaded()) {
-            continue;
-        }
-
-        // We cannot enumerate all symbols, so we only cache symbols
-        // that have been explicitly looked up.
-        // This is a limitation of the platform APIs.
-    }
-
     m_cacheDirty = false;
 }
 

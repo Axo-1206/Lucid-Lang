@@ -48,6 +48,7 @@ struct InternedString {
 
     bool operator==(InternedString other) const { return id == other.id; }
     bool operator!=(InternedString other) const { return id != other.id; }
+    bool operator<(InternedString other) const { return id < other.id; }
 
     /** True for any string that was actually interned (id != 0). */
     bool isValid() const { return id != 0; }
