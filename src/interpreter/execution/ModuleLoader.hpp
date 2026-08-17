@@ -75,4 +75,7 @@ bool hasErrors(const std::vector<ModuleAST*>& modules);
 /// @brief Report errors from modules.
 void reportErrors(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
 
+/// @brief Register foreign libraries from modules.
+void registerModuleLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules);
+
 } // namespace interpreter

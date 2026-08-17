@@ -55,6 +55,10 @@ public:
     /// @return The active module, or nullptr if none.
     ModuleInfo* getActiveModule();
 
+    /// @brief Get the active module (const).
+    /// @return The active module, or nullptr if none.
+    const ModuleInfo* getActiveModule() const;
+
     /// @brief Set the active module.
     void setActiveModule(InternedString name);
 

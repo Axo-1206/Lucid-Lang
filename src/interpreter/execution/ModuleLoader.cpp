@@ -4,6 +4,7 @@
 #include "ModuleLoader.hpp"
 #include "../support/InterpreterError.hpp"
 #include "codegen/CodeGen.hpp"
+#include "interpreter/Interpreter.hpp"
 #include "llvm/IR/Module.h"
 
 #include <algorithm>
@@ -47,7 +48,7 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
     }
 
     // ─── 2. Register foreign libraries ──────────────────────────────────
-    registerLibraries(ctx, modules);
+    registerModuleLibraries(ctx, modules);
 
     // ─── 3. Generate module name ─────────────────────────────────────────
     InternedString moduleName = generateModuleName(ctx, modules[0]);
@@ -62,12 +63,11 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
     // ─── 5. Add to JIT ──────────────────────────────────────────────────
     ctx.jit.addModule(std::move(irModule), moduleName);
 
-    // ─── 6. Track loaded modules ─────────────────────────────────────────
+    // ─── 6. Track loaded modules using ModuleRegistry ───────────────────
     for (ModuleAST* module : modules) {
-        ctx.loadedModules[moduleName.id] = module;
+        ctx.moduleRegistry.registerModule(moduleName, module);
     }
-    ctx.hasActiveModule = true;
-    ctx.activeModuleName = moduleName;
+    ctx.moduleRegistry.setActiveModule(moduleName);
 
     if (ctx.options.verbose) {
         std::cout << "Loaded module: " << ctx.pool.lookup(moduleName) << "\n";
@@ -77,15 +77,12 @@ bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules
 }
 
 bool isModuleLoaded(const InterpreterContext& ctx, InternedString name) {
-    return ctx.loadedModules.find(name.id) != ctx.loadedModules.end();
+    return ctx.moduleRegistry.hasModule(name);
 }
 
 ModuleAST* getActiveModule(const InterpreterContext& ctx) {
-    if (!ctx.hasActiveModule || !ctx.activeModuleName.isValid()) {
-        return nullptr;
-    }
-    auto it = ctx.loadedModules.find(ctx.activeModuleName.id);
-    return it != ctx.loadedModules.end() ? it->second : nullptr;
+    const ModuleInfo* info = ctx.moduleRegistry.getActiveModule();
+    return info ? info->ast : nullptr;
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────
@@ -98,6 +95,7 @@ InternedString generateModuleName(InterpreterContext& ctx, ModuleAST* module) {
     }
 
     std::string name = ctx.pool.lookup(module->filePath);
+    // Replace path separators and dots with underscores
     std::replace(name.begin(), name.end(), '/', '_');
     std::replace(name.begin(), name.end(), '\\', '_');
     std::replace(name.begin(), name.end(), '.', '_');
@@ -111,7 +109,6 @@ std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* mo
     }
 
     // ─── Use the CodeGen module to generate IR ──────────────────────────
-    // This is a temporary implementation - we'll use the existing codegen
     llvm::LLVMContext llvmCtx;
     auto modules = codegen::generate({module}, llvmCtx);
     
@@ -144,11 +141,17 @@ std::unique_ptr<llvm::Module> lowerModules(
 
     // For multiple modules, we need to combine them
     // TODO: Implement proper multi-module lowering
-    ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, nullptr,
-                            "multi-module lowering is not fully implemented, "
-                            "only the first module will be used");
+    // The codegen::generate function may already handle multiple modules
+    llvm::LLVMContext llvmCtx;
+    auto generatedModules = codegen::generate(modules, llvmCtx);
+    
+    if (generatedModules.empty() || !generatedModules[0]) {
+        ctx.diagnostics.error(DiagCode::Backend_CodegenError, modules[0],
+                              "failed to generate IR for multiple modules");
+        return nullptr;
+    }
 
-    return lowerModule(ctx, modules[0]);
+    return std::move(generatedModules[0]);
 }
 
 bool hasErrors(const std::vector<ModuleAST*>& modules) {
@@ -168,6 +171,12 @@ void reportErrors(InterpreterContext& ctx, const std::vector<ModuleAST*>& module
             ctx.diagnostics.dump(std::cerr);
         }
     }
+}
+
+void registerModuleLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
+    // Delegate to the registerLibraries function from Interpreter.cpp
+    // This is declared in Interpreter.hpp
+    registerLibraries(ctx, modules);
 }
 
 } // namespace interpreter

@@ -17,8 +17,11 @@ InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint
     if (entryPoint.isValid()) {
         std::string epName = ctx.pool.lookup(entryPoint);
         
-        // Scan all loaded modules for the function
-        for (const auto& [id, module] : ctx.loadedModules) {
+        // Scan all loaded modules using ModuleRegistry
+        for (ModuleInfo* info : ctx.moduleRegistry.getAllModules()) {
+            ModuleAST* module = info->ast;
+            if (!module) continue;
+            
             for (DeclAST* decl : module->decls) {
                 if (FuncDeclAST* func = decl->as<FuncDeclAST>()) {
                     // Check if this function matches the entry point name
@@ -107,7 +110,11 @@ bool isEntryPointCandidate(FuncDeclAST* func, InterpreterContext& ctx) {
 std::vector<FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx) {
     std::vector<FuncDeclAST*> candidates;
     
-    for (const auto& [id, module] : ctx.loadedModules) {
+    // Use ModuleRegistry to iterate over loaded modules
+    for (ModuleInfo* info : ctx.moduleRegistry.getAllModules()) {
+        ModuleAST* module = info->ast;
+        if (!module) continue;
+        
         for (DeclAST* decl : module->decls) {
             if (FuncDeclAST* func = decl->as<FuncDeclAST>()) {
                 if (isEntryPointCandidate(func, ctx)) {

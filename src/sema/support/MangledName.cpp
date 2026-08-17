@@ -50,7 +50,7 @@ InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx) {
     result += "_P";
     const FuncTypeAST* funcType = decl->funcType;
     while (funcType) {
-        for (ParamAST* param : decl->paramGroups) {
+        for (ParamAST* param : funcType->params) {
             result += typeToMangleString(param->type, ctx);
         }
         funcType = funcType->getNext();

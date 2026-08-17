@@ -3,36 +3,32 @@
 
 #include "Interpreter.hpp"
 #include "support/InterpreterError.hpp"
-#include "execution/ModuleLoader.hpp"
 #include "execution/SymbolResolver.hpp"
-#include "core/ModuleRegistry.hpp"
-
-#include "codegen/CodeGen.hpp"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/Verifier.h"
 
 #include <chrono>
 #include <iostream>
 
 namespace interpreter {
 
-// ─── Construction ──────────────────────────────────────────────────────────
+// ─── Forward Declarations ──────────────────────────────────────────────
 
-Interpreter::Interpreter(StringPool& pool, DiagnosticEngine& diagnostics)
-    : m_context(std::make_unique<InterpreterContext>(pool, diagnostics)) {}
+/// @brief Helper to lower a module to LLVM IR (stub).
+static std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* module);
 
-// ─── Initialization ────────────────────────────────────────────────────────
+/// @brief Helper to find the entry point.
+static InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint);
 
-void Interpreter::initialize(const InterpreterOptions& options) {
-    if (m_context->initialized) {
+// ─── Initialization ──────────────────────────────────────────────────────
+
+void initialize(InterpreterContext& ctx, const InterpreterOptions& options) {
+    if (ctx.jit.isInitialized()) {
         return;
     }
 
-    m_context->options = options;
+    ctx.options = options;
 
     try {
-        m_context->jit.initialize();
-        m_context->initialized = true;
+        ctx.jit.initialize();
 
         if (options.verbose) {
             std::cout << "Interpreter initialized successfully\n";
@@ -41,32 +37,39 @@ void Interpreter::initialize(const InterpreterOptions& options) {
             std::cout << "  Hot-reload: " << (options.enableHotReload ? "enabled" : "disabled") << "\n";
         }
     } catch (const std::exception& e) {
-        m_context->diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
-                                     "interpreter initialization failed: ", e.what());
+        ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
+                              "interpreter initialization failed: ", e.what());
         throw InterpreterError(InterpreterError::Kind::InitFailed, e.what());
     }
 }
 
-// ─── Run ──────────────────────────────────────────────────────────────────
+bool isInitialized(const InterpreterContext& ctx) {
+    return ctx.jit.isInitialized();
+}
 
-ExecutionResult Interpreter::run(ModuleAST* module, InternedString entryPoint) {
+// ─── Execution ──────────────────────────────────────────────────────────
+
+ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module,
+                          InternedString entryPoint) {
     if (!module) {
         throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
                                "Cannot run null module");
     }
-    return run(std::vector<ModuleAST*>{module}, entryPoint);
+    return runModules(ctx, std::vector<ModuleAST*>{module}, entryPoint);
 }
 
-ExecutionResult Interpreter::run(ModuleAST* module, const std::string& entryPoint) {
-    InternedString ep = entryPoint.empty() 
+ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module,
+                          const std::string& entryPoint) {
+    InternedString entryPointInterned = entryPoint.empty() 
         ? InternedString() 
-        : m_context->pool.intern(entryPoint);
-    return run(module, ep);
+        : ctx.pool.intern(entryPoint);
+    return runModule(ctx, module, entryPointInterned);
 }
 
-ExecutionResult Interpreter::run(const std::vector<ModuleAST*>& modules, 
-                                 InternedString entryPoint) {
-    if (!m_context->initialized) {
+ExecutionResult runModules(InterpreterContext& ctx,
+                           const std::vector<ModuleAST*>& modules,
+                           InternedString entryPoint) {
+    if (!ctx.jit.isInitialized()) {
         throw InterpreterError(InterpreterError::Kind::InitFailed,
                                "Interpreter not initialized");
     }
@@ -76,111 +79,50 @@ ExecutionResult Interpreter::run(const std::vector<ModuleAST*>& modules,
                                "Cannot run empty module list");
     }
 
-    // Validate all modules
+    // ─── Validate modules ──────────────────────────────────────────────
     for (ModuleAST* module : modules) {
         if (!module) {
             throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
                                    "Cannot run null module in list");
         }
         if (module->hasErrors) {
-            // Report errors using the diagnostic system
-            m_context->diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
-                                         "module '", 
-                                         m_context->pool.lookup(module->filePath),
-                                         "' has semantic errors");
+            ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
+                                  "module '", ctx.pool.lookup(module->filePath),
+                                  "' has semantic errors");
             return ExecutionResult{1, false, "Module has semantic errors"};
         }
     }
 
-    return runImpl(modules, entryPoint);
-}
-
-ExecutionResult Interpreter::run(const std::vector<ModuleAST*>& modules,
-                                 const std::string& entryPoint) {
-    InternedString ep = entryPoint.empty() 
-        ? InternedString() 
-        : m_context->pool.intern(entryPoint);
-    return run(modules, ep);
-}
-
-// ─── Load ──────────────────────────────────────────────────────────────────
-
-bool Interpreter::load(ModuleAST* module) {
-    if (!module) {
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
-                               "Cannot load null module");
-    }
-    return load(std::vector<ModuleAST*>{module});
-}
-
-bool Interpreter::load(const std::vector<ModuleAST*>& modules) {
-    if (!m_context->initialized) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
-                               "Interpreter not initialized");
-    }
-
-    if (modules.empty()) {
-        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
-                               "Cannot load empty module list");
-    }
-
-    for (ModuleAST* module : modules) {
-        if (!module) {
-            throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
-                                   "Cannot load null module in list");
-        }
-        if (module->hasErrors) {
-            m_context->diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
-                                         "module '", 
-                                         m_context->pool.lookup(module->filePath),
-                                         "' has semantic errors");
-            return false;
-        }
-    }
-
-    try {
-        ModuleLoader loader(*m_context);
-        return loader.loadModules(modules);
-    } catch (const std::exception& e) {
-        m_context->diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
-                                     "module load failed: ", e.what());
-        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed, e.what());
-    }
-}
-
-// ─── Internal Implementation ──────────────────────────────────────────────
-
-ExecutionResult Interpreter::runImpl(const std::vector<ModuleAST*>& modules,
-                                     InternedString entryPoint) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
     try {
         // 1. Register foreign libraries
-        registerLibraries(modules);
+        registerLibraries(ctx, modules);
 
         // 2. Load modules
-        ModuleLoader loader(*m_context);
-        if (!loader.loadModules(modules)) {
+        if (!loadModules(ctx, modules)) {
             return ExecutionResult{1, false, "Failed to load modules"};
         }
 
-        // 3. Find entry point
-        SymbolResolver resolver(*m_context);
-        InternedString foundEntry = resolver.findEntryPoint(entryPoint);
+        // 3. Determine entry point
+        InternedString actualEntryPoint = entryPoint;
+        if (!actualEntryPoint.isValid()) {
+            // Default to "main" if no entry point specified
+            actualEntryPoint = ctx.pool.intern("main");
+        }
+
+        InternedString foundEntry = findEntryPoint(ctx, actualEntryPoint);
+        
         if (!foundEntry.isValid()) {
-            std::string epName = entryPoint.isValid() 
-                ? m_context->pool.lookup(entryPoint)
-                : m_context->options.entryPoint;
-            reportEntryPointNotFound(m_context->diagnostics, epName);
-            return ExecutionResult{1, false, "Entry point not found: " + epName};
+            reportEntryPointNotFound(ctx.diagnostics, ctx.pool.lookup(actualEntryPoint));
+            return ExecutionResult{1, false, "Entry point not found"};
         }
 
         // 4. Execute entry point
-        void* fnPtr = resolver.lookupSymbol(foundEntry);
+        std::string foundName = ctx.pool.lookup(foundEntry);
+        void* fnPtr = lookupSymbol(ctx, foundName);
         if (!fnPtr) {
-            reportSymbolLookupError(m_context->diagnostics,
-                                   m_context->pool.lookup(foundEntry),
-                                   "symbol not found in JIT");
+            reportSymbolLookupError(ctx.diagnostics, foundName, "symbol not found in JIT");
             return ExecutionResult{1, false, "Symbol lookup failed"};
         }
 
@@ -189,7 +131,7 @@ ExecutionResult Interpreter::runImpl(const std::vector<ModuleAST*>& modules,
             auto mainFn = reinterpret_cast<int(*)()>(fnPtr);
             exitCode = mainFn();
         } catch (const std::exception& e) {
-            exitCode = m_context->panicHandler.handle(e);
+            exitCode = ctx.panicHandler.handle(e);
         }
 
         auto endTime = std::chrono::high_resolution_clock::now();
@@ -200,9 +142,9 @@ ExecutionResult Interpreter::runImpl(const std::vector<ModuleAST*>& modules,
         result.exitCode = exitCode;
         result.success = true;
         result.executionTimeMs = duration.count() / 1000.0;
-        result.entryPointUsed = m_context->pool.lookup(foundEntry);
+        result.entryPointUsed = foundName;
 
-        if (m_context->options.verbose) {
+        if (ctx.options.verbose) {
             std::cout << "Execution completed in " << result.executionTimeMs << "ms\n";
             std::cout << "Exit code: " << exitCode << "\n";
         }
@@ -211,67 +153,204 @@ ExecutionResult Interpreter::runImpl(const std::vector<ModuleAST*>& modules,
 
     } catch (const InterpreterError& e) {
         if (e.hasCode()) {
-            e.report(m_context->diagnostics);
+            e.report(ctx.diagnostics);
         }
         throw;
     } catch (const std::exception& e) {
-        m_context->diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
-                                     "execution failed: ", e.what());
+        ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
+                              "execution failed: ", e.what());
         throw InterpreterError(InterpreterError::Kind::ExecutionFailed, e.what());
     }
 }
 
-InternedString Interpreter::findEntryPoint(const std::vector<ModuleAST*>& modules,
-                                           InternedString entryPoint) {
-    SymbolResolver resolver(*m_context);
-    return resolver.findEntryPoint(entryPoint);
+ExecutionResult runModules(InterpreterContext& ctx,
+                           const std::vector<ModuleAST*>& modules,
+                           const std::string& entryPoint) {
+    InternedString entryPointInterned = entryPoint.empty() 
+        ? InternedString() 
+        : ctx.pool.intern(entryPoint);
+    return runModules(ctx, modules, entryPointInterned);
 }
 
-// ─── Foreign Libraries ────────────────────────────────────────────────────
+// ─── Loading ────────────────────────────────────────────────────────────
 
-void Interpreter::registerLibrary(const std::string& name) {
+bool loadModule(InterpreterContext& ctx, ModuleAST* module) {
+    if (!module) {
+        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+                               "Cannot load null module");
+    }
+
+    if (module->hasErrors) {
+        ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
+                              "module '", ctx.pool.lookup(module->filePath),
+                              "' has semantic errors");
+        return false;
+    }
+
+    // Register foreign libraries
+    registerLibraries(ctx, module);
+
+    // Generate module name from file path
+    std::string filePath = ctx.pool.lookup(module->filePath);
+    std::string moduleName = filePath;
+    
+    // Remove path and extension
+    size_t lastSlash = moduleName.find_last_of("/\\");
+    if (lastSlash != std::string::npos) {
+        moduleName = moduleName.substr(lastSlash + 1);
+    }
+    size_t lastDot = moduleName.find_last_of('.');
+    if (lastDot != std::string::npos) {
+        moduleName = moduleName.substr(0, lastDot);
+    }
+
+    InternedString name = ctx.pool.intern(moduleName);
+
+    // Lower to IR and compile
+    auto irModule = lowerModule(ctx, module);
+    if (!irModule) {
+        throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+                               "Failed to lower module to LLVM IR");
+    }
+
+    ctx.jit.addModule(std::move(irModule), name);
+    
+    // Register the module
+    ctx.moduleRegistry.registerModule(name, module);
+    ctx.moduleRegistry.setActiveModule(name);
+
+    if (ctx.options.verbose) {
+        std::cout << "Loaded module: " << moduleName << "\n";
+    }
+
+    return true;
+}
+
+bool loadModules(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
+    if (modules.empty()) {
+        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+                               "Cannot load empty module list");
+    }
+
+    // Register libraries from all modules first
+    registerLibraries(ctx, modules);
+
+    // Load each module in order
+    for (ModuleAST* module : modules) {
+        if (!loadModule(ctx, module)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// ─── Hot-Reload ─────────────────────────────────────────────────────────
+
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, InternedString name) {
+    if (!ctx.jit.isInitialized()) {
+        throw InterpreterError(InterpreterError::Kind::InitFailed,
+                               "JIT not initialized");
+    }
+
+    if (!module) {
+        throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+                               "Cannot reload null module");
+    }
+
+    if (module->hasErrors) {
+        ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, module,
+                              "module '", ctx.pool.lookup(module->filePath),
+                              "' has semantic errors");
+        return false;
+    }
+
+    if (!ctx.options.enableHotReload) {
+        throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+                               "Hot-reload is not enabled");
+    }
+
     try {
-        if (m_context->linker.isLoaded(name)) {
+        // 1. Register new foreign libraries
+        registerLibraries(ctx, module);
+
+        // 2. Increment version and generate versioned name
+        uint64_t newVersion = ctx.moduleRegistry.incrementVersion(name);
+        std::string nameStr = ctx.pool.lookup(name);
+        std::string versionedName = nameStr + "_v" + std::to_string(newVersion);
+        InternedString versionedNameInterned = ctx.pool.intern(versionedName);
+
+        // 3. Lower the module
+        auto irModule = lowerModule(ctx, module);
+        if (!irModule) {
+            throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
+                                   "Failed to lower module to LLVM IR");
+        }
+
+        // 4. Add new version to JIT
+        ctx.jit.addModule(std::move(irModule), versionedNameInterned);
+
+        // 5. Remove old version
+        if (ctx.jit.hasModule(name)) {
+            ctx.jit.removeModule(name);
+        }
+
+        // 6. Update registry
+        ctx.moduleRegistry.registerModule(versionedNameInterned, module);
+        ctx.moduleRegistry.setActiveModule(versionedNameInterned);
+
+        if (ctx.options.verbose) {
+            std::cout << "Hot-reload successful: " << nameStr << " -> " << versionedName << "\n";
+        }
+
+        return true;
+
+    } catch (const std::exception& e) {
+        ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
+                              "hot-reload failed: ", e.what());
+        throw InterpreterError(InterpreterError::Kind::HotReloadFailed, e.what());
+    }
+}
+
+bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, const std::string& name) {
+    InternedString nameInterned = ctx.pool.intern(name);
+    return hotReloadModule(ctx, module, nameInterned);
+}
+
+// ─── Foreign Libraries ──────────────────────────────────────────────────
+
+void registerLibrary(InterpreterContext& ctx, const std::string& name) {
+    try {
+        if (ctx.linker.isLoaded(name)) {
             return;
         }
-        m_context->linker.load(name);
-        m_context->linker.registerWithJIT(m_context->jit);
+        ctx.linker.load(name);
+        ctx.linker.registerWithJIT(ctx.jit);
     } catch (const std::exception& e) {
-        reportLibraryLoadError(m_context->diagnostics, name, e.what());
+        reportLibraryLoadError(ctx.diagnostics, name, e.what());
         throw InterpreterError(InterpreterError::Kind::LibraryLoadFailed, e.what());
     }
 }
 
-void Interpreter::registerLibraries(ModuleAST* module) {
-    if (!module) return;
-    registerLibraries(std::vector<ModuleAST*>{module});
-}
-
-void Interpreter::registerLibraries(const std::vector<ModuleAST*>& modules) {
-    for (ModuleAST* module : modules) {
-        registerLibrariesFromModule(module);
-    }
-}
-
-void Interpreter::registerLibrariesFromModule(ModuleAST* module) {
+void registerLibrariesFromModule(InterpreterContext& ctx, ModuleAST* module) {
     if (!module) return;
 
+    InternedString linkName = ctx.pool.intern("link");
     for (DeclAST* decl : module->decls) {
         for (AttributePtr attr : decl->attributes) {
-            if (attr->name == m_context->pool.intern("link")) {
+            if (attr->name == linkName) {
                 for (LiteralExprAST* arg : attr->args) {
                     if (arg->kind == LiteralKind::String || 
                         arg->kind == LiteralKind::RawString) {
-                        std::string libName = m_context->pool.lookup(arg->value);
-                        // Skip if it looks like a file path (has extension)
+                        std::string libName = ctx.pool.lookup(arg->value);
                         bool isPath = libName.find('/') != std::string::npos ||
                                       libName.find('\\') != std::string::npos ||
                                       libName.find('.') != std::string::npos;
                         if (!isPath) {
                             try {
-                                registerLibrary(libName);
+                                registerLibrary(ctx, libName);
                             } catch (const std::exception& e) {
-                                if (m_context->options.verbose) {
+                                if (ctx.options.verbose) {
                                     std::cerr << "Warning: " << e.what() << "\n";
                                 }
                             }
@@ -283,28 +362,77 @@ void Interpreter::registerLibrariesFromModule(ModuleAST* module) {
     }
 }
 
-// ─── Symbol Lookup ─────────────────────────────────────────────────────────
+void registerLibraries(InterpreterContext& ctx, ModuleAST* module) {
+    if (!module) return;
+    registerLibraries(ctx, std::vector<ModuleAST*>{module});
+}
 
-void* Interpreter::lookupSymbol(const std::string& name) {
-    if (!m_context->initialized) {
+void registerLibraries(InterpreterContext& ctx, const std::vector<ModuleAST*>& modules) {
+    for (ModuleAST* module : modules) {
+        registerLibrariesFromModule(ctx, module);
+    }
+}
+
+// ─── Symbol Lookup ──────────────────────────────────────────────────────
+
+void* lookupSymbol(InterpreterContext& ctx, const std::string& name) {
+    if (!ctx.jit.isInitialized()) {
         return nullptr;
     }
     try {
-        return m_context->jit.lookupSymbol(name);
+        return ctx.jit.lookupSymbol(name);
     } catch (const std::exception& e) {
-        reportSymbolLookupError(m_context->diagnostics, name, e.what());
+        reportSymbolLookupError(ctx.diagnostics, name, e.what());
         return nullptr;
     }
 }
 
-void* Interpreter::lookupSymbol(InternedString name) {
-    return lookupSymbol(m_context->pool.lookup(name));
+void* lookupSymbol(InterpreterContext& ctx, InternedString name) {
+    if (!name.isValid()) {
+        return nullptr;
+    }
+    return lookupSymbol(ctx, ctx.pool.lookup(name));
 }
 
-// ─── Accessors ─────────────────────────────────────────────────────────────
+// ─── Accessors ──────────────────────────────────────────────────────────
 
-std::vector<ModuleInfo*> Interpreter::getLoadedModules() {
-    return m_context->modules.getAllModules();
+std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx) {
+    return ctx.moduleRegistry.getAllModules();
+}
+
+// ─── Helper Implementations ─────────────────────────────────────────────
+
+static InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint) {
+    if (!entryPoint.isValid()) {
+        return InternedString();
+    }
+
+    // Check if the entry point exists in the JIT
+    void* ptr = ctx.jit.lookupSymbol(entryPoint);
+    if (ptr) {
+        return entryPoint;
+    }
+
+    // Try the entry point as a string
+    std::string name = ctx.pool.lookup(entryPoint);
+    ptr = ctx.jit.lookupSymbol(name);
+    if (ptr) {
+        return entryPoint;
+    }
+
+    return InternedString();
+}
+
+static std::unique_ptr<llvm::Module> lowerModule(InterpreterContext& ctx, ModuleAST* module) {
+    // This is a stub - actual implementation would use the code generation
+    // pipeline to convert AST to LLVM IR.
+    // In the real implementation, you'd call:
+    // return codegen::generateIR(ctx, module);
+    
+    // Placeholder: create an empty module
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto mod = std::make_unique<llvm::Module>("module", *context);
+    return mod;
 }
 
 } // namespace interpreter
