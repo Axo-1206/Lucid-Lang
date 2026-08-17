@@ -908,78 +908,109 @@ resolveType(type, ctx)
 
 ### Capture Analysis (`CaptureAnalysis.cpp`)
 
-Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function).
+Capture analysis detects which variables from outer scopes are referenced inside a closure (anonymous function or nested function). It also performs escape analysis to determine if closures must be heap-allocated.
 
 **Purpose:**
 - Detects which variables are captured by closures and nested functions
 - Validates that captured variables are not borrowed types (`&T`, `[_]T`)
 - Validates that captured variables are not linear types (`Future<T>`, `Thread<T>`)
 - Stores capture information on the AST node for code generation
-- Marks closures as escaping when they are returned from functions
+- Marks closures as returned when they escape via function return
 
 ```cpp
-analyzeCaptures(expr, ctx)
+analyzeCaptures(expr, ctx)           // Analyze anonymous function
 │
 ├── // EARLY EXIT
 │   └── if expr->body is null: return
 │
 ├── // COLLECT CAPTURES
-│   └── collectCaptures(body, ctx, expr)
+│   └── walkStmt(expr->body)
 │       │
-│       └── // WALK AST
+│       └── // WALK AST with localScopes tracking
+│           │
+│           ├── // BlockStmt: pushLocalScope() / popLocalScope()
+│           │
+│           ├── // DeclStmt: register var after walking init → declareLocal()
+│           │
+│           ├── // ForStmt: pushLocalScope() for binders
 │           │
 │           ├── // IdentifierExpr
 │           │   │   Check if this identifier is a capture
-│           │   ├── if isGenericParam(name) → NOT CAPTURE
-│           │   ├── if isInCurrentScope(name) → NOT CAPTURE
-│           │   ├── if isModuleMember(name) → NOT CAPTURE
+│           │   ├── if ctx.isModuleMember(name) → NOT CAPTURE
+│           │   ├── if isOwnParam(name) → NOT CAPTURE
+│           │   ├── if isLocallyDeclared(name) → NOT CAPTURE
+│           │   ├── if ctx.isGenericParam(name) → NOT CAPTURE
+│           │   ├── if !ctx.lookupValue(name) → NOT CAPTURE
 │           │   └── else → CAPTURE
 │           │
-│           ├── // Nested AnonFuncExpr
-│           │   └── analyzeCaptures(nested, ctx)
-│           │
-│           ├── // FuncDecl
-│           │   └── skip (captures analyzed separately)
-│           │
-│           └── // Other AST nodes
-│               └── recurse into children
+│           └── // AnonFuncExpr (nested closure)
+│               │   Propagate captures upward
+│               └── propagateCapture(childCapture)
 │
-├── // VALIDATE CAPTURES
+├── // VALIDATE CAPTURES (validateAndAddCapture)
 │   └── for each capture:
+│       ├── // Deduplicate: if seenCaptures.contains(name) → skip
 │       ├── // Rule 1: No borrowed types
 │       │   └── if isBorrowedType(decl->type):
-│       │       ├── error: closure cannot capture borrowed type
-│       │       └── note: "Only owned values can be captured by closures"
+│       │       └── error: closure cannot capture borrowed type
 │       ├── // Rule 2: No linear types
 │       │   └── if decl->type is FutureTypeAST or ThreadTypeAST:
-│       │       ├── error: closure cannot capture linear type
-│       │       └── note: "Future<T> and Thread<T> cannot be captured"
+│       │       └── error: closure cannot capture linear type
 │       └── // Add to capture list
-│           └── expr->captures.push_back(capture)
+│           └── CapturedVariable{decl, byReference, index}
 │
 └── // STORE RESULT
-    └── expr->hasClosure = !expr->captures.empty()
+    └── expr->captures = captureSpan, expr->hasClosure = true
 ```
 
 ```cpp
-markClosureIfEscaping(expr, ctx)
+analyzeCaptures(FuncDeclAST* func, ctx)    // Analyze nested function
+│
+├── // EARLY EXIT
+│   ├── if !func || !func->body → return
+│   └── if ctx.getClosureDepth() == 0 → return (top-level function cannot capture)
+│
+├── // COLLECT CAPTURES (same as anonymous function)
+│   └── walkStmt(func->body)
+│
+└── // STORE RESULT
+    └── func->captures = captureSpan, func->hasClosure = true
+```
+
+```cpp
+markClosureIfEscaping(expr, ctx)         // Detect closures returned from functions
 │
 ├── // PURPOSE
 │   │   Detects when a closure is returned from a function and must be
 │   │   heap-allocated because it outlives the function call.
-│   └── Escaping closures are heap-allocated; non-escaping closures are stack-allocated
+│   └── Uses `isReturned` field (not `isEscaping`)
 │
-├── // CASE 1: IdentifierExpr
-│   │   Returning a named function or closure variable
-│   ├── lookupValue(name) → FuncDeclAST
-│   ├── if func is nested (closureDepth > 0) and is const:
-│   │   └── func->isEscaping = true
-│   └── if func is AnonFuncExpr and is const:
-│       └── func->isEscaping = true
+├── // DISPATCH BY EXPRESSION KIND
 │
-└── // CASE 2: AnonFuncExpr
-    │   Directly returning an anonymous function literal
-    └── expr->isEscaping = true
+    ├── AnonFuncExpr
+    │   └── expr->isReturned = true
+    │
+    ├── IdentifierExpr
+    │   ├── if !ctx.isModuleMember(id->name):
+    │   │   └── funcDecl->isReturned = true
+    │   └── else: return (module members are static)
+    │
+    ├── ModuleAccessExpr
+    │   └── return (static member - no escaping needed)
+    │
+    ├── FieldAccessExpr
+    │   └── if object is module member: return
+    │       else: conservative mark
+    │
+    ├── CallExpr
+    │   └── resolveCalleeOrError() → may return closure
+    │
+    ├── BinaryExpr → recurse into left and right
+    ├── IfExpr → recurse into then and else
+    ├── ArrayLiteralExpr → recurse into all elements
+    ├── StructLiteralExpr → recurse into all field inits
+    ├── PipelineExpr → recurse into seed and steps
+    └── ComposeExpr → recurse into left and operands
 ```
 
 **Capture Detection Walkthrough:**
@@ -999,15 +1030,19 @@ Step 1: analyzeCaptures() called on the inner anonymous function
 Walk AST of the anonymous function body:
 ├── BinaryExpr (count += step)
 │   ├── left: IdentifierExpr("count")
-│   │   ├── isInCurrentScope("count")? → false
-│   │   ├── isModuleMember("count")? → false
-│   │   └── → CAPTURE (count is captured from outer scope)
+│   │   ├── ctx.isModuleMember("count")? → false
+│   │   ├── isOwnParam("count")? → false
+│   │   ├── isLocallyDeclared("count")? → false (no let/const in body)
+│   │   ├── ctx.isGenericParam("count")? → false
+│   │   ├── ctx.lookupValue("count")? → true (from outer scope)
+│   │   └── → CAPTURE
 │   └── right: IdentifierExpr("step")
-│       ├── isInCurrentScope("step")? → true (parameter)
+│       ├── isOwnParam("step")? → true (parameter)
 │       └── → NOT CAPTURE
 └── ReturnStmt (return count)
     └── IdentifierExpr("count")
-        ├── isInCurrentScope("count")? → false
+        ├── isOwnParam("count")? → false
+        ├── isLocallyDeclared("count")? → false
         └── → CAPTURE (already captured)
 
 Step 2: Validate captures
@@ -1017,20 +1052,79 @@ Step 3: Store result
 └── expr->captures = count, expr->hasClosure = true
 
 Step 4: markClosureIfEscaping() called on return expression
-└── expr is AnonFuncExpr → expr->isEscaping = true
+└── expr is AnonFuncExpr → expr->isReturned = true
     └── Closure escapes → heap-allocated in code generation
+```
+
+**Transitive Capture Propagation (Multi-Level Closures):**
+
+```cpp
+// Example: three-level nested closure
+const outer () -> (int) -> int = {
+    let x int = 10
+    return (a int) -> int {
+        // This closure captures x (from outer) → stored in its capture list
+        return (b int) -> int {
+            // This innermost closure captures x (from outer's outer)
+            // It DOES NOT see x in its own capture list - it's not in its
+            // immediate outer closure's parameters or locals.
+            // 
+            // propagateCapture() pulls x from the intermediate closure's
+            // capture list and adds it to the intermediate closure's own
+            // capture list, so CodeGen can properly build all environments.
+            return x + a + b
+        }
+    }
+}
+```
+
+**Transitive Propagation Flow:**
+```
+1. Innermost closure captures x from outer's outer
+2. Inner closure's capture list has x (from its analysis)
+3. Outer closure's walk sees AnonFuncExpr (inner)
+4. propagateCapture(x) adds x to outer's capture list
+5. All closures have the variables they need in their own capture lists
+```
+
+**Capture Storage on AST Nodes:**
+
+```cpp
+// AnonFuncExprAST fields for capture analysis
+struct AnonFuncExprAST {
+    bool hasClosure = false;                    // true if captures any variables
+    ArenaSpan<CapturedVariable> captures;       // list of captured variables
+    bool isReturned = false;                    // true if returned from function
+};
+
+// FuncDeclAST fields for capture analysis
+struct FuncDeclAST {
+    bool hasClosure = false;                    // true if nested function captures
+    ArenaSpan<CapturedVariable> captures;       // list of captured variables
+    bool isReturned = false;                    // true if returned from function
+};
+
+// CapturedVariable structure (actual implementation)
+struct CapturedVariable {
+    ValueDeclAST* decl;                         // variable declaration
+    bool byReference;                           // true if captured by reference
+    size_t index;                               // position in environment struct
+};
 ```
 
 **Key Relationships:**
 
-| Component                 | Responsibility                                  | Called From                                  |
-| ------------------------- | ----------------------------------------------- | -------------------------------------------- |
-| `analyzeCaptures()`       | Main entry point for capture analysis           | `resolveAnonFuncExpr()`, `resolveFuncDecl()` |
-| `collectCaptures()`       | Walks AST to find identifier references         | `analyzeCaptures()`                          |
-| `isInCurrentScope()`      | Checks if variable is in current function scope | `collectCaptures()`                          |
-| `isModuleMember()`        | Checks if variable is a module-level global     | `collectCaptures()`                          |
-| `isBorrowedType()`        | Validates captured type is owned                | `analyzeCaptures()`                          |
-| `markClosureIfEscaping()` | Detects escaping closures for heap allocation   | `resolveReturnStmt()`                        |
+| Component                              | Responsibility                                 | Called From                                     |
+| -------------------------------------- | ---------------------------------------------- | ----------------------------------------------- |
+| `analyzeCaptures()`                    | Main entry point for capture analysis          | `resolveAnonFuncExpr()`, `resolveFuncDecl()`    |
+| `walkStmt()` / `walkExpr()`            | Walks AST to find identifier references        | `analyzeCaptures()`                             |
+| `isCapture()`                          | Determines if identifier is a capture          | `processIdentifier()`                           |
+| `isLocallyDeclared()`                  | Checks if variable is declared in closure body | `isCapture()`                                   |
+| `pushLocalScope()` / `popLocalScope()` | Tracks block-scoped declarations               | `walkStmt()` for BlockStmt, ForStmt             |
+| `declareLocal()`                       | Registers a local variable in current scope    | `walkStmt()` for DeclStmt, AsyncStmt, SpawnStmt |
+| `validateAndAddCapture()`              | Validates capture rules and adds to list       | `processIdentifier()`, `propagateCapture()`     |
+| `propagateCapture()`                   | Propagates captures upward through nesting     | `walkExpr()` for nested AnonFuncExpr            |
+| `markClosureIfEscaping()`              | Detects escaping closures for heap allocation  | `resolveReturnStmt()`                           |
 
 **Important Rules:**
 
@@ -1041,54 +1135,29 @@ Step 4: markClosureIfEscaping() called on return expression
 | **Module Members**        | Module-level globals are not captured (they're global)          | `const PI f64 = 3.14; return (r f64) -> f64 { return PI * r * r }` ✅             |
 | **Generic Parameters**    | Generic parameters are not captured (resolved at instantiation) | `<T> const id (v T) -> (T) -> T = { return (x T) -> T { return x } }` ✅          |
 | **Local Variables**       | Variables from outer function scopes are captured               | `let count int = 0; return () -> int { return count }` ✅                         |
-| **Escaping Closures**     | Closures returned from functions are heap-allocated             | `return (x int) -> int { return x + 1 }` → heap allocated                        |
+| **Escaping Closures**     | Closures returned from functions are heap-allocated             | `return (x int) -> int { return x + 1 }` → heap allocated (`isReturned = true`)  |
 | **Non-Escaping Closures** | Closures used locally are stack-allocated                       | `let f (int) -> int = (x int) -> int { return x + 1 }; use(f)` → stack allocated |
-
-**Capture Storage on AST Nodes:**
-
-```cpp
-// AnonFuncExprAST fields for capture analysis
-struct AnonFuncExprAST {
-    bool hasClosure = false;                    // true if captures any variables
-    std::vector<CapturedVariable> captures;     // list of captured variables
-    bool isEscaping = false;                    // true if returned from function
-};
-
-// FuncDeclAST fields for capture analysis
-struct FuncDeclAST {
-    bool hasClosure = false;                    // true if nested function captures
-    std::vector<CapturedVariable> captures;     // list of captured variables
-    bool isEscaping = false;                    // true if returned from function
-};
-
-// CapturedVariable structure
-struct CapturedVariable {
-    InternedString name;                        // variable name
-    ValueDeclAST* decl;                         // variable declaration
-    TypeAST* type;                              // variable type
-    bool isMutable;                             // true if variable is let (mutable)
-    bool isCapturedByRef;                       // true if captured by reference
-};
-```
 
 **Key Implementation Notes:**
 
 1. **Capture Detection**: The analyzer walks the AST recursively, checking every `IdentifierExpr` node to determine if it references a variable from an outer scope.
 
 2. **Scope Determination**: A variable is considered a capture if it is:
+   - Not a module member (global)
+   - Not a parameter of the current function/closure (`isOwnParam`)
+   - Not declared within the body being walked (`isLocallyDeclared`)
    - Not a generic parameter
-   - Not in the current scope (local variable or parameter)
-   - Not a module member (top-level declaration)
+   - Found in some outer scope via `ctx.lookupValue()`
 
-3. **Validation Rules**: Captures are validated immediately when detected:
+3. **Local Scope Tracking**: `localScopes` is a stack of block-scoped frames that tracks variable declarations within the closure body. This is necessary because capture analysis runs as a second pass after the first pass's scopes have been popped. Without this, a name declared inside the body that shadows an outer variable would incorrectly resolve to the outer one.
+
+4. **Transitive Capture Propagation**: When a nested closure captures a variable, the enclosing closure must also capture it (even if it doesn't reference it directly) so CodeGen's flat value map has the correct value when building the nested closure's environment.
+
+5. **Validation Rules**: Captures are validated immediately when detected:
    - Borrowed types (`&T`, `[_]T`) are rejected with a clear error message
    - Linear types (`Future<T>`, `Thread<T>`) are rejected
 
-4. **Escape Analysis**: `markClosureIfEscaping()` is called during return statement resolution to detect closures that outlive the function call and must be heap-allocated.
-
-5. **Nested Closures**: Nested closures are analyzed recursively, with each closure maintaining its own capture list.
-
----
+6. **Escape Analysis**: `markClosureIfEscaping()` is called during return statement resolution to detect closures that outlive the function call and must be heap-allocated. Uses `isReturned` field, not `isEscaping`.
 
 ### Type Narrowing (`TypeNarrowHelpers.cpp`)
 
