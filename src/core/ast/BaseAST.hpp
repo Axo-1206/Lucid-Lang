@@ -775,63 +775,55 @@ struct TypeDeclAST : DeclAST {
 // ModuleAST — root node for a single translation unit.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Root node for a single translation unit (source file).
+/// @brief Root node for a source file module.
 /// 
-/// This node represents an entire `.luc` file after parsing. It owns all
-/// top‑level declarations and provides file‑level context for semantic passes.
+/// A ModuleAST represents the entire parsed contents of a single `.luc` file.
 /// 
-/// @par Memory Layout (64-bit, typical)
-///   - BaseAST overhead        : ~20 bytes (vtable + kind + loc + flags + padding)
-///   - `packageName`           : 4 bytes (InternedString is a uint32_t)
-///   - `filePath`              : 4 bytes (InternedString)
-///   - `decls` (ArenaSpan)     : 16 bytes (ptr + size, each 8 bytes)
-///   @n Total: ~44 bytes per file (excluding the actual declaration nodes)
+/// ─── Imports Storage ──────────────────────────────────────────────────────
 /// 
-/// @note Why separate `packageName` and `filePath`?
-///   - `packageName` is the identifier after `package` (e.g., "math").
-///     Used for cross‑file symbol resolution within the same package.
-///   - `filePath` is the relative path from the package root (e.g., "math/vec2.luc").
-///     Used for error messages, debug info, and module identity.
-///   Both are interned to avoid duplicate string storage across the AST.
+/// The `imports` field stores the resolved file paths of all imported modules.
+/// This is a **derived view** computed during parsing by ModuleResolver.
 /// 
-/// @par Declaration Ownership
-///   The `decls` span holds all top‑level declarations in source order.
-///   Each declaration is an ASTPtr<DeclAST> (unique_ptr with no‑op deleter).
-///   The underlying memory is arena‑allocated; the unique_ptr is just an
-///   ownership wrapper that does not call delete.
+/// Why not store ImportDeclAST*?
+///   - ImportDeclAST stores the user‑written path (e.g., "io.math")
+///   - The CLI and Interpreter need the resolved file path (e.g., "io/math.luc")
+///   - The resolved path is the stable key for dependency tracking, JIT module
+///     naming, and the file watcher.
 /// 
-/// @field packageName The package name declared by `package foo` at file start.
-/// @field filePath    Relative path from package root (e.g., "math/vec2.luc").
-/// @field decls       Top‑level declarations in source order.
+/// The user‑written path (ImportDeclAST::path) is preserved on the AST for:
+///   - Error messages (show the user what they wrote)
+///   - Alias resolution (ImportDeclAST::alias)
 /// 
-/// @note Diagnostics for this module are NOT stored here. They live in the
-///       `diagnostic` namespace's own whole-session list (see
-///       Diagnostic.hpp), keyed by `filePath` — get them with
-///       `diagnostic::getAllForFile(module->filePath)`. Storing a second
-///       copy on the node itself was removed once the diagnostic system
-///       started tracking file association on its own (see
-///       `diagnostic::pushSource()`/`getAllForFile()`); keeping one here
-///       too would just be the same data living in two places again, the
-///       exact duplication the diagnostic-system rewrite was meant to
-///       eliminate.
+/// The `imports` field is purely a cache for:
+///   - CLI DependencyGraph (build reverse dependencies)
+///   - Interpreter ModuleLoader (extract dependencies for hot reload)
+///   - LSP (incremental parsing)
 /// 
-///       `hasErrors` remains as a cheap cached bool — a single flag, set
-///       once from `diagnostic::hasErrorsInCurrentSource()` right after
-///       this module finishes parsing/analysis, so callers that only need
-///       "did this succeed" don't have to make a lookup (or pull in
-///       Diagnostic.hpp at all) just to check a yes/no. That's a small
-///       derived snapshot, not a duplicate store, which is why it stayed
-///       while `errors` didn't.
+/// @note This field is populated during parsing. It is NOT user input — it is
+///       the resolved, canonical path to the imported file.
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString       filePath;
-    ArenaSpan<DeclAST*>   decls;
+    InternedString filePath;        ///< Resolved file path of this module
+    ArenaSpan<DeclAST*> decls;      ///< Top-level declarations
     bool hasErrors = false;
+
+    /// @brief Resolved import paths of this module.
+    /// 
+    /// These are the resolved file paths (e.g., "io/math.luc", "std/array.luc")
+    /// NOT the user‑written import paths (e.g., "io.math", "std.array").
+    /// 
+    /// Why this is important:
+    ///   - The user‑written path is ambiguous (dots vs slashes, no extension)
+    ///   - The resolved path is concrete (direct file system mapping)
+    ///   - Resolved paths are stable keys across the entire toolchain
+    /// 
+    /// Populated by: Parser (via ModuleResolver::resolveImportPath())
+    /// Used by:      CLI, Interpreter, LSP
+    std::vector<InternedString> imports;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };
-using ModuleASTPtr = ModuleAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GenericParamDeclAST — a generic type parameter declaration.

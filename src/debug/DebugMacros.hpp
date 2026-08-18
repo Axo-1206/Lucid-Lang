@@ -12,7 +12,7 @@
  *   LOG_DETAIL("Parser", "Token: ", tok.value);        // Verbose detail (level 2)
  * 
  *   // Any type with operator<< works:
- *   LOG_PARSER("Module '", usePath, "' not found");
+ *   LOG_PARSER("Module '", importPath, "' not found");
  *   LOG_PARSER("Expected ", expected, " but got ", actual);
  * 
  * ## Build Configuration
@@ -263,7 +263,7 @@ inline void logMessage(const char* component, int level, const std::string& mess
  * LOG_PARSER("Parsed declaration #", declCount, " (", kindName, ")");
  * 
  * // Logging with InternedString (resolved to string)
- * LOG_PARSER("Module '", usePath, "' not found");
+ * LOG_PARSER("Module '", importPath, "' not found");
  * 
  * // Logging with mixed types
  * LOG_PARSER("Expected ", expected, " but got ", actual);

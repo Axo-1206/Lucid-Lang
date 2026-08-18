@@ -682,8 +682,7 @@ lucid/
     ├── cli/                            # command-line interface
     │   ├── commands.hpp/cpp            # command dispatch
     │   ├── run.hpp                     # lucid run
-    │   ├── build.hpp                   # lucid build
-    │   └── repl.hpp                    # lucid repl
+    │   └── build.hpp                   # lucid build
     │
     └── debug/                          # developer tools (not user-facing)
 

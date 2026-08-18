@@ -55,7 +55,7 @@ namespace parser {
  * ModuleResolver resolver(packageRoot, pool);
  * 
  * // Resolve import
- * InternedString filePath = resolver.resolveUsePath("std.io");
+ * InternedString filePath = resolver.resolveImportPath("std.io");
  * 
  * // Check cache
  * if (resolver.isModuleParsed(filePath)) {
@@ -90,10 +90,10 @@ public:
      *   "math"           → "math.luc"
      *   "graphics.gl"    → "graphics/gl.luc"
      * 
-     * @param usePath The import path (e.g., "std.io")
+     * @param importPath The import path (e.g., "std.io")
      * @return InternedString The resolved file path, or empty if not found
      */
-    InternedString resolveUsePath(InternedString usePath);
+    InternedString resolveImportPath(InternedString importPath);
     
     /**
      * @brief Get the full filesystem path for a resolved module.
@@ -106,10 +106,10 @@ public:
     /**
      * @brief Check if an import path is valid.
      * 
-     * @param usePath The import path to check
+     * @param importPath The import path to check
      * @return true if the path resolves to an existing file
      */
-    bool isValidUsePath(InternedString usePath) const;
+    bool isValidImportPath(InternedString importPath) const;
     
     // ─── Module Caching ───────────────────────────────────────────────────
     
@@ -193,7 +193,7 @@ private:
     // ─── Internal State ──────────────────────────────────────────────────
     
     // Map from import path (e.g., "std.io") to resolved file path (e.g., "std/io.luc")
-    std::unordered_map<InternedString, InternedString> usePathToFile_;
+    std::unordered_map<InternedString, InternedString> importPathToFile_;
     
     // Map from resolved file path to parsed AST
     std::unordered_map<InternedString, ModuleAST*> parsedModules_;
@@ -212,10 +212,10 @@ private:
     /**
      * @brief Convert an import path to a relative file path.
      * 
-     * @param usePath The import path (e.g., "std.io")
+     * @param importPath The import path (e.g., "std.io")
      * @return std::string The relative file path (e.g., "std/io.luc")
      */
-    std::string usePathToRelativePath(InternedString usePath) const;
+    std::string importPathToRelativePath(InternedString importPath) const;
     
     /**
      * @brief Resolve a relative path to an absolute path.

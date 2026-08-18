@@ -1,22 +1,20 @@
-/**
- * @file ParserContext.hpp
- * @brief Shared parsing context across all files.
- * 
- * ParserContext holds state that is shared across all files being parsed:
- * - StringPool and ASTArena (shared memory)
- * - ModuleResolver (module coordination)
- * - DiagnosticEngine (error reporting)
- * - Context tracking (syntactic context stack)
- * 
- * @design_decision Diagnostics use DiagnosticEngine directly
- *   ParserContext holds a reference to DiagnosticEngine. Error reporting
- *   goes through ctx.diagnostics.error() directly, just like SemaContext.
- *   No convenience wrappers - this maintains consistency across the codebase.
- * 
- * @design_decision TokenStream is separate from ParserContext
- *   TokenStream is per-file (the "tape"), ParserContext is cross-file
- *   (shared state). They are composed in the parser, not merged.
- */
+/// @file ParserContext.hpp
+/// @brief Shared parsing context across all files.
+/// 
+/// ParserContext holds state that is shared across all files being parsed:
+/// - StringPool and ASTArena (shared memory)
+/// - ModuleResolver (module coordination)
+/// - DiagnosticEngine (error reporting)
+/// - Context tracking (syntactic context stack)
+/// 
+/// @design_decision Diagnostics use DiagnosticEngine directly
+///   ParserContext holds a reference to DiagnosticEngine. Error reporting
+///   goes through ctx.diagnostics.error() directly, just like SemaContext.
+///   No convenience wrappers - this maintains consistency across the codebase.
+/// 
+/// @design_decision TokenStream is separate from ParserContext
+///   TokenStream is per-file (the "tape"), ParserContext is cross-file
+///   (shared state). They are composed in the parser, not merged.
 
 #pragma once
 
@@ -35,12 +33,10 @@
 
 namespace parser {
 
-/**
- * @brief The kind of syntactic construct currently being parsed.
- *
- * Pushed/popped as the parser enters and leaves nested constructs.
- * Used by error recovery to pick a sensible follow-set.
- */
+/// @brief The kind of syntactic construct currently being parsed.
+/// 
+/// Pushed/popped as the parser enters and leaves nested constructs.
+/// Used by error recovery to pick a sensible follow-set.
 enum class SyntacticContext {
     TopLevel,       // File-level declarations
     Attribute,      // @[ ... ]
@@ -76,41 +72,40 @@ struct ContextFrame {
     SourceLocation openedAt;
 };
 
-/**
- * @brief Shared parsing context across all files.
- * 
- * ## Usage
- * 
- * ```cpp
- * ParserContext ctx(pool, arena, resolver, diagnostics);
- * TokenStream stream(tokens);
- * 
- * // Parse a file
- * auto* ast = parse(stream, ctx);
- * ```
- * 
- * ## Error Reporting
- * 
- * Use ctx.diagnostics directly (consistent with SemaContext):
- * ```cpp
- * ctx.diagnostics.error(DiagCode::Syntax_ExpectedToken, node, "expected ';'");
- * ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc, "expected ';'");
- * ```
- */
+/// @brief Shared parsing context across all files.
+/// 
+/// ## Usage
+/// 
+/// ```cpp
+/// ParserContext ctx(pool, arena, resolver, diagnostics);
+/// TokenStream stream(tokens);
+/// 
+/// // Parse a file
+/// auto* ast = parse(stream, ctx);
+/// ```
+/// 
+/// ## Error Reporting
+/// 
+/// Use ctx.diagnostics directly (consistent with SemaContext):
+/// ```cpp
+/// ctx.diagnostics.error(DiagCode::Syntax_ExpectedToken, node, "expected ';'");
+/// ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc, "expected ';'");
+/// ```
 struct ParserContext {
-    // ─────────────────────────────────────────────────────────────────────────
-    // Shared Resources
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ─── Shared Resources ──────────────────────────────────────────────
     StringPool& pool;
     ASTArena& arena;
     DiagnosticEngine& diagnostics;
     ModuleResolver* resolver = nullptr;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Syntactic Context Stack
-    // ─────────────────────────────────────────────────────────────────────────
+    // @brief The module currently being parsed.
+    // 
+    // This is used by parseImportDecl() to populate the module's imports.
+    // It is set in parse() before parsing declarations and reset to nullptr
+    // after the module is complete.
+    ModuleAST* currentModule = nullptr;
 
+    // ─── Syntactic Context Stack ──────────────────────────────────────
     std::vector<ContextFrame> contextStack;
 
     void pushContext(SyntacticContext kind, const SourceLocation& loc) {
@@ -136,51 +131,38 @@ struct ParserContext {
 
     size_t contextDepth() const { return contextStack.size(); }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Doc Comment Harvesting
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    std::optional<DocComment> pendingDoc;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Constructor
-    // ─────────────────────────────────────────────────────────────────────────
-    
+    // ─── Constructor ──────────────────────────────────────────────────────
     ParserContext(StringPool& p, ASTArena& a, DiagnosticEngine& d, ModuleResolver* r = nullptr)
         : pool(p)
         , arena(a)
         , diagnostics(d)
-        , resolver(r)
-    {}
-    
-    // ─── Query Helpers ─────────────────────────────────────────────────
-    
+        , resolver(r) {}
+
     bool canContinue(int maxErrors = 100) const {
         return diagnostics.canContinue(maxErrors);
     }
 };
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RAII Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief RAII guard for syntactic context tracking.
- * 
- * Pushes a SyntacticContext frame on construction and pops it on destruction.
- * 
- * ## Usage
- * 
- * ```cpp
- * ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
- *     if (!stream.check(TokenType::AT_SIGN)) return {};
- *     stream.consume(); // consume '@'
- *     stream.consume(); // consume '['
- *     ScopedContext guard(ctx, SyntacticContext::Attribute, stream.currentLoc());
- *     // ... parse ...
- * }
- * ```
- */
+/// @brief RAII guard for syntactic context tracking.
+/// 
+/// Pushes a SyntacticContext frame on construction and pops it on destruction.
+/// 
+/// ## Usage
+/// 
+/// ```cpp
+/// ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
+///     if (!stream.check(TokenType::AT_SIGN)) return {};
+///     stream.consume(); // consume '@'
+///     stream.consume(); // consume '['
+///     ScopedContext guard(ctx, SyntacticContext::Attribute, stream.currentLoc());
+///     // ... parse ...
+/// }
+/// ```
 struct ScopedContext {
     ScopedContext(ParserContext& ctx, SyntacticContext kind, const SourceLocation& loc)
         : ctx_(ctx) {
@@ -200,21 +182,19 @@ private:
     ParserContext& ctx_;
 };
 
-/**
- * @brief RAII guard for entering a fresh file's parsing state.
- * 
- * Saves and restores the context stack for recursive parsing of imported files.
- * 
- * ## Usage
- * 
- * ```cpp
- * ModuleAST* parse(TokenStream& stream, ParserContext& ctx) {
- *     ScopedFileContext fileContext(ctx);
- *     // ... parse ...
- *     return module;
- * }
- * ```
- */
+/// @brief RAII guard for entering a fresh file's parsing state.
+/// 
+/// Saves and restores the context stack for recursive parsing of imported files.
+/// 
+/// ## Usage
+/// 
+/// ```cpp
+/// ModuleAST* parse(TokenStream& stream, ParserContext& ctx) {
+///     ScopedFileContext fileContext(ctx);
+///     // ... parse ...
+///     return module;
+/// }
+/// ```
 struct ScopedFileContext {
     explicit ScopedFileContext(ParserContext& ctx)
         : ctx_(ctx)

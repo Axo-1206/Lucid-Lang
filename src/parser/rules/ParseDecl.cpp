@@ -47,13 +47,14 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    // Build full import path
+    // ─── Build full import path ──────────────────────────────────────────
+    // This is the user‑written logical path (e.g., "io.math")
     std::string fullPath;
     for (size_t i = 0; i < pathParts.size(); ++i) {
         if (i > 0) fullPath += ".";
         fullPath += std::string(ctx.pool.lookup(pathParts[i]));
     }
-    InternedString usePath = ctx.pool.intern(fullPath);
+    InternedString importPath = ctx.pool.intern(fullPath);
     
     // 3. Determine the alias
     InternedString alias;
@@ -77,33 +78,49 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // 4. Create the ImportDeclAST
-    auto* importDecl = ctx.arena.make<ImportDeclAST>(usePath, alias);
+    auto* importDecl = ctx.arena.make<ImportDeclAST>(importPath, alias);
     importDecl->loc = loc;
     
-    // 5. Import the module - let parse() handle all checks
+    // 5. Resolve the import path to a file path ──────────────────────────
+    // This converts "io.math" → "io/math.luc"
+    // The resolved path is the canonical key used by the CLI, Interpreter, and LSP.
     if (!ctx.resolver) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
                                 "no module resolver available for '", fullPath, "'");
         return importDecl;
     }
 
-    InternedString filePath = ctx.resolver->resolveUsePath(usePath);
-    if (!filePath.isValid()) {
+    InternedString resolvedPath = ctx.resolver->resolveImportPath(importPath);
+    if (!resolvedPath.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
                                 "module '", fullPath, "' not found");
         return importDecl;
     }
 
-    // Check if already parsed (cache check - this is fine here)
-    if (!ctx.resolver->getParsedModule(filePath)) {
-        std::string pathStr = std::string(ctx.pool.lookup(filePath));
-        std::string source = ctx.resolver->readModuleSource(filePath);
+    // ─── Store resolved path on current module ──────────────────────
+    // This is NOT the user‑written path ("io.math").
+    // This is the resolved filesystem path ("io/math.luc").
+    // Used by: CLI (DependencyGraph), Interpreter (ModuleLoader), LSP
+    if (ctx.currentModule) {
+        ctx.currentModule->imports.push_back(resolvedPath);
+    } else {
+        // Should never happen — parse() always sets ctx.currentModule
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
+                                "internal error: no current module for import '", fullPath, "'");
+    }
+
+    // 6. Parse the imported module ────────────────────────────────────────
+    // parse() will handle:
+    //   - Cache checking
+    //   - Circular import detection (via ScopedParsingGuard + isParsing())
+    //   - Lexing
+    //   - Actual parsing
+    //   - Registering the module in ModuleResolver::parsedModules_
+    if (!ctx.resolver->getParsedModule(resolvedPath)) {
+        std::string pathStr = std::string(ctx.pool.lookup(resolvedPath));
+        std::string source = ctx.resolver->readModuleSource(resolvedPath);
         
-        // parse() will handle:
-        //   - Cache checking
-        //   - Circular import detection (via ScopedParsingGuard + isParsing())
-        //   - Lexing
-        //   - Actual parsing
+        // parse() will detect cycles via isParsing() + ScopedParsingGuard
         parse(pathStr, source, ctx);
     }
     // If already parsed, we just use the cached version (already loaded)

@@ -169,7 +169,7 @@ parseImportDecl(stream, ctx)
 ├── consume 'import'
 ├── parseImportPath(stream, ctx)                        [Helpers.cpp]
 ├── 'parse' alias (optional 'as' 'IDENTIFIER')
-├── ctx.resolver->resolveUsePath(usePath)
+├── ctx.resolver->resolveImportPath(importPath)
 ├── if not ctx.resolver->getParsedModule(filePath)     (check cache)
 │   ├── std::string source = ctx.resolver->readModuleSource(filePath)
 │   └── parse(filePath, source, ctx)  ◄── recursive call (imports)
@@ -843,15 +843,15 @@ ModuleResolver
 │
 ├── 'packageRoot_' : filesystem::path
 ├── 'pool_' : StringPool&
-├── 'usePathToFile_' : unordered_map<InternedString, InternedString>
+├── 'importPathToFile_' : unordered_map<InternedString, InternedString>
 ├── 'parsedModules_' : unordered_map<InternedString, ModuleAST*>
 ├── 'moduleOrder_' : vector<InternedString>
 ├── 'parsingStack_' : vector<InternedString>
 └── 'resolvedPathCache_' : unordered_map<InternedString, filesystem::path>.
 
-resolveUsePath(usePath)
+resolveImportPath(importPath)
 │
-├── check cache: usePathToFile_
+├── check cache: importPathToFile_
 ├── convert "std.io" → "std/io.luc"
 ├── resolveRelativePath(relativePath)
 ├── cache result

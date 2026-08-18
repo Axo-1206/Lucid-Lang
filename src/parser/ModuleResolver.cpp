@@ -28,15 +28,15 @@ ModuleResolver::ModuleResolver(const std::filesystem::path& packageRoot, StringP
 // Path Resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
+InternedString ModuleResolver::resolveImportPath(InternedString importPath) {
     // 1. Check cache first
-    auto cacheIt = usePathToFile_.find(usePath);
-    if (cacheIt != usePathToFile_.end()) {
+    auto cacheIt = importPathToFile_.find(importPath);
+    if (cacheIt != importPathToFile_.end()) {
         return cacheIt->second;
     }
     
     // 2. Convert import path to relative file path
-    std::string relativePath = usePathToRelativePath(usePath);
+    std::string relativePath = importPathToRelativePath(importPath);
     if (relativePath.empty()) {
         return InternedString();
     }
@@ -45,7 +45,7 @@ InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
     std::filesystem::path foundPath = resolveRelativePath(relativePath);
     if (!foundPath.empty()) {
         InternedString result = pool_.intern(relativePath);
-        usePathToFile_[usePath] = result;
+        importPathToFile_[importPath] = result;
         resolvedPathCache_[result] = foundPath;
         return result;
     }
@@ -56,7 +56,7 @@ InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
         foundPath = resolveRelativePath(withoutExt);
         if (!foundPath.empty()) {
             InternedString result = pool_.intern(withoutExt);
-            usePathToFile_[usePath] = result;
+            importPathToFile_[importPath] = result;
             resolvedPathCache_[result] = foundPath;
             return result;
         }
@@ -95,9 +95,9 @@ std::filesystem::path ModuleResolver::getModuleFilePath(InternedString modulePat
     return result;
 }
 
-bool ModuleResolver::isValidUsePath(InternedString usePath) const {
+bool ModuleResolver::isValidImportPath(InternedString importPath) const {
     // Try to resolve without caching
-    std::string relativePath = usePathToRelativePath(usePath);
+    std::string relativePath = importPathToRelativePath(importPath);
     if (relativePath.empty()) {
         return false;
     }
@@ -177,8 +177,8 @@ bool ModuleResolver::moduleFileExists(InternedString filePath) const {
 // Private Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const {
-    std::string useStr = pool_.lookup(usePath);
+std::string ModuleResolver::importPathToRelativePath(InternedString importPath) const {
+    std::string useStr = pool_.lookup(importPath);
     if (useStr.empty()) {
         return "";
     }

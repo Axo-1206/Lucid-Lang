@@ -62,17 +62,17 @@ ModuleAST* parse(const std::string& path,
     
     InternedString filePath = ctx.pool.intern(path);
 
-    // Check cache
+    // ─── Check cache ──────────────────────────────────────────────────
     if (ctx.resolver) {
         if (auto* cached = ctx.resolver->getParsedModule(filePath)) {
             return cached;
         }
     }
 
-    // Save and reset context stack for this file
+    // ─── File context ──────────────────────────────────────────────────
     ScopedFileContext fileContext(ctx);
     
-    // Check circular dependency
+    // ─── Circular import detection ────────────────────────────────────
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
         LOG_PARSER("Circular import detected: ", path);
         auto* dummy = ctx.arena.make<ModuleAST>();
@@ -83,7 +83,7 @@ ModuleAST* parse(const std::string& path,
     
     ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
     
-    // Lex the source
+    // ─── Lex the source ────────────────────────────────────────────────
     std::vector<Token> tokens = lexer::tokenize(source, ctx.diagnostics);
 
     if (tokens.empty()) {
@@ -94,7 +94,7 @@ ModuleAST* parse(const std::string& path,
         return mod;
     }
 
-    // Check for lexer errors
+    // ─── Check for lexer errors ────────────────────────────────────────
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
             ctx.diagnostics.errorAt(DiagCode::Lex_UnknownCharacter,
@@ -108,30 +108,40 @@ ModuleAST* parse(const std::string& path,
         }
     }
     
-    // Parse declarations
+    // ─── Create ModuleAST BEFORE parsing imports ──────────────────────
+    // This allows parseImportDecl() to populate module->imports.
+    auto* module = ctx.arena.make<ModuleAST>();
+    module->filePath = filePath;
+    module->imports.clear();  // Will be populated during parsing
+    
+    // ─── NEW: Set current module in context ───────────────────────────
+    ctx.currentModule = module;
+    
+    // ─── Parse declarations ────────────────────────────────────────────
     TokenStream stream(std::move(tokens));
     std::vector<DeclAST*> allDecls;
     parseInternal(stream, ctx, allDecls);
     
-    // Build module AST
-    auto* thisModule = ctx.arena.make<ModuleAST>();
-    thisModule->filePath = filePath;
+    // ─── Reset context ──────────────────────────────────────────────────
+    ctx.currentModule = nullptr;
     
+    // ─── Build module AST ──────────────────────────────────────────────
     auto builder = ctx.arena.makeBuilder<DeclAST*>();
     for (auto* d : allDecls) {
         builder.push_back(d);
     }
-    thisModule->decls = builder.build();
-    thisModule->hasErrors = ctx.diagnostics.hasErrors();
+    module->decls = builder.build();
+    module->hasErrors = ctx.diagnostics.hasErrors();
     
-    // Cache the result
+    // ─── Cache the result ──────────────────────────────────────────────
     if (ctx.resolver) {
-        ctx.resolver->cacheModule(filePath, thisModule);
-        LOG_PARSER_DETAIL("Cached module: ", path);
+        ctx.resolver->cacheModule(filePath, module);
+        LOG_PARSER_DETAIL("Cached module: ", path, " with ", 
+                         module->imports.size(), " imports");
     }
     
     LOG_PARSER_MINIMAL("Parse completed: ", allDecls.size(), " declarations");
-    return thisModule;
+    return module;
 }
 
 // =============================================================================
