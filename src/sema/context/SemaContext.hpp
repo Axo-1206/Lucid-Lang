@@ -496,11 +496,10 @@ struct SemaContext {
     
     // ─── Constructor ────────────────────────────────────────────────────
     
-    SemaContext(StringPool& p, ASTArena& a, DiagnosticEngine& d, std::vector<ModuleAST*> mods)
+    SemaContext(StringPool& p, ASTArena& a, DiagnosticEngine& d)
         : pool(p)
         , arena(a)
-        , diagnostics(d)
-        , modules(std::move(mods)) {
+        , diagnostics(d) {
         for (ModuleAST* m : modules) {
             if (m) modulesByPath[m->filePath] = m;
         }
