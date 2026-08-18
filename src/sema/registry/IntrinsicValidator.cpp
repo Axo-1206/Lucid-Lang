@@ -154,6 +154,8 @@ bool isIntrinsicVoid(InternedString name, SemaContext& ctx) {
     return isIntrinsicVoidInternal(name, ctx);
 }
 
+// ─── getIntrinsicReturnType - FULL Implementation ─────────────────────────
+
 TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
                                        TypeAST* targetType,
                                        SemaContext& ctx) {
@@ -180,9 +182,13 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
         return ctx.getStringType();
     }
 
+    // ─── Pointer Operations (using type cache) ────────────────────────────
     if (name == "addrof") {
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            return ctx.arena.make<PtrTypeAST>(expr->args[0]->resolvedType);
+            // addrof(x) returns *T where T is the type of x
+            TypeAST* innerType = expr->args[0]->resolvedType;
+            // Use the cached pointer type - ensures canonicalization
+            return ctx.getPtrType(innerType);
         }
         return targetType;
     }
@@ -191,9 +197,13 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
             TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<PtrTypeAST>()) {
-                return ctx.arena.make<RefTypeAST>(
-                    argType->as<PtrTypeAST>()->inner
-                );
+                TypeAST* inner = argType->as<PtrTypeAST>()->inner;
+                // Use the cached reference type
+                return ctx.getRefType(inner);
+            }
+            // If it's already a reference, return it
+            if (argType->isa<RefTypeAST>()) {
+                return argType;
             }
         }
         return targetType;
@@ -203,15 +213,39 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
             TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<RefTypeAST>()) {
-                return ctx.arena.make<PtrTypeAST>(
-                    argType->as<RefTypeAST>()->inner
-                );
+                TypeAST* inner = argType->as<RefTypeAST>()->inner;
+                // Use the cached pointer type
+                return ctx.getPtrType(inner);
+            }
+            // If it's already a pointer, return it
+            if (argType->isa<PtrTypeAST>()) {
+                return argType;
             }
         }
         return targetType;
     }
 
+    // ─── ptrOffset(ptr, n) returns the same pointer type ──────────────────
+    if (name == "ptrOffset") {
+        if (!expr->args.empty() && expr->args[0]->resolvedType) {
+            return expr->args[0]->resolvedType;
+        }
+        return targetType;
+    }
+
+    // ─── ptrDiff(p1, p2) returns int64 ─────────────────────────────────────
+    if (name == "ptrDiff") {
+        return ctx.getIntType();
+    }
+
+    // ─── bitcast(T, x) returns the target type T ──────────────────────────
     if (name == "bitcast") {
+        // The return type is the target type T passed as the first argument
+        // This is stored in expr->resolvedType by the caller
+        // We just return the target type from the call
+        if (expr->resolvedType) {
+            return expr->resolvedType;
+        }
         return targetType;
     }
 
@@ -222,7 +256,7 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
     }
 
     if (name == "str_ptr") {
-        return ctx.arena.make<PtrTypeAST>(ctx.getIntType());
+        return ctx.getPtrType(ctx.getIntType());
     }
 
     if (name == "str_eq") {
@@ -235,11 +269,18 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
 
     // ─── Memory Management ──────────────────────────────────────────────────
     if (name == "alloc" || name == "arena_alloc") {
-        return ctx.arena.make<PtrTypeAST>(ctx.getIntType());
+        // Return type is *T where T is the pointee type
+        // This is stored in the call's resolved type
+        if (expr->resolvedType) {
+            return expr->resolvedType;
+        }
+        return ctx.getPtrType(ctx.getIntType());
     }
 
     if (name == "arena_create") {
         // Return ArenaDescriptor struct type
+        // For now, return a pointer to it
+        // TODO: Define ArenaDescriptor struct type
         return targetType;
     }
 
@@ -248,6 +289,11 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
         // simd_store returns void
         if (name == "simd_store") {
             return nullptr;
+        }
+        // simd_splat, simd_load, simd_add, etc. return the vector type
+        // This is stored in the call's resolved type
+        if (expr->resolvedType) {
+            return expr->resolvedType;
         }
         return targetType;
     }
@@ -270,16 +316,24 @@ ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) 
         return ValueState::None;
     }
 
+    // ─── Memory allocations can fail ──────────────────────────────────────
     if (name == "alloc" || name == "arena_alloc") {
         return ValueState::Unknown;
     }
 
+    // ─── toRef asserts non-null - always definite if it returns ──────────
     if (name == "toRef") {
         return ValueState::Definite;
     }
 
+    // ─── Fence and pause always succeed ──────────────────────────────────
     if (name == "fence" || name == "pause") {
         return ValueState::Definite;
+    }
+
+    // ─── String operations that can fail ──────────────────────────────────
+    if (name == "str_from_ptr" || name == "str_concat" || name == "str_slice") {
+        return ValueState::Unknown;
     }
 
     return ValueState::Definite;
@@ -324,7 +378,7 @@ bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     TypeAST* result = resolveExprWithTarget(
-        const_cast<ExprAST*>(expr->args[0]), ctx.getStringType(), ctx
+        expr->args[0], ctx.getStringType(), ctx
     );
     if (!result || result->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
@@ -442,7 +496,7 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     
     // First, resolve the argument if not already resolved
     if (!funcType || funcType->isa<UnknownTypeAST>()) {
-        funcType = resolveExpr(const_cast<ExprAST*>(funcArg), ctx);
+        funcType = resolveExpr(funcArg, ctx);
         if (!funcType || funcType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                                   "#scope_exit argument has unknown type");
@@ -473,13 +527,16 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             funcDecl = decl->as<FuncDeclAST>();
         }
     } else if (funcArg->isa<ModuleAccessExprAST>()) {
-        const ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
+        ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
         hasGenericArgs = !mod->genericArgs.empty();
         
         ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
         if (decl && decl->isa<FuncDeclAST>()) {
             funcDecl = decl->as<FuncDeclAST>();
         }
+    } else if (funcArg->isa<AnonFuncExprAST>()) {
+        // Anonymous functions are always fully resolved
+        // No generic handling needed
     }
     
     // ─── 6. Validate generic instantiation ─────────────────────────────────
@@ -558,7 +615,7 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         TypeAST* expectedType = func->params[i]->type;
 
         TypeAST* argType = resolveExprWithTarget(
-            const_cast<ExprAST*>(arg), expectedType, ctx
+            arg, expectedType, ctx
         );
         if (!argType || argType->isa<UnknownTypeAST>()) {
             return false;
@@ -577,12 +634,12 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         }
 
         // Store the resolved argument
-        argsBuilder.push_back(const_cast<ExprAST*>(arg));
+        argsBuilder.push_back(arg);
     }
 
     // ─── 12. Check for field access capture issues ─────────────────────────
     if (funcArg->isa<FieldAccessExprAST>()) {
-        const FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
+        FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
         ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, funcArg,
                                 "function reference from struct field '",
                                 ctx.pool.lookup(field->fieldName),
@@ -601,8 +658,8 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     // ─── 14. Create the registration ──────────────────────────────────────
     ScopeExitRegistration* registration = ctx.arena.make<ScopeExitRegistration>();
-    registration->callExpr = const_cast<IntrinsicCallExprAST*>(expr);
-    registration->callback = const_cast<FuncDeclAST*>(funcDecl);
+    registration->callExpr = expr;
+    registration->callback = funcDecl;
     registration->args = argsBuilder.build();
 
     // ─── 15. Append to the current block's scopeExits ────────────────────
@@ -640,7 +697,7 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.size() >= 2) {
         ExprAST* lastArg = expr->args[expr->args.size() - 1];
         TypeAST* result = resolveExprWithTarget(
-            const_cast<ExprAST*>(lastArg), ctx.getStringType(), ctx
+            lastArg, ctx.getStringType(), ctx
         );
         if (!result || result->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
@@ -673,7 +730,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (name == "simd_splat") {
         if (expr->args.size() >= 2) {
             TypeAST* nType = resolveExprWithTarget(
-                const_cast<ExprAST*>(expr->args[1]), ctx.getIntType(), ctx
+                expr->args[1], ctx.getIntType(), ctx
             );
             if (!nType || nType->isa<UnknownTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],

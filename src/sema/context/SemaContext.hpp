@@ -304,6 +304,32 @@ struct TypeCache {
         }
     };
     std::unordered_map<ArrayTypeKey, ArrayTypeAST*, ArrayTypeKeyHash> arrayTypes;
+
+    struct PtrTypeKey {
+        TypeAST* inner;
+        bool operator==(const PtrTypeKey& other) const {
+            return inner == other.inner;
+        }
+    };
+    struct PtrTypeKeyHash {
+        size_t operator()(const PtrTypeKey& key) const {
+            return std::hash<TypeAST*>{}(key.inner);
+        }
+    };
+    std::unordered_map<PtrTypeKey, PtrTypeAST*, PtrTypeKeyHash> ptrTypes;
+    
+    struct RefTypeKey {
+        TypeAST* inner;
+        bool operator==(const RefTypeKey& other) const {
+            return inner == other.inner;
+        }
+    };
+    struct RefTypeKeyHash {
+        size_t operator()(const RefTypeKey& key) const {
+            return std::hash<TypeAST*>{}(key.inner);
+        }
+    };
+    std::unordered_map<RefTypeKey, RefTypeAST*, RefTypeKeyHash> refTypes;
 };
 
 /// # SemaContext
@@ -1034,6 +1060,36 @@ struct SemaContext {
         }
         ArrayTypeAST* type = arena.make<ArrayTypeAST>(kind, size, element);
         typeCache.arrayTypes[key] = type;
+        return type;
+    }
+
+    /// @brief Get or create a pointer type.
+    PtrTypeAST* getPtrType(TypeAST* inner) {
+        if (!inner) return nullptr;
+        
+        TypeCache::PtrTypeKey key{inner};
+        auto it = typeCache.ptrTypes.find(key);
+        if (it != typeCache.ptrTypes.end()) {
+            return it->second;
+        }
+        
+        PtrTypeAST* type = arena.make<PtrTypeAST>(inner);
+        typeCache.ptrTypes[key] = type;
+        return type;
+    }
+
+    /// @brief Get or create a reference type.
+    RefTypeAST* getRefType(TypeAST* inner) {
+        if (!inner) return nullptr;
+        
+        TypeCache::RefTypeKey key{inner};
+        auto it = typeCache.refTypes.find(key);
+        if (it != typeCache.refTypes.end()) {
+            return it->second;
+        }
+        
+        RefTypeAST* type = arena.make<RefTypeAST>(inner);
+        typeCache.refTypes[key] = type;
         return type;
     }
     
