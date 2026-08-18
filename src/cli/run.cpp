@@ -5,6 +5,7 @@
 #include "CLIContext.hpp"
 #include "DependencyGraph.hpp"
 #include "FileWatcher.hpp"
+#include "run.hpp"
 
 #include "parser/Parser.hpp"
 #include "sema/Sema.hpp"

@@ -66,7 +66,7 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
 ///
 /// @param module The module to register names from.
 /// @param ctx The semantic context.
-void registerTopLevelNames(const ModuleAST* module, SemaContext& ctx) {
+void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
     for (DeclAST* decl : module->decls) {

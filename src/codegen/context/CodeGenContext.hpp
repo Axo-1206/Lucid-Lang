@@ -26,17 +26,29 @@ namespace codegen {
 
 /// @brief A key for identifying a generic instantiation.
 struct GenericInstantiationKey {
-    DeclAST* decl;
-    std::vector<TypeAST*> typeArgs;
+    DeclAST* decl;                    // The generic declaration
+    std::vector<TypeAST*> typeArgs;   // Concrete type arguments
     
     bool operator==(const GenericInstantiationKey& other) const {
-        return decl == other.decl && typeArgs == other.typeArgs;
+        if (decl != other.decl) return false;
+        if (typeArgs.size() != other.typeArgs.size()) return false;
+        for (size_t i = 0; i < typeArgs.size(); ++i) {
+            if (typeArgs[i] != other.typeArgs[i]) return false;
+        }
+        return true;
     }
 };
 
 /// @brief Hash for GenericInstantiationKey.
 struct GenericInstantiationKeyHash {
-    size_t operator()(const GenericInstantiationKey& key) const;
+    size_t operator()(const GenericInstantiationKey& key) const {
+        size_t h1 = std::hash<DeclAST*>{}(key.decl);
+        size_t h2 = 0;
+        for (TypeAST* t : key.typeArgs) {
+            h2 ^= std::hash<TypeAST*>{}(t) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
+        }
+        return h1 ^ (h2 << 1);
+    }
 };
 
 /// @brief Registry of all generic instantiations in a module.

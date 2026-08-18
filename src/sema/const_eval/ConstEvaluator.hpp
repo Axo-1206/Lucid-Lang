@@ -227,10 +227,6 @@ private:
     static bool compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
     static int compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
 
-    // ─── Type Helpers ────────────────────────────────────────────────────
-
-    static TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
-
     // ─── Internal State ──────────────────────────────────────────────────
 
     static std::vector<DeclAST*> m_constDecls;
