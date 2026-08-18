@@ -312,9 +312,189 @@ llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ct
 
 llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "struct literal not fully implemented in CodeGen");
-    return nullptr;
+
+    // ─── 1. Get the struct type from the resolved type ─────────────────────
+    TypeAST* structTypeAST = expr->resolvedType;
+    if (!structTypeAST) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "struct literal has no resolved type");
+        return nullptr;
+    }
+
+    // The resolved type should be a NamedTypeAST
+    NamedTypeAST* namedType = structTypeAST->as<NamedTypeAST>();
+    if (!namedType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "struct literal type is not a named type");
+        return nullptr;
+    }
+
+    // ─── 2. Get the resolved declaration from the named type ────────────────
+    // The resolvedDecl should be set by Sema on the NamedTypeAST
+    TypeDeclAST* typeDecl = namedType->resolvedDecl;
+    if (!typeDecl) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedType, expr->loc,
+                                "struct type '", ctx.pool.lookup(expr->typeName), 
+                                "' has no resolved declaration");
+        return nullptr;
+    }
+
+    if (!typeDecl->isa<StructDeclAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "'", ctx.pool.lookup(expr->typeName), 
+                                "' is not a struct type");
+        return nullptr;
+    }
+
+    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+    // ─── 3. Get the LLVM struct type ───────────────────────────────────────
+    llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
+    if (!llvmStructType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "struct type '", ctx.pool.lookup(structDecl->name), 
+                                "' has no LLVM type");
+        return nullptr;
+    }
+
+    // ─── 4. Build the struct value from field initializers ─────────────────
+    // Start with undef for the struct
+    llvm::Value* result = llvm::UndefValue::get(llvmStructType);
+
+    // ─── 5. Map field names to indices ─────────────────────────────────────
+    std::unordered_map<InternedString, size_t> fieldIndexMap;
+    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+        fieldIndexMap[structDecl->fields[i]->name] = i;
+    }
+
+    // Track which fields have been initialized
+    std::vector<bool> initialized(structDecl->fields.size(), false);
+
+    // ─── 6. Process each field initializer ─────────────────────────────────
+    for (FieldInitAST* init : expr->inits) {
+        if (!init) continue;
+
+        // Find the field index
+        auto it = fieldIndexMap.find(init->name);
+        if (it == fieldIndexMap.end()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, init->loc,
+                                    "unknown field '", ctx.pool.lookup(init->name), 
+                                    "' in struct '", ctx.pool.lookup(structDecl->name), "'");
+            return nullptr;
+        }
+
+        size_t fieldIndex = it->second;
+        initialized[fieldIndex] = true;
+
+        // ─── Lower the field value ─────────────────────────────────────────
+        llvm::Value* fieldValue = lowerExpression(init->value, ctx);
+        if (!fieldValue) {
+            return nullptr;
+        }
+
+        // If the field value is an l-value, load it
+        if (init->value->isLValue) {
+            llvm::Type* elemType = getType(ctx, init->value->resolvedType);
+            if (elemType) {
+                fieldValue = loadIfNeeded(fieldValue, elemType, ctx);
+            } else {
+                fieldValue = loadIfNeeded(fieldValue, true, ctx);
+            }
+            if (!fieldValue) return nullptr;
+        }
+
+        // ─── Type compatibility check ──────────────────────────────────────
+        llvm::Type* expectedType = llvmStructType->getElementType(fieldIndex);
+        if (fieldValue->getType() != expectedType) {
+            // Try to cast if compatible
+            if (fieldValue->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
+                fieldValue = ctx.builder.CreateIntCast(
+                    fieldValue, 
+                    expectedType, 
+                    true,  // signed
+                    "field_cast"
+                );
+            } else if (fieldValue->getType()->isFloatingPointTy() && 
+                       expectedType->isFloatingPointTy()) {
+                if (fieldValue->getType()->isFloatTy() && expectedType->isDoubleTy()) {
+                    fieldValue = ctx.builder.CreateFPExt(
+                        fieldValue, 
+                        expectedType, 
+                        "field_fpext"
+                    );
+                } else if (fieldValue->getType()->isDoubleTy() && expectedType->isFloatTy()) {
+                    fieldValue = ctx.builder.CreateFPTrunc(
+                        fieldValue, 
+                        expectedType, 
+                        "field_fptrunc"
+                    );
+                }
+            } else if (fieldValue->getType()->isPointerTy() && 
+                       expectedType->isPointerTy()) {
+                fieldValue = ctx.builder.CreatePointerCast(
+                    fieldValue, 
+                    expectedType, 
+                    "field_ptr_cast"
+                );
+            } else {
+                // Get type names for diagnostic using LLVM's own printing
+                std::string expectedName;
+                llvm::raw_string_ostream expectedOS(expectedName);
+                expectedType->print(expectedOS);
+                
+                std::string actualName;
+                llvm::raw_string_ostream actualOS(actualName);
+                fieldValue->getType()->print(actualOS);
+                
+                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, init->loc,
+                                        "field '", ctx.pool.lookup(init->name), 
+                                        "' type mismatch: expected ", expectedName,
+                                        " but got ", actualName);
+                return nullptr;
+            }
+        }
+
+        // ─── Insert the value into the struct ─────────────────────────────
+        result = ctx.builder.CreateInsertValue(
+            result, 
+            fieldValue, 
+            static_cast<unsigned>(fieldIndex), 
+            "field_" + ctx.pool.lookup(init->name)
+        );
+    }
+
+    // ─── 7. Fill uninitialized fields with default values ──────────────────
+    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+        if (initialized[i]) continue;
+
+        FieldDeclAST* field = structDecl->fields[i];
+        llvm::Type* fieldType = llvmStructType->getElementType(i);
+        llvm::Constant* defaultValue = nullptr;
+        
+        // Check if the field has a default value expression
+        if (field->defaultVal) {
+            llvm::Value* defaultVal = lowerExpression(field->defaultVal, ctx);
+            if (defaultVal && llvm::isa<llvm::Constant>(defaultVal)) {
+                defaultValue = llvm::cast<llvm::Constant>(defaultVal);
+            } else {
+                // Default value is not a constant - use null
+                defaultValue = llvm::Constant::getNullValue(fieldType);
+            }
+        } else {
+            // Use null/default for uninitialized fields
+            defaultValue = llvm::Constant::getNullValue(fieldType);
+        }
+
+        result = ctx.builder.CreateInsertValue(
+            result, 
+            defaultValue, 
+            static_cast<unsigned>(i), 
+            "default_field_" + ctx.pool.lookup(field->name)
+        );
+    }
+
+    expr->llvmValue = result;
+    return result;
 }
 
 // =============================================================================

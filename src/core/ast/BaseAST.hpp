@@ -874,13 +874,13 @@ using ModuleASTPtr = ModuleAST*;
 ///       The semantic pass verifies that all constraint types resolve to traits
 ///       and that the traits are compatible.
 /// 
-struct GenericParamDeclAST : DeclAST {
+struct GenericParamDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
     ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
-        : DeclAST(ASTKind::GenericParamDecl, n) {}
+        : TypeDeclAST(ASTKind::GenericParamDecl, n) {}
 };
 using ParamGroup        = std::vector<ParamAST*>;
 

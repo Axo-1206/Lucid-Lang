@@ -733,6 +733,66 @@ struct SemaContext {
         auto it = currentModuleTable->importAliases.find(alias);
         return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
     }
+
+    // ─── Type Lookup with Context ──────────────────────────────────────────
+
+    /// @brief Look up a type by name, returning the declaration.
+    /// 
+    /// This searches local scopes (innermost to outermost), then the module table.
+    /// For generic parameters, it returns the GenericParamDeclAST (which is a
+    /// TypeDeclAST) so that callers can distinguish between concrete types and
+    /// generic parameters.
+    TypeDeclAST* lookupTypeDecl(InternedString name) const {
+        // Check local scopes first (innermost to outermost)
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            // Check generic params first - they shadow types
+            auto gen = it->genericParams.find(name);
+            if (gen != it->genericParams.end()) {
+                return gen->second;  // GenericParamDeclAST inherits from TypeDeclAST
+            }
+            // Then check local types
+            auto found = it->types.find(name);
+            if (found != it->types.end()) {
+                return found->second;
+            }
+        }
+        
+        // Check module table
+        if (currentModuleTable) {
+            auto found = currentModuleTable->types.find(name);
+            if (found != currentModuleTable->types.end()) {
+                return found->second;
+            }
+        }
+        
+        return nullptr;
+    }
+
+    /// @brief Check if a name resolves to a generic type parameter.
+    bool isGenericTypeParam(InternedString name) const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto gen = it->genericParams.find(name);
+            if (gen != it->genericParams.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief Look up a type by name, with alias resolution.
+    /// 
+    /// This handles both unqualified lookup and module-qualified lookup.
+    /// For module-qualified names, use lookupTypeByAlias().
+    TypeDeclAST* lookupTypeDeclWithAlias(InternedString name) const {
+        // First try unqualified lookup
+        TypeDeclAST* decl = lookupTypeDecl(name);
+        if (decl) return decl;
+        
+        // If not found, try to parse as module:type
+        // This is a fallback for cases where the parser didn't create a ModuleTypeAccessAST
+        // The proper way is to use ModuleTypeAccessAST for qualified names
+        return nullptr;
+    }
     
     // ─── Module Member Lookup ──────────────────────────────────────────
     
