@@ -1,10 +1,10 @@
 /// @file cli/run.cpp
 /// @brief Implementation of the 'lucid run' command.
 
+#include "CLIOptions.hpp"
 #include "CLIContext.hpp"
 #include "DependencyGraph.hpp"
 #include "FileWatcher.hpp"
-#include "RunOptions.hpp"
 
 #include "parser/Parser.hpp"
 #include "sema/Sema.hpp"
@@ -16,6 +16,7 @@
 #include <iostream>
 #include <signal.h>
 #include <atomic>
+#include <thread>
 
 namespace cli {
 
@@ -67,7 +68,7 @@ static void handleFileChange(
     const DependencyGraph& depGraph,
     interpreter::InterpreterContext& interpCtx,
     const std::string& changedRelativePath,
-    const RunOptions& options
+    const CLIOptions& opts
 ) {
     InternedString changedName = ctx.stringPool.intern(changedRelativePath);
 
@@ -86,7 +87,6 @@ static void handleFileChange(
         // Use ModuleResolver to get the full path and read the source
         parser::ModuleResolver resolver(ctx.packageRoot, ctx.stringPool);
         
-        // Get absolute filesystem path
         std::filesystem::path fullPath = resolver.getModuleFilePath(name);
         
         // Read source using ModuleResolver
@@ -100,10 +100,9 @@ static void handleFileChange(
             return;
         }
 
-        // Parse the file
         parser::ParserContext parserCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics, &resolver);
-
         ModuleAST* module = parser::parse(filePath, source, parserCtx);
+
         if (ctx.diagnostics.hasErrors()) {
             ctx.diagnostics.dump(std::cerr);
             return;
@@ -111,7 +110,7 @@ static void handleFileChange(
         affectedModules.push_back(module);
     }
 
-    // 3. Re-run Sema on affected modules
+    // 3. Re-run Sema
     sema::SemaContext semaCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics);
     sema::analyze(affectedModules, semaCtx);
 
@@ -122,7 +121,7 @@ static void handleFileChange(
 
     // 4. Hot reload via interpreter
     try {
-        InternedString entryPoint = ctx.stringPool.intern(options.entryPoint);
+        InternedString entryPoint = ctx.stringPool.intern(opts.entryPoint);
 
         interpreter::ExecutionResult result = interpreter::runModules(
             interpCtx,
@@ -132,49 +131,46 @@ static void handleFileChange(
         );
 
         if (result.success) {
-            std::cout << "[Hot‑reload] Successfully reloaded "
-                      << affectedModules.size()
-                      << " module(s)" << std::endl;
+            std::cout << "[Hot‑reload] ✅ Successfully reloaded "
+                      << affectedModules.size() << " module(s)" << std::endl;
         } else {
-            std::cerr << "[Hot‑reload] Failed: " << result.errorMessage << std::endl;
+            std::cerr << "[Hot‑reload] ❌ Failed: " << result.errorMessage << std::endl;
         }
     } catch (const interpreter::InterpreterError& e) {
-        std::cerr << "[Hot‑reload] Interpreter error: " << e.what() << std::endl;
+        std::cerr << "[Hot‑reload] ❌ Interpreter error: " << e.what() << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[Hot‑reload] Unexpected error: " << e.what() << std::endl;
+        std::cerr << "[Hot‑reload] ❌ Unexpected error: " << e.what() << std::endl;
     }
 }
 
 // ─── Main Run Command ──────────────────────────────────────────────────
 
-int runCommand(const std::string& rootPath, const RunOptions& options) {
+int runCommand(const CLIOptions& opts) {
     // ─── 1. Validate input ─────────────────────────────────────────────
-    std::string absRootPath = getAbsolutePath(rootPath);
+    std::string absRootPath = getAbsolutePath(opts.rootFilePath);
     if (!fileExists(absRootPath)) {
         std::cerr << "Error: File not found: " << absRootPath << std::endl;
         return 1;
     }
 
     std::string source = readFile(absRootPath);
-    // source.empty() is valid for empty files — we already checked fileExists
 
     // ─── 2. Initialize CLI context ─────────────────────────────────────
     std::filesystem::path packageRoot = std::filesystem::current_path();
     CLIContext ctx(packageRoot);
 
-    if (options.verbose) {
+    bool verbose = opts.verbose || opts.interpreter.verbose;
+
+    if (verbose) {
         std::cout << "[CLI] Package root: " << packageRoot.string() << std::endl;
         std::cout << "[CLI] Root file: " << absRootPath << std::endl;
     }
 
     // ─── 3. Parse ───────────────────────────────────────────────────────
-    // Note: The root module's file path is the relative path from package root
-    std::string rootRelativePath = std::filesystem::relative(absRootPath, packageRoot).string();
-
     parser::ModuleResolver resolver(packageRoot, ctx.stringPool);
     parser::ParserContext parserCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics, &resolver);
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Parser] Parsing program..." << std::endl;
     }
 
@@ -185,14 +181,14 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
         return 1;
     }
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Parser] Parsed " << modules.size() << " module(s)" << std::endl;
     }
 
     // ─── 4. Semantic Analysis ──────────────────────────────────────────
     sema::SemaContext semaCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics);
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Sema] Analyzing..." << std::endl;
     }
 
@@ -203,7 +199,7 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
         return 1;
     }
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Sema] Analysis complete" << std::endl;
     }
 
@@ -211,10 +207,8 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
     DependencyGraph depGraph;
     depGraph.build(modules);
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[CLI] Dependency graph: " << depGraph.size() << " node(s)" << std::endl;
-        
-        // Log dependencies for debugging
         for (InternedString name : depGraph.getAllModules()) {
             auto imports = depGraph.getImports(name);
             if (!imports.empty()) {
@@ -229,23 +223,23 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
     }
 
     // ─── 6. Initialize Interpreter ─────────────────────────────────────
-    interpreter::InterpreterOptions interpOpts;
-    interpOpts.verbose = options.verbose;
-    interpOpts.enableHotReload = options.enableHotReload;
-    interpOpts.optimizationLevel = options.optimizationLevel;
-    interpOpts.enableDebugInfo = options.enableDebugInfo;
+    // Build interpreter options: start with CLI's nested options,
+    // then override with CLI-specific fields if they were explicitly set.
+    interpreter::InterpreterOptions interpOpts = opts.interpreter;
+    interpOpts.verbose = verbose;
+    interpOpts.entryPoint = opts.entryPoint;
 
     interpreter::InterpreterContext interpCtx(ctx.stringPool, ctx.diagnostics);
     interpreter::initialize(interpCtx, interpOpts);
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Interpreter] Initialized" << std::endl;
     }
 
     // ─── 7. Initial Execution ──────────────────────────────────────────
-    InternedString entryPoint = ctx.stringPool.intern(options.entryPoint);
+    InternedString entryPoint = ctx.stringPool.intern(opts.entryPoint);
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Interpreter] Running initial execution..." << std::endl;
     }
 
@@ -265,23 +259,20 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
         return result.exitCode;
     }
 
-    if (options.verbose) {
+    if (verbose) {
         std::cout << "[Interpreter] Execution completed in "
                   << result.executionTimeMs << "ms" << std::endl;
         std::cout << "[Interpreter] Exit code: " << result.exitCode << std::endl;
     }
 
     // ─── 8. Hot‑Reload (if enabled) ────────────────────────────────────
-    if (options.enableHotReload) {
-        // Set up signal handling for clean shutdown
+    if (opts.enableHotReload) {
         signal(SIGINT, signalHandler);
         signal(SIGTERM, signalHandler);
 
-        // Build list of all watched files (absolute paths)
         std::vector<std::string> watchedFiles;
         watchedFiles.reserve(depGraph.size());
 
-        // Use ModuleResolver to get absolute paths
         parser::ModuleResolver resolver(packageRoot, ctx.stringPool);
 
         for (InternedString name : depGraph.getAllModules()) {
@@ -289,26 +280,20 @@ int runCommand(const std::string& rootPath, const RunOptions& options) {
             watchedFiles.push_back(absPath.string());
         }
 
-        // Create file watcher
         FileWatcher watcher(packageRoot, [&](const std::string& changedPath) {
-            // This is called from the watcher thread
-            // changedPath is already relative to package root
-            handleFileChange(ctx, depGraph, interpCtx, changedPath, options);
+            handleFileChange(ctx, depGraph, interpCtx, changedPath, opts);
         });
 
-        // Start watching
         watcher.watchFiles(watchedFiles);
         watcher.start();
 
         std::cout << "[Hot‑reload] Watching " << watchedFiles.size()
                   << " file(s). Press Ctrl+C to exit." << std::endl;
 
-        // Wait for interrupt
         while (g_running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        // Clean shutdown
         watcher.stop();
         std::cout << "\n[Hot‑reload] Shutting down..." << std::endl;
     }

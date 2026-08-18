@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "CLIOptions.hpp"
 #include "RunOptions.hpp"
 #include "DependencyGraph.hpp"
 #include "FileWatcher.hpp"
@@ -59,12 +60,8 @@ struct CLIContext;
  * opts.enableHotReload = false;
  * int exitCode = cli::runCommand("main.luc", opts);
  * ```
- *
- * @param rootPath Path to the root/main `.luc` file (relative or absolute).
- * @param options Run command options.
- * @return Exit code (0 = success, non‑zero = failure).
  */
-int runCommand(const std::string& rootPath, const RunOptions& options);
+int runCommand(const CLIOptions& opts);
 
 // ─── Hot‑Reload Handler ────────────────────────────────────────────────
 

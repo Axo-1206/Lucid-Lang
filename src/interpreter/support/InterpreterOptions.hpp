@@ -8,34 +8,37 @@
 
 namespace interpreter {
 
-/// @brief Options for configuring the interpreter.
+/**
+ * @brief Options for configuring the interpreter (JIT) engine.
+ *
+ * These options control LLVM JIT behavior, not CLI behavior.
+ * They are used by the interpreter regardless of whether it's
+ * called from CLI, LSP, or an embedded environment.
+ */
 struct InterpreterOptions {
-    /// Enable LLVM optimizations (default: true)
+    /// @brief Enable LLVM optimizations.
     bool enableOptimizations = true;
-    
-    /// Enable debug info generation (default: false)
+
+    /// @brief Enable debug info generation in JIT.
     bool enableDebugInfo = false;
-    
-    /// Optimization level: 0-3 (default: 2)
+
+    /// @brief Optimization level: 0-3.
     int optimizationLevel = 2;
-    
-    /// Default entry point name (default: "main")
-    std::string entryPoint = "main";
-    
-    /// Additional library search paths
-    std::vector<std::string> libraryPaths;
-    
-    /// Enable hot-reload support (default: false)
-    bool enableHotReload = false;
-    
-    /// Enable verbose output (default: false)
+
+    /// @brief Enable verbose output from the interpreter.
     bool verbose = false;
-    
-    /// Enable JIT profiling (default: false)
+
+    /// @brief Enable JIT profiling.
     bool enableProfiling = false;
-    
-    /// Path to the kernel library (platform-specific default)
+
+    /// @brief Path to the kernel library (platform-specific default).
     std::string kernelLibraryPath;
+
+    /// @brief Additional library search paths.
+    std::vector<std::string> libraryPaths;
+
+    /// @brief Default entry point name.
+    std::string entryPoint = "main";
 };
 
 } // namespace interpreter
