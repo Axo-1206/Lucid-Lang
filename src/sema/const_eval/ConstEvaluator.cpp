@@ -11,6 +11,14 @@
 
 namespace sema {
 
+// ─── Static Member Initialization ────────────────────────────────────────
+
+std::unordered_map<DeclAST*, std::vector<DeclAST*>> ConstEvaluator::m_deps;
+std::vector<DeclAST*> ConstEvaluator::m_constDecls;
+std::unordered_set<ExprAST*> ConstEvaluator::m_evaluatedExprs;
+std::unordered_set<DeclAST*> ConstEvaluator::m_evaluating;
+size_t ConstEvaluator::m_recursionDepth = 0;
+
 // ─── Main Entry Points ───────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
