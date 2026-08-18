@@ -243,6 +243,14 @@ struct ModuleAccessExprAST : ExprAST {
     const InternedString memberName;
     ArenaSpan<TypeAST*> genericArgs; // Generic function instantiation
 
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    /// @brief The resolved declaration for the module member.
+    /// This can be a FuncDeclAST, VarDeclAST, or EnumVariantAST.
+    ValueDeclAST* resolvedDecl = nullptr;
+    
+    /// @brief The module containing the member.
+    ModuleAST* resolvedModule = nullptr;
+
     ModuleAccessExprAST(InternedString mod, InternedString mem) 
         : ExprAST(ASTKind::ModuleAccessExpr),
         moduleName(mod),

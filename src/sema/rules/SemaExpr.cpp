@@ -1704,16 +1704,36 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 
 TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Look up the member by module alias ─────────────────────────
-    ValueDeclAST* decl = ctx.lookupValueByAlias(expr->moduleName, expr->memberName);
-    if (!decl) {
-        // The helper already reported the error (module not found or member not found)
+    ModuleAST* module = ctx.lookupImport(expr->moduleName);
+    if (!module) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
+                              "undefined module alias '", ctx.pool.lookup(expr->moduleName), "'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
+        expr->resolvedDecl = nullptr;
+        expr->resolvedModule = nullptr;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Check if the member is exported ───────────────────────────
+    ValueDeclAST* decl = ctx.lookupModuleValueMember(module, expr->memberName);
+    if (!decl) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
+                              "module '", ctx.pool.lookup(expr->moduleName),
+                              "' has no member named '", ctx.pool.lookup(expr->memberName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->resolvedDecl = nullptr;
+        expr->resolvedModule = module;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 2: Store resolved declaration and module ─────────────────────
+    expr->resolvedDecl = decl;
+    expr->resolvedModule = module;
+
+    // ─── Step 3: Check if the member is exported ───────────────────────────
     if (!ctx.isValueExported(decl)) {
         ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -1726,11 +1746,19 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Mark as module member ────────────────────────────────────
+    // ─── Step 4: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
-    // ─── Step 4: Get the declaration's type ──────────────────────
-    TypeAST* declType = decl->type;
+    // ─── Step 5: Get the declaration's type ──────────────────────────────────
+    // Use the effective type (accounting for any narrowing that might apply)
+    // For module members, narrowing doesn't apply (they're global), but we
+    // use the same pattern for consistency.
+    TypeAST* declType = ctx.getEffectiveType(decl, expr->memberName);
+    if (!declType) {
+        // Fallback to decl->type if effective type is not available
+        declType = decl->type;
+    }
+    
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -1741,7 +1769,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 5: Set isLValue based on member's keyword ──────────────────
+    // ─── Step 6: Set isLValue and isConst based on member's keyword ──────
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -1758,7 +1786,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->isConst = false;
     }
 
-    // ─── Step 6: Handle generic arguments if present ────────────────────────
+    // ─── Step 7: Handle generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1772,6 +1800,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
 
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
+        // Resolve each generic argument
         for (TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1784,6 +1813,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
             }
         }
 
+        // Validate generic arguments against the function's parameters
         if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
@@ -1791,7 +1821,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
             return ctx.getUnknownType();
         }
 
-        // Use the function's type
+        // Use the function's type (generic arguments are stored on the expression)
         declType = funcDecl->type;
         if (!declType) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
@@ -1804,17 +1834,52 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         }
     }
 
-    // ─── Step 7: Determine value state ──────────────────────────────────────
-    ValueState state = (isNullableType(declType) || isFallibleType(declType))
-                       ? ValueState::Unknown : ValueState::Definite;
+    // ─── Step 8: Determine value state ──────────────────────────────────────
+    ValueState state;
     if (decl->isa<EnumVariantAST>()) {
         state = ValueState::Definite;
+    } else if (isNullableType(declType) || isFallibleType(declType)) {
+        // Nullable/fallible module members are unknown until runtime
+        state = ValueState::Unknown;
+    } else if (decl->isa<FuncDeclAST>()) {
+        // Functions are definite (they exist at compile time)
+        state = ValueState::Definite;
+    } else if (decl->isa<VarDeclAST>()) {
+        VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        if (varDecl->init && varDecl->init->isConst) {
+            state = ValueState::Definite;
+        } else {
+            state = ValueState::Unknown;
+        }
+    } else {
+        state = ValueState::Unknown;
     }
 
-    // ─── Step 8: Set the expression's type ────────────────────────
-    expr->resolvedType = const_cast<TypeAST*>(declType);
+    // ─── Step 9: Set the expression's type ──────────────────────────────────
+    expr->resolvedType = declType;
     expr->valueState = state;
-    return const_cast<TypeAST*>(declType);
+
+    // ─── Step 10: Validate against target type if provided ─────────────────
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (!isAssignable(targetType, declType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ",
+                                  debug::typeToString(declType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+    }
+
+    LOG_SEMA("resolveModuleAccessExpr: ", 
+             ctx.pool.lookup(expr->moduleName), ":",
+             ctx.pool.lookup(expr->memberName),
+             " resolved to ", debug::typeToString(declType, ctx.pool));
+
+    return declType;
 }
 
 // =============================================================================

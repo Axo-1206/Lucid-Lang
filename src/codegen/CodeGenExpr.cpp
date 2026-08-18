@@ -15,6 +15,7 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "closure/CodeGenClosure.hpp"
+#include "generic/CodeGenGeneric.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -1028,9 +1029,209 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
 
 llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "field access not fully implemented in CodeGen");
-    return nullptr;
+
+    // ─── 1. Lower the object expression ─────────────────────────────────────
+    llvm::Value* object = lowerExpression(expr->object, ctx);
+    if (!object) {
+        return nullptr;
+    }
+
+    // ─── 2. Get the type of the object ─────────────────────────────────────
+    TypeAST* objectType = expr->object->resolvedType;
+    if (!objectType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->object->loc,
+                                "object has no resolved type");
+        return nullptr;
+    }
+
+    // ─── 3. Determine what kind of access this is ──────────────────────────
+    // Case 1: Enum variant access (e.g., Direction.North)
+    // Case 2: Struct field access (e.g., point.x)
+    // Case 3: Module access (handled by ModuleAccessExprAST)
+    
+    // Check if the object is a type name (enum access)
+    bool isEnumAccess = false;
+    TypeDeclAST* typeDecl = nullptr;
+    
+    if (objectType->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+        typeDecl = namedType->resolvedDecl;
+        if (typeDecl && typeDecl->isa<EnumDeclAST>()) {
+            isEnumAccess = true;
+        }
+    }
+
+    // ─── 4a. Enum variant access ────────────────────────────────────────────
+    if (isEnumAccess) {
+        EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
+        
+        // Find the variant by name
+        EnumVariantAST* variant = nullptr;
+        for (EnumVariantAST* v : enumDecl->variants) {
+            if (v->name == expr->fieldName) {
+                variant = v;
+                break;
+            }
+        }
+        
+        if (!variant) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                    "enum '", ctx.pool.lookup(enumDecl->name), 
+                                    "' has no variant '", ctx.pool.lookup(expr->fieldName), "'");
+            return nullptr;
+        }
+        
+        // Get the LLVM constant for the variant
+        llvm::ConstantInt* variantConst = enumDecl->constantForVariant(expr->fieldName);
+        if (!variantConst) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "enum variant '", ctx.pool.lookup(expr->fieldName), 
+                                    "' has no LLVM constant");
+            return nullptr;
+        }
+        
+        expr->llvmValue = variantConst;
+        return variantConst;
+    }
+
+    // ─── 4b. Struct field access ────────────────────────────────────────────
+    // The object should be a struct type
+    StructDeclAST* structDecl = nullptr;
+    
+    // Unwrap nullable/fallible if present
+    TypeAST* innerType = objectType;
+    if (objectType->isa<NullableTypeAST>()) {
+        innerType = objectType->as<NullableTypeAST>()->inner;
+    } else if (objectType->isa<FallibleTypeAST>()) {
+        innerType = objectType->as<FallibleTypeAST>()->inner;
+    } else if (objectType->isa<CombinedTypeAST>()) {
+        innerType = objectType->as<CombinedTypeAST>()->inner;
+    }
+    
+    if (innerType->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedType = innerType->as<NamedTypeAST>();
+        TypeDeclAST* decl = namedType->resolvedDecl;
+        if (decl && decl->isa<StructDeclAST>()) {
+            structDecl = decl->as<StructDeclAST>();
+        }
+    }
+    
+    if (!structDecl) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                "cannot access field on non-struct type");
+        return nullptr;
+    }
+
+    // ─── 5. Find the field in the struct ────────────────────────────────────
+    FieldDeclAST* field = nullptr;
+    size_t fieldIndex = 0;
+    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+        if (structDecl->fields[i]->name == expr->fieldName) {
+            field = structDecl->fields[i];
+            fieldIndex = i;
+            break;
+        }
+    }
+    
+    if (!field) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                "struct '", ctx.pool.lookup(structDecl->name), 
+                                "' has no field '", ctx.pool.lookup(expr->fieldName), "'");
+        return nullptr;
+    }
+
+    // ─── 6. Get the LLVM struct type ──────────────────────────────────────
+    llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
+    if (!llvmStructType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "struct '", ctx.pool.lookup(structDecl->name), 
+                                "' has no LLVM type");
+        return nullptr;
+    }
+
+    // ─── 7. If the object is an l-value, we need the pointer ──────────────
+    // If the object is already a pointer (from an l-value), we can GEP directly.
+    // If it's a value (struct value), we need to take its address first.
+    
+    bool objectIsLValue = expr->object->isLValue;
+    llvm::Value* structPtr = nullptr;
+    llvm::Value* fieldPtr = nullptr;
+    llvm::Type* fieldType = llvmStructType->getElementType(fieldIndex);
+
+    if (objectIsLValue) {
+        // Object is an l-value - we have a pointer to the struct
+        structPtr = object;
+        
+        // GEP to the field
+        std::vector<llvm::Value*> indices = {
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), static_cast<uint32_t>(fieldIndex))
+        };
+        fieldPtr = ctx.builder.CreateInBoundsGEP(
+            llvmStructType,
+            structPtr,
+            indices,
+            "field_ptr_" + ctx.pool.lookup(field->name)
+        );
+    } else {
+        // Object is a value - we need to extract the field directly
+        // If the object is a struct value (not a pointer), we can extract
+        if (object->getType()->isStructTy()) {
+            // Extract the field value directly
+            llvm::Value* fieldVal = ctx.builder.CreateExtractValue(
+                object,
+                static_cast<unsigned>(fieldIndex),
+                "field_val_" + ctx.pool.lookup(field->name)
+            );
+            expr->llvmValue = fieldVal;
+            return fieldVal;
+        } else {
+            // Object is a pointer to a struct - GEP and load
+            structPtr = object;
+            
+            std::vector<llvm::Value*> indices = {
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), static_cast<uint32_t>(fieldIndex))
+            };
+            fieldPtr = ctx.builder.CreateInBoundsGEP(
+                llvmStructType,
+                structPtr,
+                indices,
+                "field_ptr_" + ctx.pool.lookup(field->name)
+            );
+            
+            // Load the field value
+            llvm::Value* fieldVal = ctx.builder.CreateLoad(
+                fieldType,
+                fieldPtr,
+                "field_load_" + ctx.pool.lookup(field->name)
+            );
+            
+            // If this is an l-value (for assignment), return the pointer
+            if (expr->isLValue) {
+                expr->llvmValue = fieldPtr;
+                return fieldPtr;
+            }
+            
+            expr->llvmValue = fieldVal;
+            return fieldVal;
+        }
+    }
+
+    // ─── 8. Load the field value if not an l-value ─────────────────────────
+    if (expr->isLValue) {
+        expr->llvmValue = fieldPtr;
+        return fieldPtr;
+    }
+
+    llvm::Value* fieldVal = ctx.builder.CreateLoad(
+        fieldType,
+        fieldPtr,
+        "field_load_" + ctx.pool.lookup(field->name)
+    );
+    
+    expr->llvmValue = fieldVal;
+    return fieldVal;
 }
 
 // =============================================================================
@@ -1039,8 +1240,133 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
 
 llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "module access not fully implemented in CodeGen");
+
+    // ─── 1. Get the resolved declaration ───────────────────────────────────
+    // Sema should have set resolvedDecl during semantic analysis
+    ValueDeclAST* resolvedDecl = expr->resolvedDecl;
+    if (!resolvedDecl) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                                "module member '", ctx.pool.lookup(expr->moduleName),
+                                ":", ctx.pool.lookup(expr->memberName), 
+                                "' was not resolved");
+        return nullptr;
+    }
+
+    // ─── 2. Handle function access ──────────────────────────────────────────
+    if (resolvedDecl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
+        
+        // Check if this is a generic function that needs specialization
+        if (!funcDecl->genericParams.empty() && !expr->genericArgs.empty()) {
+            // Build type arguments from the expression's generic args
+            std::vector<TypeAST*> typeArgs;
+            typeArgs.reserve(expr->genericArgs.size());
+            for (TypeAST* arg : expr->genericArgs) {
+                typeArgs.push_back(arg);
+            }
+            
+            // Use the existing generic helper
+            llvm::Function* specializedFunc = getOrCreateSpecializedFunction(
+                funcDecl, 
+                typeArgs, 
+                ctx
+            );
+            
+            if (!specializedFunc) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
+                                        "failed to instantiate generic function '",
+                                        ctx.pool.lookup(funcDecl->name), "'");
+                return nullptr;
+            }
+            
+            expr->llvmValue = specializedFunc;
+            return specializedFunc;
+        }
+        
+        // Regular function - look it up in the function map
+        llvm::Function* func = ctx.lookupFunction(funcDecl);
+        if (!func) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "function '", ctx.pool.lookup(funcDecl->name), 
+                                    "' not found in codegen cache");
+            return nullptr;
+        }
+        
+        expr->llvmValue = func;
+        return func;
+    }
+
+    // ─── 3. Handle variable/constant access ─────────────────────────────────
+    if (resolvedDecl->isa<VarDeclAST>()) {
+        VarDeclAST* varDecl = resolvedDecl->as<VarDeclAST>();
+        
+        // Look up the global variable in the context
+        llvm::Value* global = ctx.lookupValue(varDecl);
+        if (!global) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "global variable '", ctx.pool.lookup(varDecl->name), 
+                                    "' not found in codegen cache");
+            return nullptr;
+        }
+        
+        // If this is an l-value (for assignment), return the pointer
+        if (expr->isLValue) {
+            expr->llvmValue = global;
+            return global;
+        }
+        
+        // Otherwise, load the value
+        llvm::Type* varType = getType(ctx, varDecl->type);
+        if (!varType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "variable '", ctx.pool.lookup(varDecl->name), 
+                                    "' has no type");
+            return nullptr;
+        }
+        
+        llvm::Value* loaded = ctx.builder.CreateLoad(varType, global, 
+                                                      "module_load_" + ctx.pool.lookup(varDecl->name));
+        expr->llvmValue = loaded;
+        return loaded;
+    }
+
+    // ─── 4. Handle enum variant access ──────────────────────────────────────
+    if (resolvedDecl->isa<EnumVariantAST>()) {
+        EnumVariantAST* variant = resolvedDecl->as<EnumVariantAST>();
+        
+        // Use the variant's llvmValue if already set
+        if (variant->llvmValue) {
+            expr->llvmValue = variant->llvmValue;
+            return variant->llvmValue;
+        }
+        
+        // Otherwise, create a constant from the variant's value
+        llvm::Type* enumType = getType(ctx, expr->resolvedType);
+        if (!enumType || !enumType->isIntegerTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "enum variant '", ctx.pool.lookup(variant->name), 
+                                    "' has invalid type");
+            return nullptr;
+        }
+        
+        // Create the constant - explicitly cast to ConstantInt*
+        llvm::Constant* constVal = llvm::ConstantInt::get(
+            enumType, 
+            static_cast<uint64_t>(variant->value), 
+            true  // signed
+        );
+        
+        // Store as ConstantInt* (safe cast since ConstantInt::get returns ConstantInt*)
+        variant->llvmValue = llvm::cast<llvm::ConstantInt>(constVal);
+        expr->llvmValue = variant->llvmValue;
+        return variant->llvmValue;
+    }
+
+    // ─── 5. Unknown declaration type ───────────────────────────────────────
+    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                            "module member '", ctx.pool.lookup(expr->moduleName),
+                            ":", ctx.pool.lookup(expr->memberName), 
+                            "' has unknown declaration type");
     return nullptr;
 }
 
