@@ -1619,19 +1619,297 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
 }
 
 // =============================================================================
-// Composition Expression
+// Compose Operand
 // =============================================================================
-
-llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
-    if (!expr) return nullptr;
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "composition is not fully implemented yet");
-    return nullptr;
-}
 
 llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx) {
     if (!operand) return nullptr;
-    return lowerExpression(operand->callable, ctx);
+
+    // ─── 1. Lower the callable expression ──────────────────────────────────
+    llvm::Value* callable = lowerExpression(operand->callable, ctx);
+    if (!callable) {
+        return nullptr;
+    }
+
+    // ─── 2. If it's an l-value, load it ────────────────────────────────────
+    if (operand->callable->isLValue) {
+        llvm::Type* elemType = getType(ctx, operand->callable->resolvedType);
+        if (elemType) {
+            callable = loadIfNeeded(callable, elemType, ctx);
+        } else {
+            callable = loadIfNeeded(callable, true, ctx);
+        }
+        if (!callable) return nullptr;
+    }
+
+    // ─── 3. Ensure the result is a function pointer ─────────────────────────
+    // If callable is a function value, cast to function pointer
+    if (callable->getType()->isFunctionTy()) {
+        llvm::FunctionType* funcType = llvm::cast<llvm::FunctionType>(callable->getType());
+        callable = ctx.builder.CreatePointerCast(
+            callable,
+            llvm::PointerType::get(funcType, 0),
+            "func_ptr_cast"
+        );
+    }
+
+    // ─── 4. Validate it's callable ──────────────────────────────────────────
+    if (!callable->getType()->isPointerTy()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, operand->loc,
+                                "composition operand is not a function pointer");
+        return nullptr;
+    }
+
+    return callable;  // Return the value, don't store on operand
+}
+
+// =============================================================================
+// Compose Expression
+// =============================================================================
+
+/// @brief Create a wrapper function that composes two functions: f +> g
+/// @param f The first function (returns R)
+/// @param fType The function type of f (T -> R)
+/// @param g The second function (takes R)
+/// @param gType The function type of g (R -> U)
+/// @param ctx The code generation context
+/// @return A function pointer to the composed function (T -> U)
+static llvm::Function* createCompositionWrapper(
+    llvm::Value* f,
+    FuncTypeAST* fType,
+    llvm::Value* g,
+    FuncTypeAST* gType,
+    CodeGenContext& ctx
+) {
+    if (!f || !fType || !g || !gType) return nullptr;
+
+    // ─── 1. Extract parameter types from f ──────────────────────────────────
+    std::vector<llvm::Type*> paramTypes;
+    for (ParamAST* param : fType->params) {
+        llvm::Type* paramType = getType(ctx, param->type);
+        if (!paramType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
+                                    "invalid parameter type in composition");
+            return nullptr;
+        }
+        paramTypes.push_back(paramType);
+    }
+
+    // ─── 2. Get return type (which becomes the input to g) ─────────────────
+    llvm::Type* intermediateType = getType(ctx, fType->returnType);
+    if (!intermediateType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, fType->loc,
+                                "invalid return type in composition");
+        return nullptr;
+    }
+
+    // ─── 3. Get final return type from g ──────────────────────────────────
+    llvm::Type* returnType = getType(ctx, gType->returnType);
+    if (!returnType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, gType->loc,
+                                "invalid return type in composition");
+        return nullptr;
+    }
+
+    // ─── 4. Build the LLVM function type ──────────────────────────────────
+    llvm::FunctionType* composedFuncType = llvm::FunctionType::get(
+        returnType,
+        paramTypes,
+        false
+    );
+
+    // ─── 5. Generate a unique name for the wrapper ─────────────────────────
+    static int wrapperCounter = 0;
+    std::string wrapperName = "_compose_wrapper_" + std::to_string(wrapperCounter++);
+
+    // ─── 6. Create the LLVM function ──────────────────────────────────────
+    llvm::Function* wrapper = llvm::Function::Create(
+        composedFuncType,
+        llvm::Function::InternalLinkage,
+        wrapperName,
+        ctx.module
+    );
+
+    // ─── 7. Set parameter names ────────────────────────────────────────────
+    size_t paramIndex = 0;
+    for (ParamAST* param : fType->params) {
+        if (paramIndex < wrapper->arg_size()) {
+            wrapper->getArg(paramIndex)->setName(ctx.pool.lookup(param->name));
+            paramIndex++;
+        }
+    }
+
+    // ─── 8. Create entry block ─────────────────────────────────────────────
+    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx,
+        "entry",
+        wrapper
+    );
+    ctx.builder.SetInsertPoint(entryBlock);
+
+    // ─── 9. Call f with the parameters ────────────────────────────────────
+    // First, cast f to the correct function type
+    llvm::FunctionType* fLLVMType = llvm::FunctionType::get(
+        intermediateType,
+        paramTypes,
+        false
+    );
+    llvm::Value* fCasted = ctx.builder.CreatePointerCast(
+        f,
+        llvm::PointerType::get(fLLVMType, 0),
+        "f_cast"
+    );
+
+    // Build argument list for f
+    std::vector<llvm::Value*> fArgs;
+    for (size_t i = 0; i < wrapper->arg_size(); ++i) {
+        fArgs.push_back(wrapper->getArg(i));
+    }
+
+    llvm::Value* intermediate = ctx.builder.CreateCall(
+        fLLVMType,
+        fCasted,
+        fArgs,
+        "f_result"
+    );
+
+    // ─── 10. Call g with the intermediate result ──────────────────────────
+    // g takes exactly one parameter (the result of f)
+    std::vector<llvm::Type*> gParamTypes = {intermediateType};
+    llvm::FunctionType* gLLVMType = llvm::FunctionType::get(
+        returnType,
+        gParamTypes,
+        false
+    );
+    llvm::Value* gCasted = ctx.builder.CreatePointerCast(
+        g,
+        llvm::PointerType::get(gLLVMType, 0),
+        "g_cast"
+    );
+
+    llvm::Value* result = ctx.builder.CreateCall(
+        gLLVMType,
+        gCasted,
+        {intermediate},
+        "g_result"
+    );
+
+    // ─── 11. Return the result ─────────────────────────────────────────────
+    ctx.builder.CreateRet(result);
+
+    // ─── 12. Verify the wrapper function ──────────────────────────────────
+    llvm::verifyFunction(*wrapper);
+
+    return wrapper;
+}
+
+llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
+    if (!expr) return nullptr;
+
+    // ─── Step 1: Lower left operand ──────────────────────────────────────
+    if (!expr->left || !expr->left->isa<ComposeOperandAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_CompositionMismatch, expr->loc,
+                                "invalid left operand in composition");
+        return nullptr;
+    }
+
+    ComposeOperandAST* leftOperand = expr->left->as<ComposeOperandAST>();
+    llvm::Value* leftFunc = lowerComposeOperand(leftOperand, ctx);
+    if (!leftFunc) {
+        return nullptr;
+    }
+
+    // ─── Step 2: Get the function type of the left operand ────────────────
+    TypeAST* leftType = leftOperand->callable->resolvedType;
+    if (!leftType || !leftType->isa<FuncTypeAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_CompositionMismatch, expr->left->loc,
+                                "left operand is not a function type");
+        return nullptr;
+    }
+
+    FuncTypeAST* leftFuncType = leftType->as<FuncTypeAST>();
+    if (leftFuncType->isCurried()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_CompositionMismatch, expr->left->loc,
+                                "left operand must have exactly one parameter group "
+                                "(curried functions are not allowed in composition)");
+        return nullptr;
+    }
+
+    // ─── Step 3: Compose each right operand sequentially ──────────────────
+    // Sema already validated type compatibility, so CodeGen just needs to
+    // create wrapper functions for each composition step.
+    
+    llvm::Value* currentFunc = leftFunc;
+    FuncTypeAST* currentFuncType = leftFuncType;
+
+    for (ComposeOperandAST* operand : expr->operands) {
+        // ─── 3a. Lower the operand ──────────────────────────────────────
+        llvm::Value* nextFunc = lowerComposeOperand(operand, ctx);
+        if (!nextFunc) {
+            return nullptr;
+        }
+
+        // ─── 3b. Get the function type of the operand ──────────────────
+        TypeAST* nextType = operand->callable->resolvedType;
+        if (!nextType || !nextType->isa<FuncTypeAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_CompositionMismatch, operand->loc,
+                                    "operand is not a function type");
+            return nullptr;
+        }
+
+        FuncTypeAST* nextFuncType = nextType->as<FuncTypeAST>();
+        if (nextFuncType->isCurried()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_CompositionMismatch, operand->loc,
+                                    "operand must have exactly one parameter group "
+                                    "(curried functions are not allowed in composition)");
+            return nullptr;
+        }
+
+        // ─── 3c. Create a wrapper function that composes current +> next ──
+        currentFunc = createCompositionWrapper(
+            currentFunc,
+            currentFuncType,
+            nextFunc,
+            nextFuncType,
+            ctx
+        );
+
+        if (!currentFunc) {
+            return nullptr;
+        }
+
+        // ─── 3d. Update current function type for the next iteration ────
+        // The result type of the composition is the next function's return type
+        // The parameter type is the current function's parameter type
+        // We build this from the AST types for the next iteration.
+        // Since we can't allocate a new FuncTypeAST in CodeGen (no arena),
+        // we create a temporary one on the stack and use it only for the
+        // next iteration's type information. This is safe because we only
+        // need the type info during lowering, and we don't store it anywhere.
+        FuncTypeAST composedType;
+        composedType.params = currentFuncType->params;
+        composedType.hasArrow = true;
+        composedType.returnType = nextFuncType->returnType;
+
+        // Update for next iteration - we need to keep the type info alive
+        // since we reference it in the next iteration. We use a small vector
+        // to store the composed types we create.
+        // Alternatively, we could just use the nextFuncType's return type
+        // directly and keep currentFuncType->params.
+        // 
+        // Actually, for the next iteration we need:
+        //   params = currentFuncType->params (f's original params)
+        //   returnType = nextFuncType->returnType (the latest return type)
+        // 
+        // We don't need to allocate a new FuncTypeAST because we can just
+        // keep track of the parameter list separately.
+        currentFuncType->returnType = nextFuncType->returnType;
+        // currentFuncType->params stays the same
+    }
+
+    // ─── Step 4: Store the result on the expression ──────────────────────
+    expr->llvmValue = currentFunc;
+    return currentFunc;
 }
 
 // =============================================================================

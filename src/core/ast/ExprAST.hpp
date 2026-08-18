@@ -624,7 +624,6 @@ struct ComposeOperandAST : BaseAST {
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Compile-time: Produces a new function without executing anything.
 /// - Type Matching: Strict – output type of left must exactly match input type of right.
-/// - No Qualifiers: `~[async]` or `~[nullable]` operands are forbidden.
 /// - Generic Instantiation: Explicit type arguments required for generic functions.
 /// 
 /// @field left           The leftmost operand.
