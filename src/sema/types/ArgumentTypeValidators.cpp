@@ -4,6 +4,7 @@
 #include "ArgumentTypeValidators.hpp"
 #include "../types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
+#include "sema/Sema.hpp"
 
 namespace sema {
 
@@ -40,12 +41,34 @@ bool validateIntArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) 
 }
 
 bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                              "argument '", argName, "' expects string type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+    if (!arg) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, nullptr,
+                              "argument '", argName, "' is null");
         return false;
     }
+
+    TypeAST* result = resolveExprWithTarget(
+        arg, ctx.getStringType(), ctx
+    );
+    if (!result || result->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "argument '", argName, "' expects a string literal");
+        return false;
+    }
+
+    if (!arg->isa<LiteralExprAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
+                              "argument '", argName, "' must be a string literal (not an expression)");
+        return false;
+    }
+
+    LiteralExprAST* lit = arg->as<LiteralExprAST>();
+    if (lit->kind != LiteralKind::String && lit->kind != LiteralKind::RawString) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
+                              "argument '", argName, "' must be a string literal");
+        return false;
+    }
+
     return true;
 }
 

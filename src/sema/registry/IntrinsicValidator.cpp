@@ -832,16 +832,6 @@ bool validateIntArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) 
     return true;
 }
 
-bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                              "argument '", argName, "' expects string type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
-        return false;
-    }
-    return true;
-}
-
 bool validateBoolArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !isBoolType(arg->resolvedType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
