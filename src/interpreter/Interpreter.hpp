@@ -37,14 +37,6 @@ ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module,
                           InternedString entryPoint = InternedString(),
                           bool isHotReload = false);
 
-// ─── Hot-Reload ─────────────────────────────────────────────────────────
-
-bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
-                     InternedString name);
-
-bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module, 
-                     const std::string& name);
-
 // ─── Convenience Accessors ─────────────────────────────────────────────
 
 std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx);

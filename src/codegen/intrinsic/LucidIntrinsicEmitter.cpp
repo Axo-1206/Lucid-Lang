@@ -8,6 +8,7 @@
 #include "../support/CodeGenPanic.hpp"
 #include "../support/LLVMHelpers.hpp"
 #include "codegen/CodeGen.hpp"
+#include "core/ast/ExprAST.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
@@ -28,6 +29,301 @@ static std::string getLucidTypeName(CodeGenContext& ctx, TypeAST* type) {
     return getTypeName(ctx, type);
 }
 
+// ─── Helper: concatenate two strings via the runtime ─────────────────────
+
+static llvm::Value* emitStrConcat(llvm::Value* a, llvm::Value* b, CodeGenContext& ctx) {
+    llvm::Type* strType = ctx.getStringType();
+    llvm::FunctionType* concatType = llvm::FunctionType::get(
+        strType, {strType, strType}, false);
+    llvm::Function* concatFunc = ctx.getOrCreateRuntimeFunction(
+        "__lucid_str_concat", concatType);
+    return ctx.builder.CreateCall(concatFunc, {a, b});
+}
+
+// ─── #tostr core: recursive value formatter ───────────────────────────────
+//
+// Shared by the top-level #tostr(x) call and by struct-field formatting,
+// which needs to recurse into each field's own type. sourceExpr is the
+// syntactic expression this value came from - only meaningful for the
+// function/closure case (to look up a declared name), and only available
+// for the top-level call; recursive calls into struct fields pass nullptr
+// since a field's value has no source expression of its own once read out
+// of the struct.
+static llvm::Value* emitTostrValue(
+    llvm::Value* val,
+    TypeAST* type,
+    ExprAST* sourceExpr,
+    SourceLocation loc,
+    CodeGenContext& ctx
+) {
+    llvm::Type* strType = ctx.getStringType();
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+
+    // ─── Functions/closures: declared name ────────────────────────────────
+    if (type && type->isa<FuncTypeAST>()) {
+        std::string nameStr;
+        IdentifierExprAST* ident = sourceExpr ? sourceExpr->as<IdentifierExprAST>() : nullptr;
+        FieldAccessExprAST* field = (!ident && sourceExpr) ? sourceExpr->as<FieldAccessExprAST>() : nullptr;
+        if (ident) {
+            nameStr = ctx.pool.lookup(ident->name);
+        } else if (field) {
+            nameStr = ctx.pool.lookup(field->fieldName);
+        } else {
+            // No source expression (recursive struct-field call) or an
+            // anonymous closure literal with no declared name to report.
+            nameStr = "<closure>";
+        }
+        return ctx.createStringLiteral(nameStr);
+    }
+
+    // ─── Primitives: format by value ──────────────────────────────────────
+    if (type && type->isa<PrimitiveTypeAST>()) {
+        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
+
+        switch (kind) {
+            case PrimitiveKind::String:
+                // Already a string - identity, no runtime call needed.
+                return val;
+
+            case PrimitiveKind::Bool: {
+                llvm::FunctionType* fnType = llvm::FunctionType::get(
+                    strType, {llvm::Type::getInt1Ty(ctx.llvmCtx)}, false);
+                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+                    "__lucid_bool_to_str", fnType);
+                return ctx.builder.CreateCall(fn, {val});
+            }
+
+            case PrimitiveKind::Char: {
+                llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
+                llvm::FunctionType* fnType = llvm::FunctionType::get(
+                    strType, {i32}, false);
+                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+                    "__lucid_char_to_str", fnType);
+                llvm::Value* charVal = val;
+                if (charVal->getType() != i32) {
+                    charVal = ctx.builder.CreateZExtOrTrunc(charVal, i32);
+                }
+                return ctx.builder.CreateCall(fn, {charVal});
+            }
+
+            case PrimitiveKind::Byte:
+            case PrimitiveKind::Short:
+            case PrimitiveKind::Int:
+            case PrimitiveKind::Long:
+            case PrimitiveKind::Int8:
+            case PrimitiveKind::Int16:
+            case PrimitiveKind::Int32:
+            case PrimitiveKind::Int64: {
+                llvm::FunctionType* fnType = llvm::FunctionType::get(
+                    strType, {i64}, false);
+                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+                    "__lucid_int_to_str", fnType);
+                llvm::Value* intVal = val;
+                if (intVal->getType() != i64) {
+                    intVal = ctx.builder.CreateSExtOrTrunc(intVal, i64);
+                }
+                return ctx.builder.CreateCall(fn, {intVal});
+            }
+
+            case PrimitiveKind::Ubyte:
+            case PrimitiveKind::Ushort:
+            case PrimitiveKind::Uint:
+            case PrimitiveKind::Ulong:
+            case PrimitiveKind::Uint8:
+            case PrimitiveKind::Uint16:
+            case PrimitiveKind::Uint32:
+            case PrimitiveKind::Uint64: {
+                llvm::FunctionType* fnType = llvm::FunctionType::get(
+                    strType, {i64}, false);
+                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+                    "__lucid_uint_to_str", fnType);
+                llvm::Value* uintVal = val;
+                if (uintVal->getType() != i64) {
+                    uintVal = ctx.builder.CreateZExtOrTrunc(uintVal, i64);
+                }
+                return ctx.builder.CreateCall(fn, {uintVal});
+            }
+
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal: {
+                // NOTE: Decimal is 128-bit high-precision. Routing it
+                // through the same double formatter as Float/Double loses
+                // precision - a real fix needs its own
+                // __lucid_decimal_to_str helper. Known, scoped-out gap
+                // for Decimal specifically.
+                llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
+                llvm::FunctionType* fnType = llvm::FunctionType::get(
+                    strType, {f64}, false);
+                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+                    "__lucid_float_to_str", fnType);
+                llvm::Value* floatVal = val;
+                if (floatVal->getType() != f64) {
+                    floatVal = ctx.builder.CreateFPExt(floatVal, f64);
+                }
+                return ctx.builder.CreateCall(fn, {floatVal});
+            }
+        }
+    }
+
+    // ─── Named types: enum or struct ──────────────────────────────────────
+    if (type && type->isa<NamedTypeAST>()) {
+        NamedTypeAST* named = type->as<NamedTypeAST>();
+
+        // ─── Enum: "EnumType.VariantName" via a runtime switch ─────────────
+        // The value is only known at runtime, so this has to be a real
+        // switch, but every case result is a compile-time string literal -
+        // this compiles down to a plain jump table, no string building.
+        if (named->resolvedDecl && named->resolvedDecl->isa<EnumDeclAST>()) {
+            EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();
+            std::string enumName = ctx.pool.lookup(enumDecl->name);
+
+            llvm::Function* func = ctx.getCurrentFunction();
+            llvm::BasicBlock* defaultBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "tostr_enum_unknown", func);
+            llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "tostr_enum_merge", func);
+
+            llvm::SwitchInst* sw = ctx.builder.CreateSwitch(
+                val, defaultBlock, static_cast<unsigned>(enumDecl->variants.size()));
+
+            std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> incoming;
+
+            for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
+                EnumVariantAST* variant = enumDecl->variants[i];
+                llvm::ConstantInt* constVal = enumDecl->constantForVariant(variant->name);
+                if (!constVal) continue;
+
+                llvm::BasicBlock* caseBlock = llvm::BasicBlock::Create(
+                    ctx.llvmCtx, "tostr_enum_" + ctx.pool.lookup(variant->name), func);
+                sw->addCase(constVal, caseBlock);
+
+                ctx.builder.SetInsertPoint(caseBlock);
+                std::string label = enumName + "." + ctx.pool.lookup(variant->name);
+                incoming.push_back({caseBlock, ctx.createStringLiteral(label)});
+                ctx.builder.CreateBr(mergeBlock);
+            }
+
+            // ─── Default: value matches no known variant. Shouldn't be
+            // reachable for a well-typed program, but the value is only
+            // known at runtime (corrupted/uninitialized memory could
+            // reach here) - fall back to the raw backing integer rather
+            // than trapping, since #tostr is a diagnostic/debug tool and
+            // shouldn't itself crash the program it's inspecting.
+            ctx.builder.SetInsertPoint(defaultBlock);
+            llvm::Value* asI64 = ctx.builder.CreateSExtOrTrunc(val, i64);
+            llvm::FunctionType* intFnType = llvm::FunctionType::get(strType, {i64}, false);
+            llvm::Function* intFn = ctx.getOrCreateRuntimeFunction(
+                "__lucid_int_to_str", intFnType);
+            llvm::Value* defaultStr = ctx.builder.CreateCall(intFn, {asI64});
+            incoming.push_back({defaultBlock, defaultStr});
+            ctx.builder.CreateBr(mergeBlock);
+
+            ctx.builder.SetInsertPoint(mergeBlock);
+            llvm::PHINode* phi = ctx.builder.CreatePHI(
+                strType, static_cast<unsigned>(incoming.size()), "tostr_enum_result");
+            for (auto& pair : incoming) {
+                phi->addIncoming(pair.second, pair.first);
+            }
+            return phi;
+        }
+
+        // ─── Struct: "Name{ field: value, ... }", or the `str` override ────
+        if (named->resolvedDecl && named->resolvedDecl->isa<StructDeclAST>()) {
+            StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();
+            std::string structName = ctx.pool.lookup(structDecl->name);
+
+            llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
+            if (!llvmStructType) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                        "struct '", structName, "' has no LLVM type");
+                return llvm::Constant::getNullValue(strType);
+            }
+
+            // Reads a field out of `val`, which may be a pointer to the
+            // struct (GEP + load) or an already-loaded aggregate value
+            // (ExtractValue) - the same dual path lowerFieldAccessExpr
+            // (CodeGenExpr.cpp) already has to handle for the same reason.
+            auto readField = [&](size_t index) -> llvm::Value* {
+                if (val->getType()->isPointerTy()) {
+                    llvm::Type* fieldType = llvmStructType->getElementType(index);
+                    std::vector<llvm::Value*> indices = {
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx),
+                                                static_cast<uint32_t>(index))
+                    };
+                    llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
+                        llvmStructType, val, indices, "tostr_field_ptr");
+                    return ctx.builder.CreateLoad(fieldType, fieldPtr, "tostr_field_load");
+                }
+                return ctx.builder.CreateExtractValue(
+                    val, static_cast<unsigned>(index), "tostr_field_val");
+            };
+
+            // ─── Custom `str` field override: call it instead of the
+            // generic field-by-field format ──────────────────────────────
+            InternedString strFieldName = ctx.pool.intern("str");
+            size_t strIndex = structDecl->indexOfField(strFieldName);
+            if (strIndex != SIZE_MAX) {
+                FieldDeclAST* strField = structDecl->fields[strIndex];
+                bool isValidOverride = strField->type && strField->type->isa<FuncTypeAST>();
+                if (isValidOverride) {
+                    FuncTypeAST* fnType = strField->type->as<FuncTypeAST>();
+                    isValidOverride = fnType->params.size() == 0 &&
+                        fnType->returnType &&
+                        fnType->returnType->isa<PrimitiveTypeAST>() &&
+                        fnType->returnType->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
+                }
+                if (isValidOverride) {
+                    llvm::Value* closureVal = readField(strIndex);
+                    llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
+                        closureVal, 0, "str_override_func");
+                    llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                        closureVal, 1, "str_override_env");
+                    return emitClosureCall(funcPtr, envPtr, {}, strType, ctx);
+                }
+                // A field named `str` exists but isn't a zero-arg
+                // string-returning closure - fall through to generic
+                // field formatting rather than silently misinterpreting it.
+            }
+
+            // ─── No override: synthesize "Name{ f1: v1, f2: v2 }" ──────────
+            if (structDecl->fields.empty()) {
+                return ctx.createStringLiteral(structName + "{}");
+            }
+
+            llvm::Value* result = ctx.createStringLiteral(structName + "{ ");
+            for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+                FieldDeclAST* field = structDecl->fields[i];
+                std::string fieldPrefix = ctx.pool.lookup(field->name) + ": ";
+
+                llvm::Value* fieldVal = readField(i);
+                llvm::Value* fieldStr = emitTostrValue(fieldVal, field->type, nullptr, loc, ctx);
+                if (!fieldStr) {
+                    fieldStr = llvm::Constant::getNullValue(strType);
+                }
+
+                result = emitStrConcat(result, ctx.createStringLiteral(fieldPrefix), ctx);
+                result = emitStrConcat(result, fieldStr, ctx);
+                if (i + 1 < structDecl->fields.size()) {
+                    result = emitStrConcat(result, ctx.createStringLiteral(", "), ctx);
+                }
+            }
+            result = emitStrConcat(result, ctx.createStringLiteral(" }"), ctx);
+            return result;
+        }
+    }
+
+    // ─── Trait, generic params, or anything else not yet covered ─────────
+    // Trait-by-value is mechanically identical to the struct case above
+    // (walk TraitDeclAST::fields instead of StructDeclAST::fields, no
+    // `str` override since traits have no methods) but isn't wired up
+    // yet. Trait-by-reference (&TraitA) needs the field-offset-table
+    // design agreed on separately and isn't implemented at all yet.
+    assert(false && "#tostr is not implemented for this type yet");
+    return llvm::Constant::getNullValue(strType);
+}
+
 // ─── Type Inspection Intrinsics ──────────────────────────────────────────
 
 llvm::Value* emitLucidTypeIntrinsic(
@@ -38,6 +334,7 @@ llvm::Value* emitLucidTypeIntrinsic(
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
     llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+    llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
 
     // ─── #sizeof(T) ──────────────────────────────────────────────────────
     if (name == "sizeof") {
@@ -111,10 +408,10 @@ llvm::Value* emitLucidTypeIntrinsic(
 
         std::string nameStr;
         ExprAST* arg = expr->args[0];
-        if (auto* ident = llvm::dyn_cast<IdentifierExprAST>(arg)) {
-            nameStr = ctx.pool.lookup(ident->name);
-        } else if (auto* field = llvm::dyn_cast<FieldAccessExprAST>(arg)) {
-            nameStr = ctx.pool.lookup(field->fieldName);
+        if (arg->isa<IdentifierExprAST>()) {
+            nameStr = ctx.pool.lookup(arg->as<IdentifierExprAST>()->name);
+        } if (arg->isa<FieldAccessExprAST>()) {
+            nameStr = ctx.pool.lookup(arg->as<FieldAccessExprAST>()->fieldName);
         } else {
             nameStr = "unknown";
         }
@@ -130,8 +427,7 @@ llvm::Value* emitLucidTypeIntrinsic(
             return nullptr;
         }
 
-        // TODO: Implement proper to-string conversion
-        return llvm::Constant::getNullValue(ctx.getStringType());
+        return emitTostrValue(args[0], expr->args[0]->resolvedType, expr->args[0], loc, ctx);
     }
 
     // ─── #ptrstr(x) ──────────────────────────────────────────────────────
@@ -142,8 +438,22 @@ llvm::Value* emitLucidTypeIntrinsic(
             return nullptr;
         }
 
-        // TODO: Implement proper pointer-to-string conversion
-        return llvm::Constant::getNullValue(ctx.getStringType());
+        // args[0] is the raw, un-loaded address (see the "ptrstr"
+        // special-case in emitIntrinsicFromAST, IntrinsicEmitter.cpp) -
+        // it must not be loaded, since the whole point is reporting the
+        // address itself, not the value stored there.
+        llvm::Value* addr = args[0];
+        if (addr->getType() != i8Ptr) {
+            addr = ctx.builder.CreateBitCast(addr, i8Ptr);
+        }
+
+        llvm::Type* strType = ctx.getStringType();
+        llvm::FunctionType* fnType = llvm::FunctionType::get(
+            strType, {i8Ptr}, false);
+        llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
+            "__lucid_ptr_to_hex_string", fnType);
+
+        return ctx.builder.CreateCall(fn, {addr});
     }
 
     ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
@@ -731,10 +1041,8 @@ void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx
         closureArgs.push_back(argVal);
     }
 
-    // emitClosureCall now takes the return type explicitly (the FIXME that
-    // used to hardcode void inside it is fixed). scope_exit callbacks are
-    // registered as a void intrinsic, so void is genuinely correct here -
-    // not a placeholder like it was before.
+    // scope_exit callbacks are registered as a void intrinsic, so this
+    // return type is always void - never a placeholder.
     emitClosureCall(funcPtr, envPtr, closureArgs, llvm::Type::getVoidTy(ctx.llvmCtx), ctx);
 }
 

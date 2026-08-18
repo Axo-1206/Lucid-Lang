@@ -66,6 +66,27 @@ llvm::Type* getType(
                     return nullptr;
                 }
             }
+            // ─── Resolved struct/enum: dispatch directly via resolvedDecl ───
+            // Sema (resolveNamedType) already sets named->resolvedDecl to the
+            // concrete StructDeclAST/EnumDeclAST/TraitDeclAST this name
+            // refers to. Using it here means getStructType/getEnumType are
+            // reached directly instead of falling through to
+            // getNamedType()'s fragile by-LLVM-name lookup below, which
+            // never had a path to getEnumType at all - any enum-typed
+            // value previously got a bogus empty forward-declared struct
+            // in its place. TraitDeclAST is intentionally not handled yet
+            // (see getNamedType) - there's no canonical trait-by-value
+            // storage type defined in this file yet.
+            if (named->resolvedDecl) {
+                if (named->resolvedDecl->isa<StructDeclAST>()) {
+                    result = getStructType(ctx, named->resolvedDecl->as<StructDeclAST>());
+                    break;
+                }
+                if (named->resolvedDecl->isa<EnumDeclAST>()) {
+                    result = getEnumType(ctx, named->resolvedDecl->as<EnumDeclAST>());
+                    break;
+                }
+            }
             // ─── Otherwise, resolve as a normal named type ──────────────────
             result = getNamedType(ctx, named);
             break;

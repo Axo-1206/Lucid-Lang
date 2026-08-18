@@ -254,10 +254,12 @@ std::vector<InternedString> extractModuleDependencies(
         return dependencies;
     }
 
-    // Look for import declarations in the module
-    // This is a placeholder - actual implementation depends on
-    // how imports are stored in your AST
-    
+    // Read dependencies from ModuleAST::imports (populated by parser)
+    // This is now a simple read from the cached field
+    for (InternedString import : module->imports) {
+        dependencies.push_back(import);
+    }
+
     return dependencies;
 }
 

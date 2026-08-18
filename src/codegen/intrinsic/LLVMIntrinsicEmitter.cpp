@@ -34,7 +34,7 @@ static bool tryGetStringLiteralArg(
 ) {
     if (!expr || index >= expr->args.size()) return false;
     ExprAST* argExpr = expr->args[index];
-    if (auto* lit = llvm::dyn_cast<LiteralExprAST>(argExpr)) {
+    if (auto* lit = argExpr->as<LiteralExprAST>()) {
         if (lit->kind == LiteralKind::String || lit->kind == LiteralKind::RawString) {
             outStr = ctx.pool.lookup(lit->value);
             return true;

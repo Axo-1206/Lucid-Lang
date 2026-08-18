@@ -25,6 +25,9 @@ struct InterpreterOptions {
     /// @brief Optimization level: 0-3.
     int optimizationLevel = 2;
 
+    /// @brief Enable hot-reload support (JIT module replacement).
+    bool enableHotReload = false;  // <-- ADD THIS
+
     /// @brief Enable verbose output from the interpreter.
     bool verbose = false;
 
