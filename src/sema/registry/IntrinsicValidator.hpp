@@ -60,13 +60,4 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
-// ─── Argument Type Validators ─────────────────────────────────────────────
-
-bool validatePtrArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateNumericArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateIntArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateBoolArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateRefArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-
 } // namespace sema

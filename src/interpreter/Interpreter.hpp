@@ -40,7 +40,5 @@ ExecutionResult runModule(InterpreterContext& ctx, ModuleAST* module,
 // ─── Convenience Accessors ─────────────────────────────────────────────
 
 std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx);
-std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
-                                            InternedString changedModule);
 
 } // namespace interpreter

@@ -135,7 +135,4 @@ std::string getMangledModulePath(SemaContext& ctx);
 /// @return The encoded character.
 char encodePrimitiveKind(PrimitiveKind kind);
 
-/// @brief Check if a type is a primitive type.
-bool isPrimitiveType(TypeAST* type);
-
 } // namespace sema

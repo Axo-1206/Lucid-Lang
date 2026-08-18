@@ -47,9 +47,6 @@ bool validateSpecialize(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/// @brief Validate that an attribute argument is a string literal.
-bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
-
 /// @brief Validate attribute argument count.
 bool validateArgCount(AttributeAST* attr, size_t min, size_t max, SemaContext& ctx);
 

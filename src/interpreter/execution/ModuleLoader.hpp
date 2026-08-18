@@ -42,10 +42,6 @@ bool isModuleLoaded(const InterpreterContext& ctx, InternedString name);
 /// @brief Get the active module.
 ModuleAST* getActiveModule(const InterpreterContext& ctx);
 
-/// @brief Get modules affected by a change.
-std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
-                                            InternedString changedModule);
-
 // ─── Internal Helpers ───────────────────────────────────────────────────
 
 /// @brief Generate a unique module name from an AST.

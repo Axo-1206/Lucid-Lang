@@ -297,8 +297,4 @@ char encodePrimitiveKind(PrimitiveKind kind) {
     }
 }
 
-bool isPrimitiveType(TypeAST* type) {
-    return type && type->isa<PrimitiveTypeAST>();
-}
-
 } // namespace sema

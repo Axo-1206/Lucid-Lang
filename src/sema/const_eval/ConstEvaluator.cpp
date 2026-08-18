@@ -309,28 +309,6 @@ ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, BinaryExprAST* expr,
     return evalBinaryOp(ctx, expr->op, left, right, expr, targetType);
 }
 
-// ─── evalUnary ────────────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, UnaryExprAST* expr,
-                                         TypeAST* targetType) {
-    if (!expr) return ConstantValue::error();
-
-    ConstantValue operand = evaluate(ctx, expr->operand, targetType);
-    if (operand.isError()) return operand;
-    if (operand.isUnknown()) return ConstantValue::unknown();
-
-    switch (expr->op) {
-        case UnaryOp::Neg:
-            return evalNeg(ctx, operand, expr, targetType);
-        case UnaryOp::Not:
-            return evalNot(ctx, operand, expr);
-        case UnaryOp::BitNot:
-            return evalBitNot(ctx, operand, expr);
-        default:
-            return ConstantValue::unknown();
-    }
-}
-
 // ─── evalStructLiteral ────────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, StructLiteralExprAST* expr) {

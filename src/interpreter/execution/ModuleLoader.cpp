@@ -142,7 +142,7 @@ bool hotReloadModule(InterpreterContext& ctx, ModuleAST* module,
     }
 
     // Get all affected modules (dependents)
-    std::vector<ModuleInfo*> affectedModules = getAffectedModules(ctx, name);
+    std::vector<ModuleInfo*> affectedModules = ctx.moduleRegistry.getAffectedModules(name);
     
     // Build list of modules to reload (changed + dependents)
     std::vector<ModuleAST*> modulesToReload;
@@ -175,11 +175,6 @@ bool isModuleLoaded(const InterpreterContext& ctx, InternedString name) {
 ModuleAST* getActiveModule(const InterpreterContext& ctx) {
     const ModuleInfo* info = ctx.moduleRegistry.getActiveModule();
     return info ? info->ast : nullptr;
-}
-
-std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
-                                            InternedString changedModule) {
-    return ctx.moduleRegistry.getAffectedModules(changedModule);
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────

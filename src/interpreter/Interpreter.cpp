@@ -217,9 +217,4 @@ std::vector<ModuleInfo*> getLoadedModules(InterpreterContext& ctx) {
     return ctx.moduleRegistry.getAllModules();
 }
 
-std::vector<ModuleInfo*> getAffectedModules(InterpreterContext& ctx, 
-                                            InternedString changedModule) {
-    return ctx.moduleRegistry.getAffectedModules(changedModule);
-}
-
 } // namespace interpreter
