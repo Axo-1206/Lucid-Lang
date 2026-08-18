@@ -22,9 +22,8 @@
 
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
-#include "core/diagnostics/Diagnostic.hpp"
-#include "../lexer/Lexer.hpp"
 #include <string>
+#include <vector>
 
 namespace parser {
 
@@ -33,29 +32,9 @@ namespace parser {
  * 
  * TokenStream is per-file - each file gets its own instance.
  * Comments (LINE_COMMENT, DOC_COMMENT, BLOCK_COMMENT) are transparently skipped.
- * 
- * ## Usage Example
- * 
- * ```cpp
- * TokenStream stream(source, diagnostics);
- * if (stream.check(TokenType::IDENTIFIER)) {
- *     Token tok = stream.consume();
- * }
- * stream.consume(TokenType::LBRACE);
- * ```
  */
 class TokenStream {
 public:
-    /**
-     * @brief Construct a TokenStream from a source file.
-     * 
-     * This will lazily tokenize the source as tokens are consumed.
-     * 
-     * @param source The source code
-     * @param diagnostics The diagnostic engine for error reporting
-     */
-    TokenStream(const std::string& source, DiagnosticEngine& diagnostics);
-    
     /**
      * @brief Construct a TokenStream from an existing token vector.
      * 
@@ -88,14 +67,6 @@ public:
      */
     bool match(TokenType type);
     
-    /**
-     * @brief Consume the current token, expecting it to be of the given type.
-     * 
-     * This method consumes the token without checking its type.
-     * The caller must verify the type before calling.
-     */
-    Token consume(TokenType type);
-    
     /// @brief Check if we've reached the end of the token stream.
     bool isAtEnd();
     
@@ -125,12 +96,8 @@ public:
 private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
-    DiagnosticEngine* diagnostics_ = nullptr;
+    static const Token EOF_TOKEN_SENTINEL;
     
-    // ─── Lazy Lexing ───────────────────────────────────────────────────
-    
-    void ensureTokens(size_t count);
-    void tokenizeAll();
     size_t skipCommentsFrom(size_t start) const;
 };
 

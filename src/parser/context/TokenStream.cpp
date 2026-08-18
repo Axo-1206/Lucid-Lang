@@ -1,7 +1,5 @@
-/**
- * @file TokenStream.cpp
- * @brief Implementation of TokenStream - with lazy lexing.
- */
+/// @file TokenStream.cpp
+/// @brief Implementation of TokenStream.
 
 #include "TokenStream.hpp"
 #include "debug/DebugMacros.hpp"
@@ -9,12 +7,12 @@
 
 namespace parser {
 
-// ─── Construction ───────────────────────────────────────────────────────
+// ─── Static Sentinel ──────────────────────────────────────────────────────
 
-TokenStream::TokenStream(const std::string& source, DiagnosticEngine& diagnostics)
-    : diagnostics_(&diagnostics) {
-    // Don't tokenize immediately - lazy lexing
-}
+const Token TokenStream::EOF_TOKEN_SENTINEL = 
+    Token{TokenType::EOF_TOKEN, "EOF", 0, 0};
+
+// ─── Construction ───────────────────────────────────────────────────────
 
 TokenStream::TokenStream(std::vector<Token> tokens)
     : tokens_(std::move(tokens)) {}
@@ -22,10 +20,6 @@ TokenStream::TokenStream(std::vector<Token> tokens)
 // ─── Token Consumption ──────────────────────────────────────────────────
 
 const Token& TokenStream::peek() {
-    ensureTokens(1);
-    if (pos_ >= tokens_.size()) {
-        return EOF_TOKEN_SENTINEL;
-    }
     size_t next = skipCommentsFrom(pos_);
     if (next >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
@@ -34,7 +28,6 @@ const Token& TokenStream::peek() {
 }
 
 Token TokenStream::consume() {
-    ensureTokens(1);
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
@@ -56,19 +49,9 @@ bool TokenStream::match(TokenType type) {
     return false;
 }
 
-Token TokenStream::consume(TokenType type) {
-    if (pos_ >= tokens_.size()) {
-        return EOF_TOKEN_SENTINEL;
-    }
-    Token result = tokens_[pos_];
-    pos_++;
-    pos_ = skipCommentsFrom(pos_);
-    return result;
-}
-
 bool TokenStream::isAtEnd() {
-    ensureTokens(1);
-    return pos_ >= tokens_.size() || tokens_[pos_].type == TokenType::EOF_TOKEN;
+    size_t next = skipCommentsFrom(pos_);
+    return next >= tokens_.size() || tokens_[next].type == TokenType::EOF_TOKEN;
 }
 
 SourceLocation TokenStream::currentLoc() const {
@@ -76,19 +59,6 @@ SourceLocation TokenStream::currentLoc() const {
         return SourceLocation(tokens_[pos_].line, tokens_[pos_].column);
     }
     return SourceLocation(1, 1);
-}
-
-// ─── Lazy Lexing ────────────────────────────────────────────────────────
-
-void TokenStream::ensureTokens(size_t count) {
-    if (!diagnostics_) return;
-    
-    while (tokens_.size() < pos_ + count) {
-        // Tokenize one token at a time
-        // We need to tokenize all tokens at once since the lexer
-        // doesn't support incremental tokenization yet.
-        tokenizeAll();
-    }
 }
 
 // ─── Trailing Token Consumption ────────────────────────────────────────
@@ -112,21 +82,18 @@ int TokenStream::consumeTrailing(TokenType type) {
 // ─── Lookahead ──────────────────────────────────────────────────────────
 
 TokenType TokenStream::peekNextType() {
-    ensureTokens(2);
     size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return TokenType::EOF_TOKEN;
     return tokens_[next].type;
 }
 
 const Token& TokenStream::peekNext() {
-    ensureTokens(2);
     size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     return tokens_[next];
 }
 
 const Token& TokenStream::peekAt(size_t offset) {
-    ensureTokens(offset + 1);
     size_t idx = pos_ + offset;
     if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     idx = skipCommentsFrom(idx);

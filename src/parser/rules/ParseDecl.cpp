@@ -61,8 +61,9 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     std::string aliasStr;
     
     if (stream.match(TokenType::AS)) {
-        Token aliasTok = stream.consume(TokenType::IDENTIFIER);
-        if (aliasTok.type != TokenType::EOF_TOKEN) {
+        Token aliasTok = stream.peek();
+        stream.consume();
+        if (aliasTok.type == TokenType::IDENTIFIER) {
             alias = ctx.pool.intern(aliasTok.value);
             aliasStr = std::string(ctx.pool.lookup(alias));
         } else {
