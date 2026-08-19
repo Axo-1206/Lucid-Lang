@@ -32,21 +32,7 @@ static std::string formatDiagCodePrefix(DiagCode code) {
 }
 
 static void emitPanicInternal(const std::string& message, CodeGenContext& ctx) {
-    llvm::Function* panicFunc = ctx.getRuntimeFunction("__lucid_panic");
-    if (!panicFunc) {
-        llvm::FunctionType* panicType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0)},
-            false
-        );
-        panicFunc = llvm::Function::Create(
-            panicType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_panic",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_panic", panicFunc);
-    }
+    llvm::Function* panicFunc = ctx.getRuntimeFn(RuntimeFn::Panic);
 
     llvm::Constant* msgConst = llvm::ConstantDataArray::getString(
         ctx.llvmCtx,

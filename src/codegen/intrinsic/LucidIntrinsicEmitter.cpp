@@ -8,7 +8,6 @@
 #include "../support/CodeGenPanic.hpp"
 #include "../support/LLVMHelpers.hpp"
 #include "codegen/CodeGen.hpp"
-#include "core/ast/ExprAST.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
@@ -32,11 +31,7 @@ static std::string getLucidTypeName(CodeGenContext& ctx, TypeAST* type) {
 // ─── Helper: concatenate two strings via the runtime ─────────────────────
 
 static llvm::Value* emitStrConcat(llvm::Value* a, llvm::Value* b, CodeGenContext& ctx) {
-    llvm::Type* strType = ctx.getStringType();
-    llvm::FunctionType* concatType = llvm::FunctionType::get(
-        strType, {strType, strType}, false);
-    llvm::Function* concatFunc = ctx.getOrCreateRuntimeFunction(
-        "__lucid_str_concat", concatType);
+    llvm::Function* concatFunc = ctx.getRuntimeFn(RuntimeFn::StrConcat);
     return ctx.builder.CreateCall(concatFunc, {a, b});
 }
 
@@ -86,19 +81,13 @@ static llvm::Value* emitTostrValue(
                 return val;
 
             case PrimitiveKind::Bool: {
-                llvm::FunctionType* fnType = llvm::FunctionType::get(
-                    strType, {llvm::Type::getInt1Ty(ctx.llvmCtx)}, false);
-                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-                    "__lucid_bool_to_str", fnType);
+                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::BoolToStr);
                 return ctx.builder.CreateCall(fn, {val});
             }
 
             case PrimitiveKind::Char: {
                 llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
-                llvm::FunctionType* fnType = llvm::FunctionType::get(
-                    strType, {i32}, false);
-                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-                    "__lucid_char_to_str", fnType);
+                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::CharToStr);
                 llvm::Value* charVal = val;
                 if (charVal->getType() != i32) {
                     charVal = ctx.builder.CreateZExtOrTrunc(charVal, i32);
@@ -114,10 +103,7 @@ static llvm::Value* emitTostrValue(
             case PrimitiveKind::Int16:
             case PrimitiveKind::Int32:
             case PrimitiveKind::Int64: {
-                llvm::FunctionType* fnType = llvm::FunctionType::get(
-                    strType, {i64}, false);
-                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-                    "__lucid_int_to_str", fnType);
+                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
                 llvm::Value* intVal = val;
                 if (intVal->getType() != i64) {
                     intVal = ctx.builder.CreateSExtOrTrunc(intVal, i64);
@@ -133,10 +119,7 @@ static llvm::Value* emitTostrValue(
             case PrimitiveKind::Uint16:
             case PrimitiveKind::Uint32:
             case PrimitiveKind::Uint64: {
-                llvm::FunctionType* fnType = llvm::FunctionType::get(
-                    strType, {i64}, false);
-                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-                    "__lucid_uint_to_str", fnType);
+                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::UintToStr);
                 llvm::Value* uintVal = val;
                 if (uintVal->getType() != i64) {
                     uintVal = ctx.builder.CreateZExtOrTrunc(uintVal, i64);
@@ -153,10 +136,7 @@ static llvm::Value* emitTostrValue(
                 // __lucid_decimal_to_str helper. Known, scoped-out gap
                 // for Decimal specifically.
                 llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
-                llvm::FunctionType* fnType = llvm::FunctionType::get(
-                    strType, {f64}, false);
-                llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-                    "__lucid_float_to_str", fnType);
+                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::FloatToStr);
                 llvm::Value* floatVal = val;
                 if (floatVal->getType() != f64) {
                     floatVal = ctx.builder.CreateFPExt(floatVal, f64);
@@ -212,9 +192,7 @@ static llvm::Value* emitTostrValue(
             // shouldn't itself crash the program it's inspecting.
             ctx.builder.SetInsertPoint(defaultBlock);
             llvm::Value* asI64 = ctx.builder.CreateSExtOrTrunc(val, i64);
-            llvm::FunctionType* intFnType = llvm::FunctionType::get(strType, {i64}, false);
-            llvm::Function* intFn = ctx.getOrCreateRuntimeFunction(
-                "__lucid_int_to_str", intFnType);
+            llvm::Function* intFn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
             llvm::Value* defaultStr = ctx.builder.CreateCall(intFn, {asI64});
             incoming.push_back({defaultBlock, defaultStr});
             ctx.builder.CreateBr(mergeBlock);
@@ -447,11 +425,7 @@ llvm::Value* emitLucidTypeIntrinsic(
             addr = ctx.builder.CreateBitCast(addr, i8Ptr);
         }
 
-        llvm::Type* strType = ctx.getStringType();
-        llvm::FunctionType* fnType = llvm::FunctionType::get(
-            strType, {i8Ptr}, false);
-        llvm::Function* fn = ctx.getOrCreateRuntimeFunction(
-            "__lucid_ptr_to_hex_string", fnType);
+        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::PtrToHexString);
 
         return ctx.builder.CreateCall(fn, {addr});
     }
@@ -606,12 +580,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             "alloc_size"
         );
 
-        llvm::FunctionType* allocType = llvm::FunctionType::get(
-            i8Ptr,
-            {i64},
-            false
-        );
-        llvm::Function* allocFunc = ctx.getOrCreateRuntimeFunction("__lucid_alloc", allocType);
+        llvm::Function* allocFunc = ctx.getRuntimeFn(RuntimeFn::Alloc);
 
         llvm::Value* result = ctx.builder.CreateCall(allocFunc, {size});
 
@@ -629,12 +598,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* freeType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {i8Ptr},
-            false
-        );
-        llvm::Function* freeFunc = ctx.getOrCreateRuntimeFunction("__lucid_free", freeType);
+        llvm::Function* freeFunc = ctx.getRuntimeFn(RuntimeFn::Free);
 
         llvm::Value* ptr = args[0];
         if (ptr->getType() != i8Ptr) {
@@ -652,16 +616,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             return nullptr;
         }
 
-        llvm::Type* arenaType = llvm::StructType::get(ctx.llvmCtx, {i8Ptr, i64});
-
-        llvm::FunctionType* arenaCreateType = llvm::FunctionType::get(
-            arenaType,
-            {i64},
-            false
-        );
-        llvm::Function* arenaCreateFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_arena_create", arenaCreateType
-        );
+        llvm::Function* arenaCreateFunc = ctx.getRuntimeFn(RuntimeFn::ArenaCreate);
 
         return ctx.builder.CreateCall(arenaCreateFunc, {args[0]});
     }
@@ -699,14 +654,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             "arena_alloc_size"
         );
 
-        llvm::FunctionType* arenaAllocType = llvm::FunctionType::get(
-            i8Ptr,
-            {i8Ptr, i64},
-            false
-        );
-        llvm::Function* arenaAllocFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_arena_alloc", arenaAllocType
-        );
+        llvm::Function* arenaAllocFunc = ctx.getRuntimeFn(RuntimeFn::ArenaAlloc);
 
         llvm::Value* result = ctx.builder.CreateCall(arenaAllocFunc, {arena, size});
 
@@ -724,14 +672,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* arenaResetType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {i8Ptr},
-            false
-        );
-        llvm::Function* arenaResetFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_arena_reset", arenaResetType
-        );
+        llvm::Function* arenaResetFunc = ctx.getRuntimeFn(RuntimeFn::ArenaReset);
 
         llvm::Value* arena = args[0];
         if (arena->getType() != i8Ptr) {
@@ -749,14 +690,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* arenaFreeType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {i8Ptr},
-            false
-        );
-        llvm::Function* arenaFreeFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_arena_free", arenaFreeType
-        );
+        llvm::Function* arenaFreeFunc = ctx.getRuntimeFn(RuntimeFn::ArenaFree);
 
         llvm::Value* arena = args[0];
         if (arena->getType() != i8Ptr) {
@@ -834,14 +768,7 @@ llvm::Value* emitLucidStringIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* concatType = llvm::FunctionType::get(
-            strType,
-            {strType, strType},
-            false
-        );
-        llvm::Function* concatFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_str_concat", concatType
-        );
+        llvm::Function* concatFunc = ctx.getRuntimeFn(RuntimeFn::StrConcat);
 
         return ctx.builder.CreateCall(concatFunc, {args[0], args[1]});
     }
@@ -854,14 +781,7 @@ llvm::Value* emitLucidStringIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* sliceType = llvm::FunctionType::get(
-            strType,
-            {strType, i64, i64},
-            false
-        );
-        llvm::Function* sliceFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_str_slice", sliceType
-        );
+        llvm::Function* sliceFunc = ctx.getRuntimeFn(RuntimeFn::StrSlice);
 
         return ctx.builder.CreateCall(sliceFunc, {args[0], args[1], args[2]});
     }
@@ -874,14 +794,7 @@ llvm::Value* emitLucidStringIntrinsic(
             return nullptr;
         }
 
-        llvm::FunctionType* eqType = llvm::FunctionType::get(
-            llvm::Type::getInt1Ty(ctx.llvmCtx),
-            {strType, strType},
-            false
-        );
-        llvm::Function* eqFunc = ctx.getOrCreateRuntimeFunction(
-            "__lucid_str_eq", eqType
-        );
+        llvm::Function* eqFunc = ctx.getRuntimeFn(RuntimeFn::StrEq);
 
         return ctx.builder.CreateCall(eqFunc, {args[0], args[1]});
     }

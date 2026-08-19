@@ -7,6 +7,7 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "../runtime/RuntimeFunctionRegistry.hpp"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
@@ -187,6 +188,32 @@ struct CodeGenContext {
         llvm::Function* func = getRuntimeFunction(name);
         if (func) return func;
 
+        func = llvm::Function::Create(
+            type,
+            llvm::Function::ExternalLinkage,
+            name,
+            module
+        );
+        setRuntimeFunction(name, func);
+        return func;
+    }
+
+    /// @brief Get or create a runtime function by its RuntimeFn entry.
+    ///
+    /// Preferred over getOrCreateRuntimeFunction(name, type) for anything
+    /// with a RuntimeFunctionRegistry entry - the name is never spelled as
+    /// a string at the call site, and the FunctionType comes from the
+    /// registry's single definition instead of being rebuilt ad hoc at
+    /// every call site. See runtime/RuntimeFunctionRegistry.hpp.
+    /// @param fn The runtime function to get or declare.
+    /// @return The LLVM function.
+    llvm::Function* getRuntimeFn(RuntimeFn fn) {
+        const RuntimeFunctionInfo& info = getRuntimeFunctionInfo(fn);
+        std::string name(info.name);
+        llvm::Function* func = getRuntimeFunction(name);
+        if (func) return func;
+
+        llvm::FunctionType* type = info.buildType(*this);
         func = llvm::Function::Create(
             type,
             llvm::Function::ExternalLinkage,

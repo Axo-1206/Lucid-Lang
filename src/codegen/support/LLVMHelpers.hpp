@@ -295,15 +295,6 @@ inline llvm::Type* getPtrType(llvm::LLVMContext& ctx) {
     return llvm::PointerType::get(ctx, 0);
 }
 
-/// @brief Get the string type (struct { ptr, len, cap }).
-/// @param ctx The LLVM context.
-/// @return The string struct type.
-inline llvm::StructType* getStringType(llvm::LLVMContext& ctx) {
-    llvm::Type* i8Ptr = llvm::PointerType::get(ctx, 0);
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
-    return llvm::StructType::get(ctx, {i8Ptr, i64, i64});
-}
-
 // ─── Value Creation Helpers ──────────────────────────────────────────────
 
 /// @brief Create a zero constant for a type.

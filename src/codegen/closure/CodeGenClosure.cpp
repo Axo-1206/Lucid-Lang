@@ -115,24 +115,8 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
 
     if (hasCaptures) {
         // ─── 4. Allocate the environment ───────────────────────────────────
-        // The environment is heap-allocated (refcounted). We call a runtime
-        // function to allocate the environment.
-        llvm::Function* allocEnv = ctx.getRuntimeFunction("__lucid_alloc_env");
-        if (!allocEnv) {
-            // Declare the alloc_env function: void* __lucid_alloc_env(uint64_t size)
-            llvm::FunctionType* allocType = llvm::FunctionType::get(
-                llvm::PointerType::get(ctx.llvmCtx, 0),
-                {llvm::Type::getInt64Ty(ctx.llvmCtx)},
-                false
-            );
-            allocEnv = llvm::Function::Create(
-                allocType,
-                llvm::Function::ExternalLinkage,
-                "__lucid_alloc_env",
-                ctx.module
-            );
-            ctx.setRuntimeFunction("__lucid_alloc_env", allocEnv);
-        }
+        // The environment is heap-allocated (refcounted).
+        llvm::Function* allocEnv = ctx.getRuntimeFn(RuntimeFn::AllocEnv);
 
         // ─── 5. Get the size of the environment ────────────────────────────
         llvm::DataLayout dl(ctx.module);
@@ -225,13 +209,25 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     // same way whether or not there are captures, so every closure value -
     // capturing or not - has the same LLVM shape and can be called through
     // the same path in lowerCallExpr (CodeGenExpr.cpp).
-    llvm::StructType* closureType = llvm::StructType::create(
+    //
+    // IMPORTANT: this must be StructType::get (an anonymous/literal struct
+    // type), not StructType::create (a named/identified struct type).
+    // StructType::create mints a brand new, distinct type identity on
+    // every call - two structurally identical closures built at two
+    // different call sites would get different LLVM types (%closure,
+    // %closure.1, ...), which LLVM does not unify. StructType::get with
+    // no name instead produces a single structurally-uniqued type shared
+    // by every closure literal with this shape, which matters as soon as
+    // anything needs to treat "a closure value" as one consistent type
+    // regardless of where it was created - e.g. a trait field-offset
+    // table describing a callable field, or storing different closures
+    // into the same variable across branches.
+    llvm::StructType* closureType = llvm::StructType::get(
         ctx.llvmCtx,
         {
             llvm::PointerType::get(ctx.llvmCtx, 0),  // function pointer
             llvm::PointerType::get(ctx.llvmCtx, 0)   // environment pointer
-        },
-        "closure"
+        }
     );
 
     // Build the closure value

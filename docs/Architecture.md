@@ -616,6 +616,10 @@ lucid/
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
     │   │   └── CodeGenPanic.hpp/cpp        # Panic, null checks
     │   │
+    │   ├── runtime/
+    │   │   └── RuntimeFunctionRegistry.hpp/cpp # Single source of truth for every `__lucid_*` runtime library
+    │   │                                         function CodeGen declares and calls
+    │   │
     │   ├── closure/
     │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations
     │   │   └── CodeGenClosure.hpp/cpp # Closure implementation
@@ -662,14 +666,6 @@ lucid/
     │   └── aot/                        # AOT-only backend
     │       ├── AOT.hpp/cpp             # optimisation pipeline + object file emission
     │       └── Linker.hpp/cpp          # system linker invocation
-    │
-    ├── runtime/                        # services that run alongside the program
-    │   ├── memory.hpp/cpp              # #alloc/#free registry, ArenaDescriptor management
-    │   ├── threading.hpp/cpp           # async/parallel/await/join implementation
-    │   └── ffi/
-    │       ├── FFI.hpp/cpp             # foreign call dispatch
-    │       ├── DynLink.hpp/cpp         # shared dlopen wrapper (used by runtime + JIT)
-    │       └── TypeMarshal.hpp/cpp     # Lucid ↔ C type layout (fallback path only)
     │
     ├── stdlib/                         # standard library (written in Lucid)
     │   ├── io.luc
