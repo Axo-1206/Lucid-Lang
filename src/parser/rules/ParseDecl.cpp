@@ -21,6 +21,105 @@
 namespace parser {
 
 // =============================================================================
+// parseDecl() - Dispatch to specific declaration parsers
+// =============================================================================
+
+DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
+    // Don't consume semicolons here - let each declaration parser handle it
+    // or the caller handle it based on the declaration type.
+    
+    if (stream.isAtEnd()) {
+        return nullptr;
+    }
+
+    auto doc = harvestDocComment(stream, ctx);
+    ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    DeclAST* decl = nullptr;
+    
+    // Check if this is a struct/enum/trait declaration - these don't take semicolons
+    bool isTypeDecl = stream.check(TokenType::STRUCT) || 
+                      stream.check(TokenType::ENUM) || 
+                      stream.check(TokenType::TRAIT);
+    
+    if (stream.check(TokenType::IMPORT)) {
+        if (ctx.currentContext() == SyntacticContext::FuncBody) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget,
+                                    stream.currentLoc(),
+                                    "import cannot appear inside function body");
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+        decl = parseImportDecl(stream, ctx);
+    } else if (stream.check(TokenType::STRUCT)) {
+        decl = parseStructDecl(stream, ctx);
+        // Struct declarations DO NOT take semicolon
+        if (decl) {
+            // Check for stray semicolon and warn
+            if (stream.check(TokenType::SEMICOLON)) {
+                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                          "unexpected ';' after struct declaration");
+                stream.consume(); // Consume to recover
+            }
+        }
+    } else if (stream.check(TokenType::ENUM)) {
+        decl = parseEnumDecl(stream, ctx);
+        if (decl) {
+            if (stream.check(TokenType::SEMICOLON)) {
+                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                          "unexpected ';' after enum declaration");
+                stream.consume();
+            }
+        }
+    } else if (stream.check(TokenType::TRAIT)) {
+        decl = parseTraitDecl(stream, ctx);
+        if (decl) {
+            if (stream.check(TokenType::SEMICOLON)) {
+                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                          "unexpected ';' after trait declaration");
+                stream.consume();
+            }
+        }
+    } else if (stream.check(TokenType::LET) || stream.check(TokenType::CONST)) {
+        if (looksLikeFuncDecl(stream, ctx)) {
+            decl = parseFuncDecl(stream, ctx);
+            // Function declarations require semicolon
+            if (decl) {
+                if (!stream.match(TokenType::SEMICOLON)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                            "expected ';' after function declaration");
+                }
+            }
+        } else {
+            decl = parseVarDecl(stream, ctx);
+            // Variable declarations require semicolon
+            if (decl) {
+                if (!stream.match(TokenType::SEMICOLON)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                            "expected ';' after variable declaration");
+                }
+            }
+        }
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
+                                stream.currentLoc(),
+                                "unexpected token '", stream.peekValue(), 
+                                "' - expected declaration");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    if (decl) {
+        decl->attributes = attrs;
+        if (doc.has_value()) {
+            decl->doc = doc;
+        }
+    }
+    
+    return decl;
+}
+
+// =============================================================================
 // parseImportDecl
 // =============================================================================
 
@@ -306,9 +405,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                                        "The block body borrows its signature from the function declaration");
                 
                 synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-                if (stream.check(TokenType::SEMICOLON)) {
-                    stream.consume();
-                }
                 return nullptr;
             }
             
@@ -428,44 +524,12 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
 
     std::vector<FieldDeclAST*> fields;
     
-    if (stream.check(TokenType::RBRACE)) {
-        stream.consume();
-        
-        // Build trait refs span
-        auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
-        for (auto* tr : traitRefs) {
-            traitBuilder.push_back(tr);
-        }
-        
-        // Create StructDeclAST using constructor
-        auto* structDecl = ctx.arena.make<StructDeclAST>(
-            name,
-            genericParams,
-            ctx.arena.makeBuilder<FieldDeclAST*>().build(),
-            traitBuilder.build()
-        );
-        structDecl->loc = loc;
-        
-        LOG_PARSER_DETAIL("Parsed empty struct: ", ctx.pool.lookup(name));
-        return structDecl;
-    }
-    
-    if (stream.consumeTrailing(TokenType::SEMICOLON) > 0) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                "unexpected semicolon in struct body");
-    }
-    
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         FieldDeclAST* field = parseFieldDecl(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
             synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-        }
-        
-        if (stream.consumeTrailing(TokenType::SEMICOLON) > 1) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "unexpected duplicate semicolon in struct body");
         }
     }
     
@@ -500,10 +564,6 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("Parsed struct: ", ctx.pool.lookup(name));
     return structDecl;
 }
-
-// =============================================================================
-// parseFieldDecl
-// =============================================================================
 
 FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
@@ -596,6 +656,8 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     if (doc.has_value()) {
         fieldDecl->doc = doc;
     }
+
+    stream.consumeTrailing(TokenType::SEMICOLON);
     
     LOG_PARSER_DETAIL("Parsed field: ", ctx.pool.lookup(name));
     return fieldDecl;
@@ -649,38 +711,13 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     ScopedContext bodyGuard(ctx, SyntacticContext::EnumBody, stream.currentLoc());
 
     std::vector<EnumVariantAST*> variants;
-    
-    if (stream.check(TokenType::RBRACE)) {
-        stream.consume();
-        
-        // Create EnumDeclAST using constructor
-        auto* enumDecl = ctx.arena.make<EnumDeclAST>(
-            name,
-            ctx.arena.makeBuilder<EnumVariantAST*>().build(),
-            backingType
-        );
-        enumDecl->loc = loc;
-        
-        LOG_PARSER_DETAIL("Parsed empty enum: ", ctx.pool.lookup(name));
-        return enumDecl;
-    }
-    
-    if (stream.consumeTrailing(TokenType::SEMICOLON) > 0) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                "unexpected semicolon in enum body");
-    }
-    
+
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         EnumVariantAST* variant = parseEnumVariant(stream, ctx);
         if (variant) {
             variants.push_back(variant);
         } else {
             synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-        }
-        
-        if (stream.consumeTrailing(TokenType::SEMICOLON) > 1) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "unexpected duplicate semicolon in enum body");
         }
     }
     
@@ -704,10 +741,6 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("Parsed enum: ", ctx.pool.lookup(name));
     return enumDecl;
 }
-
-// =============================================================================
-// parseEnumVariant
-// =============================================================================
 
 EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
@@ -750,6 +783,8 @@ EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     if (doc.has_value()) {
         variant->doc = doc;
     }
+        
+    stream.consumeTrailing(TokenType::SEMICOLON);
     
     LOG_PARSER_DETAIL("Parsed enum variant: ", ctx.pool.lookup(name));
     return variant;
@@ -796,45 +831,12 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
 
     std::vector<TraitFieldDeclAST*> fields;
     
-    if (stream.check(TokenType::RBRACE)) {
-        stream.consume();
-        
-        // Create TraitDeclAST using constructor
-        auto* traitDecl = ctx.arena.make<TraitDeclAST>(
-            name,
-            genericParams,
-            ctx.arena.makeBuilder<TraitFieldDeclAST*>().build()
-        );
-        traitDecl->loc = loc;
-        
-        LOG_PARSER_DETAIL("Parsed empty trait: ", ctx.pool.lookup(name));
-        return traitDecl;
-    }
-    
-    if (stream.consumeTrailing(TokenType::SEMICOLON) > 0) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                "unexpected semicolon in trait body");
-    }
-    
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         TraitFieldDeclAST* field = parseTraitField(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
             synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-            if (stream.check(TokenType::SEMICOLON)) {
-                stream.consume();
-                continue;
-            } else if (stream.check(TokenType::RBRACE)) {
-                break;
-            } else {
-                break;
-            }
-        }
-        
-        if (stream.consumeTrailing(TokenType::SEMICOLON) > 1) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "unexpected duplicate semicolon in trait body");
         }
     }
     
@@ -858,10 +860,6 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("Parsed trait: ", ctx.pool.lookup(name));
     return traitDecl;
 }
-
-// =============================================================================
-// parseTraitField
-// =============================================================================
 
 TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
@@ -894,6 +892,8 @@ TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
     if (doc.has_value()) {
         traitField->doc = doc;
     }
+
+    stream.consumeTrailing(TokenType::SEMICOLON);
     
     LOG_PARSER_DETAIL("Parsed trait field: ", ctx.pool.lookup(name));
     return traitField;

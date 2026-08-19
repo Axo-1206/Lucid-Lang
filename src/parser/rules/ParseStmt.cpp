@@ -62,19 +62,59 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
     
     Token current = stream.peek();
     SourceLocation loc = stream.currentLoc();
+    StmtAST* result = nullptr;
     
     switch (current.type) {
-        // Control Flow
-        case TokenType::IF:      return parseIfStmt(stream, ctx);
-        case TokenType::SWITCH:  return parseSwitchStmt(stream, ctx);
-        case TokenType::FOR:     return parseForStmt(stream, ctx);
-        case TokenType::WHILE:   return parseWhileStmt(stream, ctx);
-        case TokenType::DO:      return parseDoWhileStmt(stream, ctx);
+        // Control Flow - these DO NOT take semicolon
+        case TokenType::IF:     
+            result = parseIfStmt(stream, ctx);
+            // No semicolon consumed - if statement ends with block
+            break;
+        case TokenType::SWITCH: 
+            result = parseSwitchStmt(stream, ctx);
+            // No semicolon consumed - switch statement ends with block
+            break;
+        case TokenType::FOR:    
+            result = parseForStmt(stream, ctx);
+            // No semicolon consumed - for statement ends with block
+            break;
+        case TokenType::WHILE:  
+            result = parseWhileStmt(stream, ctx);
+            // No semicolon consumed - while statement ends with block
+            break;
+        case TokenType::DO:     
+            result = parseDoWhileStmt(stream, ctx);
+            // do-while requires semicolon AFTER the while condition
+            if (result) {
+                if (!stream.match(TokenType::SEMICOLON)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                            "expected ';' after do-while statement");
+                }
+            }
+            break;
             
-        // Jumps
-        case TokenType::RETURN:  return parseReturnStmt(stream, ctx);
-        case TokenType::BREAK:   return parseBreakStmt(stream, ctx);
-        case TokenType::CONTINUE: return parseContinueStmt(stream, ctx);
+        // Jumps - these REQUIRE semicolon
+        case TokenType::RETURN:  
+            result = parseReturnStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after return statement");
+            }
+            break;
+        case TokenType::BREAK:   
+            result = parseBreakStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after break statement");
+            }
+            break;
+        case TokenType::CONTINUE: 
+            result = parseContinueStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after continue statement");
+            }
+            break;
             
         // Declarations
         case TokenType::LET:
@@ -82,7 +122,9 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         case TokenType::STRUCT:
         case TokenType::ENUM:
         case TokenType::TRAIT:
-            return parseDeclStmt(stream, ctx);
+            result = parseDeclStmt(stream, ctx);
+            // parseDeclStmt will handle semicolon based on declaration type
+            break;
 
         case TokenType::IMPORT:
             ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, loc,
@@ -90,16 +132,47 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             synchronizeToContext(stream, ctx);
             return nullptr;
 
-        // Concurrency
-        case TokenType::ASYNC:   return parseAsyncStmt(stream, ctx);
-        case TokenType::AWAIT:   return parseAwaitStmt(stream, ctx);
-        case TokenType::SPAWN:   return parseSpawnStmt(stream, ctx);
-        case TokenType::JOIN:    return parseJoinStmt(stream, ctx);
+        // Concurrency - async/await/spawn/join are statements with their own rules
+        case TokenType::ASYNC:   
+            result = parseAsyncStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after async statement");
+            }
+            break;
+        case TokenType::AWAIT:   
+            result = parseAwaitStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after await statement");
+            }
+            break;
+        case TokenType::SPAWN:   
+            result = parseSpawnStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after spawn statement");
+            }
+            break;
+        case TokenType::JOIN:    
+            result = parseJoinStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after join statement");
+            }
+            break;
             
-        // Expression Statement (default)
+        // Expression Statement (default) - REQUIRES semicolon
         default:
-            return parseExprStmt(stream, ctx);
+            result = parseExprStmt(stream, ctx);
+            if (result && !stream.match(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ';' after expression statement");
+            }
+            break;
     }
+    
+    return result;
 }
 
 // =============================================================================
@@ -753,6 +826,9 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
         synchronizeToContext(stream, ctx);
         return ctx.arena.make<DeclStmtAST>(nullptr);
     }
+    
+    // parseDecl already handles semicolon consumption based on declaration type
+    // So we don't need to consume another semicolon here
     
     DeclStmtAST* declStmt = ctx.arena.make<DeclStmtAST>(decl);
     declStmt->loc = loc;
