@@ -49,6 +49,7 @@ enum class SyntacticContext {
     StructBody,     // struct { ... }
     EnumBody,       // enum { ... }
     TraitBody,      // trait { ... }
+    SwitchBody,     // switch { ... }  - special recovery: stop at case/default/RBRACE
 };
 
 inline const char* syntacticContextName(SyntacticContext kind) {
@@ -63,6 +64,7 @@ inline const char* syntacticContextName(SyntacticContext kind) {
         case SyntacticContext::StructBody:    return "struct body";
         case SyntacticContext::EnumBody:      return "enum body";
         case SyntacticContext::TraitBody:     return "trait body";
+        case SyntacticContext::SwitchBody:    return "switch body";
     }
     return "unknown context";
 }

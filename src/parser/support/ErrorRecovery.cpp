@@ -169,6 +169,27 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
             return SyncOutcome::Abandoned;
         }
 
+        // ─── SwitchBody: Special recovery for switch statements ──────────
+        // We want to stop at 'case', 'default', or '}' (closing brace)
+        // This allows us to continue parsing the switch body even after errors
+        case SyntacticContext::SwitchBody: {
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::CASE
+                    || t == TokenType::DEFAULT
+                    || t == TokenType::RBRACE
+                    || t == TokenType::SEMICOLON  // Skip stray semicolons, but don't stop on them
+                    || is_declaration_keyword(t);
+            });
+            // For SwitchBody, we can always continue if we find case/default/RBRACE
+            if (!stream.isAtEnd()) {
+                TokenType t = stream.peekType();
+                if (t == TokenType::CASE || t == TokenType::DEFAULT || t == TokenType::RBRACE) {
+                    return SyncOutcome::Continuable;
+                }
+            }
+            return SyncOutcome::Abandoned;
+        }
+
         case SyntacticContext::FuncBody:
         case SyntacticContext::StructBody:
         case SyntacticContext::EnumBody:

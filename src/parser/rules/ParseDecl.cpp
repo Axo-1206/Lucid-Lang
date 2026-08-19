@@ -36,11 +36,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
     
     DeclAST* decl = nullptr;
-    
-    // Check if this is a struct/enum/trait declaration - these don't take semicolons
-    bool isTypeDecl = stream.check(TokenType::STRUCT) || 
-                      stream.check(TokenType::ENUM) || 
-                      stream.check(TokenType::TRAIT);
+    bool isFuncDecl = false;
+    bool isVarDecl = false;
     
     if (stream.check(TokenType::IMPORT)) {
         if (ctx.currentContext() == SyntacticContext::FuncBody) {
@@ -53,52 +50,17 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         decl = parseImportDecl(stream, ctx);
     } else if (stream.check(TokenType::STRUCT)) {
         decl = parseStructDecl(stream, ctx);
-        // Struct declarations DO NOT take semicolon
-        if (decl) {
-            // Check for stray semicolon and warn
-            if (stream.check(TokenType::SEMICOLON)) {
-                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                          "unexpected ';' after struct declaration");
-                stream.consume(); // Consume to recover
-            }
-        }
     } else if (stream.check(TokenType::ENUM)) {
         decl = parseEnumDecl(stream, ctx);
-        if (decl) {
-            if (stream.check(TokenType::SEMICOLON)) {
-                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                          "unexpected ';' after enum declaration");
-                stream.consume();
-            }
-        }
     } else if (stream.check(TokenType::TRAIT)) {
         decl = parseTraitDecl(stream, ctx);
-        if (decl) {
-            if (stream.check(TokenType::SEMICOLON)) {
-                ctx.diagnostics.warningAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                          "unexpected ';' after trait declaration");
-                stream.consume();
-            }
-        }
     } else if (stream.check(TokenType::LET) || stream.check(TokenType::CONST)) {
         if (looksLikeFuncDecl(stream, ctx)) {
             decl = parseFuncDecl(stream, ctx);
-            // Function declarations require semicolon
-            if (decl) {
-                if (!stream.match(TokenType::SEMICOLON)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected ';' after function declaration");
-                }
-            }
+            isFuncDecl = true;
         } else {
             decl = parseVarDecl(stream, ctx);
-            // Variable declarations require semicolon
-            if (decl) {
-                if (!stream.match(TokenType::SEMICOLON)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected ';' after variable declaration");
-                }
-            }
+            isVarDecl = true;
         }
     } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
@@ -107,6 +69,19 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
                                 "' - expected declaration");
         synchronizeToContext(stream, ctx);
         return nullptr;
+    }
+
+    if (stream.consumeTrailing(TokenType::COMMA) == 0) {
+        if (isFuncDecl) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                                "expected ';' after function declaration");
+        } else if (isVarDecl) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                            "expected ';' after variable declaration");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ';' after declaration");
+        }
     }
     
     if (decl) {
@@ -657,7 +632,10 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         fieldDecl->doc = doc;
     }
 
-    stream.consumeTrailing(TokenType::SEMICOLON);
+    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ';' after field declaration");
+    }
     
     LOG_PARSER_DETAIL("Parsed field: ", ctx.pool.lookup(name));
     return fieldDecl;
@@ -784,7 +762,10 @@ EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
         variant->doc = doc;
     }
         
-    stream.consumeTrailing(TokenType::SEMICOLON);
+    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ';' after enum variant declaration");
+    }
     
     LOG_PARSER_DETAIL("Parsed enum variant: ", ctx.pool.lookup(name));
     return variant;
@@ -893,7 +874,10 @@ TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
         traitField->doc = doc;
     }
 
-    stream.consumeTrailing(TokenType::SEMICOLON);
+    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ';' after trait field declaration");
+    }
     
     LOG_PARSER_DETAIL("Parsed trait field: ", ctx.pool.lookup(name));
     return traitField;
