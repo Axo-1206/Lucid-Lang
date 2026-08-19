@@ -124,12 +124,6 @@ struct NamedTypeAST : TypeAST {
     /// It can be a StructDeclAST, EnumDeclAST, or TraitDeclAST.
     /// For generic parameters, this remains nullptr (use isGenericParam instead).
     TypeDeclAST* resolvedDecl = nullptr;
-    
-    /// @brief True if this name refers to a generic type parameter.
-    /// 
-    /// Set by `TypeResolver` when the name matches a generic parameter
-    /// declared on the enclosing declaration (e.g., `T` in `struct Box<T>`).
-    bool isGenericParam = false;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}

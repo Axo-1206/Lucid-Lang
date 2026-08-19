@@ -55,41 +55,43 @@ TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── 1. Check: Is this a generic parameter? ──────────────────────────
-    if (ctx.isGenericTypeParam(type->name)) {
-        type->isGenericParam = true;
-        type->resolvedDecl = nullptr;  // No declaration for generic params
+    // ─── 1. Resolve the declaration if not already set ─────────────────────
+    if (!type->resolvedDecl) {
+        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
+        if (!decl) {
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
+                                  "undefined type '", ctx.pool.lookup(type->name), "'");
+            return nullptr;
+        }
+        type->resolvedDecl = decl;
+    }
+
+    // ─── 2. Generic parameters can't have generic arguments ───────────────
+    TypeDeclAST* decl = type->resolvedDecl;
+    if (decl->isa<GenericParamDeclAST>()) {
+        if (!type->genericArgs.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "generic parameter '", ctx.pool.lookup(type->name),
+                                  "' cannot have generic arguments");
+            return nullptr;
+        }
         return type;
     }
 
-    // ─── 2. Look up as concrete type ──────────────────────────────────────
-    TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
-    if (!decl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
-                              "undefined type '", ctx.pool.lookup(type->name), "'");
-        return nullptr;
-    }
-
-    // ─── 3. Store the resolved declaration ────────────────────────────────
-    type->resolvedDecl = decl;
-
-    // ─── 4. Resolve generic arguments if present ─────────────────────────
+    // ─── 3. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
         // Check which kind of declaration we have
         size_t expectedParams = 0;
         bool isGeneric = false;
-        bool isValid = false;
 
         if (decl->isa<StructDeclAST>()) {
             StructDeclAST* structDecl = decl->as<StructDeclAST>();
             expectedParams = structDecl->genericParams.size();
             isGeneric = !structDecl->genericParams.empty();
-            isValid = true;
         } else if (decl->isa<TraitDeclAST>()) {
             TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             expectedParams = traitDecl->genericParams.size();
             isGeneric = !traitDecl->genericParams.empty();
-            isValid = true;
         } else if (decl->isa<EnumDeclAST>()) {
             // Enums cannot be generic
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
@@ -98,6 +100,12 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         } else {
             ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
                                   "unknown type declaration kind");
+            return nullptr;
+        }
+
+        if (!isGeneric) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "type '", ctx.pool.lookup(type->name), "' is not generic");
             return nullptr;
         }
 
@@ -163,6 +171,7 @@ TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
     // ─── Step 1: Look up the type in the module by alias ──────────────────
     TypeDeclAST* decl = ctx.lookupTypeByAlias(type->moduleName, type->typeName);
     if (!decl) {
+        // The helper already reported the error (module not found or member not found)
         return nullptr;
     }
 
@@ -175,89 +184,21 @@ TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Step 3: Create a NamedTypeAST with the resolved declaration ──────
+    // ─── Step 3: Get the canonical NamedTypeAST from the cache ─────────────
     NamedTypeAST* resolvedType = ctx.getNamedType(type->typeName);
+    
+    // ─── Step 4: Transfer data from the ModuleTypeAccessAST ────────────────
+    // Note: We set resolvedDecl BEFORE calling resolveNamedType.
+    // resolveNamedType will see resolvedDecl is already set and skip lookup,
+    // but it will still validate generic arguments.
     resolvedType->resolvedDecl = decl;
     resolvedType->genericArgs = type->genericArgs;
-    resolvedType->isGenericParam = false;
     resolvedType->loc = type->loc;
 
-    // ─── Step 4: Validate generic arguments if present ─────────────────────
-    if (!type->genericArgs.empty()) {
-        size_t expectedParams = 0;
-        bool isGeneric = false;
-
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            expectedParams = structDecl->genericParams.size();
-            isGeneric = !structDecl->genericParams.empty();
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            expectedParams = traitDecl->genericParams.size();
-            isGeneric = !traitDecl->genericParams.empty();
-        } else {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                  "type '", ctx.pool.lookup(type->typeName), "' is not generic");
-            return nullptr;
-        }
-
-        if (!isGeneric) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                  "type '", ctx.pool.lookup(type->typeName), "' is not generic");
-            return nullptr;
-        }
-
-        if (type->genericArgs.size() != expectedParams) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
-                                  "type '", ctx.pool.lookup(type->typeName),
-                                  "' expected ", expectedParams,
-                                  " generic arguments, got ", type->genericArgs.size());
-            return nullptr;
-        }
-
-        // Resolve each generic argument type
-        for (TypeAST* arg : type->genericArgs) {
-            if (!resolveType(arg, ctx)) {
-                return nullptr;
-            }
-        }
-
-        // Validate constraints
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
-                return nullptr;
-            }
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
-                return nullptr;
-            }
-        }
-    } else {
-        // Check if the type requires generic arguments
-        bool requiresGeneric = false;
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            if (!structDecl->genericParams.empty()) {
-                requiresGeneric = true;
-            }
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            if (!traitDecl->genericParams.empty()) {
-                requiresGeneric = true;
-            }
-        }
-
-        if (requiresGeneric) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, type,
-                                  "type '", ctx.pool.lookup(type->typeName),
-                                  "' requires generic arguments");
-            return nullptr;
-        }
-    }
-
-    return resolvedType;
+    // ─── Step 5: Delegate to resolveNamedType for validation ──────────────
+    // This will validate generic arguments, arity, and constraints.
+    // Since resolvedDecl is already set, it skips the lookup phase.
+    return resolveNamedType(resolvedType, ctx);
 }
 
 // ─── Array Type ──────────────────────────────────────────────────────────
@@ -483,39 +424,22 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
 TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
-    TypeDeclAST* typeDecl = ctx.lookupType(ref->name);
-    if (!typeDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, ref,
-                              "undefined trait '", ctx.pool.lookup(ref->name), "'");
-        return nullptr;
-    }
+    // ─── Step 1: Resolve the named type ────────────────────────────────────
+    // This will set resolvedDecl and validate generic arguments
+    TypeAST* resolved = resolveNamedType(ref, ctx);
+    if (!resolved) return nullptr;
 
-    if (!typeDecl->isa<TraitDeclAST>()) {
+    // ─── Step 2: Check if it's a trait ─────────────────────────────────────
+    TypeDeclAST* decl = ref->resolvedDecl;
+    if (!decl) return nullptr;
+
+    if (!decl->isa<TraitDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotATrait, ref,
                               "'", ctx.pool.lookup(ref->name), "' is not a trait");
         return nullptr;
     }
 
-    TraitDeclAST* traitDecl = typeDecl->as<TraitDeclAST>();
-
-    if (!ref->genericArgs.empty()) {
-        if (ref->genericArgs.size() != traitDecl->genericParams.size()) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, ref,
-                                  "trait '", ctx.pool.lookup(ref->name),
-                                  "' expected ", traitDecl->genericParams.size(),
-                                  " generic arguments, got ", 
-                                  ref->genericArgs.size());
-            return nullptr;
-        }
-
-        for (TypeAST* arg : ref->genericArgs) {
-            if (!resolveType(arg, ctx)) {
-                return nullptr;
-            }
-        }
-    }
-
-    return traitDecl;
+    return decl->as<TraitDeclAST>();
 }
 
 // ─── Callee Resolution ──────────────────────────────────────────────────
@@ -730,11 +654,15 @@ bool isFieldAccessibleOnGenericType(TypeAST* genericType,
     if (!genericType || !genericType->isa<NamedTypeAST>()) return false;
     NamedTypeAST* named = genericType->as<NamedTypeAST>();
 
-    // If it's a generic parameter, check constraints
-    if (ctx.isGenericParam(named->name)) {
-        GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
-        if (!param) return false;
+    // ─── Step 1: Ensure the type is resolved ──────────────────────────────
+    if (!named->resolvedDecl) {
+        resolveNamedType(named, ctx);
+    }
 
+    // ─── Step 2: Check if it's a generic parameter ─────────────────────────
+    if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+        GenericParamDeclAST* param = static_cast<GenericParamDeclAST*>(named->resolvedDecl);
+        
         for (NamedTypeAST* constraint : param->constraints) {
             TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
             if (!trait) continue;
@@ -746,8 +674,8 @@ bool isFieldAccessibleOnGenericType(TypeAST* genericType,
         return false;
     }
 
-    // Concrete type - check fields
-    TypeDeclAST* decl = ctx.lookupType(named->name);
+    // ─── Step 3: Concrete type - check fields ─────────────────────────────
+    TypeDeclAST* decl = named->resolvedDecl;
     if (!decl || !decl->isa<StructDeclAST>()) return false;
 
     StructDeclAST* structDecl = decl->as<StructDeclAST>();
@@ -759,15 +687,20 @@ bool isFieldAccessibleOnGenericType(TypeAST* genericType,
 }
 
 TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
-                                         InternedString fieldName,
-                                         SemaContext& ctx) {
+                                   InternedString fieldName,
+                                   SemaContext& ctx) {
     if (!genericType || !genericType->isa<NamedTypeAST>()) return nullptr;
     NamedTypeAST* named = genericType->as<NamedTypeAST>();
 
-    if (ctx.isGenericParam(named->name)) {
-        GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
-        if (!param) return nullptr;
+    // ─── Step 1: Ensure the type is resolved ──────────────────────────────
+    if (!named->resolvedDecl) {
+        resolveNamedType(named, ctx);
+    }
 
+    // ─── Step 2: Check if it's a generic parameter ─────────────────────────
+    if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+        GenericParamDeclAST* param = static_cast<GenericParamDeclAST*>(named->resolvedDecl);
+        
         for (NamedTypeAST* constraint : param->constraints) {
             TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
             if (!trait) continue;
@@ -781,7 +714,8 @@ TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
         return nullptr;
     }
 
-    TypeDeclAST* decl = ctx.lookupType(named->name);
+    // ─── Step 3: Concrete type - check fields ─────────────────────────────
+    TypeDeclAST* decl = named->resolvedDecl;
     if (!decl || !decl->isa<StructDeclAST>()) return nullptr;
 
     StructDeclAST* structDecl = decl->as<StructDeclAST>();
