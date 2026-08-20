@@ -362,9 +362,15 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
             continue;
         }
         
-        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
+        int count = stream.consumeTrailing(TokenType::COMMA);
+        if (count == 0) {
+             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected ',' to separate array elements");
+        } else if (stream.consumeTrailing(TokenType::PIPELINE) > 2) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected consecutive commas in array literal");
+            stream.consume();
+            continue;
         }
     }
     
@@ -1185,16 +1191,12 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
     
     std::vector<PipelineStepAST*> steps;
     
-    while (stream.check(TokenType::PIPELINE)) {
-        stream.consume(); // Consume '|>'
-        
-        if (stream.isAtEnd()) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+    while (!stream.isAtEnd() && stream.check(TokenType::PIPELINE)) {
+        int count = stream.consumeTrailing(TokenType::PIPELINE);
+        if (count == 0) {
+             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected pipeline step after '|>'");
-            break;
-        }
-        
-        if (stream.consumeTrailing(TokenType::PIPELINE) > 1) {
+        } else if (stream.consumeTrailing(TokenType::PIPELINE) > 2) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected consecutive '|>' operators");
             stream.consume();
@@ -1249,7 +1251,8 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         return step;
     }
     
-    // Expression step
+    /// Expression step
+    /// AnonFuncExprAST, ModuleAccessExprAST, FieldAccessExprAST, IntrinsicCallExprAST or IdentifierExprAST
     ExprAST* callable = parseExpr(stream, ctx);
     if (!callable) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
