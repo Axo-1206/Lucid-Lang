@@ -1,5 +1,7 @@
 /// @file const_eval/ConstEvalUnary.cpp
 /// @brief Unary operation evaluation for const expressions.
+/// Only integer operations are evaluated at compile-time.
+/// Float operations are left to LLVM's constant folding.
 
 #include "ConstEvalHelpers.hpp"
 #include "ConstEvaluator.hpp"
@@ -22,13 +24,9 @@ ConstantValue ConstEvaluator::evalNeg(SemaContext& ctx, const ConstantValue& ope
         }
         return ConstantValue(-operand.asInt());
     }
-    if (operand.isFloat()) {
-        return ConstantValue(-operand.asFloat());
-    }
     
-    ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, node,
-                          "negation requires numeric operand");
-    return ConstantValue::error();
+    // Float negation: let LLVM handle it
+    return ConstantValue::unknown();
 }
 
 ConstantValue ConstEvaluator::evalNot(SemaContext& ctx, const ConstantValue& operand,

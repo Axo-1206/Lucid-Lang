@@ -15,7 +15,7 @@ namespace sema {
 
 std::unordered_map<DeclAST*, std::vector<DeclAST*>> ConstEvaluator::m_deps;
 std::vector<DeclAST*> ConstEvaluator::m_constDecls;
-std::unordered_set<ExprAST*> ConstEvaluator::m_evaluatedExprs;
+std::unordered_map<ExprAST*, ConstantValue> ConstEvaluator::m_evalCache;
 std::unordered_set<DeclAST*> ConstEvaluator::m_evaluating;
 size_t ConstEvaluator::m_recursionDepth = 0;
 
@@ -41,7 +41,7 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
     }
 
     EvaluationGuard guard(m_evaluating, decl);
-    m_recursionDepth++;
+    DepthGuard depthGuard(m_recursionDepth);
 
     ctx.pushScope();
     ctx.insertValue(decl);
@@ -49,7 +49,6 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
     ConstantValue result = evaluate(ctx, decl->init, decl->type);
     
     ctx.popScope();
-    m_recursionDepth--;
 
     return result;
 }
@@ -63,8 +62,9 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
     }
 
     // ─── Cache check ──────────────────────────────────────────────────────
-    if (m_evaluatedExprs.find(expr) != m_evaluatedExprs.end()) {
-        return expr->constValue;
+    auto it = m_evalCache.find(expr);
+    if (it != m_evalCache.end()) {
+        return it->second;
     }
 
     ConstantValue result;
@@ -107,13 +107,15 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
             return ConstantValue::unknown();
     }
 
-    // ─── Store result on the AST node ──────────────────────────────────
+    // ─── Cache the result and update AST metadata ──────────────────────
     if (result.isEvaluated() && !result.isError()) {
+        // Store in cache for future lookups
+        m_evalCache[expr] = result;
+        
+        // Update AST metadata (lightweight: just the flag and type)
         expr->isConst = true;
-        expr->constValue = result;
         expr->resolvedType = getConstantType(ctx, result);
         expr->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
-        m_evaluatedExprs.insert(expr);
     }
 
     return result;
@@ -131,8 +133,19 @@ bool ConstEvaluator::isConstExpr(SemaContext& ctx, ExprAST* expr,
 ConstantValue ConstEvaluator::getConstValue(SemaContext& ctx, ExprAST* expr,
                                              TypeAST* targetType) {
     if (!expr) return ConstantValue::unknown();
-    if (expr->isConst) return expr->constValue;
-    return evaluate(ctx, expr, targetType);
+    
+    // Check cache first
+    auto it = m_evalCache.find(expr);
+    if (it != m_evalCache.end()) {
+        return it->second;
+    }
+    
+    // If the expression is marked const but not in cache, evaluate it
+    if (expr->isConst) {
+        return evaluate(ctx, expr, targetType);
+    }
+    
+    return ConstantValue::unknown();
 }
 
 std::optional<int64_t> ConstEvaluator::evaluateAsInt(SemaContext& ctx, ExprAST* expr) {
@@ -201,15 +214,13 @@ ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, LiteralExprAST* expr
 ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, IdentifierExprAST* expr) {
     if (!expr) return ConstantValue::error();
 
-    // ─── `_` is the discard placeholder ──────────────────────────────────────
-    // `_` is a valid identifier but has no value - it's used for discarding
+    // ─── `_` is the discard placeholder ──────────────────────────────────
     if (ctx.pool.lookupView(expr->name) == "_") {
         return ConstantValue::unknown();
     }
 
     ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) {
-        // This shouldn't happen if name resolution succeeded
         return ConstantValue::error();
     }
 
@@ -217,9 +228,14 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, IdentifierExprAST
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* var = decl->as<VarDeclAST>();
         
-        // Check if this variable has a const value already computed
+        // Check if this variable has a const value already computed (in cache)
         if (var->init && var->init->isConst) {
-            return var->init->constValue;
+            auto it = m_evalCache.find(var->init);
+            if (it != m_evalCache.end()) {
+                return it->second;
+            }
+            // If marked const but not in cache, evaluate it
+            return evaluate(ctx, var->init, var->type);
         }
 
         // If it's a const variable, evaluate it now
@@ -256,13 +272,9 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, IdentifierExprAST
     // ─── Parameter ─────────────────────────────────────────────────────────
     if (decl->isa<ParamAST>()) {
         // Parameters get their values from function arguments during
-        // const function execution. The value is stored in the parameter's
-        // type field during executeFunction.
+        // const function execution.
         ParamAST* param = decl->as<ParamAST>();
         if (param->type && param->type->isa<PrimitiveTypeAST>()) {
-            // We don't have the actual value stored on the param
-            // During const function execution, the value is bound to the param
-            // This should only be called when executing a const function body
             return ConstantValue::unknown();
         }
         return ConstantValue::unknown();
@@ -282,9 +294,8 @@ ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, BinaryExprAST* expr,
         NarrowingInfo info = detectNarrowingPattern(expr, ctx);
         if (info.hasNarrowing) {
             ctx.stack.setPendingNarrowing(info);
-            // Return a placeholder - the actual value will be evaluated later
-            // if needed. For narrowing detection, we just need to know
-            // that the condition is const.
+            // Return unknown - the condition is const for narrowing purposes
+            // but we don't need the actual value here.
             return ConstantValue::unknown();
         }
     }
@@ -345,7 +356,6 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, StructLiteralE
     }
 
     std::unordered_map<InternedString, ConstantValue> fields;
-    bool hasError = false;
 
     // ─── Initialize with default values ──────────────────────────────────
     for (FieldDeclAST* field : structDecl->fields) {
@@ -392,9 +402,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, StructLiteralE
     // ─── Check missing required fields ──────────────────────────────────
     for (FieldDeclAST* field : structDecl->fields) {
         if (fields.find(field->name) == fields.end()) {
-            // Check if field has a default
             if (field->defaultVal) continue;
-            // Check if field is nullable/fallible (optional)
             if (isNullableType(field->type) || isFallibleType(field->type)) continue;
             
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
@@ -440,14 +448,6 @@ ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, ArrayLiteralExp
     ConstantValue result;
     result.kind = ConstantValue::Kind::Array;
     result.value = elements;
-    // Previously never set — getConstantType()'s fallback switch has no
-    // case for Kind::Array, so every const array literal was silently
-    // typed Unknown despite the element type already being validated
-    // above. ArrayKind::Fixed is the most information-preserving choice
-    // for a bare literal with no target type in scope here (the literal's
-    // own size is exactly known); ordinary type-checking elsewhere still
-    // handles conversion against a [*]T-declared target, same as any
-    // other Fixed-to-Dynamic assignment.
     if (!elements.empty()) {
         result.type = ctx.getArrayType(ArrayKind::Fixed, elements.size(), elements[0].type);
     }
@@ -556,16 +556,9 @@ ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, RangeExprAST* expr
         return ConstantValue::error();
     }
 
-    // ─── No Kind::Range exists to hold both bounds ───────────────────────
-    // Returning loVal alone (as this used to do) silently discards hiVal —
-    // anything reading the cached result later (expr->constValue) would
-    // see only the lower bound with no indication the upper bound ever
-    // existed. Returning unknown() here is honest about what this function
-    // actually can't represent, rather than caching a plausible-looking
-    // but incomplete value. The one real caller that needs both bounds
-    // (executeFor, in ConstEvalStatement.cpp) already evaluates range->lo
-    // and range->hi separately via evaluateAsInt rather than going through
-    // this function, and is unaffected by this change.
+    // ─── Return the lower bound (range expressions are only used for loops) ──
+    // The actual range evaluation for loops is handled in executeFor, which
+    // calls evaluateAsInt on lo and hi separately.
     return ConstantValue::unknown();
 }
 
@@ -596,13 +589,6 @@ ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, CallExprAST* expr) {
     return executeFunction(ctx, func, args);
 }
 
-// ─── executeFunction ─────────────────────────────────────────────────────
-// Implemented in ConstEvalStatement.cpp, alongside every other execute*
-// function. A second, near-identical definition used to live here too —
-// removed: two definitions of the same non-template member function in
-// two translation units is a duplicate-symbol error at link time, not a
-// style issue. See ConstEvalStatement.cpp for the real implementation.
-
 // ─── Report Cycle ────────────────────────────────────────────────────────
 
 void ConstEvaluator::reportCycle(SemaContext& ctx, const std::vector<DeclAST*>& cycle) {
@@ -621,7 +607,10 @@ ConstantValue ConstEvaluator::getConstValue(VarDeclAST* decl) {
         return ConstantValue::unknown();
     }
     if (decl->init->isConst) {
-        return decl->init->constValue;
+        auto it = m_evalCache.find(decl->init);
+        if (it != m_evalCache.end()) {
+            return it->second;
+        }
     }
     return ConstantValue::unknown();
 }

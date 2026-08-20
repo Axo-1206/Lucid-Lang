@@ -20,21 +20,12 @@ TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val) {
     switch (val.kind) {
         case ConstantValue::Kind::Bool:   return ctx.getBoolType();
         case ConstantValue::Kind::Int:    return ctx.getIntType();
-        case ConstantValue::Kind::Float:  return ctx.getFloatType();
-        case ConstantValue::Kind::String: return ctx.getStringType();
         case ConstantValue::Kind::Char:   return ctx.getCharType();
+        case ConstantValue::Kind::String: return ctx.getStringType();
+        case ConstantValue::Kind::Nil:    return ctx.getUnknownType();
+        case ConstantValue::Kind::Err:    return ctx.getUnknownType();
         default:                          return ctx.getUnknownType();
     }
-}
-
-double toDouble(const ConstantValue& v) {
-    if (v.isInt()) return static_cast<double>(v.asInt());
-    if (v.isFloat()) return v.asFloat();
-    return 0.0;
-}
-
-bool bothNumeric(const ConstantValue& a, const ConstantValue& b) {
-    return (a.isInt() || a.isFloat()) && (b.isInt() || b.isFloat());
 }
 
 // ─── Error Helpers ──────────────────────────────────────────────────────
@@ -219,7 +210,6 @@ std::vector<DeclAST*> topologicalSort(SemaContext& ctx,
                 cycle.push_back(decl);
             }
         }
-        // Report cycle through the context
         if (!cycle.empty()) {
             std::string msg = "circular dependency in const declarations: ";
             for (size_t i = 0; i < cycle.size(); ++i) {

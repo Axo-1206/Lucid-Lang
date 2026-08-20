@@ -12,14 +12,7 @@ namespace sema {
 // ─── Type Helpers ──────────────────────────────────────────────────────
 
 /// @brief Get the type of a constant value.
-/// Set by const evaluator, read by code generator.
 TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
-
-/// @brief Convert a constant value to double (for numeric operations).
-double toDouble(const ConstantValue& v);
-
-/// @brief Check if two constant values are both numeric.
-bool bothNumeric(const ConstantValue& a, const ConstantValue& b);
 
 // ─── Error Helpers ──────────────────────────────────────────────────────
 
@@ -33,7 +26,6 @@ ConstantValue handleArithmeticError(SemaContext& ctx,
 // ─── Dependency Helpers ─────────────────────────────────────────────────
 
 /// @brief Collect dependencies from an expression.
-/// Collected by const evaluator, used for topological sorting.
 void collectDeps(SemaContext& ctx, ExprAST* expr, 
                  std::vector<DeclAST*>& deps);
 
@@ -42,7 +34,6 @@ void collectDepsFromStmt(SemaContext& ctx, StmtAST* stmt,
                          std::vector<DeclAST*>& deps);
 
 /// @brief Topological sort of const declarations.
-/// Computed by const evaluator, used to determine evaluation order.
 std::vector<DeclAST*> topologicalSort(SemaContext& ctx,
                                       const std::unordered_map<DeclAST*, std::vector<DeclAST*>>& deps);
 

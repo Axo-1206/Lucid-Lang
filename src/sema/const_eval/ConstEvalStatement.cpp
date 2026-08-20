@@ -270,8 +270,8 @@ ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, DeclStmtAST* stm
             if (val.isError()) return val;
             if (val.isUnknown()) return ConstantValue::unknown();
             
-            var->init->isConst = true;
-            var->init->constValue = val;
+            m_evalCache[var->init] = val;  // Cache the value
+            var->init->isConst = true;     // Mark as const
             ctx.insertValue(var);
             return ConstantValue::voidValue();
         }
@@ -283,7 +283,6 @@ ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, DeclStmtAST* stm
 
     return ConstantValue::unknown();
 }
-
 ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* func,
                                                const std::vector<ConstantValue>& args) {
     if (!func) {

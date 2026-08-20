@@ -146,7 +146,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
                 decl->init->isConst = true;
-                decl->init->constValue = val;
             }
         }
     }

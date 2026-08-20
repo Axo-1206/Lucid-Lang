@@ -5,28 +5,29 @@
 ///   The evaluator does not know about statements, loops, or switches.
 ///   It only evaluates expressions and returns their constant values.
 ///
-/// @design_decision Results are stored on the AST node
-///   When an expression is evaluated, we set expr->isConst = true and
-///   expr->constValue = result. This avoids re-evaluation.
+/// @design_decision Results are cached internally
+///   When an expression is evaluated, we store the result in m_evalCache.
+///   This avoids re-evaluation without bloating the AST with heavy data.
 ///
 /// @design_decision Unknown is not an error
 ///   If an expression can't be evaluated, we return ConstantValue::unknown()
 ///   without a diagnostic. The caller decides what to do.
 ///
-/// @design_decision Mutable AST nodes
-///   AST nodes use mutable fields now (removed const from parser fields).
-///   The const evaluator modifies AST nodes directly by setting isConst,
-///   constValue, and resolvedType on expressions it evaluates.
+/// @design_decision AST nodes are minimally modified
+///   We only set `isConst = true` on successfully evaluated expressions.
+///   The actual value is stored in the evaluator's internal cache.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
+#include "ConstValue.hpp"
 #include "../context/SemaContext.hpp"
 #include "../support/TypeNarrowHelpers.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <optional>
 
 namespace sema {
 
@@ -78,6 +79,16 @@ private:
     SemaContext& m_ctx;
 };
 
+/// @brief RAII guard for recursion depth tracking.
+class DepthGuard {
+public:
+    DepthGuard(size_t& depth) : m_depth(depth) { ++m_depth; }
+    ~DepthGuard() { --m_depth; }
+    
+private:
+    size_t& m_depth;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ConstEvaluator - Main Class
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,8 +99,7 @@ private:
 /// ─── Phase Responsibilities ──────────────────────────────────────────────
 /// | Field            | Set By      | Read By               | Notes                     |
 /// | -----------------| ----------- | --------------------- | ------------------------- |
-/// | `isConst`        | Evaluator   | CodeGen               | True if const evaluated   |
-/// | `constValue`     | Evaluator   | CodeGen               | The evaluated constant    |
+/// | `isConst`        | Evaluator   | Sema, CodeGen         | True if const evaluated   |
 /// | `resolvedType`   | Evaluator   | Sema, CodeGen         | Set during evaluation     |
 /// | `valueState`     | Evaluator   | Sema, CodeGen         | Nil/Err/Definite/Unknown  |
 class ConstEvaluator {
@@ -100,14 +110,13 @@ public:
     // ─── Main Entry Points ───────────────────────────────────────────────
 
     /// @brief Evaluate a const variable declaration.
-    /// Sets decl->constValue and decl->isConst.
     static ConstantValue evaluateDecl(SemaContext& ctx, VarDeclAST* decl);
 
     /// @brief Evaluate an expression with optional target type.
     /// 
     /// This is the main entry point for evaluating any expression.
-    /// It uses caching to avoid re-evaluating the same expression.
-    /// Sets expr->isConst, expr->constValue, expr->resolvedType.
+    /// It uses an internal cache to avoid re-evaluating the same expression.
+    /// Sets expr->isConst = true and expr->resolvedType on success.
     /// 
     /// @param ctx The semantic context.
     /// @param expr The expression to evaluate.
@@ -136,7 +145,7 @@ public:
     /// @brief Build the dependency graph for const declarations.
     static void buildDependencyGraph(SemaContext& ctx);
 
-    /// @brief Get the const value of a declaration.
+    /// @brief Get the const value of a declaration from the cache.
     static ConstantValue getConstValue(VarDeclAST* decl);
 
     // ─── Binary Operation Evaluators ────────────────────────────────────
@@ -228,11 +237,13 @@ private:
     static int compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
 
     // ─── Internal State ──────────────────────────────────────────────────
+    // These are static because the evaluator is stateless across calls.
+    // The cache stores evaluated expressions to avoid re-computation.
 
     static std::vector<DeclAST*> m_constDecls;
     static std::unordered_map<DeclAST*, std::vector<DeclAST*>> m_deps;
-    static std::unordered_set<ExprAST*> m_evaluatedExprs;
-    static std::unordered_set<DeclAST*> m_evaluating;
+    static std::unordered_map<ExprAST*, ConstantValue> m_evalCache;  // Value cache
+    static std::unordered_set<DeclAST*> m_evaluating;                 // Cycle detection
     static size_t m_recursionDepth;
 };
 
