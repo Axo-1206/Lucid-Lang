@@ -58,12 +58,12 @@ void registerFuncName(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Register the function itself ──────────────────────────────────────
     ctx.insertValue(decl);
 
-    // ─── 2. Register generic parameters ──────────────────────────────────────
-    // Generic parameters need to be registered in Phase 1 so they can be
-    // resolved when types are resolved in Phase 2.
-    for (GenericParamDeclAST* g : decl->genericParams) {
-        ctx.insertGenericParam(g);
-    }
+    // ─── 2. Generic parameters are NOT registered in Phase 1 ──────────────────
+    // Generic parameters are only valid inside the function body, which is
+    // resolved in Phase 2. They are registered when resolveFuncDecl is called.
+    // 
+    // If we register them at module level here, they'll leak into other
+    // functions and cause name conflicts in nested functions.
 
     // ─── 3. Parameters are NOT registered in Phase 1 ─────────────────────────
     // Parameters are only needed inside the function body, which is resolved
@@ -79,20 +79,12 @@ void registerEnumName(EnumDeclAST* decl, SemaContext& ctx) {
 
 void registerTraitName(TraitDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-    for (GenericParamDeclAST* g : decl->genericParams) {
-        ctx.insertGenericParam(g);
-    }
 }
 
 void registerStructName(StructDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-    for (GenericParamDeclAST* g : decl->genericParams) {
-        ctx.insertGenericParam(g);
-    }
-    registerStructFieldNames(decl, ctx);
-}
 
-void registerStructFieldNames(StructDeclAST* decl, SemaContext& ctx) {
+    /// Register all field names in a struct (no type resolution).
     for (FieldDeclAST* field : decl->fields) {
         ctx.insertValue(field);
     }
@@ -378,6 +370,8 @@ void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx) {
     for (NamedTypeAST* constraint : param->constraints) {
         resolveTraitRef(constraint, ctx);
     }
+    // ─── Register this generic parameter in the current scope ──────────────
+    ctx.insertGenericParam(param);
 }
 
 // ─── resolveEnumDecl ──────────────────────────────────────────────────────────
