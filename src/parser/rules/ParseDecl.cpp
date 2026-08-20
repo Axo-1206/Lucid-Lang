@@ -12,6 +12,7 @@
 
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
@@ -389,6 +390,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             if (exprBody->isa<IdentifierExprAST>() ||
                 exprBody->isa<ModuleAccessExprAST>() ||
                 exprBody->isa<FieldAccessExprAST>() ||
+                exprBody->isa<ComposeExprAST>() ||
                 exprBody->isa<CallExprAST>()) {
                 isPureFunctionRef = true;
             }
