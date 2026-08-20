@@ -119,6 +119,9 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         }
 
         // Resolve each generic argument type
+        // NOTE: type->genericArgs is an ArenaSpan<TypeAST*>, so we iterate
+        // over it directly. The elements are already TypeAST* and we need
+        // to resolve them.
         for (TypeAST* arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
@@ -184,20 +187,24 @@ TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Step 3: Get the canonical NamedTypeAST from the cache ─────────────
-    NamedTypeAST* resolvedType = ctx.getNamedType(type->typeName);
+    // ─── Step 3: Get the canonical NamedTypeAST with generic args ─────────
+    // The cache key includes genericArgs, so Vec2<int> and Vec2<float>
+    // are stored separately. This prevents type corruption across different
+    // instantiations of the same generic type name.
+    NamedTypeAST* resolvedType = ctx.getNamedType(type->typeName, type->genericArgs);
     
-    // ─── Step 4: Transfer data from the ModuleTypeAccessAST ────────────────
-    // Note: We set resolvedDecl BEFORE calling resolveNamedType.
-    // resolveNamedType will see resolvedDecl is already set and skip lookup,
-    // but it will still validate generic arguments.
+    // ─── Step 4: Transfer semantic data ────────────────────────────────────
+    // The resolvedDecl is set here, not in the cache key, because it's a
+    // semantic property (the declaration we resolved to), not a syntactic
+    // property of the type name. This is safe because the cache key only
+    // includes the name and generic args - the resolvedDecl is set once
+    // and never changes for a given instantiation.
     resolvedType->resolvedDecl = decl;
-    resolvedType->genericArgs = type->genericArgs;
     resolvedType->loc = type->loc;
 
     // ─── Step 5: Delegate to resolveNamedType for validation ──────────────
-    // This will validate generic arguments, arity, and constraints.
-    // Since resolvedDecl is already set, it skips the lookup phase.
+    // Since resolvedDecl is already set, this skips the lookup phase and
+    // only validates generic arguments, arity, and constraints.
     return resolveNamedType(resolvedType, ctx);
 }
 
@@ -263,6 +270,7 @@ TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // This should not be ran, the parser should create an array with nullable elements
     if (inner->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
                               "array types cannot be nullable (use empty array instead)");
@@ -290,6 +298,7 @@ TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // This should not be ran, the parser should create an array with fallible elements
     if (inner->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
                               "array types cannot be fallible");

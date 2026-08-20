@@ -233,8 +233,10 @@ struct ModuleTable {
 /// | `stringType`  | N/A                       | `PrimitiveTypeAST*` | Built-in string     |
 /// | `charType`    | N/A                       | `PrimitiveTypeAST*` | Built-in char       |
 /// | `unknownType` | N/A                       | `UnknownTypeAST*`   | Error recovery type |
-/// | `namedTypes`  | `{ name }`                | `NamedTypeAST*`     | User-defined types  |
+/// | `namedTypes`  | `{ name, genericArgs }`   | `NamedTypeAST*`     | User-defined types  |
 /// | `arrayTypes`  | `{ kind, size, element }` | `ArrayTypeAST*`     | Array types         |
+/// | `ptrTypes`    | `{ inner }`               | `PtrTypeAST*`       | Pointer types       |
+/// | `refTypes`    | `{ inner }`               | `RefTypeAST*`       | Reference types     |
 ///
 /// ## Example: Type Cache in Action
 ///
@@ -265,6 +267,20 @@ struct ModuleTable {
 ///
 /// All types in the cache are arena-allocated and live for the entire
 /// compilation session. The cache is populated lazily as types are resolved.
+/// # TypeCache
+///
+/// ════════════════════════════════════════════════════════════════════════════
+/// WHY GENERIC ARGUMENTS MUST BE IN THE CACHE KEY
+/// ════════════════════════════════════════════════════════════════════════════
+///
+/// Without generic arguments in the key, `Vec2<int>` and `Vec2<float>` both
+/// hash to the SAME `NamedTypeAST*`. This causes silent type corruption:
+///   - Module A resolves Vec2<int> → stores genericArgs = [int]
+///   - Module B resolves Vec2<float> → returns same node, overwrites to [float]
+///   - Module A later sees Vec2<int> with genericArgs = [float] → ❌ WRONG
+///
+/// Including genericArgs in the key ensures each instantiation gets its
+/// own canonical node, preventing cross-contamination.
 struct TypeCache {
     PrimitiveTypeAST* boolType = nullptr;
     PrimitiveTypeAST* intType = nullptr;
@@ -273,19 +289,33 @@ struct TypeCache {
     PrimitiveTypeAST* charType = nullptr;
     UnknownTypeAST* unknownType = nullptr;
     
+    // ─── Named Type Cache (key includes generic arguments) ────────────────
     struct NamedTypeKey {
         InternedString name;
+        ArenaSpan<TypeAST*> genericArgs;
+        
         bool operator==(const NamedTypeKey& other) const {
-            return name == other.name;
+            if (name != other.name) return false;
+            if (genericArgs.size() != other.genericArgs.size()) return false;
+            for (size_t i = 0; i < genericArgs.size(); ++i) {
+                if (genericArgs[i] != other.genericArgs[i]) return false;
+            }
+            return true;
         }
     };
+    
     struct NamedTypeKeyHash {
         size_t operator()(const NamedTypeKey& key) const {
-            return std::hash<uint32_t>{}(key.name.id);
+            size_t h = std::hash<uint32_t>{}(key.name.id);
+            for (TypeAST* arg : key.genericArgs) {
+                h ^= std::hash<TypeAST*>{}(arg) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            }
+            return h;
         }
     };
     std::unordered_map<NamedTypeKey, NamedTypeAST*, NamedTypeKeyHash> namedTypes;
     
+    // ─── Array Type Cache ──────────────────────────────────────────────────
     struct ArrayTypeKey {
         ArrayKind kind;
         uint64_t size;
@@ -305,6 +335,7 @@ struct TypeCache {
     };
     std::unordered_map<ArrayTypeKey, ArrayTypeAST*, ArrayTypeKeyHash> arrayTypes;
 
+    // ─── Pointer Type Cache ──────────────────────────────────────────────────
     struct PtrTypeKey {
         TypeAST* inner;
         bool operator==(const PtrTypeKey& other) const {
@@ -318,6 +349,7 @@ struct TypeCache {
     };
     std::unordered_map<PtrTypeKey, PtrTypeAST*, PtrTypeKeyHash> ptrTypes;
     
+    // ─── Reference Type Cache ──────────────────────────────────────────────
     struct RefTypeKey {
         TypeAST* inner;
         bool operator==(const RefTypeKey& other) const {
@@ -1040,13 +1072,29 @@ struct SemaContext {
         return typeCache.unknownType;
     }
     
-    NamedTypeAST* getNamedType(InternedString name) {
-        TypeCache::NamedTypeKey key{name};
+    /// @brief Get or create a named type with the given name and generic arguments.
+    /// 
+    /// The generic arguments are part of the cache key, so each distinct
+    /// instantiation (e.g., Vec2<int> vs Vec2<float>) gets its own canonical node.
+    /// 
+    /// @param name The type name.
+    /// @param genericArgs The generic arguments (empty for non-generic types).
+    /// @return The canonical NamedTypeAST node.
+    NamedTypeAST* getNamedType(InternedString name, const ArenaSpan<TypeAST*>& genericArgs = {}) {
+        TypeCache::NamedTypeKey key{name, genericArgs};
         auto it = typeCache.namedTypes.find(key);
         if (it != typeCache.namedTypes.end()) {
             return it->second;
         }
+        
+        // Create a new NamedTypeAST with the generic args stored as ArenaSpan
         NamedTypeAST* type = arena.make<NamedTypeAST>(name);
+        
+        // Since the node is newly created, we need to store the generic args.
+        // The ArenaSpan points into arena memory - this is safe because the
+        // ASTArena owns all type nodes and the generic args are also arena-allocated.
+        type->genericArgs = genericArgs;
+        
         typeCache.namedTypes[key] = type;
         return type;
     }
