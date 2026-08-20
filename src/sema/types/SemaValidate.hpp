@@ -34,21 +34,6 @@ bool validateConstType(TypeAST* type,
                         const char* kind,
                         SemaContext& ctx);
 
-/// @brief Validate that a const declaration has an initializer.
-/// 
-/// Const declarations must always have an initializer because they cannot
-/// be assigned later.
-/// 
-/// @param hasInit True if the declaration has an initializer.
-/// @param name The name of the declaration (for error messages).
-/// @param kind The kind of declaration (for error messages).
-/// @param ctx The semantic context.
-/// @return true if the declaration has an initializer.
-bool validateConstInitializer(bool hasInit,
-                               InternedString name,
-                               const char* kind,
-                               SemaContext& ctx);
-
 // ─── Trait Validation ────────────────────────────────────────────────────
 
 /// @brief Validate that a struct implements all fields of a single trait.

@@ -26,6 +26,7 @@
 #include "../support/CaptureAnalysis.hpp"
 #include "../support/MangledName.hpp"
 #include "../registry/AttributeValidator.hpp"
+#include "sema/types/SemaCompare.hpp"
 
 
 namespace sema {
@@ -120,12 +121,9 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 2. Validate const type and initializer ──────────────────────
+    // ─── 2. Validate const type ──────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
-            return;
-        }
-        if (!validateConstInitializer(decl->init != nullptr, decl->name, "variable", ctx)) {
             return;
         }
     }
@@ -148,6 +146,70 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
                 decl->init->isConst = true;
             }
         }
+    } else {
+        // ─── NO INITIALIZER: Set default value state ────────────────
+        
+        // Create a placeholder expression to represent the default value
+        // This expression won't be used for code generation - only Sema needs
+        // the valueState and resolvedType for flow analysis.
+        UnknownExprAST* defaultExpr = ctx.arena.make<UnknownExprAST>();
+        defaultExpr->resolvedType = declaredType;
+        defaultExpr->isLValue = false;
+        defaultExpr->isConst = true;
+        
+        // ─── 4a. Check if type is nullable (T?) ──────────────────────
+        if (isNullableType(declaredType)) {
+            // Nullable variables default to nil
+            defaultExpr->valueState = ValueState::Nil;
+            decl->init = defaultExpr;
+            
+            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+                     "' default-initialized to nil (nullable type)");
+            return;
+        }
+        
+        // ─── 4b. Check if type is fallible (T!) ──────────────────────
+        if (isFallibleType(declaredType)) {
+            // Fallible variables default to err
+            defaultExpr->valueState = ValueState::Err;
+            decl->init = defaultExpr;
+            
+            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+                     "' default-initialized to err (fallible type)");
+            return;
+        }
+        
+        // ─── 4c. Check if type is combined (T?!) ─────────────────────
+        if (declaredType->isa<CombinedTypeAST>()) {
+            // Combined types default to nil (the tag is nil)
+            defaultExpr->valueState = ValueState::Nil;
+            decl->init = defaultExpr;
+            
+            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+                     "' default-initialized to nil (combined type)");
+            return;
+        }
+        
+        // ─── 4d. Check for function type with default body ───────────
+        // Function types can have a default body at declaration site,
+        // but at variable declaration site, we need an explicit initializer.
+        if (declaredType->isa<FuncTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
+                                  "function type variable '", ctx.pool.lookup(decl->name),
+                                  "' must be initialized with a function value");
+            return;
+        }
+        
+        // ─── 4e. Non-nullable, non-fallible, non-combined type ──────
+        // These cannot be default-initialized
+        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
+                              "variable '", ctx.pool.lookup(decl->name),
+                              "' of type '", debug::typeToString(declaredType, ctx.pool),
+                              "' must be initialized (type is not nullable or fallible)");
+        ctx.diagnostics.note(decl, 
+                             "Consider using a nullable type (T?) or fallible type (T!) ",
+                             "if you want default initialization to nil/err, or provide an initializer");
+        return;
     }
 
     // ─── 5. Generate mangled name for exported globals ───────────────────

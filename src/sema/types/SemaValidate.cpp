@@ -291,19 +291,6 @@ bool validateConstType(TypeAST* type,
     return true;
 }
 
-bool validateConstInitializer(bool hasInit,
-                               InternedString name,
-                               const char* kind,
-                               SemaContext& ctx) {
-    if (!hasInit) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, nullptr,
-                              "const ", kind, " '", ctx.pool.lookup(name),
-                              "' must have an initializer");
-        return false;
-    }
-    return true;
-}
-
 // ─── Public Trait Validation ────────────────────────────────────────────
 
 bool validateTraitImplementation(StructDeclAST* structDecl,
