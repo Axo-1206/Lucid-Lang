@@ -568,17 +568,16 @@ lucid/
     │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
     │   │
     │   ├── types/
-    │   │   ├── SemaLookup.hpp/cpp          # Look up type, check if type exist in current scope.
-    │   │   ├── SemaResolve.hpp/cpp         # Resolves type annotations to their semantic representations. 
+    │   │   ├── ArgTypeValidators.hpp/cpp   # Validate argument type for attribute and intrinsics
+    │   │   ├── SemaResolve.hpp/cpp         # Resolves type annotations to their semantic representations.
     │   │   ├── SemaCompare.hpp/cpp         # Type Compatibility Helpers
-    │   │   ├── SemaValidate.hpp/cpp        # Type Compatibility Helpers
-    │   │   └── SemaType.hpp                # Main header for 4 .cpp files
+    │   │   ├── SemaValidate.hpp/cpp        # Type Validation Helpers
+    │   │   └── SemaType.hpp                # Main header for document
     │   │
     │   ├── const_eval/
     │   │   ├── ConstEvaluator.hpp          # Public interface
     │   │   ├── ConstEvaluator.cpp          # Main logic: evaluateDecl, evaluate, buildDependencyGraph
-    │   │   ├── ConstEvalHelpers.hpp        # Internal helper declarations
-    │   │   ├── ConstEvalHelpers.cpp        # Type helpers, error helpers, dependency helpers
+    │   │   ├── ConstEvalHelpers.hpp/cpp    # Internal helper declarations
     │   │   ├── ConstEvalBinary.cpp         # Binary operations: add, sub, mul, div, mod, pow, comparisons
     │   │   ├── ConstEvalUnary.cpp          # Unary operations: neg, not, bitnot
     │   │   └── ConstEvalStatement.cpp      # Statement execution: block, return, if, while, expr, decl
@@ -634,15 +633,12 @@ lucid/
     │   │
     │   ├── core/
     │   │   ├── InterpreterContext.hpp   # Context holding all state
-    │   │   ├── InterpreterContext.cpp
+    │   │   ├── ModuleLoader.hpp         # Loads modules into JIT
+    │   │   ├── ModuleLoader.cpp
     │   │   ├── ModuleRegistry.hpp       # Tracks loaded modules
     │   │   └── ModuleRegistry.cpp
     │   │
     │   ├── execution/
-    │   │   ├── ModuleLoader.hpp         # Loads modules into JIT
-    │   │   ├── ModuleLoader.cpp
-    │   │   ├── SymbolResolver.hpp       # Finds and resolves symbols
-    │   │   └── SymbolResolver.cpp
     │   │
     │   ├── jit/
     │   │   ├── JITSession.hpp           # LLVM ORC JIT wrapper
@@ -660,7 +656,7 @@ lucid/
     │       ├── InterpreterOptions.hpp   # Configuration options
     │       ├── InterpreterError.hpp     # Error types
     │       ├── ExecutionResult.hpp      # Result of execution
-    │       └── PanicHandler.hpp         # Runtime panic handling
+    │       └── PanicHandler.hpp/cpp     # Runtime panic handling
     │
     ├── compiler/                       # AOT backend (lucid build)
     │   └── aot/                        # AOT-only backend
@@ -676,9 +672,13 @@ lucid/
     │   └── game.luc
     │
     ├── cli/                            # command-line interface
-    │   ├── commands.hpp/cpp            # command dispatch
-    │   ├── run.hpp                     # lucid run
-    │   └── build.hpp                   # lucid build
+    │   ├── CLIContext.hpp              # Shared CLI context for a single run session.
+    │   ├── CLIOptions.hpp              # Unified CLI options for all commands.
+    │   ├── DependencyGraph.hpp         # Bi‑directional dependency graph for hot‑reload.
+    │   ├── FileWatcher.hpp             # File watcher for hot‑reload.
+    │   ├── RunOptions.hpp/cpp
+    │   ├── run.hpp/cpp                 # lucid run
+    │   └── build.hpp                   # lucid build (not implemented)
     │
     └── debug/                          # developer tools (not user-facing)
 

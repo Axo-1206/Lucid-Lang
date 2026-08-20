@@ -94,10 +94,6 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     return decl;
 }
 
-// =============================================================================
-// parseImportDecl
-// =============================================================================
-
 ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("Enter UseDecl");
 
@@ -203,10 +199,6 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_MINIMAL("Parsed import: '", fullPath, "' as '", aliasStr, "'");
     return importDecl;
 }
-
-// =============================================================================
-// parseVarDecl
-// =============================================================================
 
 VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();

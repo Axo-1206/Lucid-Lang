@@ -3,7 +3,7 @@
 
 #include "IntrinsicValidator.hpp"
 #include "core/registry/IntrinsicRegistry.hpp"
-#include "../types/ArgumentTypeValidators.hpp"
+#include "../types/ArgTypeValidators.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"
 

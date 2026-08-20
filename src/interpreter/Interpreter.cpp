@@ -3,7 +3,7 @@
 
 #include "Interpreter.hpp"
 #include "support/InterpreterError.hpp"
-#include "execution/ModuleLoader.hpp"
+#include "core/ModuleLoader.hpp"
 #include "dynlink/DynamicLinker.hpp"
 
 #include <chrono>

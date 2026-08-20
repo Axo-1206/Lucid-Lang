@@ -1,7 +1,7 @@
 /// @file registry/ArgumentTypeValidators.cpp
 /// @brief Implementation of argument type validation utilities.
 
-#include "ArgumentTypeValidators.hpp"
+#include "ArgTypeValidators.hpp"
 #include "../types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"

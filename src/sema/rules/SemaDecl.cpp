@@ -294,6 +294,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 9. Push function context with expected return type ──────────────────
+    // The function resolveReturnStmt will resolve this requirement
     TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(decl, expectedReturn);
 
@@ -305,7 +306,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     } else if (decl->body->isa<ReturnStmtAST>()) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
-        const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
+        FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
         TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
             ctx.stack.pop();

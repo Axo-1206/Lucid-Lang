@@ -3,6 +3,7 @@
 
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaResolve.hpp"
+#include "../types/SemaCompare.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 

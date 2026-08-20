@@ -3,7 +3,7 @@
 
 #include "AttributeValidator.hpp"
 #include "core/registry/AttributeRegistry.hpp"
-#include "../types/ArgumentTypeValidators.hpp"
+#include "../types/ArgTypeValidators.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"
 
