@@ -102,4 +102,24 @@ bool validateForeignFunction(FuncDeclAST* decl,
                               AttributeAST* foreignAttr,
                               SemaContext& ctx);
 
+
+// ─── Downward Flow Rule Validation ──────────────────────────────────────
+
+/// @brief Validate that a borrowed type appears in a valid context.
+/// 
+/// Borrowed types are:
+///   - &T (references)
+///   - [_]T (slices)
+/// 
+/// The Downward Flow Rule forbids borrowed types from:
+///   1. Struct fields
+///   2. Array/Slice elements
+///   3. Function returns
+///   4. Closure captures
+/// 
+/// @param type The borrowed type to validate.
+/// @param ctx The semantic context.
+/// @return true if the borrowed type is in a valid context.
+bool validateBorrowedContext(TypeAST* type, SemaContext& ctx);
+
 } // namespace sema

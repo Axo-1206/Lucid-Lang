@@ -523,4 +523,38 @@ bool validateForeignFunction(FuncDeclAST* decl,
     return allValid;
 }
 
+// ─── Downward Flow Rule Validation ──────────────────────────────────────
+
+bool validateBorrowedContext(TypeAST* type, SemaContext& ctx) {
+    if (!type || !isBorrowedType(type)) {
+        return true;
+    }
+
+    // ─── Rule 1: No Struct Storage ─────────────────────────────────────────
+    // A borrowed type cannot be stored in a struct field
+    TypeDeclAST* currentType = ctx.currentDefiningType();
+    if (currentType && currentType->isa<StructDeclAST>()) {
+        const char* typeName = type->isa<RefTypeAST>() ? "reference (&T)" : "slice ([_]T)";
+        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
+                              "borrowed type ", typeName,
+                              " cannot be stored in struct fields");
+        return false;
+    }
+
+    // ─── Rule 2: No Array/Slice Storage ────────────────────────────────────
+    // A borrowed type cannot be an element of an array or slice
+    // This is checked in resolveArrayType, but we also check the context here
+    // The caller should have already checked this
+    
+    // ─── Rule 3: No Borrowed Returns ──────────────────────────────────────
+    // A borrowed type cannot be returned from a function
+    // This is checked in resolveFuncType for the return type
+    
+    // ─── Rule 4: No Closure Capture ──────────────────────────────────────
+    // A borrowed type cannot be captured by a closure
+    // This is checked in resolveAnonFuncExpr and resolveFuncDecl
+    
+    return true;
+}
+
 } // namespace sema

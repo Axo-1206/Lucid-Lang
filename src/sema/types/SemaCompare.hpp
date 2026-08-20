@@ -77,4 +77,9 @@ bool isSwitchCaseCompatible(ExprAST* value,
 
 bool isValidFFIType(TypeAST* type, SemaContext& ctx);
 
+// ─── BorrowedType ───────────────────────────────────────────────────
+
+/// @brief Check if a type is a borrowed type (&T or [_]T).
+bool isBorrowedType(TypeAST* type);
+
 } // namespace sema

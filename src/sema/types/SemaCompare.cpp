@@ -486,4 +486,25 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
     return false;
 }
 
+// ─── BorrowedType ───────────────────────────────────────────────────
+
+bool isBorrowedType(TypeAST* type) {
+    if (!type) return false;
+    
+    // &T is a borrowed type
+    if (type->isa<RefTypeAST>()) {
+        return true;
+    }
+    
+    // [_]T is a borrowed type (slice)
+    if (type->isa<ArrayTypeAST>()) {
+        ArrayTypeAST* array = type->as<ArrayTypeAST>();
+        if (array->isSlice()) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 } // namespace sema
