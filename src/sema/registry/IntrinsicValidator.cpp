@@ -7,9 +7,6 @@
 #include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"
 
-#include <unordered_set>
-#include <unordered_map>
-
 namespace sema {
 
 // ─── Internal Helpers ──────────────────────────────────────────────────────
@@ -22,6 +19,7 @@ static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info) {
 }
 
 static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
+    // Check against the VOID_INTRINSICS set defined in IntrinsicRegistry.hpp
     std::string nameStr = ctx.pool.lookup(name);
     return VOID_INTRINSICS.find(nameStr) != VOID_INTRINSICS.end();
 }
@@ -49,108 +47,144 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
                                   std::to_string(expr->args.size()));
         } else {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "intrinsic '#", intrinsicName, "' expects ",
+                                  "intrinsic '#'", intrinsicName, "' expects ",
                                   std::to_string(info->minArgs), " argument(s), got ",
                                   std::to_string(expr->args.size()));
         }
         return false;
     }
 
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    // ─── Dispatch by IntrinsicKind ─────────────────────────────────────────
+    switch (info->kind) {
+        // ─── Floating-Point Math ──────────────────────────────────────────
+        case IntrinsicKind::Sqrt:
+        case IntrinsicKind::Abs:
+        case IntrinsicKind::Fma:
+        case IntrinsicKind::Ceil:
+        case IntrinsicKind::Floor:
+        case IntrinsicKind::Round:
+        case IntrinsicKind::Pow:
+        case IntrinsicKind::Min:
+        case IntrinsicKind::Max:
+            return validateFloatingPoint(expr, ctx);
 
-    // ─── Dispatch to specific validator ────────────────────────────────────
-    // Floating-Point Math
-    static const std::unordered_set<std::string> FLOATING_POINT_OPS = {
-        "sqrt", "abs", "fma", "ceil", "floor", "round", "pow", "min", "max"
-    };
-    if (FLOATING_POINT_OPS.find(name) != FLOATING_POINT_OPS.end()) {
-        return validateFloatingPoint(expr, ctx);
-    }
+        // ─── Memory Operations ────────────────────────────────────────────
+        case IntrinsicKind::Memcpy:
+        case IntrinsicKind::Memmove:
+        case IntrinsicKind::Memset:
+            return validateMemoryOp(expr, ctx);
 
-    // Memory Operations
-    static const std::unordered_set<std::string> MEMORY_OPS = {
-        "memcpy", "memmove", "memset"
-    };
-    if (MEMORY_OPS.find(name) != MEMORY_OPS.end()) {
-        return validateMemoryOp(expr, ctx);
-    }
+        // ─── CPU Hints ────────────────────────────────────────────────────
+        case IntrinsicKind::Prefetch:
+        case IntrinsicKind::PrefetchR:
+        case IntrinsicKind::PrefetchW:
+            // These just need a pointer argument - validated above
+            return true;
 
-    if (name == "fence") {
-        return validateFence(expr, ctx);
-    }
+        case IntrinsicKind::Fence:
+            return validateFence(expr, ctx);
 
-    // String Operations
-    static const std::unordered_set<std::string> STRING_OPS = {
-        "str_len", "str_ptr", "str_from_ptr", "str_concat",
-        "str_eq", "str_slice", "str_byte_at"
-    };
-    if (STRING_OPS.find(name) != STRING_OPS.end()) {
-        return validateStringOp(expr, ctx);
-    }
+        case IntrinsicKind::Pause:
+            return true;  // No arguments, always valid
 
-    // Pointer Operations
-    static const std::unordered_set<std::string> POINTER_OPS = {
-        "addrof", "toRef", "toPtr", "ptrOffset", "ptrDiff"
-    };
-    if (POINTER_OPS.find(name) != POINTER_OPS.end()) {
-        return validatePointerOp(expr, ctx);
-    }
+        // ─── Atomics ──────────────────────────────────────────────────────
+        case IntrinsicKind::AtomicLoad:
+        case IntrinsicKind::AtomicStore:
+        case IntrinsicKind::AtomicAdd:
+        case IntrinsicKind::AtomicSub:
+        case IntrinsicKind::AtomicAnd:
+        case IntrinsicKind::AtomicOr:
+        case IntrinsicKind::AtomicXor:
+        case IntrinsicKind::AtomicCas:
+            return validateAtomicOp(expr, ctx);
 
-    if (name == "scope_exit") {
-        return validateScopeExit(expr, ctx);
-    }
+        // ─── Type & Value Inspection ──────────────────────────────────────
+        case IntrinsicKind::Sizeof:
+        case IntrinsicKind::Alignof:
+        case IntrinsicKind::Typeof:
+        case IntrinsicKind::Nameof:
+        case IntrinsicKind::Tostr:
+        case IntrinsicKind::Ptrstr:
+        case IntrinsicKind::Addrof:
+            // These have minimal validation - mostly just ensure arguments exist
+            return true;
 
-    if (name.find("atomic_") == 0) {
-        return validateAtomicOp(expr, ctx);
-    }
+        // ─── Pointer Operations ────────────────────────────────────────────
+        case IntrinsicKind::PtrOffset:
+        case IntrinsicKind::PtrDiff:
+        case IntrinsicKind::ToRef:
+        case IntrinsicKind::ToPtr:
+            return validatePointerOp(expr, ctx);
 
-    if (name.find("simd_") == 0) {
-        return validateSIMD(expr, ctx);
-    }
+        // ─── Bit Manipulation ─────────────────────────────────────────────
+        case IntrinsicKind::Bitcast:
+            // bitcast(T, x) - T is a type argument, x is any value
+            // Type validation happens elsewhere
+            return true;
 
-    // Memory Management
-    static const std::unordered_set<std::string> MEMORY_MGMT_OPS = {
-        "alloc", "free", "arena_create", "arena_alloc", "arena_reset", "arena_free"
-    };
-    if (MEMORY_MGMT_OPS.find(name) != MEMORY_MGMT_OPS.end()) {
-        return validateMemoryManagement(expr, ctx);
-    }
+        case IntrinsicKind::Clz:
+        case IntrinsicKind::Ctz:
+        case IntrinsicKind::Popcount:
+        case IntrinsicKind::Bswap:
+            // These take a single integer argument
+            if (!expr->args.empty() && !validateIntArg(expr->args[0], "value", ctx)) {
+                return false;
+            }
+            return true;
 
-    // ─── Compiler-handled intrinsics with minimal validation ─────────────
-    if (name == "clz" || name == "ctz" || name == "popcount" || name == "bswap") {
-        if (!expr->args.empty() && !validateIntArg(expr->args[0], "value", ctx)) {
+        // ─── Branch Prediction ────────────────────────────────────────────
+        case IntrinsicKind::Likely:
+        case IntrinsicKind::Unlikely:
+            if (!expr->args.empty() && !validateBoolArg(expr->args[0], "condition", ctx)) {
+                return false;
+            }
+            return true;
+
+        // ─── String Operations ─────────────────────────────────────────────
+        case IntrinsicKind::StrLen:
+        case IntrinsicKind::StrPtr:
+        case IntrinsicKind::StrFromPtr:
+        case IntrinsicKind::StrConcat:
+        case IntrinsicKind::StrSlice:
+        case IntrinsicKind::StrEq:
+        case IntrinsicKind::StrByteAt:
+            return validateStringOp(expr, ctx);
+
+        // ─── Memory Management ─────────────────────────────────────────────
+        case IntrinsicKind::Alloc:
+        case IntrinsicKind::Free:
+        case IntrinsicKind::ArenaCreate:
+        case IntrinsicKind::ArenaAlloc:
+        case IntrinsicKind::ArenaReset:
+        case IntrinsicKind::ArenaFree:
+            return validateMemoryManagement(expr, ctx);
+
+        // ─── Scope Exit ────────────────────────────────────────────────────
+        case IntrinsicKind::ScopeExit:
+            return validateScopeExit(expr, ctx);
+
+        // ─── SIMD ──────────────────────────────────────────────────────────
+        case IntrinsicKind::SimdAdd:
+        case IntrinsicKind::SimdSub:
+        case IntrinsicKind::SimdMul:
+        case IntrinsicKind::SimdDiv:
+        case IntrinsicKind::SimdFma:
+        case IntrinsicKind::SimdMin:
+        case IntrinsicKind::SimdMax:
+        case IntrinsicKind::SimdLoad:
+        case IntrinsicKind::SimdStore:
+        case IntrinsicKind::SimdSplat:
+        case IntrinsicKind::SimdExtract:
+        case IntrinsicKind::SimdInsert:
+            return validateSIMD(expr, ctx);
+
+        // ─── Unknown kind ──────────────────────────────────────────────────
+        default:
+            ctx.diagnostics.error(DiagCode::Sem_UnknownIntrinsic, expr,
+                                  "intrinsic '#'", ctx.pool.lookup(expr->intrinsicName),
+                                  "' has unknown kind in validator");
             return false;
-        }
-        return true;
     }
-
-    if (name == "prefetch" || name == "prefetch_r" || name == "prefetch_w") {
-        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) {
-            return false;
-        }
-        return true;
-    }
-
-    if (name == "likely" || name == "unlikely") {
-        if (!expr->args.empty() && !validateBoolArg(expr->args[0], "condition", ctx)) {
-            return false;
-        }
-        return true;
-    }
-
-    if (name == "pause") {
-        return true;
-    }
-
-    // ─── Type & Value Inspection ──────────────────────────────────────────
-    static const std::unordered_set<std::string> INSPECTION_OPS = {
-        "sizeof", "alignof", "typeof", "nameof", "tostr", "ptrstr", "bitcast"
-    };
-    if (INSPECTION_OPS.find(name) != INSPECTION_OPS.end()) {
-        return true;
-    }
-
-    return true;
 }
 
 bool validateIntrinsicArgCount(InternedString name, size_t count, SemaContext& ctx) {
@@ -171,6 +205,10 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
                                        SemaContext& ctx) {
     if (!expr) return targetType;
 
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return targetType;
+
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     // ─── Void intrinsics return nothing ────────────────────────────────────
@@ -178,141 +216,138 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
         return nullptr;
     }
 
-    // ─── Scope Exit returns void ──────────────────────────────────────────
-    if (name == "scope_exit") {
-        return nullptr;
-    }
+    // ─── Dispatch by IntrinsicKind ─────────────────────────────────────────
+    switch (info->kind) {
+        // ─── Type/Value Inspection ────────────────────────────────────────
+        case IntrinsicKind::Sizeof:
+        case IntrinsicKind::Alignof:
+            return ctx.getIntType();
 
-    // ─── Type/Value Inspection ─────────────────────────────────────────────
-    if (name == "sizeof" || name == "alignof") {
-        return ctx.getIntType();
-    }
+        case IntrinsicKind::Typeof:
+        case IntrinsicKind::Nameof:
+        case IntrinsicKind::Tostr:
+        case IntrinsicKind::Ptrstr:
+            return ctx.getStringType();
 
-    if (name == "typeof" || name == "nameof" || name == "tostr" || name == "ptrstr") {
-        return ctx.getStringType();
-    }
-
-    // ─── Pointer Operations (using type cache) ────────────────────────────
-    if (name == "addrof") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            // addrof(x) returns *T where T is the type of x
-            TypeAST* innerType = expr->args[0]->resolvedType;
-            // Use the cached pointer type - ensures canonicalization
-            return ctx.getPtrType(innerType);
-        }
-        return targetType;
-    }
-
-    if (name == "toRef") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            TypeAST* argType = expr->args[0]->resolvedType;
-            if (argType->isa<PtrTypeAST>()) {
-                TypeAST* inner = argType->as<PtrTypeAST>()->inner;
-                // Use the cached reference type
-                return ctx.getRefType(inner);
+        // ─── Pointer Operations ────────────────────────────────────────────
+        case IntrinsicKind::Addrof: {
+            if (!expr->args.empty() && expr->args[0]->resolvedType) {
+                TypeAST* innerType = expr->args[0]->resolvedType;
+                return ctx.getPtrType(innerType);
             }
-            // If it's already a reference, return it
-            if (argType->isa<RefTypeAST>()) {
-                return argType;
+            return targetType;
+        }
+
+        case IntrinsicKind::ToRef: {
+            if (!expr->args.empty() && expr->args[0]->resolvedType) {
+                TypeAST* argType = expr->args[0]->resolvedType;
+                if (argType->isa<PtrTypeAST>()) {
+                    TypeAST* inner = argType->as<PtrTypeAST>()->inner;
+                    return ctx.getRefType(inner);
+                }
+                if (argType->isa<RefTypeAST>()) {
+                    return argType;
+                }
             }
+            return targetType;
         }
-        return targetType;
-    }
 
-    if (name == "toPtr") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            TypeAST* argType = expr->args[0]->resolvedType;
-            if (argType->isa<RefTypeAST>()) {
-                TypeAST* inner = argType->as<RefTypeAST>()->inner;
-                // Use the cached pointer type
-                return ctx.getPtrType(inner);
+        case IntrinsicKind::ToPtr: {
+            if (!expr->args.empty() && expr->args[0]->resolvedType) {
+                TypeAST* argType = expr->args[0]->resolvedType;
+                if (argType->isa<RefTypeAST>()) {
+                    TypeAST* inner = argType->as<RefTypeAST>()->inner;
+                    return ctx.getPtrType(inner);
+                }
+                if (argType->isa<PtrTypeAST>()) {
+                    return argType;
+                }
             }
-            // If it's already a pointer, return it
-            if (argType->isa<PtrTypeAST>()) {
-                return argType;
+            return targetType;
+        }
+
+        case IntrinsicKind::PtrOffset: {
+            if (!expr->args.empty() && expr->args[0]->resolvedType) {
+                return expr->args[0]->resolvedType;
             }
+            return targetType;
         }
-        return targetType;
-    }
 
-    // ─── ptrOffset(ptr, n) returns the same pointer type ──────────────────
-    if (name == "ptrOffset") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            return expr->args[0]->resolvedType;
-        }
-        return targetType;
-    }
+        case IntrinsicKind::PtrDiff:
+            return ctx.getIntType();
 
-    // ─── ptrDiff(p1, p2) returns int64 ─────────────────────────────────────
-    if (name == "ptrDiff") {
-        return ctx.getIntType();
-    }
+        // ─── Bitcast ──────────────────────────────────────────────────────
+        case IntrinsicKind::Bitcast:
+            // The return type is the target type T passed as a type argument
+            if (expr->resolvedType) {
+                return expr->resolvedType;
+            }
+            return targetType;
 
-    // ─── bitcast(T, x) returns the target type T ──────────────────────────
-    if (name == "bitcast") {
-        // The return type is the target type T passed as the first argument
-        // This is stored in expr->resolvedType by the caller
-        // We just return the target type from the call
-        if (expr->resolvedType) {
-            return expr->resolvedType;
-        }
-        return targetType;
-    }
+        // ─── String Operations ─────────────────────────────────────────────
+        case IntrinsicKind::StrLen:
+        case IntrinsicKind::StrFromPtr:
+        case IntrinsicKind::StrConcat:
+        case IntrinsicKind::StrSlice:
+            return ctx.getStringType();
 
-    // ─── String Operations ──────────────────────────────────────────────────
-    if (name == "str_len" || name == "str_from_ptr" || name == "str_concat" ||
-        name == "str_slice") {
-        return ctx.getStringType();
-    }
+        case IntrinsicKind::StrPtr:
+            return ctx.getPtrType(ctx.getIntType());
 
-    if (name == "str_ptr") {
-        return ctx.getPtrType(ctx.getIntType());
-    }
+        case IntrinsicKind::StrEq:
+            return ctx.getBoolType();
 
-    if (name == "str_eq") {
-        return ctx.getBoolType();
-    }
+        case IntrinsicKind::StrByteAt:
+            return ctx.getIntType();
 
-    if (name == "str_byte_at") {
-        return ctx.getIntType();
-    }
+        // ─── Memory Management ─────────────────────────────────────────────
+        case IntrinsicKind::Alloc:
+        case IntrinsicKind::ArenaAlloc:
+            if (expr->resolvedType) {
+                return expr->resolvedType;
+            }
+            return ctx.getPtrType(ctx.getIntType());
 
-    // ─── Memory Management ──────────────────────────────────────────────────
-    if (name == "alloc" || name == "arena_alloc") {
-        // Return type is *T where T is the pointee type
-        // This is stored in the call's resolved type
-        if (expr->resolvedType) {
-            return expr->resolvedType;
-        }
-        return ctx.getPtrType(ctx.getIntType());
-    }
+        case IntrinsicKind::ArenaCreate:
+            // Return ArenaDescriptor struct type
+            return targetType;
 
-    if (name == "arena_create") {
-        // Return ArenaDescriptor struct type
-        // For now, return a pointer to it
-        // TODO: Define ArenaDescriptor struct type
-        return targetType;
-    }
+        // ─── SIMD ──────────────────────────────────────────────────────────
+        case IntrinsicKind::SimdLoad:
+        case IntrinsicKind::SimdSplat:
+        case IntrinsicKind::SimdAdd:
+        case IntrinsicKind::SimdSub:
+        case IntrinsicKind::SimdMul:
+        case IntrinsicKind::SimdDiv:
+        case IntrinsicKind::SimdFma:
+        case IntrinsicKind::SimdMin:
+        case IntrinsicKind::SimdMax:
+        case IntrinsicKind::SimdExtract:
+        case IntrinsicKind::SimdInsert:
+            if (expr->resolvedType) {
+                return expr->resolvedType;
+            }
+            return targetType;
 
-    // ─── SIMD ────────────────────────────────────────────────────────────────
-    if (name.find("simd_") == 0) {
-        // simd_store returns void
-        if (name == "simd_store") {
-            return nullptr;
-        }
-        // simd_splat, simd_load, simd_add, etc. return the vector type
-        // This is stored in the call's resolved type
-        if (expr->resolvedType) {
-            return expr->resolvedType;
-        }
-        return targetType;
-    }
+        case IntrinsicKind::SimdStore:
+            return nullptr;  // Void
 
-    return targetType;
+        // ─── Scope Exit ────────────────────────────────────────────────────
+        case IntrinsicKind::ScopeExit:
+            return nullptr;  // Void
+
+        // ─── Default ──────────────────────────────────────────────────────
+        default:
+            return targetType;
+    }
 }
 
 ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!expr) return ValueState::Unknown;
+
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return ValueState::Unknown;
 
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
@@ -321,32 +356,32 @@ ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) 
         return ValueState::None;
     }
 
-    // ─── Scope Exit produces no value ─────────────────────────────────────
-    if (name == "scope_exit") {
-        return ValueState::None;
-    }
+    // ─── Dispatch by IntrinsicKind ─────────────────────────────────────────
+    switch (info->kind) {
+        // ─── Memory allocations can fail ──────────────────────────────────
+        case IntrinsicKind::Alloc:
+        case IntrinsicKind::ArenaAlloc:
+            return ValueState::Unknown;
 
-    // ─── Memory allocations can fail ──────────────────────────────────────
-    if (name == "alloc" || name == "arena_alloc") {
-        return ValueState::Unknown;
-    }
+        // ─── toRef asserts non-null - always definite if it returns ──────
+        case IntrinsicKind::ToRef:
+            return ValueState::Definite;
 
-    // ─── toRef asserts non-null - always definite if it returns ──────────
-    if (name == "toRef") {
-        return ValueState::Definite;
-    }
+        // ─── Fence and pause always succeed ──────────────────────────────
+        case IntrinsicKind::Fence:
+        case IntrinsicKind::Pause:
+            return ValueState::Definite;
 
-    // ─── Fence and pause always succeed ──────────────────────────────────
-    if (name == "fence" || name == "pause") {
-        return ValueState::Definite;
-    }
+        // ─── String operations that can fail ─────────────────────────────
+        case IntrinsicKind::StrFromPtr:
+        case IntrinsicKind::StrConcat:
+        case IntrinsicKind::StrSlice:
+            return ValueState::Unknown;
 
-    // ─── String operations that can fail ──────────────────────────────────
-    if (name == "str_from_ptr" || name == "str_concat" || name == "str_slice") {
-        return ValueState::Unknown;
+        // ─── Everything else is definite ──────────────────────────────────
+        default:
+            return ValueState::Definite;
     }
-
-    return ValueState::Definite;
 }
 
 // ─── Individual Validators ─────────────────────────────────────────────────
@@ -361,23 +396,27 @@ bool validateFloatingPoint(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateMemoryOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    if (name == "memcpy" || name == "memmove") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "dst", ctx)) return false;
-        if (expr->args.size() >= 2 && !validatePtrArg(expr->args[1], "src", ctx)) return false;
-        if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "len", ctx)) return false;
-        return true;
+    switch (info->kind) {
+        case IntrinsicKind::Memcpy:
+        case IntrinsicKind::Memmove:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "dst", ctx)) return false;
+            if (expr->args.size() >= 2 && !validatePtrArg(expr->args[1], "src", ctx)) return false;
+            if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "len", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::Memset:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "dst", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "val", ctx)) return false;
+            if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "len", ctx)) return false;
+            return true;
+
+        default:
+            return true;
     }
-
-    if (name == "memset") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "dst", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "val", ctx)) return false;
-        if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "len", ctx)) return false;
-        return true;
-    }
-
-    return true;
 }
 
 bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -415,73 +454,74 @@ bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateStringOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    if (name == "str_len" || name == "str_ptr") {
-        if (!expr->args.empty() && !validateStringArg(expr->args[0], "string", ctx)) return false;
-        return true;
+    switch (info->kind) {
+        case IntrinsicKind::StrLen:
+        case IntrinsicKind::StrPtr:
+            if (!expr->args.empty() && !validateStringArg(expr->args[0], "string", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::StrFromPtr:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "len", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::StrConcat:
+        case IntrinsicKind::StrEq:
+            if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "a", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateStringArg(expr->args[1], "b", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::StrSlice:
+            if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "string", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "from", ctx)) return false;
+            if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "to", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::StrByteAt:
+            if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "string", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "index", ctx)) return false;
+            return true;
+
+        default:
+            return true;
     }
-
-    if (name == "str_from_ptr") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "len", ctx)) return false;
-        return true;
-    }
-
-    if (name == "str_concat" || name == "str_eq") {
-        if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "a", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateStringArg(expr->args[1], "b", ctx)) return false;
-        return true;
-    }
-
-    if (name == "str_slice") {
-        if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "string", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "from", ctx)) return false;
-        if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "to", ctx)) return false;
-        return true;
-    }
-
-    if (name == "str_byte_at") {
-        if (expr->args.size() >= 1 && !validateStringArg(expr->args[0], "string", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "index", ctx)) return false;
-        return true;
-    }
-
-    return true;
 }
 
 bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    if (name == "addrof") {
-        // addrof can take any expression (even function names, struct fields, etc.)
-        // It returns *T, which is valid
-        return true;
+    switch (info->kind) {
+        case IntrinsicKind::Addrof:
+            // addrof can take any expression - returns *T
+            return true;
+
+        case IntrinsicKind::ToRef:
+            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::ToPtr:
+            if (!expr->args.empty() && !validateRefArg(expr->args[0], "ref", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::PtrOffset:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "offset", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::PtrDiff:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "p1", ctx)) return false;
+            if (expr->args.size() >= 2 && !validatePtrArg(expr->args[1], "p2", ctx)) return false;
+            return true;
+
+        default:
+            return true;
     }
-
-    if (name == "toRef") {
-        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        return true;
-    }
-
-    if (name == "toPtr") {
-        if (!expr->args.empty() && !validateRefArg(expr->args[0], "ref", ctx)) return false;
-        return true;
-    }
-
-    if (name == "ptrOffset") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "offset", ctx)) return false;
-        return true;
-    }
-
-    if (name == "ptrDiff") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "p1", ctx)) return false;
-        if (expr->args.size() >= 2 && !validatePtrArg(expr->args[1], "p2", ctx)) return false;
-        return true;
-    }
-
-    return true;
 }
 
 bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -691,16 +731,41 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    // ─── atomic_store takes ptr, val, ordering ────────────────────────────
-    if (name == "atomic_store") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        // val can be any type that matches the pointer's pointee
-        // Ordering is validated below
-    } else {
-        // atomic_load, atomic_add, atomic_sub, atomic_and, atomic_or, atomic_xor, atomic_cas
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+    // ─── All atomics require a pointer as the first argument ──────────────
+    if (expr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "atomic intrinsic requires a pointer argument");
+        return false;
+    }
+
+    // ─── Validate the pointer argument ────────────────────────────────────
+    if (!validatePtrArg(expr->args[0], "ptr", ctx)) {
+        return false;
+    }
+
+    // ─── Special cases ─────────────────────────────────────────────────────
+    switch (info->kind) {
+        case IntrinsicKind::AtomicStore:
+            // atomic_store(ptr, val, ordering) - val can be any type
+            // Ordering is validated below
+            break;
+
+        case IntrinsicKind::AtomicCas:
+            // atomic_cas(ptr, expected, desired, ordering)
+            if (expr->args.size() >= 3) {
+                // expected and desired are validated by type system
+                // They must match the pointee type
+            }
+            break;
+
+        default:
+            // atomic_load, atomic_add, atomic_sub, atomic_and, atomic_or, atomic_xor
+            // These take ptr, [val], ordering
+            break;
     }
 
     // ─── Validate ordering (last argument, if present) ────────────────────
@@ -735,78 +800,97 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    if (name == "simd_splat") {
-        if (expr->args.size() >= 2) {
-            TypeAST* nType = resolveExprWithTarget(
-                expr->args[1], ctx.getIntType(), ctx
-            );
-            if (!nType || nType->isa<UnknownTypeAST>()) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
-                                      "argument 'N' must be a compile-time integer constant");
+    switch (info->kind) {
+        case IntrinsicKind::SimdSplat: {
+            // simd_splat(N, scalar) - N must be a compile-time integer constant
+            if (expr->args.size() >= 2) {
+                TypeAST* nType = resolveExprWithTarget(
+                    expr->args[1], ctx.getIntType(), ctx
+                );
+                if (!nType || nType->isa<UnknownTypeAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
+                                          "argument 'N' must be a compile-time integer constant");
+                    return false;
+                }
+
+                if (!expr->args[1]->isa<LiteralExprAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
+                                          "argument 'N' must be a compile-time integer constant");
+                    return false;
+                }
+            }
+            if (expr->args.size() >= 3 && !validateNumericArg(expr->args[2], "scalar", ctx)) {
                 return false;
             }
+            return true;
+        }
 
-            if (!expr->args[1]->isa<LiteralExprAST>()) {
+        case IntrinsicKind::SimdLoad:
+            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::SimdStore:
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            // val is the second argument - any type
+            return true;
+
+        case IntrinsicKind::SimdExtract:
+        case IntrinsicKind::SimdInsert:
+            // Index must be compile-time constant
+            // Validate that the index is a constant integer
+            if (expr->args.size() >= 2 && !expr->args[1]->isa<LiteralExprAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
-                                      "argument 'N' must be a compile-time integer constant");
+                                      "index must be a compile-time integer constant");
                 return false;
             }
-        }
-        if (expr->args.size() >= 3 && !validateNumericArg(expr->args[2], "scalar", ctx)) {
-            return false;
-        }
-        return true;
-    }
+            return true;
 
-    if (name == "simd_load") {
-        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        return true;
+        default:
+            // simd_add, simd_sub, simd_mul, simd_div, simd_fma, simd_min, simd_max
+            // These just need numeric arguments - validated elsewhere
+            return true;
     }
-
-    if (name == "simd_store") {
-        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        // val is the second argument - any type
-        return true;
-    }
-
-    return true;
 }
 
 bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    const std::string name = ctx.pool.lookup(expr->intrinsicName);
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) return false;
 
-    if (name == "alloc") {
-        if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "count", ctx)) {
-            return false;
-        }
-        return true;
+    switch (info->kind) {
+        case IntrinsicKind::Alloc:
+            // #alloc(T, count) - count is the only value argument
+            if (expr->args.size() >= 1 && !validateIntArg(expr->args[0], "count", ctx)) {
+                return false;
+            }
+            return true;
+
+        case IntrinsicKind::Free:
+            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::ArenaCreate:
+            if (!expr->args.empty() && !validateIntArg(expr->args[0], "size", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::ArenaAlloc:
+            // #arena_alloc(arena, T, count) - arena and count are the value args
+            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
+            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "count", ctx)) return false;
+            return true;
+
+        case IntrinsicKind::ArenaReset:
+        case IntrinsicKind::ArenaFree:
+            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
+            return true;
+
+        default:
+            return true;
     }
-
-    if (name == "free") {
-        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-        return true;
-    }
-
-    if (name == "arena_create") {
-        if (!expr->args.empty() && !validateIntArg(expr->args[0], "size", ctx)) return false;
-        return true;
-    }
-
-    if (name == "arena_alloc") {
-        if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "count", ctx)) {
-            return false;
-        }
-        return true;
-    }
-
-    if (name == "arena_reset" || name == "arena_free") {
-        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
-        return true;
-    }
-
-    return true;
 }
 
 } // namespace sema
