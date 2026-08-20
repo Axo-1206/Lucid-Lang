@@ -3066,15 +3066,14 @@ const shifted uint32 = 1 << 4;    -- 16
 
 ---
 
-## Pipeline Operator `|>`
+## Pipeline Operator `|>` (Updated)
 
-A pipeline passes the result of one expression as the first argument to the
-next step, executing left to right at runtime.
+A pipeline passes the result of one expression as arguments to the next step, executing left to right at runtime. The pipeline **does not care about the `->` syntax** — it only cares about the **function type** of each step.
 
 ```ebnf
 pipeline_expr   = expr { '|>' pipeline_step }
 
-pipeline_step   = expr                          (* single-group function or partial application *)
+pipeline_step   = expr                          (* single-parameter function or partial application *)
                 | expr '(' arg_list ')' '!'     (* argument pack — upstream injected as first arg *)
                 | func_literal                  (* anonymous function *)
 ```
@@ -3089,24 +3088,26 @@ const result [*]string =
 
 ### Argument Pack `!`
 
-`fn(args)!` is not a function call — `!` marks an intentionally incomplete
-argument list. The upstream value is injected as the **first** argument when
-`|>` fires:
+`fn(args)!` marks an intentionally incomplete argument list. The upstream values are injected as the **first** arguments when `|>` fires:
 
 ```lucid
 const scale (factor float)(v float) -> float = { return v * factor };
 
--- without !: scale(2.0) is a complete partial application — no slot for upstream
+-- scale is curried: (factor float) -> (float) -> float
+-- scale(2.0) returns: (v float) -> float
+
+-- Without !: scale(2.0) is a complete value — no slot for upstream
 42.0 |> scale(2.0);    -- ERROR: upstream has no parameter to fill
 
--- with !: upstream fills the first group
-42.0 |> scale(2.0)!;    -- calls scale(42.0)(2.0) → 84.0
+-- With !: upstream fills the first unfilled parameter
+42.0 |> scale(2.0)!;    -- Calls scale(42.0)(2.0) → 84.0
 ```
+
+**Important:** The `!` annotation tells the compiler "the upstream values will fill the remaining parameters." This is why it's called an **argument pack** — it packs the upstream values into the function's remaining parameters.
 
 ### Curry Functions in Pipelines
 
-`|>` fills exactly one parameter group. A curried function with remaining
-unfilled groups is an error as a pipeline step. Pre-apply first:
+`|>` passes upstream values to the **next unfilled parameters** of a curried function. A curried function with remaining unfilled groups is accepted — the pipeline will fill them with upstream values:
 
 ```lucid
 const clamp (lo int)(hi int)(v int) -> int = {
@@ -3115,26 +3116,54 @@ const clamp (lo int)(hi int)(v int) -> int = {
     return v;
 };
 
-42 |> clamp;    -- ERROR: 3 groups — upstream fills (lo), (hi) and (v) unresolved
-42 |> (v int) -> int { return clamp(0)(100)(v) }    -- OK: wrap in anonymous function
+-- clamp is curried: (lo int)(hi int)(v int) -> int
+-- clamp(0) returns: (hi int)(v int) -> int
+-- clamp(0)(100) returns: (v int) -> int
 
--- CORRECT: pre-apply to a single-group function
+42 |> clamp(0) |> (f (hi int)(v int) -> int) {
+    f(100)(1);
+};
+
+-- Use anonymous function to pre-apply
+42 |> (v int) -> int { return clamp(0)(100)(v) };    -- OK → 42
+150 |> (v int) -> int { return clamp(0)(100)(v) };   -- OK → 100
+
+-- Better: pre-apply to a single-parameter function
 const clamp0to100 (v int) -> int = clamp(0)(100);
 42 |> clamp0to100;    -- OK → 42
-150 |> clamp0to100;    -- OK → 100
+150 |> clamp0to100;   -- OK → 100
+```
+
+### How the Pipeline Fills Parameters
+
+The pipeline fills parameters in **the order they appear in the function type**:
+
+```lucid
+const add (a int)(b int) -> int = { return a + b };
+
+-- add is curried: (a int) -> (b int) -> int
+-- add(5) returns: (b int) -> int
+
+1 |> add(5)!;    -- Step 1: upstream 1 fills (a int) → add(1)(5)
+                 -- Step 2: 5 fills (b int) → returns 6
+                 -- Result: 6
+
+1 |> add(5)! |> add(10)!;
+-- Step 1: add(1)(5) → 6
+-- Step 2: add(6)(10) → 16
+-- Result: 16
 ```
 
 ### Generic Functions in Pipelines
 
-Generic functions must be instantiated with explicit type arguments at the
-pipeline step site. An uninstantiated generic is a compile error:
+Generic functions must be instantiated with explicit type arguments at the pipeline step site. An uninstantiated generic is a compile error:
 
 ```lucid
 const identity<T> (v T) -> T = { return v };
 const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) };
 
 42     |> identity<int>;    -- OK → 42
-42     |> identity;    -- ERROR: uninstantiated generic
+42     |> identity;         -- ERROR: uninstantiated generic
 42     |> map<int, string>(stringFromInt)!;    -- OK → "42"
 "hello" |> map<string, int>(length)!;    -- OK → 5
 
@@ -3146,23 +3175,79 @@ const result string =
     |> map<string, string>(trim)!;
 ```
 
----
+### Parameter Filling Rules
+
+The pipeline fills parameters in **strict order**:
+
+| Step Type              | Behavior                                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| `fn()` (no `!`)        | No upstream values are injected. The function must already be fully applied.             |
+| `fn(args)!` (with `!`) | Upstream values are injected as the **first** arguments. Remaining `args` fill the rest. |
+| `fn` (no parentheses)  | The upstream value is passed as the **only** argument (must have exactly one parameter). |
+
+```lucid
+const add (a int)(b int) -> int = { return a + b };
+
+-- Case 1: fn() (no !) — no injection
+1 |> add(5);        -- ERROR: add(5) returns (b int) -> int, but upstream has nowhere to go
+1 |> add(5, 6);     -- OK: add is fully applied (5, 6) → 11, upstream 1 is discarded
+
+-- Case 2: fn(args)! — upstream injected as first args
+1 |> add(5)!;       -- OK: 1 fills (a int), 5 fills (b int) → 6
+1 |> add(5, 6)!;    -- OK: 1 fills (a int), but then (b int) already filled by 6 → 7
+                     -- Extra arguments are discarded
+
+-- Case 3: fn (no parentheses) — upstream is the only argument
+1 |> add;           -- ERROR: add expects 2 parameters, but only 1 upstream value
+1 |> add(5);        -- ERROR: no !, so no injection
+1 |> add(5)!;       -- OK: 1 fills (a), 5 fills (b) → 6
+
+-- With single-parameter function
+const double (x int) -> int = { return x * 2 };
+1 |> double;        -- OK: upstream 1 fills (x int) → 2
+1 |> double(3);     -- OK: upstream 1 is discarded, double(3) → 6
+```
+
+### Anonymous Functions in Pipelines
+
+Anonymous functions capture all arguments at the definition site and cannot have an argument pack:
+
+```lucid
+-- Anonymous function as pipeline step
+1 |> (x int) -> int { return x * 2 };    -- OK → 2
+
+-- Anonymous function cannot have argument pack
+1 |> (x int)(y int) -> int { return x + y }(2)!;    -- ERROR: anonymous function cannot have !
+```
+
+### Type Checking
+
+The pipeline validates that:
+1. Each step is a function type (or resolves to one)
+2. The upstream values match the function's parameters in order
+3. The function returns a value (unless it's the last step and returns void)
+
+```lucid
+-- Step function: (int, string) -> bool
+-- Upstream: [int, string] ✅
+-- Result: bool
+
+-- Step function: (int) -> string
+-- Upstream: [int, float] ✅ (extra float discarded)
+-- Result: string
+
+-- Step function: (int, string) -> bool
+-- Upstream: [int] ❌ (not enough arguments)
+```
 
 ## Composition Operator `+>`
 
-`+>` wires functions together at compile time, producing a new function without
-executing anything. The output type of the left operand must exactly match the
-input type of the right operand. **Both operands must have exactly one
-parameter group** — curry functions are forbidden on either side (see
-**Curry functions are forbidden on both sides of `+>`**, below); this keeps
-every composition's shape fully determined by the two operands' single
-input/output types, with no leftover argument groups whose origin would be
-ambiguous to a reader.
+`+>` wires functions together at compile time, producing a new function without executing anything. The output type of the left operand must match the input type of the right operand. **Each operand must have exactly one parameter** — functions with multiple parameters or variadic parameters are not allowed in composition (see **Operand Requirements**, below).
 
 ```ebnf
 compose_expr    = expr '+>' expr     (* f +> g: apply f then g, always left-to-right
-                                         both f and g must have exactly one
-                                         param group — see below *)
+                                         both f and g must have exactly one parameter
+                                         — see below *)
 ```
 
 ```lucid
@@ -3170,7 +3255,7 @@ const f (a int)    -> string = { ... };
 const g (s string) -> bool   = { ... };
 
 const h   (a int) -> bool = f +> g;    -- OK: f returns string, g takes string
-const bad          = g +> f;    -- ERROR: g returns bool, f takes int
+const bad (a int) -> bool = g +> f;    -- ERROR: g returns bool, f takes int
 
 -- chain three or more
 const process (raw string) -> bool = validate +> transform +> render;
@@ -3178,9 +3263,7 @@ const process (raw string) -> bool = validate +> transform +> render;
 
 ### Generic Functions and `+>`
 
-`+>` is where generic functions are most powerful. Instantiated at the
-composition site, a generic function acts as a universal adapter between any
-two compatible types:
+`+>` is where generic functions are most powerful. Instantiated at the composition site, a generic function acts as a universal adapter between any two compatible types:
 
 ```lucid
 const toString<T>  (v T)      -> string = { ... };
@@ -3188,8 +3271,7 @@ const parseFloat   (s string) -> float  = { ... };
 const double       (x float)  -> float  = { return x * 2.0 };
 
 -- int → string → float → float
-const intToDoubled (x int) -> float =
-    toString<int> +> parseFloat +> double;
+const intToDoubled (x int) -> float = toString<int> +> parseFloat +> double;
 
 intToDoubled(42);    -- "42" → 42.0 → 84.0
 intToDoubled(10);    -- "10" → 10.0 → 20.0
@@ -3209,60 +3291,63 @@ const pipeFloat (v float) -> string = validateFloat +> toString<float> +> trim;
 const pipeBool  (v bool)  -> string = validateBool  +> toString<bool>  +> trim;
 ```
 
-**Curry functions are forbidden on both sides of `+>`** — every operand,
-left or right, must have exactly one parameter group. `+>` only ever checks
-that the left operand's output type matches the right operand's input type;
-nothing about that check looks at whether either operand has *further*
-curried groups beyond the one being matched. A curried operand on the right
-is just as unpredictable as one on the left — the composed function would
-end up needing extra argument groups that don't trace cleanly back to either
-original function, which is exactly the kind of result that's hard to
-predict from reading the composition alone. Both sides are pre-applied down
-to a single group before composing:
+### Operand Requirements
+
+Every operand in a composition **must satisfy all of the following**:
+
+1. **Exactly one parameter** — Functions with multiple parameters are not allowed:
+   ```lucid
+   const add (a int, b int) -> int = { ... };     -- 2 parameters
+   const scale (x int) -> int = { ... };          -- 1 parameter ✅
+
+   const bad (a int, b int) -> int = add +> scale;     -- ERROR: add has 2 parameters (not allowed)
+   const ok (a int) -> int = scale +> scale;   -- OK: both have 1 parameter
+   ```
+
+2. **No variadic parameters** — Variadic functions are not allowed because composition returns a single value:
+   ```lucid
+   const sum (a int, b ...int) -> int = { ... };   -- variadic
+   const double (x int) -> int = { ... };          -- 1 parameter ✅
+
+   const bad (a int, b ...int) -> int = double +> sum;    -- ERROR: sum is variadic (not allowed)
+   ```
+
+3. **Generic functions must be instantiated** — Generic parameters must be resolved with explicit type arguments:
+   ```lucid
+   const identity<T> (x T) -> T = { return x };
+
+   const ok (x int) -> int = identity<int> +> identity<int>;    -- OK: instantiated
+   const bad = identity +> identity;              -- ERROR: missing generic args
+   ```
+
+### Curried Functions
+
+**Curried functions are allowed in composition** — each function must still have exactly one parameter per group, but the return type can be another function:
 
 ```lucid
-const clamp   (lo int)(hi int)(v int) -> int = { ... };
-const scaleBy2 (v int)                -> int = { return v * 2 };
+const add (a int) -> (int) -> int = { 
+    return (b int) -> int { return a + b } 
+};
+const apply5 (f (int) -> int) -> int = { return f(5) };
 
-const pipeline = clamp +> scaleBy2;    -- ERROR: clamp has 3 groups (left side)
+-- add returns (int) -> int, which matches apply5's parameter
+const pipeline (x int) -> int = add +> apply5;
 
-const validate (a int) -> string = { ... };
-const checkLen (s string)(extra int) -> bool = { ... };
-
-const bad = validate +> checkLen;    -- ERROR: checkLen has 2 groups (right
-                                              -- side) — even though validate's
-                                              -- output type matches checkLen's
-                                              -- first group's input, the composed
-                                              -- function would still need a second
-                                              -- argument group ('extra') with no
-                                              -- clear origin
-
--- CORRECT: pre-apply every operand to a single group first
-const clamp0to100 (v int) -> int = clamp(0)(100);
-const pipeline    (v int) -> int = clamp0to100 +> scaleBy2;
-
-const checkLenWith5 (s string) -> bool = (s string) -> bool { return checkLen(s)(5) };
-const ok            (a int) -> bool = validate +> checkLenWith5;
-
-pipeline(150);    -- clamp → 100, scale → 200
-pipeline(50);    -- clamp → 50,  scale → 100
-pipeline(-10);    -- clamp → 0,   scale → 0
+pipeline(10);    -- add(10) returns (b int) -> int { return 10 + b }
+                  -- apply5 calls it with 5 → returns 15
 ```
 
-**Nullable operands are forbidden** in composition:
+**Why currying is allowed:** The composed function's type is determined by the chain: `(input) -> (return)`. If the left operand returns a function, that function becomes the value that flows to the right operand. This is a natural consequence of the type system.
 
-```lucid
-const transform (v int) -> int = nil;
+### Summary of Rules
 
-const pipeline = transform +> scaleBy2;
-
--- CORRECT: guard before composing
-if transform != nil {
-    const pipeline (v int) -> int = transform +> scaleBy2;
-}
-```
-
----
+| Rule                      | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| **Exactly one parameter** | Each operand must have exactly one parameter      |
+| **No variadic**           | Variadic parameters are not allowed               |
+| **Generic instantiation** | Generic functions require explicit type arguments |
+| **Currying allowed**      | Return types can be function types                |
+| **Type matching**         | Output of left must match input of right          |
 
 ## Result Type and Error Handling
 

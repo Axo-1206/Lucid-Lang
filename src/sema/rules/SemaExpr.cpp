@@ -2369,7 +2369,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1b: Check if callable is nullable or fallible ─────────────────
+    // ─── Step 2: Check if callable is nullable or fallible ─────────────────
     if (isNullableType(callableType) || isFallibleType(callableType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, operand->callable,
                               "cannot use nullable or fallible value in a composition. "
@@ -2377,7 +2377,25 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
         return ctx.getUnknownType();
     }
 
+    // ─── Step 3: Must be a function type ───────────────────────────────────
     if (!callableType->isa<FuncTypeAST>()) {
+        // Check if it's a generic function reference that wasn't instantiated
+        if (operand->callable->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = operand->callable->as<IdentifierExprAST>();
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
+            if (decl && decl->isa<FuncDeclAST>()) {
+                FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+                if (!funcDecl->genericParams.empty() && id->genericArgs.empty()) {
+                    ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, operand->callable,
+                                          "generic function '", ctx.pool.lookup(id->name),
+                                          "' requires generic arguments in composition");
+                    ctx.diagnostics.note(operand->callable,
+                                         "Use '", ctx.pool.lookup(id->name), "<T>' to instantiate");
+                    return ctx.getUnknownType();
+                }
+            }
+        }
+        
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                               "composition operand is not a function type, got ",
                               debug::typeToString(callableType, ctx.pool));
@@ -2386,15 +2404,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
 
     FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
 
-    // ─── Step 2: Verify function has exactly one parameter group ──────────
-    if (funcType->isCurried()) {
-        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
-                              "composition operand must have exactly one parameter group "
-                              "(curried functions are not allowed in composition)");
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 3: Check generic arguments if present ────────────────────────
+    // ─── Step 4: Validate generic arguments ────────────────────────────────
     if (!operand->genericArgs.empty()) {
         FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
         if (!funcDecl) {
@@ -2417,14 +2427,38 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
         }
     }
 
+    // ─── Step 5: Validate composition-specific rules ──────────────────────
+    
+    // ─── 5a: No variadic parameters ─────────────────────────────────────
+    for (ParamAST* param : funcType->params) {
+        if (param->isVariadic) {
+            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                  "variadic parameters are not allowed in composition");
+            ctx.diagnostics.note(operand->callable,
+                                 "Composition functions must have a single parameter");
+            return ctx.getUnknownType();
+        }
+    }
+
+    // ─── 5b: Exactly one parameter ──────────────────────────────────────
+    if (funcType->params.size() != 1) {
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                              "composition operand must have exactly one parameter, got ",
+                              funcType->params.size());
+        ctx.diagnostics.note(operand->callable,
+                             "Composition chains work with single-parameter functions");
+        return ctx.getUnknownType();
+    }
+
     return callableType;
 }
 
 // =============================================================================
-// resolveComposeExpr
+// resolveComposeExpr - REFACTORED
 // =============================================================================
 
 TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    // ─── Step 1: Validate operands ──────────────────────────────────────────
     if (expr->operands.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr,
                               "composition has no operands");
@@ -2433,7 +2467,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve left operand ──────────────────────────────────────
     if (!expr->left || !expr->left->isa<ComposeOperandAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr->left,
                               "invalid left operand in composition");
@@ -2442,6 +2475,7 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
+    // ─── Step 2: Resolve left operand ──────────────────────────────────────
     TypeAST* leftType = resolveComposeOperand(expr->left->as<ComposeOperandAST>(), nullptr, ctx);
     if (!leftType || leftType->isa<UnknownTypeAST>()) {
         return ctx.getUnknownType();
@@ -2455,10 +2489,28 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
-    FuncTypeAST* currentFunc = leftType->as<FuncTypeAST>();
+    FuncTypeAST* leftFunc = leftType->as<FuncTypeAST>();
 
-    // ─── Step 2: Walk through right operands ───────────────────────────────
+    // ─── Step 3: Extract left operand's input and output ───────────────────
+    // Input: the left operand's single parameter type
+    TypeAST* inputType = leftFunc->params[0]->type;
+    if (!inputType) {
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr->left,
+                              "left operand has no parameter type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // Output: the left operand's return type (may be void or a value)
+    TypeAST* currentOutput = leftFunc->returnType;
+
+    // ─── Step 4: Process each right operand ─────────────────────────────────
+    // The output type flows through the chain: left.output → right.input → right.output → ...
+    // If left.output is void, then the next operand must take void (no parameters)
+    // If left.output is a value, then the next operand must take that value type
     for (ComposeOperandAST* operand : expr->operands) {
+        // ─── 4a: Resolve the operand ─────────────────────────────────────
         TypeAST* operandType = resolveComposeOperand(operand, nullptr, ctx);
         if (!operandType || operandType->isa<UnknownTypeAST>()) {
             return ctx.getUnknownType();
@@ -2472,42 +2524,122 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
             return ctx.getUnknownType();
         }
 
-        FuncTypeAST* nextFunc = operandType->as<FuncTypeAST>();
+        FuncTypeAST* rightFunc = operandType->as<FuncTypeAST>();
 
-        TypeAST* prevOutput = currentFunc->returnType;
-        TypeAST* nextInput = nextFunc->params.empty() ? nullptr : nextFunc->params[0]->type;
-
-        if (!prevOutput || !nextInput) {
+        // ─── 4b: Extract right operand's input and output ─────────────────
+        // Input: the right operand's single parameter type
+        // Output: the right operand's return type (may be void or a value)
+        TypeAST* rightInput = rightFunc->params[0]->type;
+        if (!rightInput) {
             ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
-                                  "function input/output mismatch in composition");
+                                  "operand has no parameter type");
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
-        if (!isAssignable(nextInput, prevOutput, ctx)) {
-            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
-                                  "composition type mismatch: previous output ",
-                                  debug::typeToString(prevOutput, ctx.pool),
-                                  " is not assignable to next input ",
-                                  debug::typeToString(nextInput, ctx.pool));
+        TypeAST* rightOutput = rightFunc->returnType;
+
+        // ─── 4c: Validate type compatibility ──────────────────────────────
+        // The current output must match the right operand's input.
+        // This works for both value and void types:
+        //   - If currentOutput is void and rightInput is void → ✅
+        //   - If currentOutput is T and rightInput is T → ✅
+        //   - If currentOutput is void and rightInput is T → ❌
+        //   - If currentOutput is T and rightInput is void → ❌
+        
+        // Special case: both are void
+        bool currentIsVoid = (currentOutput == nullptr);
+        bool rightInputIsVoid = (rightInput == nullptr);
+        
+        if (currentIsVoid && rightInputIsVoid) {
+            // Both are void → valid composition
+            // Nothing to assign, just continue
+        } else if (!currentIsVoid && !rightInputIsVoid) {
+            // Both are values → must be assignable
+            if (!isAssignable(rightInput, currentOutput, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                      "composition type mismatch: previous output ",
+                                      debug::typeToString(currentOutput, ctx.pool),
+                                      " is not assignable to next input ",
+                                      debug::typeToString(rightInput, ctx.pool));
+                ctx.diagnostics.note(operand->callable,
+                                     "In composition: (", debug::typeToString(currentOutput, ctx.pool),
+                                     ") -> (", debug::typeToString(rightInput, ctx.pool), ")");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+        } else {
+            // One is void, the other is a value → mismatch
+            if (currentIsVoid && !rightInputIsVoid) {
+                ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                      "composition type mismatch: previous output is void, "
+                                      "but next operand expects ",
+                                      debug::typeToString(rightInput, ctx.pool));
+            } else {
+                ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                      "composition type mismatch: previous output ",
+                                      debug::typeToString(currentOutput, ctx.pool),
+                                      " is not void, but next operand expects void");
+            }
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
-        currentFunc = nextFunc;
+        // ─── 4d: Update the current output ─────────────────────────────────
+        // The new output is the right operand's return type
+        currentOutput = rightOutput;
     }
 
-    expr->resolvedType = currentFunc;
-    expr->valueState = ValueState::Definite;
+    // ─── Step 5: Build the composed function type ──────────────────────────
+    FuncTypeAST* composedType = ctx.arena.make<FuncTypeAST>();
+    composedType->loc = expr->loc;
     
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    // Composition expressions are never l-values
+    // ─── 5a: Copy the left operand's parameter ─────────────────────────────
+    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+    paramBuilder.push_back(leftFunc->params[0]);
+    composedType->params = paramBuilder.build();
+    
+    // ─── 5b: Set return type ────────────────────────────────────────────────
+    // If the last operand returned void, currentOutput is nullptr
+    composedType->returnType = currentOutput;
+    
+    // ─── 5c: Set hasArrow based on context ──────────────────────────────────
+    if (targetType && targetType->isa<FuncTypeAST>()) {
+        // Target type provides the context (declaration site)
+        FuncTypeAST* targetFunc = targetType->as<FuncTypeAST>();
+        composedType->hasArrow = targetFunc->hasArrow;
+    } else {
+        // No target type - derive from the return type
+        composedType->hasArrow = (currentOutput != nullptr);
+    }
+
+    // ─── Step 6: Validate against target type ──────────────────────────────
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (!isAssignable(targetType, composedType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "composed function type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ", debug::typeToString(composedType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+    }
+
+    // ─── Step 7: Store result ──────────────────────────────────────────────
+    expr->resolvedType = composedType;
+    expr->valueState = ValueState::Definite;
     expr->isLValue = false;
     expr->isConst = false;
     
-    return currentFunc;
+    LOG_SEMA("resolveComposeExpr: composed (", 
+             debug::typeToString(inputType, ctx.pool), ") -> (",
+             debug::typeToString(currentOutput, ctx.pool), ")");
+
+    return composedType;
 }
 
 // =============================================================================
