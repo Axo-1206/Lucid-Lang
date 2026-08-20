@@ -463,7 +463,6 @@ struct ExprAST : BaseAST {
     TypeAST* resolvedType = nullptr;  // The resolved type of this expression
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
-    bool isModuleMember = false;            // Is this a module member access?
     bool isConst = false;                   // Is this a compile-time constant?
     
     // ─── CodeGen Fields (set by CodeGen) ──────────────────────────────

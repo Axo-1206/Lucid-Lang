@@ -1746,10 +1746,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Mark as module member ────────────────────────────────────
-    expr->isModuleMember = true;
-
-    // ─── Step 5: Get the declaration's type ──────────────────────────────────
+    // ─── Step 4: Get the declaration's type ──────────────────────────────────
     // Use the effective type (accounting for any narrowing that might apply)
     // For module members, narrowing doesn't apply (they're global), but we
     // use the same pattern for consistency.
@@ -1769,7 +1766,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 6: Set isLValue and isConst based on member's keyword ──────
+    // ─── Step 5: Set isLValue and isConst based on member's keyword ──────
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -1786,7 +1783,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->isConst = false;
     }
 
-    // ─── Step 7: Handle generic arguments if present ────────────────────────
+    // ─── Step 6: Handle generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1834,7 +1831,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         }
     }
 
-    // ─── Step 8: Determine value state ──────────────────────────────────────
+    // ─── Step 7: Determine value state ──────────────────────────────────────
     ValueState state;
     if (decl->isa<EnumVariantAST>()) {
         state = ValueState::Definite;
@@ -1855,11 +1852,11 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         state = ValueState::Unknown;
     }
 
-    // ─── Step 9: Set the expression's type ──────────────────────────────────
+    // ─── Step 8: Set the expression's type ──────────────────────────────────
     expr->resolvedType = declType;
     expr->valueState = state;
 
-    // ─── Step 10: Validate against target type if provided ─────────────────
+    // ─── Step 9: Validate against target type if provided ─────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, declType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
