@@ -6,103 +6,111 @@
 #include <algorithm>
 
 // ─── Data Table ─────────────────────────────────────────────────────────────
+//
+// emitterKind here is transcribed directly from the old isLLVMIntrinsic()/
+// isLucidIntrinsic() hardcoded sets in IntrinsicEmitter.cpp - e.g. fence,
+// pause, every atomic_*, every simd_*, min, and max were all in the "LLVM"
+// set there despite isCompilerHandled=true (no literal llvm::Intrinsic::ID)
+// below, because LLVMIntrinsicEmitter.cpp is where their codegen actually
+// lives. That's intentional, not a mismatch - see IntrinsicEmitterKind's
+// doc comment in the header for why these two columns legitimately differ.
 
 // IntrinsicEntry is defined at namespace scope in IntrinsicRegistry.hpp
 static const IntrinsicEntry INTRINSIC_TABLE[] = {
     // ─── Floating-Point Math ──────────────────────────────────────────────
-    {"sqrt",      llvm::Intrinsic::sqrt,   1, 1, false, false},
-    {"abs",       llvm::Intrinsic::fabs,   1, 1, false, false},
-    {"fma",       llvm::Intrinsic::fma,    3, 3, false, false},
-    {"ceil",      llvm::Intrinsic::ceil,   1, 1, false, false},
-    {"floor",     llvm::Intrinsic::floor,  1, 1, false, false},
-    {"round",     llvm::Intrinsic::round,  1, 1, false, false},
-    {"pow",       llvm::Intrinsic::pow,    2, 2, false, false},
-    {"min",       llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"max",       llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"sqrt",      IntrinsicKind::Sqrt,  IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::sqrt,   1, 1, false, false},
+    {"abs",       IntrinsicKind::Abs,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::fabs,   1, 1, false, false},
+    {"fma",       IntrinsicKind::Fma,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::fma,    3, 3, false, false},
+    {"ceil",      IntrinsicKind::Ceil,  IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::ceil,   1, 1, false, false},
+    {"floor",     IntrinsicKind::Floor, IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::floor,  1, 1, false, false},
+    {"round",     IntrinsicKind::Round, IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::round,  1, 1, false, false},
+    {"pow",       IntrinsicKind::Pow,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::pow,    2, 2, false, false},
+    {"min",       IntrinsicKind::Min,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"max",       IntrinsicKind::Max,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
 
     // ─── Memory Operations ─────────────────────────────────────────────────
-    {"memcpy",    llvm::Intrinsic::memcpy,  3, 3, false, false},
-    {"memmove",   llvm::Intrinsic::memmove, 3, 3, false, false},
-    {"memset",    llvm::Intrinsic::memset,  3, 3, false, false},
+    {"memcpy",    IntrinsicKind::Memcpy,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::memcpy,  3, 3, false, false},
+    {"memmove",   IntrinsicKind::Memmove, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::memmove, 3, 3, false, false},
+    {"memset",    IntrinsicKind::Memset,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::memset,  3, 3, false, false},
 
     // ─── Bit Manipulation ──────────────────────────────────────────────────
-    {"clz",       llvm::Intrinsic::ctlz,    1, 1, false, false},
-    {"ctz",       llvm::Intrinsic::cttz,    1, 1, false, false},
-    {"popcount",  llvm::Intrinsic::ctpop,   1, 1, false, false},
-    {"bswap",     llvm::Intrinsic::bswap,   1, 1, false, false},
+    {"clz",       IntrinsicKind::Clz,      IntrinsicEmitterKind::LLVM, llvm::Intrinsic::ctlz,    1, 1, false, false},
+    {"ctz",       IntrinsicKind::Ctz,      IntrinsicEmitterKind::LLVM, llvm::Intrinsic::cttz,    1, 1, false, false},
+    {"popcount",  IntrinsicKind::Popcount, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::ctpop,   1, 1, false, false},
+    {"bswap",     IntrinsicKind::Bswap,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::bswap,   1, 1, false, false},
 
     // ─── CPU Hints ──────────────────────────────────────────────────────────
-    {"prefetch",   llvm::Intrinsic::prefetch, 1, 1, false, false},
-    {"prefetch_r", llvm::Intrinsic::prefetch, 1, 1, false, false},
-    {"prefetch_w", llvm::Intrinsic::prefetch, 1, 1, false, false},
-    {"fence",      llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"pause",      llvm::Intrinsic::not_intrinsic, 0, 0, false, true},
+    {"prefetch",   IntrinsicKind::Prefetch,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::prefetch, 1, 1, false, false},
+    {"prefetch_r", IntrinsicKind::PrefetchR, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::prefetch, 1, 1, false, false},
+    {"prefetch_w", IntrinsicKind::PrefetchW, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::prefetch, 1, 1, false, false},
+    {"fence",      IntrinsicKind::Fence,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"pause",      IntrinsicKind::Pause,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 0, 0, false, true},
 
     // ─── Atomics ────────────────────────────────────────────────────────────
-    {"atomic_load",  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_store", llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_add",   llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_sub",   llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_and",   llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_or",    llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_xor",   llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"atomic_cas",   llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"atomic_load",  IntrinsicKind::AtomicLoad,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_store", IntrinsicKind::AtomicStore, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_add",   IntrinsicKind::AtomicAdd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_sub",   IntrinsicKind::AtomicSub,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_and",   IntrinsicKind::AtomicAnd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_or",    IntrinsicKind::AtomicOr,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_xor",   IntrinsicKind::AtomicXor,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"atomic_cas",   IntrinsicKind::AtomicCas,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
 
     // ─── Type & Value Inspection ──────────────────────────────────────────
-    {"sizeof",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"alignof",   llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"typeof",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"nameof",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"tostr",     llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"ptrstr",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"addrof",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"sizeof",    IntrinsicKind::Sizeof,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"alignof",   IntrinsicKind::Alignof, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"typeof",    IntrinsicKind::Typeof,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"nameof",    IntrinsicKind::Nameof,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"tostr",     IntrinsicKind::Tostr,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"ptrstr",    IntrinsicKind::Ptrstr,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"addrof",    IntrinsicKind::Addrof,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
 
     // ─── Pointer Operations ────────────────────────────────────────────────
-    {"ptrOffset",  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"ptrDiff",    llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"toRef",      llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"toPtr",      llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"ptrOffset",  IntrinsicKind::PtrOffset, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"ptrDiff",    IntrinsicKind::PtrDiff,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"toRef",      IntrinsicKind::ToRef,     IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"toPtr",      IntrinsicKind::ToPtr,     IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
 
     // ─── Bit Manipulation ──────────────────────────────────────────────────
-    {"bitcast",    llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"bitcast",    IntrinsicKind::Bitcast, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
 
     // ─── Branch Prediction ──────────────────────────────────────────────────
-    {"likely",     llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"unlikely",   llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"likely",     IntrinsicKind::Likely,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"unlikely",   IntrinsicKind::Unlikely, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
 
     // ─── String Operations ──────────────────────────────────────────────────
-    {"str_len",       llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"str_ptr",       llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"str_from_ptr",  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"str_concat",    llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"str_slice",     llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
-    {"str_eq",        llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"str_byte_at",   llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"str_len",       IntrinsicKind::StrLen,      IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"str_ptr",       IntrinsicKind::StrPtr,      IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"str_from_ptr",  IntrinsicKind::StrFromPtr,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"str_concat",    IntrinsicKind::StrConcat,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"str_slice",     IntrinsicKind::StrSlice,    IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"str_eq",        IntrinsicKind::StrEq,       IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"str_byte_at",   IntrinsicKind::StrByteAt,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
 
     // ─── Memory Management ──────────────────────────────────────────────────
-    {"alloc",         llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"free",          llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"arena_create",  llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"arena_alloc",   llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
-    {"arena_reset",   llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"arena_free",    llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"alloc",         IntrinsicKind::Alloc,       IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"free",          IntrinsicKind::Free,        IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"arena_create",  IntrinsicKind::ArenaCreate, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"arena_alloc",   IntrinsicKind::ArenaAlloc,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"arena_reset",   IntrinsicKind::ArenaReset,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"arena_free",    IntrinsicKind::ArenaFree,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
 
     // ─── Scope Exit Callback ──────────────────────────────────────────────
-    {"scope_exit",    llvm::Intrinsic::not_intrinsic, 1, 0, true, true},  // 1+ args, variadic
+    {"scope_exit",    IntrinsicKind::ScopeExit, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 0, true, true},  // 1+ args, variadic
 
     // ─── SIMD ────────────────────────────────────────────────────────────────
-    {"simd_add",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_sub",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_mul",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_div",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_fma",      llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
-    {"simd_min",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_max",      llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_load",     llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
-    {"simd_store",    llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_splat",    llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
-    {"simd_extract",  llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
-    {"simd_insert",   llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"simd_add",      IntrinsicKind::SimdAdd,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_sub",      IntrinsicKind::SimdSub,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_mul",      IntrinsicKind::SimdMul,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_div",      IntrinsicKind::SimdDiv,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_fma",      IntrinsicKind::SimdFma,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"simd_min",      IntrinsicKind::SimdMin,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_max",      IntrinsicKind::SimdMax,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_load",     IntrinsicKind::SimdLoad,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 1, 1, false, true},
+    {"simd_store",    IntrinsicKind::SimdStore,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_splat",    IntrinsicKind::SimdSplat,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
+    {"simd_extract",  IntrinsicKind::SimdExtract, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true},
+    {"simd_insert",   IntrinsicKind::SimdInsert,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true},
 };
 
 static constexpr size_t INTRINSIC_COUNT = sizeof(INTRINSIC_TABLE) / sizeof(INTRINSIC_TABLE[0]);
@@ -125,8 +133,9 @@ IntrinsicRegistry& IntrinsicRegistry::getInstance(StringPool& pool) {
 IntrinsicRegistry::IntrinsicRegistry(StringPool& pool) : m_pool(pool) {
     for (const auto& entry : INTRINSIC_TABLE) {
         InternedString name = m_pool.intern(entry.name);
-        IntrinsicInfo info(entry.llvmID, name, entry.minArgs, 
-                           entry.maxArgs, entry.isVarArg, entry.isCompilerHandled);
+        IntrinsicInfo info(entry.llvmID, name, entry.kind, entry.emitterKind,
+                           entry.minArgs, entry.maxArgs, entry.isVarArg,
+                           entry.isCompilerHandled);
         m_intrinsics[name] = info;
         if (entry.isCompilerHandled) {
             m_compilerHandled.insert(name);
@@ -154,6 +163,12 @@ std::optional<llvm::Intrinsic::ID> IntrinsicRegistry::getLLVMID(InternedString n
 
 bool IntrinsicRegistry::isCompilerHandled(InternedString name) const {
     return m_compilerHandled.find(name) != m_compilerHandled.end();
+}
+
+std::optional<IntrinsicEmitterKind> IntrinsicRegistry::getEmitterKind(InternedString name) const {
+    auto* info = getInfo(name);
+    if (!info) return std::nullopt;
+    return info->emitterKind;
 }
 
 size_t IntrinsicRegistry::getMinArgs(InternedString name) const {

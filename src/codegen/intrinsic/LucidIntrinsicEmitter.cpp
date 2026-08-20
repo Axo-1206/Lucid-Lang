@@ -305,6 +305,7 @@ static llvm::Value* emitTostrValue(
 // ─── Type Inspection Intrinsics ──────────────────────────────────────────
 
 llvm::Value* emitLucidTypeIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -315,7 +316,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
 
     // ─── #sizeof(T) ──────────────────────────────────────────────────────
-    if (name == "sizeof") {
+    if (kind == IntrinsicKind::Sizeof) {
         if (expr && expr->resolvedType) {
             llvm::Type* llvmType = getType(ctx, expr->resolvedType);
             if (llvmType) {
@@ -327,7 +328,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #alignof(T) ──────────────────────────────────────────────────────
-    if (name == "alignof") {
+    if (kind == IntrinsicKind::Alignof) {
         if (expr && expr->resolvedType) {
             llvm::Type* llvmType = getType(ctx, expr->resolvedType);
             if (llvmType) {
@@ -339,7 +340,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #bitcast(T, x) ──────────────────────────────────────────────────
-    if (name == "bitcast") {
+    if (kind == IntrinsicKind::Bitcast) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#bitcast' requires an argument");
@@ -358,7 +359,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #typeof(x) ──────────────────────────────────────────────────────
-    if (name == "typeof") {
+    if (kind == IntrinsicKind::Typeof) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#typeof' requires an argument");
@@ -377,7 +378,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #nameof(x) ──────────────────────────────────────────────────────
-    if (name == "nameof") {
+    if (kind == IntrinsicKind::Nameof) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#nameof' requires an argument");
@@ -398,7 +399,7 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #tostr(x) ──────────────────────────────────────────────────────
-    if (name == "tostr") {
+    if (kind == IntrinsicKind::Tostr) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#tostr' requires an argument");
@@ -409,14 +410,14 @@ llvm::Value* emitLucidTypeIntrinsic(
     }
 
     // ─── #ptrstr(x) ──────────────────────────────────────────────────────
-    if (name == "ptrstr") {
+    if (kind == IntrinsicKind::Ptrstr) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#ptrstr' requires an argument");
             return nullptr;
         }
 
-        // args[0] is the raw, un-loaded address (see the "ptrstr"
+        // args[0] is the raw, un-loaded address (see the Ptrstr
         // special-case in emitIntrinsicFromAST, IntrinsicEmitter.cpp) -
         // it must not be loaded, since the whole point is reporting the
         // address itself, not the value stored there.
@@ -438,6 +439,7 @@ llvm::Value* emitLucidTypeIntrinsic(
 // ─── Pointer Intrinsics ──────────────────────────────────────────────────
 
 llvm::Value* emitLucidPointerIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -446,7 +448,7 @@ llvm::Value* emitLucidPointerIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     // ─── toPtr(ref) ──────────────────────────────────────────────────────
-    if (name == "toPtr") {
+    if (kind == IntrinsicKind::ToPtr) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#toPtr' requires an argument");
@@ -456,7 +458,7 @@ llvm::Value* emitLucidPointerIntrinsic(
     }
 
     // ─── ptrOffset(ptr, n) ──────────────────────────────────────────────
-    if (name == "ptrOffset") {
+    if (kind == IntrinsicKind::PtrOffset) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#ptrOffset' requires 2 arguments");
@@ -490,7 +492,7 @@ llvm::Value* emitLucidPointerIntrinsic(
     }
 
     // ─── ptrDiff(p1, p2) ──────────────────────────────────────────────
-    if (name == "ptrDiff") {
+    if (kind == IntrinsicKind::PtrDiff) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#ptrDiff' requires 2 arguments");
@@ -538,6 +540,7 @@ llvm::Value* emitLucidPointerIntrinsic(
 // ─── Memory Management Intrinsics ────────────────────────────────────────
 
 llvm::Value* emitLucidMemoryMgmtIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -554,7 +557,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     // (count). The previous version indexed args[1] as if T occupied a
     // value-arg slot, and never multiplied by sizeof(T) - it passed the
     // raw count straight through as a byte size.
-    if (name == "alloc") {
+    if (kind == IntrinsicKind::Alloc) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#alloc' requires an argument (count)");
@@ -591,7 +594,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     }
 
     // ─── #free(ptr) ──────────────────────────────────────────────────────
-    if (name == "free") {
+    if (kind == IntrinsicKind::Free) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#free' requires an argument");
@@ -609,7 +612,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     }
 
     // ─── #arena_create(size) -> ArenaDescriptor ─────────────────────────
-    if (name == "arena_create") {
+    if (kind == IntrinsicKind::ArenaCreate) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#arena_create' requires an argument");
@@ -627,7 +630,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     // [arena, n]. The previous version required 3 args and read `n` from
     // args[2] (skipping args[1] entirely), and never multiplied by
     // sizeof(T).
-    if (name == "arena_alloc") {
+    if (kind == IntrinsicKind::ArenaAlloc) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#arena_alloc' requires 2 arguments (arena, count)");
@@ -665,7 +668,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     }
 
     // ─── #arena_reset(arena) ─────────────────────────────────────────────
-    if (name == "arena_reset") {
+    if (kind == IntrinsicKind::ArenaReset) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#arena_reset' requires an argument");
@@ -683,7 +686,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     }
 
     // ─── #arena_free(arena) ──────────────────────────────────────────────
-    if (name == "arena_free") {
+    if (kind == IntrinsicKind::ArenaFree) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#arena_free' requires an argument");
@@ -708,6 +711,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
 // ─── String Intrinsics ────────────────────────────────────────────────────
 
 llvm::Value* emitLucidStringIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -719,7 +723,7 @@ llvm::Value* emitLucidStringIntrinsic(
     llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
 
     // ─── str_len(s) ──────────────────────────────────────────────────────
-    if (name == "str_len") {
+    if (kind == IntrinsicKind::StrLen) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_len' requires a string argument");
@@ -731,7 +735,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_ptr(s) ──────────────────────────────────────────────────────
-    if (name == "str_ptr") {
+    if (kind == IntrinsicKind::StrPtr) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_ptr' requires a string argument");
@@ -743,7 +747,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_from_ptr(ptr, len) ──────────────────────────────────────────
-    if (name == "str_from_ptr") {
+    if (kind == IntrinsicKind::StrFromPtr) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_from_ptr' requires 2 arguments");
@@ -761,7 +765,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_concat(a, b) ─────────────────────────────────────────────────
-    if (name == "str_concat") {
+    if (kind == IntrinsicKind::StrConcat) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_concat' requires 2 arguments");
@@ -774,7 +778,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_slice(s, from, to) ──────────────────────────────────────────
-    if (name == "str_slice") {
+    if (kind == IntrinsicKind::StrSlice) {
         if (args.size() < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_slice' requires 3 arguments");
@@ -787,7 +791,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_eq(a, b) ─────────────────────────────────────────────────────
-    if (name == "str_eq") {
+    if (kind == IntrinsicKind::StrEq) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_eq' requires 2 arguments");
@@ -800,7 +804,7 @@ llvm::Value* emitLucidStringIntrinsic(
     }
 
     // ─── str_byte_at(s, i) ──────────────────────────────────────────────
-    if (name == "str_byte_at") {
+    if (kind == IntrinsicKind::StrByteAt) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#str_byte_at' requires 2 arguments");
@@ -829,6 +833,7 @@ llvm::Value* emitLucidStringIntrinsic(
 // ─── Control Flow Intrinsics ─────────────────────────────────────────────
 
 llvm::Value* emitLucidControlIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -837,7 +842,7 @@ llvm::Value* emitLucidControlIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     // ─── scope_exit ──────────────────────────────────────────────────────
-    if (name == "scope_exit") {
+    if (kind == IntrinsicKind::ScopeExit) {
         // scope_exit is handled in Sema and stored on BlockStmtAST.
         // emitScopeExitCallback (below) emits these callbacks from
         // lowerBlockStmt, in LIFO order, at each block's exit point.
@@ -846,7 +851,7 @@ llvm::Value* emitLucidControlIntrinsic(
     }
 
     // ─── likely / unlikely ──────────────────────────────────────────────
-    if (name == "likely" || name == "unlikely") {
+    if (kind == IntrinsicKind::Likely || kind == IntrinsicKind::Unlikely) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires an argument");

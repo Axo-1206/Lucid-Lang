@@ -593,7 +593,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
                 right = ctx.builder.CreateSIToFP(right, llvm::Type::getDoubleTy(ctx.llvmCtx));
             }
 
-            result = emitIntrinsic("pow", {left, right}, nullptr, ctx);
+            result = emitIntrinsic(ctx.pool.intern("pow"), {left, right}, nullptr, ctx);
             break;
         }
 

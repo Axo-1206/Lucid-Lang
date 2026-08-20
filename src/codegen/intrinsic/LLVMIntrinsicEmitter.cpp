@@ -13,7 +13,6 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/IntrinsicInst.h>
 
-#include <unordered_set>
 #include <cmath>
 
 namespace codegen {
@@ -46,6 +45,7 @@ static bool tryGetStringLiteralArg(
 // ─── Math Intrinsics ──────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMMathIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -54,7 +54,7 @@ llvm::Value* emitLLVMMathIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     // ─── min / max ────────────────────────────────────────────────────────
-    if (name == "min" || name == "max") {
+    if (kind == IntrinsicKind::Min || kind == IntrinsicKind::Max) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires 2 arguments");
@@ -71,13 +71,13 @@ llvm::Value* emitLLVMMathIntrinsic(
         }
 
         if (a->getType()->isIntegerTy()) {
-            llvm::CmpInst::Predicate pred = (name == "min")
+            llvm::CmpInst::Predicate pred = (kind == IntrinsicKind::Min)
                 ? llvm::CmpInst::ICMP_SLT
                 : llvm::CmpInst::ICMP_SGT;
             llvm::Value* cmp = ctx.builder.CreateICmp(pred, a, b);
             return ctx.builder.CreateSelect(cmp, a, b);
         } else if (a->getType()->isFloatingPointTy()) {
-            llvm::CmpInst::Predicate pred = (name == "min")
+            llvm::CmpInst::Predicate pred = (kind == IntrinsicKind::Min)
                 ? llvm::CmpInst::FCMP_OLT
                 : llvm::CmpInst::FCMP_OGT;
             llvm::Value* cmp = ctx.builder.CreateFCmp(pred, a, b);
@@ -90,7 +90,7 @@ llvm::Value* emitLLVMMathIntrinsic(
     }
 
     // ─── pow ──────────────────────────────────────────────────────────────
-    if (name == "pow") {
+    if (kind == IntrinsicKind::Pow) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#pow' requires 2 arguments");
@@ -132,7 +132,7 @@ llvm::Value* emitLLVMMathIntrinsic(
     // Integer and floating-point abs are different LLVM intrinsics with
     // different signatures - dispatch on the operand type rather than
     // always emitting fabs (which asserts on integer operands).
-    if (name == "abs") {
+    if (kind == IntrinsicKind::Abs) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#abs' requires an argument");
@@ -175,11 +175,14 @@ llvm::Value* emitLLVMMathIntrinsic(
 
     // ─── sqrt / fma / ceil / floor / round ────────────────────────────────
     llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
-    if (name == "sqrt") id = llvm::Intrinsic::sqrt;
-    else if (name == "fma") id = llvm::Intrinsic::fma;
-    else if (name == "ceil") id = llvm::Intrinsic::ceil;
-    else if (name == "floor") id = llvm::Intrinsic::floor;
-    else if (name == "round") id = llvm::Intrinsic::round;
+    switch (kind) {
+        case IntrinsicKind::Sqrt:  id = llvm::Intrinsic::sqrt;  break;
+        case IntrinsicKind::Fma:   id = llvm::Intrinsic::fma;   break;
+        case IntrinsicKind::Ceil:  id = llvm::Intrinsic::ceil;  break;
+        case IntrinsicKind::Floor: id = llvm::Intrinsic::floor; break;
+        case IntrinsicKind::Round: id = llvm::Intrinsic::round; break;
+        default: break;
+    }
 
     if (id == llvm::Intrinsic::not_intrinsic) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
@@ -187,11 +190,11 @@ llvm::Value* emitLLVMMathIntrinsic(
         return nullptr;
     }
 
-    size_t requiredArgs = (name == "fma") ? 3 : 1;
+    size_t requiredArgs = (kind == IntrinsicKind::Fma) ? 3 : 1;
     if (args.size() < requiredArgs) {
         ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                "intrinsic '#", name, "' requires ",
-                               (name == "fma" ? "3 arguments" : "an argument"));
+                               (kind == IntrinsicKind::Fma ? "3 arguments" : "an argument"));
         return nullptr;
     }
 
@@ -212,6 +215,7 @@ llvm::Value* emitLLVMMathIntrinsic(
 // ─── Memory Intrinsics ────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMMemoryIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -220,9 +224,12 @@ llvm::Value* emitLLVMMemoryIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
-    if (name == "memcpy") id = llvm::Intrinsic::memcpy;
-    else if (name == "memmove") id = llvm::Intrinsic::memmove;
-    else if (name == "memset") id = llvm::Intrinsic::memset;
+    switch (kind) {
+        case IntrinsicKind::Memcpy:  id = llvm::Intrinsic::memcpy;  break;
+        case IntrinsicKind::Memmove: id = llvm::Intrinsic::memmove; break;
+        case IntrinsicKind::Memset:  id = llvm::Intrinsic::memset;  break;
+        default: break;
+    }
 
     if (id == llvm::Intrinsic::not_intrinsic) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
@@ -253,6 +260,7 @@ llvm::Value* emitLLVMMemoryIntrinsic(
 // ─── Bit Intrinsics ───────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMBitIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -267,10 +275,13 @@ llvm::Value* emitLLVMBitIntrinsic(
     }
 
     llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
-    if (name == "clz") id = llvm::Intrinsic::ctlz;
-    else if (name == "ctz") id = llvm::Intrinsic::cttz;
-    else if (name == "popcount") id = llvm::Intrinsic::ctpop;
-    else if (name == "bswap") id = llvm::Intrinsic::bswap;
+    switch (kind) {
+        case IntrinsicKind::Clz:      id = llvm::Intrinsic::ctlz;  break;
+        case IntrinsicKind::Ctz:      id = llvm::Intrinsic::cttz;  break;
+        case IntrinsicKind::Popcount: id = llvm::Intrinsic::ctpop; break;
+        case IntrinsicKind::Bswap:    id = llvm::Intrinsic::bswap; break;
+        default: break;
+    }
 
     if (id == llvm::Intrinsic::not_intrinsic) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
@@ -288,7 +299,7 @@ llvm::Value* emitLLVMBitIntrinsic(
         return nullptr;
     }
 
-    if (name == "clz" || name == "ctz") {
+    if (kind == IntrinsicKind::Clz || kind == IntrinsicKind::Ctz) {
         std::vector<llvm::Value*> callArgs = args;
         callArgs.push_back(llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0));
         return ctx.builder.CreateCall(intrinsic, callArgs);
@@ -300,6 +311,7 @@ llvm::Value* emitLLVMBitIntrinsic(
 // ─── Atomic Intrinsics ────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMAtomicIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -319,7 +331,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
     }
 
     // ─── atomic_load(ptr, ordering) ──────────────────────────────────────
-    if (name == "atomic_load") {
+    if (kind == IntrinsicKind::AtomicLoad) {
         if (numValueArgs < 1) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#atomic_load' requires at least 1 argument");
@@ -342,7 +354,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
     }
 
     // ─── atomic_store(ptr, val, ordering) ──────────────────────────────
-    if (name == "atomic_store") {
+    if (kind == IntrinsicKind::AtomicStore) {
         if (numValueArgs < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#atomic_store' requires at least 2 arguments");
@@ -357,8 +369,9 @@ llvm::Value* emitLLVMAtomicIntrinsic(
     }
 
     // ─── atomic_add / sub / and / or / xor ──────────────────────────────
-    if (name == "atomic_add" || name == "atomic_sub" || 
-        name == "atomic_and" || name == "atomic_or" || name == "atomic_xor") {
+    if (kind == IntrinsicKind::AtomicAdd || kind == IntrinsicKind::AtomicSub ||
+        kind == IntrinsicKind::AtomicAnd || kind == IntrinsicKind::AtomicOr ||
+        kind == IntrinsicKind::AtomicXor) {
         if (numValueArgs < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires at least 2 arguments");
@@ -369,18 +382,20 @@ llvm::Value* emitLLVMAtomicIntrinsic(
         llvm::Value* val = args[1];
         llvm::AtomicRMWInst::BinOp op;
 
-        if (name == "atomic_add") op = llvm::AtomicRMWInst::Add;
-        else if (name == "atomic_sub") op = llvm::AtomicRMWInst::Sub;
-        else if (name == "atomic_and") op = llvm::AtomicRMWInst::And;
-        else if (name == "atomic_or") op = llvm::AtomicRMWInst::Or;
-        else if (name == "atomic_xor") op = llvm::AtomicRMWInst::Xor;
-        else return nullptr;
+        switch (kind) {
+            case IntrinsicKind::AtomicAdd: op = llvm::AtomicRMWInst::Add; break;
+            case IntrinsicKind::AtomicSub: op = llvm::AtomicRMWInst::Sub; break;
+            case IntrinsicKind::AtomicAnd: op = llvm::AtomicRMWInst::And; break;
+            case IntrinsicKind::AtomicOr:  op = llvm::AtomicRMWInst::Or;  break;
+            case IntrinsicKind::AtomicXor: op = llvm::AtomicRMWInst::Xor; break;
+            default: return nullptr;
+        }
 
         return ctx.builder.CreateAtomicRMW(op, ptr, val, llvm::MaybeAlign(), ordering);
     }
 
     // ─── atomic_cas(ptr, expected, desired, ordering) ──────────────────
-    if (name == "atomic_cas") {
+    if (kind == IntrinsicKind::AtomicCas) {
         if (numValueArgs < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#atomic_cas' requires at least 3 arguments");
@@ -406,6 +421,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
 // ─── SIMD Intrinsics ──────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMSIMDIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -414,7 +430,8 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     // ─── SIMD Arithmetic (lane-wise) ──────────────────────────────────────
-    if (name == "simd_add" || name == "simd_sub" || name == "simd_mul" || name == "simd_div") {
+    if (kind == IntrinsicKind::SimdAdd || kind == IntrinsicKind::SimdSub ||
+        kind == IntrinsicKind::SimdMul || kind == IntrinsicKind::SimdDiv) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires 2 arguments");
@@ -438,22 +455,22 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 
         bool isFloat = a->getType()->getScalarType()->isFloatingPointTy();
 
-        if (name == "simd_add") {
-            return isFloat ? ctx.builder.CreateFAdd(a, b) : ctx.builder.CreateAdd(a, b);
-        }
-        if (name == "simd_sub") {
-            return isFloat ? ctx.builder.CreateFSub(a, b) : ctx.builder.CreateSub(a, b);
-        }
-        if (name == "simd_mul") {
-            return isFloat ? ctx.builder.CreateFMul(a, b) : ctx.builder.CreateMul(a, b);
-        }
-        if (name == "simd_div") {
-            return isFloat ? ctx.builder.CreateFDiv(a, b) : ctx.builder.CreateSDiv(a, b);
+        switch (kind) {
+            case IntrinsicKind::SimdAdd:
+                return isFloat ? ctx.builder.CreateFAdd(a, b) : ctx.builder.CreateAdd(a, b);
+            case IntrinsicKind::SimdSub:
+                return isFloat ? ctx.builder.CreateFSub(a, b) : ctx.builder.CreateSub(a, b);
+            case IntrinsicKind::SimdMul:
+                return isFloat ? ctx.builder.CreateFMul(a, b) : ctx.builder.CreateMul(a, b);
+            case IntrinsicKind::SimdDiv:
+                return isFloat ? ctx.builder.CreateFDiv(a, b) : ctx.builder.CreateSDiv(a, b);
+            default:
+                return nullptr;
         }
     }
 
     // ─── SIMD FMA ──────────────────────────────────────────────────────────
-    if (name == "simd_fma") {
+    if (kind == IntrinsicKind::SimdFma) {
         if (args.size() < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_fma' requires 3 arguments");
@@ -488,7 +505,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Min/Max ──────────────────────────────────────────────────────
-    if (name == "simd_min" || name == "simd_max") {
+    if (kind == IntrinsicKind::SimdMin || kind == IntrinsicKind::SimdMax) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires 2 arguments");
@@ -512,9 +529,9 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 
         llvm::CmpInst::Predicate pred;
         if (a->getType()->getScalarType()->isIntegerTy()) {
-            pred = (name == "simd_min") ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SGT;
+            pred = (kind == IntrinsicKind::SimdMin) ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SGT;
         } else {
-            pred = (name == "simd_min") ? llvm::CmpInst::FCMP_OLT : llvm::CmpInst::FCMP_OGT;
+            pred = (kind == IntrinsicKind::SimdMin) ? llvm::CmpInst::FCMP_OLT : llvm::CmpInst::FCMP_OGT;
         }
 
         llvm::Value* cmp = ctx.builder.CreateICmp(pred, a, b);
@@ -522,7 +539,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Splat ────────────────────────────────────────────────────────
-    if (name == "simd_splat") {
+    if (kind == IntrinsicKind::SimdSplat) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_splat' requires a scalar argument");
@@ -544,7 +561,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Extract ──────────────────────────────────────────────────────
-    if (name == "simd_extract") {
+    if (kind == IntrinsicKind::SimdExtract) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_extract' requires 2 arguments");
@@ -571,7 +588,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Insert ──────────────────────────────────────────────────────
-    if (name == "simd_insert") {
+    if (kind == IntrinsicKind::SimdInsert) {
         if (args.size() < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_insert' requires 3 arguments");
@@ -599,7 +616,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Load/Store ──────────────────────────────────────────────────
-    if (name == "simd_load") {
+    if (kind == IntrinsicKind::SimdLoad) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_load' requires a pointer argument");
@@ -617,7 +634,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
         return ctx.builder.CreateLoad(vecType, ptr);
     }
 
-    if (name == "simd_store") {
+    if (kind == IntrinsicKind::SimdStore) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#simd_store' requires 2 arguments");
@@ -645,6 +662,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 // ─── CPU Hint Intrinsics ──────────────────────────────────────────────────
 
 llvm::Value* emitLLVMCPUHintIntrinsic(
+    IntrinsicKind kind,
     const std::string& name,
     const std::vector<llvm::Value*>& args,
     IntrinsicCallExprAST* expr,
@@ -653,7 +671,8 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
     // ─── prefetch ────────────────────────────────────────────────────────
-    if (name == "prefetch" || name == "prefetch_r" || name == "prefetch_w") {
+    if (kind == IntrinsicKind::Prefetch || kind == IntrinsicKind::PrefetchR ||
+        kind == IntrinsicKind::PrefetchW) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                    "intrinsic '#", name, "' requires an argument");
@@ -662,7 +681,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
 
         llvm::Value* ptr = args[0];
 
-        int rw = (name == "prefetch_w") ? 1 : 0;
+        int rw = (kind == IntrinsicKind::PrefetchW) ? 1 : 0;
         int locality = 3;
         int cacheType = 0;
 
@@ -688,7 +707,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
     }
 
     // ─── fence ──────────────────────────────────────────────────────────
-    if (name == "fence") {
+    if (kind == IntrinsicKind::Fence) {
         llvm::AtomicOrdering ordering = llvm::AtomicOrdering::SequentiallyConsistent;
 
         if (!args.empty()) {
@@ -703,7 +722,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
     }
 
     // ─── pause ──────────────────────────────────────────────────────────
-    if (name == "pause") {
+    if (kind == IntrinsicKind::Pause) {
         ctx.builder.CreateFence(llvm::AtomicOrdering::SequentiallyConsistent);
         return nullptr;
     }
