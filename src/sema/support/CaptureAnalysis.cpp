@@ -782,9 +782,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
         // ─── Case 1: Direct anonymous function ────────────────────────────
         // `return (n int) -> int { ... };`
         case ASTKind::AnonFuncExpr: {
-            AnonFuncExprAST* closure = const_cast<AnonFuncExprAST*>(
-                expr->as<AnonFuncExprAST>()
-            );
+            AnonFuncExprAST* closure = expr->as<AnonFuncExprAST>();
             closure->isReturned = true;
             LOG_SEMA("markClosureIfEscaping: direct anonymous function returned");
             return;
@@ -808,9 +806,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             
             // ─── 2b. Function declaration (nested function) ────────────────
             if (decl->isa<FuncDeclAST>()) {
-                FuncDeclAST* funcDecl = const_cast<FuncDeclAST*>(
-                    decl->as<FuncDeclAST>()
-                );
+                FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
                 
                 // ─── Check if this is a nested function ──────────────────────
                 // We need to know if the function is nested. We can check by

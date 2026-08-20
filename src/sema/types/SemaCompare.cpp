@@ -144,8 +144,8 @@ TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx) {
     size_t bitsB = getIntegerBitWidth(b);
     
     // Return the larger one
-    if (bitsA >= bitsB) return const_cast<TypeAST*>(a);
-    return const_cast<TypeAST*>(b);
+    if (bitsA >= bitsB) return a;
+    return b;
 }
 
 bool isIntegerPromotionSafe(TypeAST* target, TypeAST* source, SemaContext& ctx) {

@@ -472,7 +472,7 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
 
     // ─── 5. Lower the body ──────────────────────────────────────────────
     if (expr->body) {
-        lowerStatement(const_cast<StmtAST*>(expr->body), ctx);
+        lowerStatement(expr->body, ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, expr->loc,
                                 "anonymous function has no body");

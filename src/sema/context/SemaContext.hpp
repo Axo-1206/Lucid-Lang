@@ -680,7 +680,7 @@ struct SemaContext {
             // We need to cast away const because the AST uses mutable fields
             // This is safe because the narrowing type is stored in the stack,
             // not in the AST node itself.
-            return const_cast<TypeAST*>(narrowedType);
+            return narrowedType;
         }
         
         // decl->type is the single source of truth for a declaration's type:
@@ -1266,7 +1266,7 @@ struct SemaContext {
 struct ScopedSemanticContext {
     ScopedSemanticContext(SemaContext& ctx, ContextKind kind, BaseAST* node)
         : ctx_(ctx) {
-        ctx_.stack.push(kind, const_cast<BaseAST*>(node));
+        ctx_.stack.push(kind, node);
     }
     ~ScopedSemanticContext() { ctx_.stack.pop(); }
     

@@ -168,7 +168,7 @@ ConstantValue ConstEvaluator::executeFor(SemaContext& ctx, ForStmtAST* stmt) {
                 
                 // Bind index variable for the body
                 if (stmt->indexVar) {
-                    const_cast<ParamAST*>(stmt->indexVar)->type = ctx.getIntType();
+                    stmt->indexVar->type = ctx.getIntType();
                 }
                 
                 ConstantValue result = executeStmt(ctx, stmt->body);
@@ -326,7 +326,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* fun
             if (argIndex < args.size()) {
                 // Create a synthetic literal for the argument value
                 // Store it in the parameter's type for lookup
-                const_cast<ParamAST*>(param)->type = getConstantType(ctx, args[argIndex]);
+                param->type = getConstantType(ctx, args[argIndex]);
                 argIndex++;
             }
         }

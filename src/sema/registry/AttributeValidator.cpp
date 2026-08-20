@@ -310,7 +310,7 @@ bool validateInlineHint(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     }
 
     // ─── 4. Store the appropriate flag on the function ─────────────────────
-    FuncDeclAST* func = const_cast<FuncDeclAST*>(owner->as<FuncDeclAST>());
+    FuncDeclAST* func = owner->as<FuncDeclAST>();
     if (ctx.pool.lookup(attr->name) == "inline") {
         func->isInline = true;
     } else {
@@ -346,9 +346,9 @@ bool validateSpecialize(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
 
     // ─── 3. Mark as needing specialization ──────────────────────────────────
     if (owner->isa<FuncDeclAST>()) {
-        const_cast<FuncDeclAST*>(owner->as<FuncDeclAST>())->shouldSpecialize = true;
+        owner->as<FuncDeclAST>()->shouldSpecialize = true;
     } else if (owner->isa<StructDeclAST>()) {
-        const_cast<StructDeclAST*>(owner->as<StructDeclAST>())->shouldSpecialize = true;
+        owner->as<StructDeclAST>()->shouldSpecialize = true;
     }
 
     return true;

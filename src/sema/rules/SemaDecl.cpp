@@ -145,8 +145,8 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         if (decl->keyword == DeclKeyword::Const) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
-                const_cast<ExprAST*>(decl->init)->isConst = true;
-                const_cast<ExprAST*>(decl->init)->constValue = val;
+                decl->init->isConst = true;
+                decl->init->constValue = val;
             }
         }
     }
@@ -198,7 +198,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (decl->isForeignFunction) {
         // Foreign functions use their original name as the symbol
-        const_cast<FuncDeclAST*>(decl)->mangledName = decl->name;
+        decl->mangledName = decl->name;
         LOG_SEMA("Foreign function '", ctx.pool.lookup(decl->name),
                  "' uses symbol name: ", ctx.pool.lookup(decl->mangledName));
         return;
@@ -272,7 +272,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     if (ctx.getClosureDepth() > 0) {
         LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
                  ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
-        analyzeCaptures(const_cast<FuncDeclAST*>(decl), ctx);
+        analyzeCaptures(decl, ctx);
     }
 
     // ─── 13. Pop function context ────────────────────────────────────────────
@@ -536,7 +536,7 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
     // This is always valid regardless of target ABI.
     for (size_t i = 0; i < decl->fields.size(); ++i) {
         FieldDeclAST* field = decl->fields[i];
-        const_cast<FieldDeclAST*>(field)->fieldIndex = i;
+        field->fieldIndex = i;
     }
 }
 

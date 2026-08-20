@@ -109,10 +109,10 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
 
     // ─── Store result on the AST node ──────────────────────────────────
     if (result.isEvaluated() && !result.isError()) {
-        const_cast<ExprAST*>(expr)->isConst = true;
-        const_cast<ExprAST*>(expr)->constValue = result;
-        const_cast<ExprAST*>(expr)->resolvedType = getConstantType(ctx, result);
-        const_cast<ExprAST*>(expr)->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
+        expr->isConst = true;
+        expr->constValue = result;
+        expr->resolvedType = getConstantType(ctx, result);
+        expr->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
         m_evaluatedExprs.insert(expr);
     }
 

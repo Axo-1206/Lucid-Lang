@@ -145,7 +145,7 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaConte
         case LiteralKind::Hex:
         case LiteralKind::Binary:
             if (targetType && targetType->isa<PrimitiveTypeAST>() && isIntegerType(targetType)) {
-                result = const_cast<TypeAST*>(targetType);
+                result = targetType;
             } else {
                 result = ctx.getIntType();
             }
@@ -154,7 +154,7 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaConte
 
         case LiteralKind::Float:
             if (targetType && targetType->isa<PrimitiveTypeAST>() && isFloatType(targetType)) {
-                result = const_cast<TypeAST*>(targetType);
+                result = targetType;
             } else {
                 result = ctx.getFloatType();
             }
@@ -174,7 +174,7 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaConte
 
         case LiteralKind::Nil:
             if (targetType && isNullableType(targetType)) {
-                result = const_cast<TypeAST*>(targetType);
+                result = targetType;
                 state = ValueState::Nil;
             } else {
                 result = ctx.getUnknownType();
@@ -184,7 +184,7 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaConte
 
         case LiteralKind::Err:
             if (targetType && isFallibleType(targetType)) {
-                result = const_cast<TypeAST*>(targetType);
+                result = targetType;
                 state = ValueState::Err;
             } else {
                 result = ctx.getUnknownType();
@@ -410,17 +410,17 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     // ─── Step 9: Apply type narrowing from if conditions ────────────────────
     TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
-        expr->resolvedType = const_cast<TypeAST*>(narrowedType);
+        expr->resolvedType = narrowedType;
         expr->valueState = state;
         expr->isLValue = true;  // Narrowed variables are still l-values
-        return const_cast<TypeAST*>(narrowedType);
+        return narrowedType;
     }
 
     // ─── Step 10: Set the expression's type ──────────────────────
-    expr->resolvedType = const_cast<TypeAST*>(declType);
+    expr->resolvedType = declType;
     expr->valueState = state;
     
-    return const_cast<TypeAST*>(declType);
+    return declType;
 }
 
 // =============================================================================
@@ -1379,12 +1379,12 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetTyp
     }
 
     // ─── Step 7: Store results ──────────────────────────────────────────────────
-    expr->resolvedType = const_cast<TypeAST*>(resultType);
+    expr->resolvedType = resultType;
     expr->valueState = state;
     expr->isLValue = false;
     expr->isConst = false;
 
-    return const_cast<TypeAST*>(resultType);
+    return resultType;
 }
 
 // =============================================================================
@@ -1596,11 +1596,11 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 
             ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                ? ValueState::Unknown : ValueState::Definite;
-            expr->resolvedType = const_cast<TypeAST*>(fieldType);
+            expr->resolvedType = fieldType;
             expr->valueState = state;
             expr->isLValue = false;
             expr->isConst = false;
-            return const_cast<TypeAST*>(fieldType);
+            return fieldType;
         }
     }
 
@@ -1640,7 +1640,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                 // ─── Propagate value state ──────────────────────────────────
                 ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                    ? ValueState::Unknown : ValueState::Definite;
-                expr->resolvedType = const_cast<TypeAST*>(fieldType);
+                expr->resolvedType = fieldType;
                 expr->valueState = state;
                 
                 // ─── Set isLValue and isConst ───────────────────────────────
@@ -1657,7 +1657,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                     expr->isConst = expr->object->isConst;
                 }
                 
-                return const_cast<TypeAST*>(fieldType);
+                return fieldType;
             }
         }
 
@@ -1908,10 +1908,10 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType,
     // ─── Step 2: Unwrap LHS type ────────────────────────────────────────────
     TypeAST* lhsInner = lhsType;
     if (isNullableType(lhsInner)) {
-        lhsInner = unwrapNullable(const_cast<TypeAST*>(lhsInner));
+        lhsInner = unwrapNullable(lhsInner);
     }
     if (isFallibleType(lhsInner)) {
-        lhsInner = unwrapFallible(const_cast<TypeAST*>(lhsInner));
+        lhsInner = unwrapFallible(lhsInner);
     }
 
     if (!lhsInner) {
@@ -2340,7 +2340,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     }
 
     // ─── Step 1: Resolve the function type ──────────────────────────────────
-    FuncTypeAST* funcType = const_cast<FuncTypeAST*>(expr->funcType);
+    FuncTypeAST* funcType = expr->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;

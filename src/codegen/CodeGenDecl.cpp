@@ -441,7 +441,7 @@ void lowerSpecializedFunctionBody(
 
     // ─── Lower the body ───────────────────────────────────────────────────
     if (funcDecl->body) {
-        lowerStatement(const_cast<StmtAST*>(funcDecl->body), ctx);
+        lowerStatement(funcDecl->body, ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, funcDecl->loc,
                                 "specialized function '", 
@@ -771,7 +771,7 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
     std::vector<llvm::ConstantInt*> variantConstants;
     variantConstants.reserve(decl->variants.size());
 
-    for (const EnumVariantAST* variant : decl->variants) {
+    for (EnumVariantAST* variant : decl->variants) {
         llvm::ConstantInt* constVal = llvm::ConstantInt::get(
             backingType,
             variant->value,
@@ -779,7 +779,7 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
         );
         variantConstants.push_back(constVal);
 
-        const_cast<EnumVariantAST*>(variant)->llvmValue = constVal;
+        variant->llvmValue = constVal;
 
         std::string varName = ctx.pool.lookup(decl->name) + "." +
                              ctx.pool.lookup(variant->name);
