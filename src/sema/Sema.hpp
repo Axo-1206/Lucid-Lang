@@ -188,8 +188,19 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
 /// @brief Resolve a pipeline expression.
 TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaContext& ctx);
 
-/// @brief Resolve a pipeline step.
-TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaContext& ctx);
+/// @brief Resolve a single pipeline step.
+/// 
+/// Pipeline steps are always function types (callable). They are never nullable
+/// or fallible by definition - a function value itself cannot be nil or err.
+/// 
+/// Argument order: The upstream values are passed FIRST, then the pack args.
+/// Extra arguments beyond the function's parameter count are discarded.
+/// 
+/// @param step The pipeline step.
+/// @param upstreamType The type of the upstream value (from seed or previous step).
+/// @param ctx The semantic context.
+/// @return The return type of the step, or nullptr on error.
+TypeAST* resolvePipelineStepInternal(PipelineStepAST* step, TypeAST* upstreamType, SemaContext& ctx);
 
 /// @brief Resolve a composition expression.
 TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaContext& ctx);

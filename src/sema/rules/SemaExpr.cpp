@@ -2067,12 +2067,31 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
 // resolvePipelineStep
 // =============================================================================
 
-TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaContext& ctx) {
-    if (!step || !inputType) {
+/// @brief Resolve a single pipeline step with variadic parameter support.
+/// 
+/// Pipeline steps are always function types (callable). They are never nullable
+/// or fallible by definition - a function value itself cannot be nil or err.
+/// 
+/// Argument order: The upstream values are passed FIRST, then the pack args.
+/// 
+/// Variadic handling:
+///   - The last parameter can be variadic (`...T`), which absorbs all remaining
+///     arguments into a slice `[]T`.
+///   - The function receives the variadic parameter as a slice.
+///   - Extra arguments beyond the function's fixed parameters are absorbed
+///     by the variadic parameter.
+/// 
+/// @param step The pipeline step.
+/// @param upstreamType The type of the upstream value (from seed or previous step).
+///                     This can be a single value or multiple values packed together.
+/// @param ctx The semantic context.
+/// @return The return type of the step, or nullptr on error.
+TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaContext& ctx) {
+    if (!step || !upstreamType) {
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve callable ───────────────────────────────────────────
+    // ─── Step 1: Resolve the callable expression ───────────────────────────
     TypeAST* callableType = resolveExpr(step->callable, ctx);
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, step->callable,
@@ -2080,15 +2099,25 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaCont
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Check if callable is nullable or fallible ──────────────────
-    if (isNullableType(callableType) || isFallibleType(callableType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, step->callable,
-                              "cannot use nullable or fallible value as a pipeline step. "
-                              "Narrow first using 'if' or '?\?'.");
-        return ctx.getUnknownType();
-    }
-
+    // ─── Step 2: Must be a function type ────────────────────────────────────
     if (!callableType->isa<FuncTypeAST>()) {
+        // Check if it's a generic function reference that wasn't instantiated
+        if (step->callable->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = step->callable->as<IdentifierExprAST>();
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
+            if (decl && decl->isa<FuncDeclAST>()) {
+                FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+                if (!funcDecl->genericParams.empty() && id->genericArgs.empty()) {
+                    ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, step->callable,
+                                          "generic function '", ctx.pool.lookup(id->name),
+                                          "' requires generic arguments in pipeline step");
+                    ctx.diagnostics.note(step->callable,
+                                         "Use '", ctx.pool.lookup(id->name), "<T>' to instantiate");
+                    return ctx.getUnknownType();
+                }
+            }
+        }
+        
         ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                               "pipeline step is not a function type, got ",
                               debug::typeToString(callableType, ctx.pool));
@@ -2097,29 +2126,161 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaCont
 
     FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
 
+    // ─── Step 3: Validate argument pack usage ──────────────────────────────
+    bool isAnonymousFunction = step->callable->isa<AnonFuncExprAST>();
+    bool hasPackArgs = !step->packArgs.empty();
+    
+    if (isAnonymousFunction && hasPackArgs) {
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "anonymous function cannot have argument pack (!) in pipeline step");
+        ctx.diagnostics.note(step->callable,
+                             "Anonymous functions capture all arguments at the definition site. "
+                             "Use a named function reference if you need argument pack.");
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 4: Build the combined argument list ──────────────────────────
+    // Order: (upstream_value, pack_args...)
+    std::vector<TypeAST*> argTypes;
+    
+    // ─── 4a: Add the upstream value ──────────────────────────────────────
+    // Upstream can be a single value or multiple values packed together.
+    // For now, we treat it as a single value.
+    // TODO: Support multiple return values (tuple unpacking).
+    if (upstreamType && !upstreamType->isa<UnknownTypeAST>()) {
+        argTypes.push_back(upstreamType);
+    }
+    
+    // ─── 4b: Resolve pack arguments ──────────────────────────────────────
+    for (ExprAST* packArg : step->packArgs) {
+        TypeAST* argType = resolveExpr(packArg, ctx);
+        if (!argType || argType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, packArg,
+                                  "pack argument has unknown type");
+            return ctx.getUnknownType();
+        }
+        argTypes.push_back(argType);
+    }
+    
+    // ─── Step 5: Special case: Function takes no parameters ────────────────
     if (funcType->params.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
-                              "pipeline step function takes no parameters");
-        return ctx.getUnknownType();
+        if (!funcType->returnType) {
+            ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                                  "pipeline step returns void (cannot continue pipeline)");
+            return ctx.getUnknownType();
+        }
+        return funcType->returnType;
     }
-
-    // ─── Step 2: Verify first parameter matches input type ────────────────
-    TypeAST* firstParamType = funcType->params[0]->type;
-    if (!isAssignable(firstParamType, inputType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
-                              "pipeline step input mismatch: expected ",
-                              debug::typeToString(firstParamType, ctx.pool),
-                              ", got ", debug::typeToString(inputType, ctx.pool));
-        return ctx.getUnknownType();
+    
+    // ─── Step 6: Check for variadic parameter ──────────────────────────────
+    size_t paramCount = funcType->params.size();
+    bool hasVariadic = funcType->params.back()->isVariadic;
+    size_t fixedParamCount = hasVariadic ? paramCount - 1 : paramCount;
+    
+    // ─── Step 7: Validate argument count ────────────────────────────────────
+    // With variadic:
+    //   - Fixed parameters must be satisfied exactly
+    //   - Remaining arguments are absorbed by the variadic parameter
+    // Without variadic:
+    //   - Function can accept FEWER parameters than provided (extra discarded)
+    //   - Cannot accept MORE parameters than provided
+    size_t argCount = argTypes.size();
+    
+    if (hasVariadic) {
+        // ─── Variadic: Need at least fixedParamCount arguments ──────────────
+        // Fixed parameters are required; variadic can be empty or more.
+        if (argCount < fixedParamCount) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, step->callable,
+                                  "pipeline step expects at least ", fixedParamCount,
+                                  " argument(s) (", fixedParamCount, " fixed + variadic), ",
+                                  "but only ", argCount, " are available");
+            return ctx.getUnknownType();
+        }
+        // No upper bound - variadic absorbs all remaining
+    } else {
+        // ─── Non-variadic: Can accept fewer (extra discarded), but not more ──
+        if (paramCount > argCount) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, step->callable,
+                                  "pipeline step expects ", paramCount,
+                                  " argument(s), but only ", argCount, " are available");
+            return ctx.getUnknownType();
+        }
     }
-
-    // ─── Step 3: Return the output type ────────────────────────────────────
+    
+    // ─── Step 8: Type-check each parameter ──────────────────────────────────
+    for (size_t i = 0; i < paramCount; ++i) {
+        TypeAST* paramType = funcType->params[i]->type;
+        bool isVariadicParam = hasVariadic && (i == paramCount - 1);
+        
+        if (isVariadicParam) {
+            // ─── Variadic parameter: absorbs all remaining arguments ─────────
+            // The parameter type is [*]T (dynamic array) or [N]T (fixed array)
+            // The argument type should be T (element type)
+            // All remaining arguments must be assignable to T
+            
+            TypeAST* elementType = nullptr;
+            if (paramType->isa<ArrayTypeAST>()) {
+                elementType = paramType->as<ArrayTypeAST>()->element;
+            } else {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, step->callable,
+                                      "variadic parameter must be an array type [*]T or [N]T");
+                return ctx.getUnknownType();
+            }
+            
+            // Check all remaining arguments against the element type
+            for (size_t j = i; j < argCount; ++j) {
+                TypeAST* argType = argTypes[j];
+                
+                if (!isAssignable(elementType, argType, ctx)) {
+                    ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                                          "variadic argument at position ", j + 1,
+                                          " type mismatch: expected ",
+                                          debug::typeToString(elementType, ctx.pool),
+                                          ", got ", debug::typeToString(argType, ctx.pool));
+                    return ctx.getUnknownType();
+                }
+            }
+            
+            // We're done - all variadic arguments are checked
+            break;
+            
+        } else {
+            // ─── Fixed parameter: check the corresponding argument ───────────
+            if (i >= argCount) {
+                // Should not happen due to count check above, but defensive
+                break;
+            }
+            
+            TypeAST* argType = argTypes[i];
+            
+            // Determine argument source for better diagnostics
+            std::string argSource;
+            size_t upstreamCount = (upstreamType && !upstreamType->isa<UnknownTypeAST>()) ? 1 : 0;
+            if (i < upstreamCount) {
+                argSource = " (from upstream)";
+            } else {
+                size_t packIndex = i - upstreamCount;
+                argSource = " (from pack argument " + std::to_string(packIndex + 1) + ")";
+            }
+            
+            if (!isAssignable(paramType, argType, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                                      "pipeline step type mismatch at argument ", i + 1,
+                                      argSource, ": expected ",
+                                      debug::typeToString(paramType, ctx.pool),
+                                      ", got ", debug::typeToString(argType, ctx.pool));
+                return ctx.getUnknownType();
+            }
+        }
+    }
+    
+    // ─── Step 9: Return the function's return type ─────────────────────────
     if (!funcType->returnType) {
         ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
-                              "pipeline step returns void");
+                              "pipeline step returns void (cannot continue pipeline)");
         return ctx.getUnknownType();
     }
-
+    
     return funcType->returnType;
 }
 
@@ -2136,11 +2297,11 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve seed ──────────────────────────────────────────────
+    // ─── Step 1: Resolve the seed expression ──────────────────────────────
     TypeAST* currentType = resolveExpr(expr->seed, ctx);
     if (!currentType || currentType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->seed,
-                              "seed has unknown type");
+                              "pipeline seed has unknown type");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -2148,17 +2309,43 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
 
     // ─── Step 2: Walk through each step ────────────────────────────────────
     for (PipelineStepAST* step : expr->steps) {
-        currentType = resolvePipelineStep(step, currentType, ctx);
-        if (!currentType || currentType->isa<UnknownTypeAST>()) {
+        TypeAST* stepResult = resolvePipelineStep(step, currentType, ctx);
+        
+        if (!stepResult || stepResult->isa<UnknownTypeAST>()) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+        
+        currentType = stepResult;
+    }
+
+    // ─── Step 3: Validate against target type if provided ──────────────────
+    // The final result of the pipeline must match the target type
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (!isAssignable(targetType, currentType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "pipeline result type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ", debug::typeToString(currentType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
+    // ─── Step 4: Propagate value state ─────────────────────────────────────
+    ValueState state = ValueState::Definite;
+    if (currentType) {
+        if (isNullableType(currentType)) {
+            state = ValueState::Unknown;
+        } else if (isFallibleType(currentType)) {
+            state = ValueState::Unknown;
+        }
+    }
+
     expr->resolvedType = currentType;
-    expr->valueState = ValueState::Definite;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    // Pipeline expressions are never l-values
+    expr->valueState = state;
     expr->isLValue = false;
     expr->isConst = false;
     

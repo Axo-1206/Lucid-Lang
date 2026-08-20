@@ -510,8 +510,6 @@ struct NullCoalesceExprAST : ExprAST {
 
 /// @brief One step in a pipeline chain – owned by PipelineExprAST.
 ///
-/// Grammar: pipeline_step := expr [ '(' arg_list ')' '!' ] | func_literal
-///
 /// The `callable` expression is the result of `parseFuncRef()` or an anonymous
 /// function expression. If the step includes an argument pack `(args)!`, then
 /// `packArgs` is non‑empty and the step is an argument pack step (the `!`
@@ -520,12 +518,10 @@ struct NullCoalesceExprAST : ExprAST {
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Argument Pack**: `!` marks an intentionally incomplete argument list.
 ///    The upstream value is injected as the first argument when `|>` fires.
-/// 2. **Curried Functions**: `|>` fills exactly one parameter group. A curried
-///    function with remaining unfilled groups is a compile error.
-/// 3. **Generic Functions**: Generic functions must be instantiated with
-///    explicit type arguments at the pipeline step site.
-/// 4. **Nullable/Fallible Steps**: A `~[nullable]` or `~[fallible]` function
-///    is forbidden as a pipeline step – the pipeline has no way to narrow it.
+/// 2. **Generic Functions**: Generic functions must be instantiated with
+///    explicit type arguments at the pipeline step site..
+/// 3. A step, can be an AnonFuncExprAST, ModuleAccessExprAST, FieldAccessExprAST,
+///    IntrinsicCallExprAST or IdentifierExprAST and they must be a function declaration
 ///
 /// @field callable       The function reference or anonymous function.
 /// @field packArgs       Non‑empty for argument pack steps (the `!` annotation).
@@ -543,21 +539,12 @@ struct PipelineStepAST : BaseAST {
 
 /// @brief A runtime pipeline chain – seed |> step |> step |> ...
 /// 
-/// @example
-///   42 |> float |> sqrt
-///   getUser(id) |> validate |> save
-///   v |> Vec2:normalize |> scale(2.0)!
-/// 
 /// The pipeline short‑circuits on Error when the error library is used.
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Left-to-Right**: Pipeline executes left to right at runtime.
 /// 2. **Argument Injection**: Each step's upstream value is injected as the
 ///    first argument when `|>` fires.
-/// 3. **Type Chaining**: The output type of each step must match the input
-///    type of the next step.
-/// 4. **Short-Circuit**: Pipelines short-circuit on Error when using the
-///    error library.
 /// 
 /// @field seed           The initial value.
 /// @field steps          Pipeline steps in order (at least one).
