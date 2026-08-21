@@ -19,9 +19,8 @@ static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info) {
 }
 
 static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
-    // Check against the VOID_INTRINSICS set defined in IntrinsicRegistry.hpp
-    std::string nameStr = ctx.pool.lookup(name);
-    return VOID_INTRINSICS.find(nameStr) != VOID_INTRINSICS.end();
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    return registry.isVoid(name);
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────

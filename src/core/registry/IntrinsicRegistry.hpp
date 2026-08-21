@@ -79,23 +79,24 @@ struct IntrinsicInfo {
     size_t maxArgs;
     bool isVarArg;
     bool isCompilerHandled;
+    bool isVoid;  // ✅ NEW: true if intrinsic returns no value
 
     IntrinsicInfo()
         : llvmID(llvm::Intrinsic::not_intrinsic)
-        , kind(IntrinsicKind::Sqrt) // arbitrary default, never read: isValid()-style
-                                    // callers should always check getInfo()'s
-                                    // return for nullptr before touching kind
+        , kind(IntrinsicKind::Sqrt)
         , emitterKind(IntrinsicEmitterKind::Lucid)
         , minArgs(0)
         , maxArgs(0)
         , isVarArg(false)
-        , isCompilerHandled(false) {}
+        , isCompilerHandled(false)
+        , isVoid(false) {}
 
     IntrinsicInfo(llvm::Intrinsic::ID id, InternedString n, IntrinsicKind k,
                   IntrinsicEmitterKind ek, size_t min, size_t max = 0,
-                  bool varArg = false, bool compiler = false)
+                  bool varArg = false, bool compiler = false, bool isVoid = false)
         : llvmID(id), name(n), kind(k), emitterKind(ek), minArgs(min),
-          maxArgs(max ? max : min), isVarArg(varArg), isCompilerHandled(compiler) {}
+          maxArgs(max ? max : min), isVarArg(varArg), isCompilerHandled(compiler),
+          isVoid(isVoid) {}
 
     bool isValid() const { return llvmID != llvm::Intrinsic::not_intrinsic; }
     bool hasFixedArgs() const { return !isVarArg; }
@@ -111,6 +112,7 @@ struct IntrinsicEntry {
     size_t maxArgs;
     bool isVarArg;
     bool isCompilerHandled;
+    bool isVoid;  // true if intrinsic returns no value
 };
 
 /// @brief Core intrinsic registry - pure data, no semantic dependencies.
@@ -121,6 +123,7 @@ public:
     const IntrinsicInfo* getInfo(InternedString name) const;
     std::optional<llvm::Intrinsic::ID> getLLVMID(InternedString name) const;
     bool isCompilerHandled(InternedString name) const;
+    bool isVoid(InternedString name) const;  // query method
 
     /// @brief Which emitter file handles this intrinsic's codegen.
     /// Replaces the old isLLVMIntrinsic()/isLucidIntrinsic() hardcoded
@@ -154,29 +157,4 @@ private:
     std::unordered_map<InternedString, IntrinsicInfo> m_intrinsics;
     std::unordered_set<InternedString> m_compilerHandled;
     bool m_initialized = false;
-};
-
-// ─── Void Intrinsics Registry ─────────────────────────────────────────────
-
-static const std::unordered_set<std::string> VOID_INTRINSICS = {
-    // Memory Operations - no return value
-    "memcpy", "memmove", "memset",
-    
-    // Memory Management - no return value (free operations)
-    "free", "arena_free", "arena_reset",
-    
-    // Synchronization - no return value
-    "fence",
-    
-    // CPU Hints - no return value
-    "pause", "prefetch", "prefetch_r", "prefetch_w",
-    
-    // Scope Exit - no return value
-    "scope_exit",
-    
-    // SIMD Store - no return value
-    "simd_store",
-    
-    // Atomic Store - no return value
-    "atomic_store",
 };
