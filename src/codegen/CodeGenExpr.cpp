@@ -1555,7 +1555,8 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     }
 
     for (PipelineStepAST* step : expr->steps) {
-        currentValue = lowerPipelineStep(step, ctx);
+        // ─── FIX: Pass currentValue to lowerPipelineStep ─────────────────
+        currentValue = lowerPipelineStep(step, currentValue, ctx);
         if (!currentValue) {
             return nullptr;
         }
@@ -1565,24 +1566,43 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     return currentValue;
 }
 
-llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
+llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, CodeGenContext& ctx) {
     if (!step) return nullptr;
 
-    llvm::Value* callable = lowerExpression(step->callable, ctx);
-    if (!callable) {
+    // Get the function type from Sema, NOT guessed from args
+    TypeAST* callableType = step->callable->resolvedType;
+    if (!callableType || !callableType->isa<FuncTypeAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, step->callable->loc,
+                                "pipeline step callable is not a function type");
         return nullptr;
     }
 
-    if (step->callable->isLValue) {
-        llvm::Type* elemType = getType(ctx, step->callable->resolvedType);
-        if (elemType) {
-            callable = loadIfNeeded(callable, elemType, ctx);
-        } else {
-            callable = loadIfNeeded(callable, true, ctx);
-        }
+    FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
+
+    // ─── Get the LLVM function type (same as lowerCallExpr uses) ──────────
+    llvm::FunctionType* fnType = getFunctionType(ctx, funcType, /* isClosure */ false);
+    if (!fnType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, step->callable->loc,
+                                "could not get function type for pipeline step");
+        return nullptr;
     }
 
+    // Build argument list: upstream + packArgs (in order)
     std::vector<llvm::Value*> args;
+
+    // ─── Upstream value is passed FIRST (if the function takes any params) ──
+    // If the function takes parameters, upstream is injected as the first arg.
+    // If the function takes no params, upstream is discarded (valid).
+    bool hasUpstream = (upstreamValue != nullptr);
+    bool hasParameters = !funcType->params.empty();
+
+    if (hasUpstream && hasParameters) {
+        args.push_back(upstreamValue);
+    } else if (hasUpstream && !hasParameters) {
+        // Upstream is discarded - no warning needed (Sema already warned)
+    }
+
+    // ─── Lower pack arguments ──────────────────────────────────────────────
     for (ExprAST* arg : step->packArgs) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
         if (!argVal) {
@@ -1595,27 +1615,223 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
             } else {
                 argVal = loadIfNeeded(argVal, true, ctx);
             }
+            if (!argVal) return nullptr;
         }
         args.push_back(argVal);
     }
 
-    // ─── Build function type ──────────────────────────────────────────────
-    std::vector<llvm::Type*> paramTypes;
-    for (llvm::Value* arg : args) {
-        paramTypes.push_back(arg->getType());
+    // Truncate excess non-variadic arguments
+    size_t paramCount = funcType->params.size();
+    bool hasVariadic = !funcType->params.empty() && funcType->params.back()->isVariadic;
+
+    if (!hasVariadic && args.size() > paramCount) {
+        // Sema already validated this is safe - just truncate
+        args.resize(paramCount);
     }
 
-    llvm::Type* returnType = args.empty() ? llvm::Type::getVoidTy(ctx.llvmCtx) : args[0]->getType();
-    llvm::FunctionType* fnType = llvm::FunctionType::get(returnType, paramTypes, false);
+    // =========================================================================
+    // Variadic parameter handling - collect tail into slice
+    // =========================================================================
+    // If the function has a variadic parameter, we need to collect all
+    // remaining arguments (after the fixed parameters) into a slice value.
+    // 
+    // The variadic parameter's type is [*]T (dynamic array) - we need to:
+    //   1. Allocate memory for the slice
+    //   2. Store each remaining argument into the slice
+    //   3. Pass the slice as the variadic parameter
+    //
+    // For simplicity in this fix, we assume the runtime provides a helper
+    // function to create a slice from a list of values.
+    // 
+    // TODO: Implement proper slice construction for variadic parameters.
+    // This requires:
+    //   - Determining the element type from the variadic parameter
+    //   - Allocating a dynamic array
+    //   - Storing each argument into the array
+    //   - Returning a {ptr, len, cap} slice struct
 
-    llvm::Value* typedFunc = ctx.builder.CreatePointerCast(
-        callable,
-        llvm::PointerType::get(fnType, 0),
-        "pipeline_func_cast"
-    );
+    if (hasVariadic) {
+        // ─── Get the variadic parameter ─────────────────────────────────────
+        ParamAST* variadicParam = funcType->params.back();
+        llvm::Type* variadicLLVMType = getType(ctx, variadicParam->type);
+        if (!variadicLLVMType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, step->callable->loc,
+                                    "variadic parameter has no LLVM type");
+            return nullptr;
+        }
 
-    llvm::Value* result = ctx.builder.CreateCall(fnType, typedFunc, args, "pipeline_call");
-    return result;
+        // ─── The variadic parameter is [*]T - we need to build a slice ────
+        // For now, we need to handle this properly. The simple approach:
+        //   1. Determine how many variadic arguments there are
+        //   2. Allocate a dynamic array of the element type
+        //   3. Store each argument into the array
+        //   4. Pass the slice as the variadic parameter
+
+        // ─── Get element type from the variadic parameter type ────────────
+        llvm::Type* elemType = nullptr;
+        if (variadicLLVMType->isPointerTy()) {
+            // For [*]T, we need the element type T
+            // With opaque pointers, we need to get it from the AST
+            if (variadicParam->type->isa<ArrayTypeAST>()) {
+                TypeAST* elementTypeAST = variadicParam->type->as<ArrayTypeAST>()->element;
+                elemType = getType(ctx, elementTypeAST);
+            }
+        }
+
+        if (!elemType) {
+            // Fallback: use i8
+            elemType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+        }
+
+        // ─── Determine which arguments go to the variadic parameter ──────
+        // Fixed parameters are the first (paramCount - 1) arguments
+        size_t fixedParamCount = paramCount - 1;
+        size_t variadicArgCount = args.size() - fixedParamCount;
+
+        // ─── Build a slice from the variadic arguments ────────────────────
+        // For now, we use a runtime helper. In a full implementation, this
+        // would be inlined.
+        //
+        // We need to:
+        //   1. Allocate memory for the slice
+        //   2. Store each variadic argument into the slice
+        //   3. Return a {ptr, len, cap} struct
+        //
+        // The runtime helper: __lucid_slice_from_values(ptr, len, cap)
+        // 
+        // TODO: Proper slice construction
+
+        // ─── For now, create an empty slice (placeholder) ─────────────────
+        // This is a placeholder - real implementation would build the slice.
+        // We emit a warning that variadic pipeline support is limited.
+        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, step->callable->loc,
+                                  "variadic parameters in pipeline steps have limited support");
+
+        // ─── Build a slice from the variadic arguments ─────────────────────
+        // We need to collect the variadic arguments into an array and create
+        // a slice from them. For now, we use the runtime helper.
+        if (variadicArgCount > 0) {
+            // Allocate an array to store the variadic arguments
+            llvm::Type* arrayType = llvm::ArrayType::get(elemType, variadicArgCount);
+            llvm::Value* array = llvm::UndefValue::get(arrayType);
+
+            // Store each variadic argument into the array
+            for (size_t i = 0; i < variadicArgCount; ++i) {
+                llvm::Value* val = args[fixedParamCount + i];
+                // FIXME: Need to cast val to elemType if needed
+                array = ctx.builder.CreateInsertValue(array, val, i, "variadic_elem");
+            }
+
+            // Allocate the array on the heap
+            llvm::Value* arraySize = llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(ctx.llvmCtx),
+                variadicArgCount
+            );
+            llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+            llvm::Function* allocFn = ctx.getRuntimeFn(RuntimeFn::Alloc);
+            llvm::Value* arrayPtr = ctx.builder.CreateCall(allocFn, {arraySize});
+
+            // Store the array elements into the allocated memory
+            // For each element, store it into the allocated array
+            for (size_t i = 0; i < variadicArgCount; ++i) {
+                llvm::Value* idx = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx.llvmCtx),
+                    i
+                );
+                llvm::Value* gep = ctx.builder.CreateGEP(
+                    elemType,
+                    arrayPtr,
+                    idx,
+                    "variadic_ptr"
+                );
+                llvm::Value* val = args[fixedParamCount + i];
+                if (val->getType() != elemType) {
+                    val = ctx.builder.CreateBitCast(val, elemType);
+                }
+                ctx.builder.CreateStore(val, gep);
+            }
+
+            // Build the slice struct { ptr, len, cap }
+            llvm::StructType* sliceType = ctx.getStringType();  // Reuse string type {ptr, len, cap}
+            llvm::Value* slice = llvm::UndefValue::get(sliceType);
+            slice = ctx.builder.CreateInsertValue(slice, arrayPtr, 0);
+            slice = ctx.builder.CreateInsertValue(slice, arraySize, 1);
+            slice = ctx.builder.CreateInsertValue(slice, arraySize, 2);
+
+            // Replace the variadic arguments with the slice in the args list
+            args.resize(fixedParamCount + 1);
+            args[fixedParamCount] = slice;
+        } else {
+            // No variadic arguments - pass null slice
+            llvm::StructType* sliceType = ctx.getStringType();
+            args.resize(fixedParamCount + 1);
+            args[fixedParamCount] = llvm::Constant::getNullValue(sliceType);
+        }
+    }
+
+    // =========================================================================
+    // BUG 5 FIX: Handle closure callable vs plain function
+    // =========================================================================
+    llvm::Value* calleeVal = lowerExpression(step->callable, ctx);
+    if (!calleeVal) {
+        return nullptr;
+    }
+
+    if (step->callable->isLValue) {
+        llvm::Type* elemType = getType(ctx, step->callable->resolvedType);
+        if (elemType) {
+            calleeVal = loadIfNeeded(calleeVal, elemType, ctx);
+        } else {
+            calleeVal = loadIfNeeded(calleeVal, true, ctx);
+        }
+        if (!calleeVal) return nullptr;
+    }
+
+    // ─── Check if callee is a closure (struct { funcPtr, envPtr }) ──────
+    if (calleeVal->getType()->isStructTy()) {
+        // ─── Closure call ──────────────────────────────────────────────────
+        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(calleeVal, 0, "closure_func");
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(calleeVal, 1, "closure_env");
+
+        llvm::Type* returnType = fnType->getReturnType();
+        return emitClosureCall(funcPtr, envPtr, args, returnType, ctx);
+    }
+
+    // ─── Plain function call ──────────────────────────────────────────────
+    llvm::Function* callee = llvm::dyn_cast<llvm::Function>(calleeVal);
+    if (!callee) {
+        // If calleeVal is a pointer to a function (but not a Function*),
+        // we need to cast it to the correct function type.
+        if (calleeVal->getType()->isPointerTy()) {
+            llvm::FunctionType* expectedFnType = fnType;
+            llvm::Value* casted = ctx.builder.CreatePointerCast(
+                calleeVal,
+                llvm::PointerType::get(expectedFnType, 0),
+                "pipeline_func_cast"
+            );
+            return ctx.builder.CreateCall(expectedFnType, casted, args, "pipeline_call");
+        }
+
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, step->callable->loc,
+                                "pipeline step callee is not a function");
+        return nullptr;
+    }
+
+    // ─── Verify argument count matches function signature ────────────────
+    if (args.size() != fnType->getNumParams()) {
+        // Sema should have validated this, but we truncate just in case
+        // This can happen with variadic parameters that we've already handled
+        if (args.size() > fnType->getNumParams()) {
+            args.resize(fnType->getNumParams());
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, step->callable->loc,
+                                    "pipeline step argument count mismatch: expected ",
+                                    fnType->getNumParams(), ", got ", args.size());
+            return nullptr;
+        }
+    }
+
+    return ctx.builder.CreateCall(callee, args, "pipeline_call");
 }
 
 // =============================================================================
