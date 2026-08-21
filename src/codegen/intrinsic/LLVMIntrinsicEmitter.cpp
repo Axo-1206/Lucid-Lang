@@ -89,45 +89,6 @@ llvm::Value* emitLLVMMathIntrinsic(
         }
     }
 
-    // ─── pow ──────────────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Pow) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#pow' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Value* a = args[0];
-        llvm::Value* b = args[1];
-
-        if (a->getType()->isIntegerTy() && b->getType()->isIntegerTy()) {
-            a = ctx.builder.CreateSIToFP(a, llvm::Type::getDoubleTy(ctx.llvmCtx));
-            b = ctx.builder.CreateSIToFP(b, llvm::Type::getDoubleTy(ctx.llvmCtx));
-        }
-
-        llvm::Type* resultType = a->getType();
-        if (!resultType->isFloatingPointTy()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "intrinsic '#pow' requires floating-point or integer arguments");
-            return nullptr;
-        }
-
-        std::string powName = (resultType->isDoubleTy()) ? "pow" : "powf";
-        llvm::FunctionType* powType = llvm::FunctionType::get(
-            resultType,
-            {resultType, resultType},
-            false
-        );
-        llvm::Function* powFunc = ctx.getOrInsertFunction(powName, powType);
-        if (!powFunc) {
-            ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
-                                   "could not find '#pow' function for type");
-            return nullptr;
-        }
-
-        return ctx.builder.CreateCall(powFunc, {a, b});
-    }
-
     // ─── abs ──────────────────────────────────────────────────────────────
     // Integer and floating-point abs are different LLVM intrinsics with
     // different signatures - dispatch on the operand type rather than
@@ -173,7 +134,27 @@ llvm::Value* emitLLVMMathIntrinsic(
         return nullptr;
     }
 
-    // ─── sqrt / fma / ceil / floor / round ────────────────────────────────
+    // ─── sqrt / fma / ceil / floor / round / pow ──────────────────────────
+    // pow needs its integer-argument promotion handled before it can join
+    // the shared llvm::Intrinsic dispatch below (llvm.pow has no integer
+    // overload) - everything else here already arrives as the right type.
+    if (kind == IntrinsicKind::Pow) {
+        if (args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#pow' requires 2 arguments");
+            return nullptr;
+        }
+        if (args[0]->getType()->isIntegerTy() && args[1]->getType()->isIntegerTy()) {
+            args[0] = ctx.builder.CreateSIToFP(args[0], llvm::Type::getDoubleTy(ctx.llvmCtx));
+            args[1] = ctx.builder.CreateSIToFP(args[1], llvm::Type::getDoubleTy(ctx.llvmCtx));
+        }
+        if (!args[0]->getType()->isFloatingPointTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "intrinsic '#pow' requires floating-point or integer arguments");
+            return nullptr;
+        }
+    }
+
     llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
     switch (kind) {
         case IntrinsicKind::Sqrt:  id = llvm::Intrinsic::sqrt;  break;
@@ -181,6 +162,7 @@ llvm::Value* emitLLVMMathIntrinsic(
         case IntrinsicKind::Ceil:  id = llvm::Intrinsic::ceil;  break;
         case IntrinsicKind::Floor: id = llvm::Intrinsic::floor; break;
         case IntrinsicKind::Round: id = llvm::Intrinsic::round; break;
+        case IntrinsicKind::Pow:   id = llvm::Intrinsic::pow;   break;
         default: break;
     }
 
@@ -190,11 +172,14 @@ llvm::Value* emitLLVMMathIntrinsic(
         return nullptr;
     }
 
-    size_t requiredArgs = (kind == IntrinsicKind::Fma) ? 3 : 1;
+    size_t requiredArgs = 1;
+    if (kind == IntrinsicKind::Fma) requiredArgs = 3;
+    else if (kind == IntrinsicKind::Pow) requiredArgs = 2;
+
     if (args.size() < requiredArgs) {
         ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                "intrinsic '#", name, "' requires ",
-                               (kind == IntrinsicKind::Fma ? "3 arguments" : "an argument"));
+                               requiredArgs, requiredArgs == 1 ? " argument" : " arguments");
         return nullptr;
     }
 

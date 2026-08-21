@@ -35,6 +35,31 @@ static llvm::Value* emitStrConcat(llvm::Value* a, llvm::Value* b, CodeGenContext
     return ctx.builder.CreateCall(concatFunc, {a, b});
 }
 
+// ─── Helper: Format an integer as a string ─────────────────────────────
+
+static llvm::Value* emitIntToStr(llvm::Value* val, PrimitiveKind kind, CodeGenContext& ctx) {
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+    
+    // Extend or truncate to i64 for the runtime function
+    llvm::Value* intVal = val;
+    if (intVal->getType() != i64) {
+        if (isSignedIntegerKind(kind)) {
+            intVal = ctx.builder.CreateSExtOrTrunc(intVal, i64);
+        } else {
+            intVal = ctx.builder.CreateZExtOrTrunc(intVal, i64);
+        }
+    }
+    
+    // Use signed or unsigned formatter based on the kind
+    if (isSignedIntegerKind(kind)) {
+        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
+        return ctx.builder.CreateCall(fn, {intVal});
+    } else {
+        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::UintToStr);
+        return ctx.builder.CreateCall(fn, {intVal});
+    }
+}
+
 // ─── #tostr core: recursive value formatter ───────────────────────────────
 //
 // Shared by the top-level #tostr(x) call and by struct-field formatting,
@@ -75,75 +100,51 @@ static llvm::Value* emitTostrValue(
     if (type && type->isa<PrimitiveTypeAST>()) {
         PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
 
-        switch (kind) {
-            case PrimitiveKind::String:
-                // Already a string - identity, no runtime call needed.
-                return val;
-
-            case PrimitiveKind::Bool: {
-                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::BoolToStr);
-                return ctx.builder.CreateCall(fn, {val});
-            }
-
-            case PrimitiveKind::Char: {
-                llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
-                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::CharToStr);
-                llvm::Value* charVal = val;
-                if (charVal->getType() != i32) {
-                    charVal = ctx.builder.CreateZExtOrTrunc(charVal, i32);
-                }
-                return ctx.builder.CreateCall(fn, {charVal});
-            }
-
-            case PrimitiveKind::Byte:
-            case PrimitiveKind::Short:
-            case PrimitiveKind::Int:
-            case PrimitiveKind::Long:
-            case PrimitiveKind::Int8:
-            case PrimitiveKind::Int16:
-            case PrimitiveKind::Int32:
-            case PrimitiveKind::Int64: {
-                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
-                llvm::Value* intVal = val;
-                if (intVal->getType() != i64) {
-                    intVal = ctx.builder.CreateSExtOrTrunc(intVal, i64);
-                }
-                return ctx.builder.CreateCall(fn, {intVal});
-            }
-
-            case PrimitiveKind::Ubyte:
-            case PrimitiveKind::Ushort:
-            case PrimitiveKind::Uint:
-            case PrimitiveKind::Ulong:
-            case PrimitiveKind::Uint8:
-            case PrimitiveKind::Uint16:
-            case PrimitiveKind::Uint32:
-            case PrimitiveKind::Uint64: {
-                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::UintToStr);
-                llvm::Value* uintVal = val;
-                if (uintVal->getType() != i64) {
-                    uintVal = ctx.builder.CreateZExtOrTrunc(uintVal, i64);
-                }
-                return ctx.builder.CreateCall(fn, {uintVal});
-            }
-
-            case PrimitiveKind::Float:
-            case PrimitiveKind::Double:
-            case PrimitiveKind::Decimal: {
-                // NOTE: Decimal is 128-bit high-precision. Routing it
-                // through the same double formatter as Float/Double loses
-                // precision - a real fix needs its own
-                // __lucid_decimal_to_str helper. Known, scoped-out gap
-                // for Decimal specifically.
-                llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
-                llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::FloatToStr);
-                llvm::Value* floatVal = val;
-                if (floatVal->getType() != f64) {
-                    floatVal = ctx.builder.CreateFPExt(floatVal, f64);
-                }
-                return ctx.builder.CreateCall(fn, {floatVal});
-            }
+        // ─── String: identity ──────────────────────────────────────────────
+        if (kind == PrimitiveKind::String) {
+            return val;
         }
+
+        // ─── Bool ──────────────────────────────────────────────────────────
+        if (kind == PrimitiveKind::Bool) {
+            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::BoolToStr);
+            return ctx.builder.CreateCall(fn, {val});
+        }
+
+        // ─── Char ──────────────────────────────────────────────────────────
+        if (kind == PrimitiveKind::Char) {
+            llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
+            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::CharToStr);
+            llvm::Value* charVal = val;
+            if (charVal->getType() != i32) {
+                charVal = ctx.builder.CreateZExtOrTrunc(charVal, i32);
+            }
+            return ctx.builder.CreateCall(fn, {charVal});
+        }
+
+        // ─── Integer (signed or unsigned) ──────────────────────────────────
+        if (isIntegerKind(kind)) {
+            return emitIntToStr(val, kind, ctx);
+        }
+
+        // ─── Floating point ─────────────────────────────────────────────────
+        if (isFloatKind(kind)) {
+            // NOTE: Decimal is 128-bit high-precision. Routing it
+            // through the same double formatter as Float/Double loses
+            // precision - a real fix needs its own
+            // __lucid_decimal_to_str helper. Known, scoped-out gap
+            // for Decimal specifically.
+            llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
+            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::FloatToStr);
+            llvm::Value* floatVal = val;
+            if (floatVal->getType() != f64) {
+                floatVal = ctx.builder.CreateFPExt(floatVal, f64);
+            }
+            return ctx.builder.CreateCall(fn, {floatVal});
+        }
+
+        // ─── Fallback for unknown primitive ──────────────────────────────
+        return ctx.createStringLiteral("<unknown primitive>");
     }
 
     // ─── Named types: enum or struct ──────────────────────────────────────
@@ -151,9 +152,6 @@ static llvm::Value* emitTostrValue(
         NamedTypeAST* named = type->as<NamedTypeAST>();
 
         // ─── Enum: "EnumType.VariantName" via a runtime switch ─────────────
-        // The value is only known at runtime, so this has to be a real
-        // switch, but every case result is a compile-time string literal -
-        // this compiles down to a plain jump table, no string building.
         if (named->resolvedDecl && named->resolvedDecl->isa<EnumDeclAST>()) {
             EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();
             std::string enumName = ctx.pool.lookup(enumDecl->name);
@@ -184,12 +182,7 @@ static llvm::Value* emitTostrValue(
                 ctx.builder.CreateBr(mergeBlock);
             }
 
-            // ─── Default: value matches no known variant. Shouldn't be
-            // reachable for a well-typed program, but the value is only
-            // known at runtime (corrupted/uninitialized memory could
-            // reach here) - fall back to the raw backing integer rather
-            // than trapping, since #tostr is a diagnostic/debug tool and
-            // shouldn't itself crash the program it's inspecting.
+            // ─── Default: value matches no known variant ───────────────────
             ctx.builder.SetInsertPoint(defaultBlock);
             llvm::Value* asI64 = ctx.builder.CreateSExtOrTrunc(val, i64);
             llvm::Function* intFn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
@@ -238,8 +231,7 @@ static llvm::Value* emitTostrValue(
                     val, static_cast<unsigned>(index), "tostr_field_val");
             };
 
-            // ─── Custom `str` field override: call it instead of the
-            // generic field-by-field format ──────────────────────────────
+            // ─── Custom `str` field override ──────────────────────────────
             InternedString strFieldName = ctx.pool.intern("str");
             size_t strIndex = structDecl->indexOfField(strFieldName);
             if (strIndex != SIZE_MAX) {
@@ -260,9 +252,6 @@ static llvm::Value* emitTostrValue(
                         closureVal, 1, "str_override_env");
                     return emitClosureCall(funcPtr, envPtr, {}, strType, ctx);
                 }
-                // A field named `str` exists but isn't a zero-arg
-                // string-returning closure - fall through to generic
-                // field formatting rather than silently misinterpreting it.
             }
 
             // ─── No override: synthesize "Name{ f1: v1, f2: v2 }" ──────────
@@ -301,6 +290,7 @@ static llvm::Value* emitTostrValue(
     assert(false && "#tostr is not implemented for this type yet");
     return llvm::Constant::getNullValue(strType);
 }
+
 
 // ─── Type Inspection Intrinsics ──────────────────────────────────────────
 
