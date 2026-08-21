@@ -2164,6 +2164,24 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
     
     // ─── Step 5: Special case: Function takes no parameters ────────────────
     if (funcType->params.empty()) {
+        // ─── WARNING: All upstream values are discarded ──────────────────────
+        if (!argTypes.empty()) {
+            // Build a description of what's being discarded
+            std::string discardedTypes;
+            for (size_t i = 0; i < argTypes.size(); ++i) {
+                if (i > 0) discardedTypes += ", ";
+                discardedTypes += debug::typeToString(argTypes[i], ctx.pool);
+            }
+            
+            ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, step->callable,
+                                    "pipeline step function takes no parameters, but ",
+                                    argTypes.size(), " value(s) are being discarded",
+                                    " (", discardedTypes, ")");
+            ctx.diagnostics.note(step->callable,
+                                 "The function '", debug::typeToString(callableType, ctx.pool),
+                                 "' ignores all upstream values.", "removing this step if the values are not needed.");
+        }
+        
         if (!funcType->returnType) {
             ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                                   "pipeline step returns void (cannot continue pipeline)");
@@ -2204,6 +2222,25 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                   "pipeline step expects ", paramCount,
                                   " argument(s), but only ", argCount, " are available");
             return ctx.getUnknownType();
+        }
+        
+        // ─── WARNING: Extra arguments are being discarded ────────────────────
+        if (argCount > paramCount) {
+            size_t discardedCount = argCount - paramCount;
+            std::string discardedTypes;
+            for (size_t i = paramCount; i < argCount; ++i) {
+                if (i > paramCount) discardedTypes += ", ";
+                discardedTypes += debug::typeToString(argTypes[i], ctx.pool);
+            }
+            
+            ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, step->callable,
+                                    "pipeline step discards ", discardedCount,
+                                    " extra argument(s)", 
+                                    discardedCount > 0 ? " (" + discardedTypes + ")" : "");
+            ctx.diagnostics.note(step->callable,
+                                 "The function '", debug::typeToString(callableType, ctx.pool),
+                                 "' expects only ", paramCount, " parameter(s), but ",
+                                 argCount, " value(s) are available. Extra values are discarded.");
         }
     }
     
