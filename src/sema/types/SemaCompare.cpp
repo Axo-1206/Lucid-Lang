@@ -153,7 +153,13 @@ static bool isTraitConformant(TypeAST* source,
     if (!source->isa<NamedTypeAST>()) return false;
     
     NamedTypeAST* namedSource = source->as<NamedTypeAST>();
-    TypeDeclAST* sourceDecl = ctx.lookupType(namedSource->name);
+    
+    // ─── Ensure resolvedDecl is populated ──────────────────────
+    // resolveNamedType is a no-op if already resolved, but ensures we have
+    // the declaration before checking it.
+    resolveNamedType(namedSource, ctx);
+    
+    TypeDeclAST* sourceDecl = namedSource->resolvedDecl;
     if (!sourceDecl) return false;
 
     if (!sourceDecl->isa<StructDeclAST>()) return false;
@@ -166,9 +172,9 @@ static bool isTraitConformant(TypeAST* source,
             return true;
         }
     }
-    
     return false;
 }
+
 
 // ─── Assignability ───────────────────────────────────────────────────────
 
@@ -316,23 +322,37 @@ bool isCharType(TypeAST* type) {
 
 bool isStructType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
+    
     NamedTypeAST* named = type->as<NamedTypeAST>();
-    TypeDeclAST* decl = ctx.lookupType(named->name);
-    return decl && decl->isa<StructDeclAST>();
+    
+    // ─── Ensure resolvedDecl is populated ──────────────────────
+    // resolveNamedType is a no-op if already resolved, but ensures we have
+    // the declaration before checking it.
+    resolveNamedType(named, ctx);
+    
+    return named->resolvedDecl && named->resolvedDecl->isa<StructDeclAST>();
 }
 
 bool isEnumType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
+    
     NamedTypeAST* named = type->as<NamedTypeAST>();
-    TypeDeclAST* decl = ctx.lookupType(named->name);
-    return decl && decl->isa<EnumDeclAST>();
+    
+    // ─── Ensure resolvedDecl is populated ──────────────────────
+    resolveNamedType(named, ctx);
+    
+    return named->resolvedDecl && named->resolvedDecl->isa<EnumDeclAST>();
 }
 
 bool isTraitType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
+    
     NamedTypeAST* named = type->as<NamedTypeAST>();
-    TypeDeclAST* decl = ctx.lookupType(named->name);
-    return decl && decl->isa<TraitDeclAST>();
+    
+    // ─── Ensure resolvedDecl is populated ──────────────────────
+    resolveNamedType(named, ctx);
+    
+    return named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>();
 }
 
 bool isGenericParamType(TypeAST* type, SemaContext& ctx) {
@@ -355,14 +375,17 @@ bool isValidSwitchType(TypeAST* type, SemaContext& ctx) {
     return false;
 }
 
-const EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx) {
+EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return nullptr;
     
     NamedTypeAST* named = type->as<NamedTypeAST>();
-    TypeDeclAST* decl = ctx.lookupType(named->name);
-    if (!decl || !decl->isa<EnumDeclAST>()) return nullptr;
     
-    return decl->as<EnumDeclAST>();
+    // ─── Ensure resolvedDecl is populated ──────────────────────
+    resolveNamedType(named, ctx);
+    
+    if (!named->resolvedDecl || !named->resolvedDecl->isa<EnumDeclAST>()) return nullptr;
+    
+    return named->resolvedDecl->as<EnumDeclAST>();
 }
 
 bool isSwitchCaseCompatible(ExprAST* value, 
@@ -445,9 +468,15 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
 
     if (type->isa<NamedTypeAST>()) {
         NamedTypeAST* named = type->as<NamedTypeAST>();
-        TypeDeclAST* decl = ctx.lookupType(named->name);
+        
+        // ─── Ensure resolvedDecl is populated ──────────────────────
+        resolveNamedType(named, ctx);
+        
+        TypeDeclAST* decl = named->resolvedDecl;
         if (!decl) return false;
+        
         if (decl->isa<TraitDeclAST>()) return false;
+        
         if (decl->isa<StructDeclAST>()) {
             StructDeclAST* structDecl = decl->as<StructDeclAST>();
             for (FieldDeclAST* field : structDecl->fields) {
@@ -455,6 +484,7 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
             }
             return true;
         }
+        
         if (decl->isa<EnumDeclAST>()) return true;
         return false;
     }

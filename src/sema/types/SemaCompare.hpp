@@ -68,7 +68,7 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx);
 // ─── Switch Type Checks ─────────────────────────────────────────────────
 
 bool isValidSwitchType(TypeAST* type, SemaContext& ctx);
-const EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx);
+EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx);
 bool isSwitchCaseCompatible(ExprAST* value, 
                              TypeAST* subjectType, 
                              SemaContext& ctx);
