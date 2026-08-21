@@ -3096,8 +3096,9 @@ const scale (factor float)(v float) -> float = { return v * factor };
 -- scale is curried: (factor float) -> (float) -> float
 -- scale(2.0) returns: (v float) -> float
 
--- Without !: scale(2.0) is a complete value — no slot for upstream
-42.0 |> scale(2.0);    -- ERROR: upstream has no parameter to fill
+-- `!` is mandatory whenever a step supplies explicit arguments -
+-- scale(2.0) without ! is not valid pipeline_step syntax at all:
+42.0 |> scale(2.0);    -- SYNTAX ERROR: missing required '!'
 
 -- With !: upstream fills the first unfilled parameter
 42.0 |> scale(2.0)!;    -- Calls scale(42.0)(2.0) → 84.0
@@ -3177,35 +3178,29 @@ const result string =
 
 ### Parameter Filling Rules
 
-The pipeline fills parameters in **strict order**:
+The pipeline fills parameters in **strict order**, and there are only two step forms — the EBNF above doesn't have a third "parenthesized call without `!`" alternative, so that form doesn't parse at all:
 
 | Step Type              | Behavior                                                                                 |
 | ---------------------- | ---------------------------------------------------------------------------------------- |
-| `fn()` (no `!`)        | No upstream values are injected. The function must already be fully applied.             |
 | `fn(args)!` (with `!`) | Upstream values are injected as the **first** arguments. Remaining `args` fill the rest. |
 | `fn` (no parentheses)  | The upstream value is passed as the **only** argument (must have exactly one parameter). |
 
+`!` is **mandatory** whenever a step supplies explicit arguments — there is no bare `fn(args)` form, with or without upstream injection. This isn't a behavior toggle: injection always happens, unconditionally, whenever a step has a callable with a matching parameter to fill. `!` exists purely as a required, visible annotation marking "this call is intentionally incomplete — upstream fills what's missing," for the reader's benefit, not the compiler's.
+
 ```lucid
-const add (a int)(b int) -> int = { return a + b };
+const add (a int, b int) -> int = { return a + b };
 
--- Case 1: fn() (no !) — no injection
-1 |> add(5);        -- ERROR: add(5) returns (b int) -> int, but upstream has nowhere to go
-1 |> add(5, 6);     -- OK: add is fully applied (5, 6) → 11, upstream 1 is discarded
-
--- Case 2: fn(args)! — upstream injected as first args
-1 |> add(5)!;       -- OK: 1 fills (a int), 5 fills (b int) → 6
-1 |> add(5, 6)!;    -- OK: 1 fills (a int), but then (b int) already filled by 6 → 7
+-- fn(args)! — upstream injected as first arg, args fill the rest
+1 |> add(5)!;       -- OK: 1 fills a, 5 fills b → 6
+1 |> add(5, 6)!;    -- OK: 1 fills a, but b is already filled by 6 → 7
                      -- Extra arguments are discarded
 
--- Case 3: fn (no parentheses) — upstream is the only argument
+-- fn (no parentheses) — upstream is the only argument
 1 |> add;           -- ERROR: add expects 2 parameters, but only 1 upstream value
-1 |> add(5);        -- ERROR: no !, so no injection
-1 |> add(5)!;       -- OK: 1 fills (a), 5 fills (b) → 6
 
 -- With single-parameter function
 const double (x int) -> int = { return x * 2 };
 1 |> double;        -- OK: upstream 1 fills (x int) → 2
-1 |> double(3);     -- OK: upstream 1 is discarded, double(3) → 6
 ```
 
 ### Anonymous Functions in Pipelines
