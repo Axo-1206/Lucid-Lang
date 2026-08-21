@@ -49,11 +49,6 @@ void registerStructName(StructDeclAST* decl, SemaContext& ctx);
 void registerEnumName(EnumDeclAST* decl, SemaContext& ctx);
 void registerTraitName(TraitDeclAST* decl, SemaContext& ctx);
 
-// ─── Struct Field Registration (Phase 1 of struct two-pass) ────────────
-
-/// @brief Register all field names in a struct (no type resolution).
-void registerStructFieldNames(StructDeclAST* decl, SemaContext& ctx);
-
 // =============================================================================
 // TYPE RESOLUTION (Phase 2)
 // =============================================================================
