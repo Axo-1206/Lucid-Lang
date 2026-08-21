@@ -31,6 +31,8 @@ enum class ArrayKind {
     Fixed    // [N]T
 };
 
+// ─── PrimitiveKind ─────────────────────────────────────────────────────────
+
 /// @brief Identifies a primitive type in the type system.
 /// 
 /// The parser maps token types (e.g., `TYPE_INT`) to this enum.
@@ -73,6 +75,112 @@ enum class PrimitiveKind {
     String,
     Char,
 };
+
+/// @brief Get the bit width of a primitive kind.
+/// 
+/// This is a property of the primitive kind itself, not of any particular
+/// phase (Sema or CodeGen). It's defined here so both phases can share it.
+/// 
+/// @param kind The primitive kind.
+/// @return The bit width (8, 16, 32, 64), or 0 if the kind is not an integer.
+/// 
+/// @note Bool and Char are both 8 bits wide when lowered to LLVM, but
+///       Sema's type system treats them as distinct categories. This
+///       function returns the width regardless of category.
+inline size_t getPrimitiveBitWidth(PrimitiveKind kind) {
+    switch (kind) {
+        // ─── 8-bit ──────────────────────────────────────────────────────
+        case PrimitiveKind::Bool:
+        case PrimitiveKind::Char:
+        case PrimitiveKind::Byte:
+        case PrimitiveKind::Ubyte:
+        case PrimitiveKind::Int8:
+        case PrimitiveKind::Uint8:
+            return 8;
+
+        // ─── 16-bit ─────────────────────────────────────────────────────
+        case PrimitiveKind::Short:
+        case PrimitiveKind::Ushort:
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Uint16:
+            return 16;
+
+        // ─── 32-bit ─────────────────────────────────────────────────────
+        case PrimitiveKind::Int:
+        case PrimitiveKind::Uint:
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Uint32:
+            return 32;
+
+        // ─── 64-bit ─────────────────────────────────────────────────────
+        case PrimitiveKind::Long:
+        case PrimitiveKind::Ulong:
+        case PrimitiveKind::Int64:
+        case PrimitiveKind::Uint64:
+            return 64;
+
+        // ─── Non-integer types ──────────────────────────────────────────
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+        case PrimitiveKind::Decimal:
+        case PrimitiveKind::String:
+            return 0;
+
+        default:
+            return 0;
+    }
+}
+
+/// @brief Check if a primitive kind is a signed integer type.
+inline bool isSignedIntegerKind(PrimitiveKind kind) {
+    switch (kind) {
+        case PrimitiveKind::Byte:
+        case PrimitiveKind::Short:
+        case PrimitiveKind::Int:
+        case PrimitiveKind::Long:
+        case PrimitiveKind::Int8:
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Int64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Check if a primitive kind is an unsigned integer type.
+inline bool isUnsignedIntegerKind(PrimitiveKind kind) {
+    switch (kind) {
+        case PrimitiveKind::Ubyte:
+        case PrimitiveKind::Ushort:
+        case PrimitiveKind::Uint:
+        case PrimitiveKind::Ulong:
+        case PrimitiveKind::Uint8:
+        case PrimitiveKind::Uint16:
+        case PrimitiveKind::Uint32:
+        case PrimitiveKind::Uint64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Check if a primitive kind is a floating-point type.
+inline bool isFloatKind(PrimitiveKind kind) {
+    switch (kind) {
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+        case PrimitiveKind::Decimal:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Check if a primitive kind is an integer type (signed or unsigned).
+inline bool isIntegerKind(PrimitiveKind kind) {
+    return isSignedIntegerKind(kind) || isUnsignedIntegerKind(kind);
+}
 
 /// @brief Represents a primitive type keyword.
 /// 

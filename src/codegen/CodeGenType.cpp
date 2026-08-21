@@ -608,33 +608,14 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type) 
 // ─── Helper Functions ─────────────────────────────────────────────────────
 
 llvm::IntegerType* getIntegerType(CodeGenContext& ctx, PrimitiveKind kind) {
-    switch (kind) {
-        case PrimitiveKind::Bool:
-        case PrimitiveKind::Int8:
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Uint8:
-        case PrimitiveKind::Ubyte:
-        case PrimitiveKind::Char:
-            return llvm::Type::getInt8Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Uint16:
-        case PrimitiveKind::Ushort:
-            return llvm::Type::getInt16Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Uint32:
-        case PrimitiveKind::Uint:
-            return llvm::Type::getInt32Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int64:
-        case PrimitiveKind::Long:
-        case PrimitiveKind::Uint64:
-        case PrimitiveKind::Ulong:
-            return llvm::Type::getInt64Ty(ctx.llvmCtx);
-        default:
-            return llvm::Type::getInt32Ty(ctx.llvmCtx);
+    size_t bits = getPrimitiveBitWidth(kind);
+    if (bits == 0) {
+        // Fallback for non-integer types
+        return llvm::Type::getInt32Ty(ctx.llvmCtx);
     }
+    return llvm::IntegerType::get(ctx.llvmCtx, static_cast<unsigned>(bits));
 }
+
 
 llvm::Type* getFloatType(CodeGenContext& ctx, PrimitiveKind kind) {
     switch (kind) {

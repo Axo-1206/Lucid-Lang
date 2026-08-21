@@ -109,32 +109,16 @@ TypeAST* unwrapFallible(TypeAST* type) {
 
 size_t getIntegerBitWidth(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return 0;
-    auto kind = type->as<PrimitiveTypeAST>()->primitiveKind;
     
-    switch (kind) {
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Ubyte:
-        case PrimitiveKind::Int8:
-        case PrimitiveKind::Uint8:
-            return 8;
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Ushort:
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Uint16:
-            return 16;
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Uint:
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Uint32:
-            return 32;
-        case PrimitiveKind::Long:
-        case PrimitiveKind::Ulong:
-        case PrimitiveKind::Int64:
-        case PrimitiveKind::Uint64:
-            return 64;
-        default:
-            return 0;
+    // Only return a width if this is actually an integer type.
+    // Bool and Char are NOT integers in Sema's type system.
+    PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
+    
+    if (!isIntegerKind(kind)) {
+        return 0;
     }
+    
+    return getPrimitiveBitWidth(kind);
 }
 
 TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx) {
