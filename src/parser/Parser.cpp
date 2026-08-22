@@ -16,6 +16,7 @@
 #include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugUtils.hpp"
+#include "core/trace/Trace.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -76,6 +77,12 @@ ModuleAST* parse(const std::string& path,
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
         // Infrastructure error - compiler can't resolve the cycle
         Trace::error("Circular import detected: ", path);
+        
+        // User-facing diagnostic with proper error code
+        ctx.diagnostics.errorAt(DiagCode::Sem_ModuleCycle,
+                                SourceLocation(1, 1),  // Start of file
+                                "Circular import detected: ", path);
+        
         auto* dummy = ctx.arena.make<ModuleAST>();
         dummy->filePath = filePath;
         dummy->hasErrors = true;
@@ -167,7 +174,6 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
         
         // Skip stray semicolons
         if (stream.check(TokenType::SEMICOLON)) {
-            Trace::detail("Skipping stray semicolon");
             stream.consume();
             continue;
         }
@@ -199,7 +205,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             consecutiveFailures = 0;
             lastPos = stream.getPos();
             
-            Trace::detail("Parsed declaration #", declCount);
+            Trace::detail("Parsed declaration: ", declCount);
             
             if (doc) {
                 decl->doc = std::move(doc);

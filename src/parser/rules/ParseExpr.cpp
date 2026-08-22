@@ -33,7 +33,6 @@ namespace parser {
 // =============================================================================
 
 ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseExpr: parsing expression");
     
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -45,7 +44,6 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
 }
 
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
-    LOG_PARSER_DETAIL("parsePrattExpr: min precedence: ", minPrec);
     
     ExprAST* lhs = parsePrefixExpr(stream, ctx);
     if (!lhs) {
@@ -119,8 +117,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
 }
 
 ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parsePrefixExpr");
-    
+
     SourceLocation loc = stream.currentLoc();
     TokenType current = stream.peekType();
     
@@ -160,8 +157,7 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parsePrimaryExpr");
-    
+
     SourceLocation loc = stream.currentLoc();
     TokenType current = stream.peekType();
     
@@ -312,7 +308,6 @@ LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
     auto* literal = ctx.arena.make<LiteralExprAST>(kind, value);
     literal->loc = loc;
     
-    LOG_PARSER_DETAIL("parseLiteralExpr: parsed literal");
     return literal;
 }
 
@@ -322,8 +317,6 @@ LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
 
 ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseArrayLiteralExpr");
     
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
@@ -389,7 +382,6 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     auto* array = ctx.arena.make<ArrayLiteralExprAST>(builder.build());
     array->loc = loc;
     
-    LOG_PARSER_DETAIL("parseArrayLiteralExpr: ", elements.size(), " elements");
     return array;
 }
 
@@ -399,8 +391,6 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
 
 IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseIfExpr");
     
     if (!stream.match(TokenType::IF)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
@@ -450,7 +440,6 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     auto* ifExpr = ctx.arena.make<IfExprAST>(condition, thenBranch, elseBranch);
     ifExpr->loc = loc;
 
-    LOG_PARSER_DETAIL("parseIfExpr: parsed if expression");
     return ifExpr;
 }
 
@@ -461,8 +450,6 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
 StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx,
                                               InternedString typeName, ArenaSpan<TypeAST*> genericArgs) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseStructLiteralExpr: ", ctx.pool.lookup(typeName));
     
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
@@ -547,7 +534,6 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName, genericArgs, builder.build());
     structLit->loc = loc;
     
-    LOG_PARSER_DETAIL("parseStructLiteralExpr: ", inits.size(), " fields");
     return structLit;
 }
 
@@ -557,8 +543,6 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseAnonFuncExpr");
     
     // ─── Parse the leading cluster - this one has names ──────────────────
     std::vector<ParamAST*> leadingParams;
@@ -627,7 +611,6 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
     anonFunc->loc = loc;
     
-    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function");
     return anonFunc;
 }
 
@@ -636,7 +619,6 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
-    LOG_PARSER_DETAIL("parsePostfixExpr");
     
     if (!lhs) {
         return nullptr;
@@ -766,8 +748,6 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
                             ExprAST* callee, ArenaSpan<TypeAST*> genericArgs) {
     SourceLocation loc = stream.currentLoc();
     
-    LOG_PARSER_DETAIL("parseCallExpr");
-    
     if (!callee) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "expected callee");
@@ -808,15 +788,12 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     call->callee = callee;
     call->genericArgs = genericArgs;
     call->args = args;
-    
-    LOG_PARSER_DETAIL("parseCallExpr: ", args.size(), " args", hasArgPack ? " with pack" : "");
+
     return call;
 }
 
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseIntrinsicCallExpr");
     
     if (!stream.check(TokenType::HASH)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
@@ -841,14 +818,11 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     intrinsic->loc = loc;
     intrinsic->args = args;
     
-    LOG_PARSER_DETAIL("parseIntrinsicCallExpr: #", ctx.pool.lookup(intrinsicName));
     return intrinsic;
 }
 
 IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseIndexExpr");
     
     if (!target) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -903,8 +877,6 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
 
 SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseSliceExpr");
     
     if (!target) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1034,8 +1006,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
     
     auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
     slice->loc = loc;
-    
-    LOG_PARSER_DETAIL("parseSliceExpr: parsed slice");
+
     return slice;
 }
 
@@ -1054,8 +1025,6 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
 /// @return FieldAccessExprAST* The parsed field access expression
 FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseFieldAccessExpr");
     
     if (!lhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1113,7 +1082,6 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
     fieldAccess->loc = loc;
     fieldAccess->object = lhs;
     
-    LOG_PARSER_DETAIL("parseFieldAccessExpr: parsed '.", ctx.pool.lookup(fieldName), "'");
     return fieldAccess;
 }
 
@@ -1131,8 +1099,6 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
 /// @return ModuleAccessExprAST* The parsed module access expression
 ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseModuleAccessExpr");
     
     // ─── 1. Parse module name ─────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -1175,8 +1141,6 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     moduleAccess->loc = loc;
     moduleAccess->genericArgs = genericArgs;
     
-    LOG_PARSER_DETAIL("parseModuleAccessExpr: parsed '", 
-                      ctx.pool.lookup(moduleName), ":", ctx.pool.lookup(memberName), "'");
     return moduleAccess;
 }
 
@@ -1186,8 +1150,6 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
 
 ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* seed) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parsePipelineExpr");
     
     if (!seed) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1230,14 +1192,11 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
     auto* pipeline = ctx.arena.make<PipelineExprAST>(seed, builder.build());
     pipeline->loc = loc;
     
-    LOG_PARSER_DETAIL("parsePipelineExpr: ", steps.size(), " steps");
     return pipeline;
 }
 
 PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parsePipelineStep");
     
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1322,14 +1281,11 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     auto* step = ctx.arena.make<PipelineStepAST>(callee, packArgs);
     step->loc = loc;
     
-    LOG_PARSER_DETAIL("parsePipelineStep: parsed step");
     return step;
 }
 
 ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseComposeExpr");
     
     if (!lhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1379,14 +1335,11 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     auto* compose = ctx.arena.make<ComposeExprAST>(lhs, builder.build());
     compose->loc = loc;
     
-    LOG_PARSER_DETAIL("parseComposeExpr: ", operands.size(), " operands");
     return compose;
 }
 
 ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseComposeOperand");
     
     ExprAST* callable = parseExpr(stream, ctx);
     if (!callable) {
@@ -1410,8 +1363,7 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
     
     auto* operand = ctx.arena.make<ComposeOperandAST>(callable, genericArgs);
     operand->loc = loc;
-    
-    LOG_PARSER_DETAIL("parseComposeOperand: parsed operand");
+
     return operand;
 }
 
@@ -1495,8 +1447,6 @@ AssignOp tokenToAssignOp(TokenType type) {
 ExprAST* parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, TokenType opTok) {
     SourceLocation loc = stream.currentLoc();
     
-    LOG_PARSER_DETAIL("parseInfixAssign");
-    
     if (!lhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "expected left-hand side");
@@ -1518,14 +1468,11 @@ ExprAST* parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprAST* lhs,
     assign->lhs = lhs;
     assign->rhs = rhs;
     
-    LOG_PARSER_DETAIL("parseInfixAssign: parsed assignment");
     return assign;
 }
 
 ExprAST* parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseInfixNullCoalesce");
     
     if (!lhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1544,14 +1491,11 @@ ExprAST* parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprAST
     auto* coalesce = ctx.arena.make<NullCoalesceExprAST>(lhs, rhs);
     coalesce->loc = loc;
 
-    LOG_PARSER_DETAIL("parseInfixNullCoalesce: parsed null coalesce");
     return coalesce;
 }
 
 ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, TokenType opTok, int prec) {
     SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseInfixBinary: ", token_type_name(opTok));
     
     if (!lhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
@@ -1586,7 +1530,6 @@ ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprAST* lhs,
     binary->left = lhs;
     binary->right = rhs;
     
-    LOG_PARSER_DETAIL("parseInfixBinary: parsed binary expression");
     return binary;
 }
 

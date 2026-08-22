@@ -35,8 +35,6 @@ namespace parser {
 // =============================================================================
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("looksLikeFuncDecl: checking");
-    
     size_t savedPos = stream.getPos();
     bool result = false;
     
@@ -72,7 +70,6 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // 4. Check for parameter group start
     if (stream.check(TokenType::LPAREN)) {
         result = true;
-        LOG_PARSER_DETAIL("looksLikeFuncDecl: true");
     }
     
     stream.setPos(savedPos);
@@ -84,8 +81,6 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("looksLikeAnonFunc: checking");
-    
     size_t savedPos = stream.getPos();
     bool result = false;
     
@@ -196,7 +191,6 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
     // 4. Must end with '{'
     if (stream.check(TokenType::LBRACE)) {
         result = true;
-        LOG_PARSER_DETAIL("looksLikeAnonFunc: true");
     }
     
     stream.setPos(savedPos);
@@ -208,8 +202,6 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("looksLikeStructLiteral: checking");
-    
     size_t savedPos = stream.getPos();
     bool result = false;
     
@@ -245,7 +237,6 @@ bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx) {
         
         if (stream.check(TokenType::LBRACE)) {
             result = true;
-            LOG_PARSER_DETAIL("looksLikeStructLiteral: true (with generics)");
         }
         
         stream.setPos(savedPos);
@@ -254,8 +245,7 @@ bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx) {
     
     // 3. Check for '{' after identifier (no generic args)
     if (stream.check(TokenType::LBRACE)) {
-        result = true;
-        LOG_PARSER_DETAIL("looksLikeStructLiteral: true");
+        result = true;\
     }
     
     stream.setPos(savedPos);

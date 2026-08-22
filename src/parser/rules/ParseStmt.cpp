@@ -49,8 +49,6 @@ bool isStatementTerminator(TokenStream& stream) {
 // =============================================================================
 
 StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseStmt: parsing statement");
-    
     // Check at the entry point - if we can't continue, bail out
     if (stream.isAtEnd() || !ctx.canContinue()) {
         return nullptr;
@@ -175,8 +173,6 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseBlock: parsing block");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::LBRACE)) {
@@ -211,7 +207,6 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     block->stmts = builder.build();
     block->loc = loc;
     
-    LOG_PARSER("parseBlock: parsed block with ", block->stmts.size(), " statements");
     return block;
 }
 
@@ -220,8 +215,6 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseIfStmt: parsing if statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::IF)) {
@@ -278,7 +271,6 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    LOG_PARSER("parseIfStmt: parsed if statement");
     return ifStmt;
 }
 
@@ -287,8 +279,6 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseSwitchStmt: parsing switch statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::SWITCH)) {
@@ -429,13 +419,10 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
     
     switchStmt->cases = bodyBuilder.build();
     
-    LOG_PARSER("parseSwitchStmt: parsed switch with ", switchStmt->cases.size(), " cases");
     return switchStmt;
 }
 
 SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseSwitchCase: parsing case");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::CASE)) {
@@ -528,8 +515,7 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
     
     switchCase->body = body;
     switchCase->values = valueBuilder.build();
-    
-    LOG_PARSER_DETAIL("parseSwitchCase: parsed case with ", switchCase->values.size(), " values");
+
     return switchCase;
 }
 
@@ -538,8 +524,6 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseForStmt: parsing for loop");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::FOR)) {
@@ -651,7 +635,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         forStmt->body = body;
         forStmt->step = nullptr;  // Step not allowed in collection loops
         
-        LOG_PARSER("parseForStmt: parsed collection loop");
         return forStmt;
     }
     
@@ -741,7 +724,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     forStmt->step = step;
     forStmt->body = body;
     
-    LOG_PARSER("parseForStmt: parsed range loop");
     return forStmt;
 }
 
@@ -750,7 +732,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseWhileStmt: parsing while loop");
     
     SourceLocation loc = stream.currentLoc();
     
@@ -785,7 +766,6 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     }
     whileStmt->body = body;
     
-    LOG_PARSER("parseWhileStmt: parsed while loop");
     return whileStmt;
 }
 
@@ -794,7 +774,6 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseDoWhileStmt: parsing do-while loop");
     
     SourceLocation loc = stream.currentLoc();
     
@@ -838,7 +817,6 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     }
     doWhileStmt->condition = condition;
     
-    LOG_PARSER("parseDoWhileStmt: parsed do-while loop");
     return doWhileStmt;
 }
 
@@ -847,8 +825,6 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseReturnStmt: parsing return statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::RETURN)) {
@@ -868,7 +844,6 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
         returnStmt->value = value;
     }
     
-    LOG_PARSER("parseReturnStmt: parsed return statement");
     return returnStmt;
 }
 
@@ -877,8 +852,6 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseBreakStmt: parsing break statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::BREAK)) {
@@ -889,8 +862,7 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
     
     BreakStmtAST* breakStmt = ctx.arena.make<BreakStmtAST>();
     breakStmt->loc = loc;
-    
-    LOG_PARSER("parseBreakStmt: parsed break statement");
+
     return breakStmt;
 }
 
@@ -899,8 +871,6 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseContinueStmt: parsing continue statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::CONTINUE)) {
@@ -912,7 +882,6 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
     ContinueStmtAST* continueStmt = ctx.arena.make<ContinueStmtAST>();
     continueStmt->loc = loc;
     
-    LOG_PARSER("parseContinueStmt: parsed continue statement");
     return continueStmt;
 }
 
@@ -921,8 +890,6 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseExprStmt: parsing expression statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     ExprAST* expr = parseExpr(stream, ctx);
@@ -937,8 +904,7 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
     
     ExprStmtAST* exprStmt = ctx.arena.make<ExprStmtAST>(expr);
     exprStmt->loc = loc;
-    
-    LOG_PARSER_DETAIL("parseExprStmt: parsed expression statement");
+
     return exprStmt;
 }
 
@@ -947,8 +913,6 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseDeclStmt: parsing declaration statement");
-    
     SourceLocation loc = stream.currentLoc();
 
     DeclAST* decl = parseDecl(stream, ctx);
@@ -964,7 +928,6 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
     DeclStmtAST* declStmt = ctx.arena.make<DeclStmtAST>(decl);
     declStmt->loc = loc;
     
-    LOG_PARSER_DETAIL("parseDeclStmt: parsed declaration statement");
     return declStmt;
 }
 
@@ -973,8 +936,6 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseAsyncStmt: parsing async statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse 'async' keyword
@@ -1053,14 +1014,10 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     asyncStmt->binding = binding;
     asyncStmt->call = call;
     
-    LOG_PARSER("parseAsyncStmt: parsed async statement with binding '", 
-               ctx.pool.lookup(name), "' (", isConst ? "const" : "let", ")");
     return asyncStmt;
 }
 
 AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseAwaitStmt: parsing await statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::AWAIT)) {
@@ -1088,13 +1045,10 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
     
     awaitStmt->targets = targetBuilder.build();
     
-    LOG_PARSER("parseAwaitStmt: parsed await statement");
     return awaitStmt;
 }
 
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseSpawnStmt: parsing spawn statement");
-
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse 'spawn' keyword
@@ -1135,7 +1089,6 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         spawnStmt->binding = nullptr;
         spawnStmt->call = call;
         
-        LOG_PARSER("parseSpawnStmt: parsed spawn discard pattern");
         return spawnStmt;
     }
     
@@ -1181,9 +1134,6 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
     
-    LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), 
-                      "' (", isConst ? "const" : "let", ")");
-    
     // 8. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -1211,14 +1161,10 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     spawnStmt->binding = binding;
     spawnStmt->call = call;
     
-    LOG_PARSER("parseSpawnStmt: parsed spawn statement with binding '", 
-               ctx.pool.lookup(name), "'");
     return spawnStmt;
 }
 
 JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseJoinStmt: parsing join statement");
-    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.match(TokenType::JOIN)) {
@@ -1246,7 +1192,6 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
     
     joinStmt->targets = targetBuilder.build();
     
-    LOG_PARSER("parseJoinStmt: parsed join statement");
     return joinStmt;
 }
 

@@ -96,8 +96,6 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
 }
 
 ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("Enter UseDecl");
-
     SourceLocation loc = stream.currentLoc();
 
     // 1. Parse 'import' keyword
@@ -197,7 +195,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     }
     // If already parsed, we just use the cached version (already loaded)
     
-    LOG_PARSER_MINIMAL("Parsed import: '", fullPath, "' as '", aliasStr, "'");
+    Trace::detail("Parsed import: '", fullPath, "' as '", aliasStr, "'");
     return importDecl;
 }
 
@@ -254,7 +252,6 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
     varDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed variable: ", ctx.pool.lookup(name));
     return varDecl;
 }
 
@@ -400,15 +397,11 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 refStmt->loc = exprBody->loc;
                 refStmt->target = exprBody;
                 body = refStmt;
-                
-                LOG_PARSER_DETAIL("Parsed function reference: ", ctx.pool.lookup(name));
             } else {
                 auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
                 returnStmt->loc = exprBody->loc;
                 returnStmt->value = exprBody;
                 body = returnStmt;
-                
-                LOG_PARSER_DETAIL("Parsed expression body for: ", ctx.pool.lookup(name));
             }
         }
         
@@ -421,7 +414,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
     funcDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
     return funcDecl;
 }
 
@@ -530,7 +522,6 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     );
     structDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed struct: ", ctx.pool.lookup(name));
     return structDecl;
 }
 
@@ -631,7 +622,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
                                     "expected ';' after field declaration");
     }
     
-    LOG_PARSER_DETAIL("Parsed field: ", ctx.pool.lookup(name));
     return fieldDecl;
 }
 
@@ -710,7 +700,6 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, builder.build(), backingType);
     enumDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed enum: ", ctx.pool.lookup(name));
     return enumDecl;
 }
 
@@ -761,7 +750,6 @@ EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
                                     "expected ';' after enum variant declaration");
     }
     
-    LOG_PARSER_DETAIL("Parsed enum variant: ", ctx.pool.lookup(name));
     return variant;
 }
 
@@ -832,7 +820,6 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, builder.build());
     traitDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed trait: ", ctx.pool.lookup(name));
     return traitDecl;
 }
 
@@ -873,7 +860,6 @@ TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
                                     "expected ';' after trait field declaration");
     }
     
-    LOG_PARSER_DETAIL("Parsed trait field: ", ctx.pool.lookup(name));
     return traitField;
 }
 

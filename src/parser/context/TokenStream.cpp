@@ -66,15 +66,8 @@ SourceLocation TokenStream::currentLoc() const {
 int TokenStream::consumeTrailing(TokenType type) {
     int count = 0;
     while (check(type)) {
-        LOG_PARSER_DETAIL("consumeTrailing: consuming token #", count + 1, 
-                          " of type ", debug::tokenTypeToString(type));
         consume();
         count++;
-    }
-    if (count > 0) {
-        LOG_PARSER_DETAIL("consumeTrailing: consumed ", count, 
-                          " consecutive tokens of type ", 
-                          debug::tokenTypeToString(type));
     }
     return count;
 }

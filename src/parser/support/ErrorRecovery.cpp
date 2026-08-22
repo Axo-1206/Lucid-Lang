@@ -33,7 +33,7 @@ namespace parser {
  */
 template<typename Predicate>
 void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt) {
-    LOG_PARSER("Synchronizing");
+    Trace::detail("Synchronizing");
     
     std::vector<TokenType> expectedClosers;
     
@@ -61,17 +61,17 @@ void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt)
                 continue;
             }
             if (expectedClosers.empty() && stopAt(current)) {
-                LOG_PARSER_DETAIL("Synchronized at: ", debug::tokenTypeToString(current));
+                Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
                 return;
             }
             // Foreign closer - belongs to enclosing construct
-            LOG_PARSER_DETAIL("Stopped before enclosing closer: ",
+            Trace::detail("Stopped before enclosing closer: ",
                                debug::tokenTypeToString(current));
             return;
         }
 
         if (expectedClosers.empty() && stopAt(current)) {
-            LOG_PARSER_DETAIL("Synchronized at: ", debug::tokenTypeToString(current));
+            Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
             return;
         }
 
@@ -81,7 +81,7 @@ void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt)
         stream.consume();
     }
 
-    LOG_PARSER("Synchronization reached EOF");
+    Trace::detail("Synchronization reached EOF");
 }
 
 // =============================================================================

@@ -87,7 +87,7 @@ int handleCommaGap(TokenStream& stream, ParserContext& ctx, const std::string& w
 // =============================================================================
 
 std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("harvestDocComment: checking for doc comment");
+    Trace::detail("harvestDocComment: checking for doc comment");
     
     const auto& tokens = stream.getTokens();
     size_t pos = stream.getPos();
@@ -170,7 +170,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
 // =============================================================================
 
 ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseAttributes: checking for attributes");
+    Trace::detail("parseAttributes: checking for attributes");
     
     std::vector<AttributePtr> attrs;
     
@@ -278,7 +278,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     }
     attr->args = builder.build();
     
-    LOG_PARSER("parseAttribute: parsed '", ctx.pool.lookup(name), "' with ", args.size(), " args");
+    Trace::detail("parseAttribute: parsed '", ctx.pool.lookup(name), "' with ", args.size(), " args");
     return attr;
 }
 
@@ -346,8 +346,6 @@ LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
 // =============================================================================
 
 ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseGenericParamDecls: parsing generic parameters");
-    
     std::vector<GenericParamDeclAST*> params;
     
     if (!stream.check(TokenType::LESS)) {
@@ -491,8 +489,6 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
 // =============================================================================
 
 ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseGenericArgs: parsing generic arguments");
-
     std::vector<TypeAST*> args;
 
     if (!stream.check(TokenType::LESS)) {
@@ -549,8 +545,6 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    LOG_PARSER_DETAIL("parseParamList: parsing parameter list (allowNames=", allowNames, ")");
-    
     std::vector<ParamAST*> params;
     
     if (!stream.check(TokenType::LPAREN)) {
@@ -662,8 +656,6 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
 // =============================================================================
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseArgList: parsing argument list");
-    
     std::vector<ExprAST*> args;
     
     if (!stream.check(TokenType::LPAREN)) {
@@ -719,8 +711,6 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseImportPath: parsing import path");
-    
     std::vector<InternedString> pathParts;
     
     while (!stream.isAtEnd()) {

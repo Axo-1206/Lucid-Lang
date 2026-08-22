@@ -34,8 +34,6 @@ namespace parser {
 // =============================================================================
 
 TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseType: parsing type");
-    
     TypeAST* type = parseBaseType(stream, ctx);
     if (!type) {
         return nullptr;
@@ -49,7 +47,6 @@ TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseBaseType: parsing base type");
     
     if (stream.isPrimitiveTypeToken(stream.peekType())) {
         return parsePrimitiveType(stream, ctx);
@@ -131,7 +128,6 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
     auto* type = ctx.arena.make<PrimitiveTypeAST>(kind);
     type->loc = loc;
     
-    LOG_PARSER_DETAIL("parsePrimitiveType: ", tok.value);
     return type;
 }
 
@@ -185,8 +181,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         moduleType->typeName = typeName;
         moduleType->genericArgs = genericArgs;
         
-        LOG_PARSER_DETAIL("parseNamedType: module-qualified '", 
-                          ctx.pool.lookup(firstName), ":", ctx.pool.lookup(typeName), "'");
         return moduleType;
     }
     
@@ -200,7 +194,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     namedType->loc = loc;
     namedType->genericArgs = genericArgs;
     
-    LOG_PARSER_DETAIL("parseNamedType: unqualified '", ctx.pool.lookup(firstName), "'");
     return namedType;
 }
 
@@ -262,7 +255,6 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     auto* type = ctx.arena.make<ArrayTypeAST>(kind, size, element);
     type->loc = loc;
     
-    LOG_PARSER_DETAIL("parseArrayType: array of ", debug::kindToString(element->kind));
     return type;
 }
 
@@ -292,7 +284,6 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     auto* type = ctx.arena.make<RefTypeAST>(inner);
     type->loc = loc;
     
-    LOG_PARSER_DETAIL("parseRefType: reference to ", debug::typeToString(inner, ctx.pool));
     return type;
 }
 
@@ -324,7 +315,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     auto* type = ctx.arena.make<PtrTypeAST>(inner);
     type->loc = loc;
     
-    LOG_PARSER_DETAIL("parsePtrType: pointer to ", debug::typeToString(inner, ctx.pool));
     return type;
 }
 
@@ -343,7 +333,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 /// @param ctx The parsing context
 /// @return TypeAST* The parsed function type
 TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseFuncType: start");
     SourceLocation loc = stream.currentLoc();
     
     // ─── 1. Parse all parameter groups before the first `->` ──────────────
@@ -374,7 +363,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
 
     // ─── 3. Check for arrow ─────────────────────────────────────────────────
     if (!stream.check(TokenType::ARROW)) {
-        LOG_PARSER_DETAIL("parseFuncType: void function with ", allParams.size(), " params");
         return funcType;
     }
     
@@ -388,7 +376,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::LPAREN)) {
         TypeAST* returnType = parseFuncType(stream, ctx);
         funcType->returnType = returnType;
-        LOG_PARSER_DETAIL("parseFuncType: curried function");
         return funcType;
     }
     
@@ -401,7 +388,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     }
     funcType->returnType = returnType;
     
-    LOG_PARSER_DETAIL("parseFuncType: function with ", allParams.size(), " params");
     return funcType;
 }
 
@@ -425,21 +411,18 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
     if (hasQuestion && hasBang) {
         auto* type = ctx.arena.make<CombinedTypeAST>(inner);
         type->loc = loc;
-        LOG_PARSER_DETAIL("parseTypeWithQualifier: combined T?!");
         return type;
     }
     
     if (hasQuestion && !hasBang) {
         auto* type = ctx.arena.make<NullableTypeAST>(inner);
         type->loc = loc;
-        LOG_PARSER_DETAIL("parseTypeWithQualifier: nullable T?");
         return type;
     }
     
     // hasBang && !hasQuestion
     auto* type = ctx.arena.make<FallibleTypeAST>(inner);
     type->loc = loc;
-    LOG_PARSER_DETAIL("parseTypeWithQualifier: fallible T!");
     return type;
 }
 
