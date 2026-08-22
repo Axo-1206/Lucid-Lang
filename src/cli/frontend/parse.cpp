@@ -19,7 +19,7 @@ int parseCommand(const CLIOptions& opts) {
     CLIContext ctx(packageRoot);
     
     // Run the pipeline
-    return runPipelineAndDump(parseOpts, ctx);
+    return runPipelineAndOutput(parseOpts, ctx);
 }
 
 } // namespace frontend

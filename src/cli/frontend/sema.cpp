@@ -19,7 +19,7 @@ int semaCommand(const CLIOptions& opts) {
     CLIContext ctx(packageRoot);
     
     // Run the pipeline
-    return runPipelineAndDump(semaOpts, ctx);
+    return runPipelineAndOutput(semaOpts, ctx);
 }
 
 } // namespace frontend
