@@ -300,14 +300,14 @@ int main(int argc, char* argv[]) {
     // Requires: rootFilePath (the file to parse)
     // Options: --json, --json-pretty, -o, --verbose
     if (command == "parse") {
-    if (opts.rootFilePath.empty()) {
-        std::cerr << "Error: No file specified for 'parse' command.\n";
-        return 1;
+        if (opts.rootFilePath.empty()) {
+            std::cerr << "Error: No file specified for 'parse' command.\n";
+            return 1;
+        }
+        opts.command = cli::CLIOptions::Command::Parse;
+        opts.stopAt = cli::PipelineStage::Parse;
+        return cli::frontend::parseCommand(opts);
     }
-    opts.command = cli::CLIOptions::Command::Parse;
-    opts.stopAt = cli::PipelineStage::Parse;
-    return cli::frontend::parseCommand(opts);
-}
 
     // ─── Sema Command ─────────────────────────────────────────────────────
     // Parses the file and runs semantic analysis, stopping after type checking.
