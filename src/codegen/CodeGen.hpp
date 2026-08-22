@@ -407,9 +407,10 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx);
 /// @brief Lower a pipeline step.
 ///
 /// @param step The pipeline step.
+/// @param upstreamValue The value from the previous step (or seed).
 /// @param ctx The code generation context.
-/// @return The LLVM value.
-llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx);
+/// @return The LLVM value, or nullptr on error.
+llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, CodeGenContext& ctx);
 
 /// @brief Lower a composition expression.
 ///

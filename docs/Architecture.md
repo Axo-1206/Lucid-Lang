@@ -672,6 +672,11 @@ lucid/
     │   └── game.luc
     │
     ├── cli/                            # command-line interface
+    │   ├── frontend/
+    │   │   ├── JSONDumper.hpp/cpp      # Serialization for all AST nodes and diagnostics.
+    │   │   ├── parse.hpp/cpp           # 'parse' command - parse-only mode for debugging.
+    │   │   ├── sema.hpp/cpp            # 'sema' command - parse + semantic analysis.
+    │   │   └── Pipeline.hpp/cpp        # Compiler pipeline with configurable stop points and output.
     │   ├── CLIContext.hpp              # Shared CLI context for a single run session.
     │   ├── CLIOptions.hpp              # Unified CLI options for all commands.
     │   ├── DependencyGraph.hpp         # Bi‑directional dependency graph for hot‑reload.

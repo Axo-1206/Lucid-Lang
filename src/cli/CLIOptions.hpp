@@ -7,38 +7,70 @@
 
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace cli {
 
 /**
+ * @brief Pipeline stages where execution can stop.
+ */
+enum class PipelineStage {
+    /// Stop after lexing (tokens only)
+    Lex,
+    /// Stop after parsing (AST only)
+    Parse,
+    /// Stop after semantic analysis (validated AST)
+    Sema,
+    /// Stop after code generation (LLVM IR)
+    CodeGen,
+    /// Full execution (default for 'run')
+    Execute,
+};
+
+/**
+ * @brief Output formats for structured data.
+ */
+enum class OutputFormat {
+    /// Human-readable text with emojis and formatting (default)
+    Text,
+    /// JSON for machine consumption (LSP, tools)
+    Json,
+    /// Pretty JSON with indentation (for human reading)
+    JsonPretty,
+};
+
+/**
  * @brief Unified CLI options for all commands.
- *
- * This struct contains:
- *   - CLI-specific options (file watcher, program args, etc.)
- *   - A nested InterpreterOptions for JIT configuration
- *
- * When the interpreter is initialized, the CLI-specific fields
- * (verbose, entryPoint, enableHotReload) override the interpreter's
- * defaults if explicitly set.
  */
 struct CLIOptions {
     // ─── Command ──────────────────────────────────────────────────────
     enum class Command {
         Unknown,
-        Run,
-        Build,
-        Repl,
+        Run,        // Full execution (default)
+        Parse,      // Parse only (stop after AST)
+        Sema,       // Parse + semantic analysis
+        CodeGen,    // Parse + sema + LLVM IR emission
+        Build,      // AOT compile to native binary
+        Repl,       // Interactive REPL
     } command = Command::Unknown;
 
-    // ─── CLI-Specific (File Watcher, Program Args, etc.) ────────────
+    // ─── Pipeline Control ────────────────────────────────────────────
+    
+    /// @brief Stage to stop at (default depends on command).
+    PipelineStage stopAt = PipelineStage::Execute;
+    
+    /// @brief Output format for structured data.
+    OutputFormat outputFormat = OutputFormat::Text;
 
-    /// @brief CLI verbose output (overrides interpreter.verbose if true).
+    // ─── CLI-Specific Options ────────────────────────────────────────
+
+    /// @brief CLI verbose output.
     bool verbose = false;
 
     /// @brief Show help message.
     bool showHelp = false;
 
-    /// @brief Entry point function name (overrides interpreter.entryPoint).
+    /// @brief Entry point function name.
     std::string entryPoint = "main";
 
     /// @brief Extra arguments passed to the program (run command only).
@@ -53,8 +85,11 @@ struct CLIOptions {
     /// @brief Path to the root file (set by CLI, not user).
     std::string rootFilePath;
 
+    /// @brief Output file for structured data (parse/sema commands).
+    std::optional<std::string> outputFile;
+
     /// @brief Output file (build command only).
-    std::string outputFile = "a.out";
+    std::string buildOutputFile = "a.out";
 
     /// @brief Emit LLVM IR instead of native code (build command).
     bool emitLLVM = false;
@@ -67,6 +102,11 @@ struct CLIOptions {
 
     /// @brief REPL init file.
     std::string replInitFile;
+
+    // ─── Parse/Sema Command Specific ────────────────────────────────
+    
+    /// @brief Dump the AST to stdout (parse/sema commands).
+    bool dumpAST = false;
 
     // ─── Interpreter Options ──────────────────────────────────────────
 
