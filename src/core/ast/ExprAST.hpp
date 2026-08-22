@@ -150,7 +150,7 @@ struct FieldInitAST : BaseAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString name;
-    ExprAST* value;
+    ExprAST* value = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FieldInitAST(InternedString n, ExprAST* v)
@@ -351,8 +351,8 @@ struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* target;
-    ExprAST* index;
+    ExprAST* target = nullptr;
+    ExprAST* index = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     IndexExprAST(ExprAST* t, ExprAST* i)
@@ -384,9 +384,9 @@ struct SliceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::SliceExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* target;
-    ExprAST* start;      // inclusive, nullptr means 0
-    ExprAST* end;        // inclusive or exclusive depending on isExclusive
+    ExprAST* target = nullptr;
+    ExprAST* start = nullptr;      // inclusive, nullptr means 0
+    ExprAST* end = nullptr;        // inclusive or exclusive depending on isExclusive
     const bool isExclusive;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -496,8 +496,8 @@ struct NullCoalesceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullCoalesceExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* value;
-    ExprAST* fallback;
+    ExprAST* value = nullptr;
+    ExprAST* fallback = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     NullCoalesceExprAST(ExprAST* v, ExprAST* f)
@@ -529,7 +529,7 @@ struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* callable;
+    ExprAST* callable = nullptr;
     ArenaSpan<ExprAST*> packArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -552,7 +552,7 @@ struct PipelineExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* seed;
+    ExprAST* seed = nullptr;
     ArenaSpan<PipelineStepAST*> steps;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -591,7 +591,7 @@ struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* callable;
+    ExprAST* callable = nullptr;
     ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -619,7 +619,7 @@ struct ComposeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* left;
+    ExprAST* left = nullptr;
     ArenaSpan<ComposeOperandAST*> operands;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -645,8 +645,8 @@ struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    FuncTypeAST* funcType;
-    StmtAST* body;
+    FuncTypeAST* funcType = nullptr;
+    StmtAST* body = nullptr;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     ArenaSpan<CapturedVariable> captures;
@@ -691,9 +691,9 @@ struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ExprAST* condition;
-    ExprAST* thenBranch;
-    ExprAST* elseBranch;
+    ExprAST* condition = nullptr;
+    ExprAST* thenBranch = nullptr;
+    ExprAST* elseBranch = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     IfExprAST(ExprAST* cond, ExprAST* then_, ExprAST* else_)

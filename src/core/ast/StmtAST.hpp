@@ -78,7 +78,7 @@ struct BlockStmtAST : StmtAST {
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
-    ExprAST* expr; // The expression being evaluated for its side effects
+    ExprAST* expr = nullptr; // The expression being evaluated for its side effects
 
     explicit ExprStmtAST(ExprAST* e)
         : StmtAST(ASTKind::ExprStmt), expr(e) {}
@@ -103,7 +103,7 @@ struct ExprStmtAST : StmtAST {
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
-    DeclAST* decl; // The actual declaration node
+    DeclAST* decl = nullptr; // The actual declaration node
 
     explicit DeclStmtAST(DeclAST* d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
 

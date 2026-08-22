@@ -303,7 +303,7 @@ struct FieldDeclAST : ValueDeclAST {
     StmtAST* defaultBody;   // Block body default (for function fields)
     const bool isConstField;      // True if field is marked `const` in struct
 
-    ExprAST* defaultVal;
+    ExprAST* defaultVal = nullptr;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     size_t fieldIndex = 0;        // Position in struct layout
