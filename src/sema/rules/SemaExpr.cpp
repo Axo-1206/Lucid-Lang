@@ -428,7 +428,9 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
 // =============================================================================
 
 TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Resolve object ─────────────────────────────────────────────
+    if (!expr) return ctx.getUnknownType();
+
+    // ─── Step 1: Resolve object expression ─────────────────────────────
     TypeAST* objectType = resolveExpr(expr->object, ctx);
     if (!objectType || objectType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
@@ -438,7 +440,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Check if object is nullable or fallible ────────────────────
+    // ─── Step 2: Check if object is nullable or fallible ──────────────
     if (isNullableType(objectType) || isFallibleType(objectType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
                               "cannot access field on nullable or fallible type '",
@@ -451,7 +453,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Handle generic type parameter ─────────────────────────────
+    // ─── Step 3: Handle generic type parameter ────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
         NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
 
@@ -477,6 +479,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                 return ctx.getUnknownType();
             }
 
+            // Cache the generic field info (not stored on AST)
             ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                ? ValueState::Unknown : ValueState::Definite;
             expr->resolvedType = fieldType;
@@ -487,7 +490,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         }
     }
 
-    // ─── Step 4: Look up type declaration ──────────────────────────────────
+    // ─── Step 4: Check if object type is a named type ────────────────
     if (!objectType->isa<NamedTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
                               "field access requires a struct or enum type, got ",
@@ -498,6 +501,40 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
     }
 
     NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+    
+    // ─── Step 5: Cache lookup - check if already resolved ──────────────
+    if (expr->resolvedDecl) {
+        // Already resolved - use cached values
+        if (expr->isEnumAccess) {
+            // Enum variant access
+            EnumVariantAST* variant = expr->resolvedDecl->as<EnumVariantAST>();
+            expr->resolvedType = ctx.getNamedType(variant->name);  // Enum type
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;
+            expr->isConst = true;
+            return expr->resolvedType;
+        } else {
+            // Struct field access
+            FieldDeclAST* field = expr->resolvedDecl->as<FieldDeclAST>();
+            TypeAST* fieldType = field->type;
+            ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
+                               ? ValueState::Unknown : ValueState::Definite;
+            expr->resolvedType = fieldType;
+            expr->valueState = state;
+            
+            // Set isLValue and isConst based on field and object
+            if (expr->object->isLValue) {
+                expr->isLValue = !field->isConst();
+                expr->isConst = field->isConst();
+            } else {
+                expr->isLValue = false;
+                expr->isConst = expr->object->isConst;
+            }
+            return fieldType;
+        }
+    }
+
+    // ─── Step 6: Resolve the type declaration ──────────────────────────
     TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
     if (!typeDecl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
@@ -507,39 +544,67 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 5: Handle struct type ─────────────────────────────────────────
+    // ─── Step 7: Handle enum type ──────────────────────────────────────
+    if (typeDecl->isa<EnumDeclAST>()) {
+        EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
+        
+        // Find the variant by name
+        for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
+            EnumVariantAST* variant = enumDecl->variants[i];
+            if (variant->name == expr->fieldName) {
+                // ─── Cache the result ─────────────────────────────────────
+                expr->resolvedDecl = variant;
+                expr->ownerType = enumDecl;
+                expr->isEnumAccess = true;
+                expr->fieldIndex = i;
+                
+                expr->resolvedType = ctx.getNamedType(enumDecl->name);
+                expr->valueState = ValueState::Definite;
+                expr->isLValue = false;
+                expr->isConst = true;
+                return expr->resolvedType;
+            }
+        }
+
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "enum '", ctx.pool.lookup(enumDecl->name),
+                              "' has no variant named '", ctx.pool.lookup(expr->fieldName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 8: Handle struct type ────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
         StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
-        for (FieldDeclAST* f : structDecl->fields) {
-            if (f->name == expr->fieldName) {
-                // ─── Get field type from resolvedType (resolved) ────────────
-                TypeAST* fieldType = f->type;
+        for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+            FieldDeclAST* field = structDecl->fields[i];
+            if (field->name == expr->fieldName) {
+                // ─── Cache the result ─────────────────────────────────────
+                expr->resolvedDecl = field;
+                expr->ownerType = structDecl;
+                expr->isEnumAccess = false;
+                expr->fieldIndex = i;
+
+                TypeAST* fieldType = field->type;
                 if (!fieldType) {
-                    // Fallback to parser type if resolvedType not set
-                    fieldType = f->type;
+                    fieldType = field->type;  // Fallback to parser type
                 }
                 
-                // ─── Propagate value state ──────────────────────────────────
                 ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                    ? ValueState::Unknown : ValueState::Definite;
                 expr->resolvedType = fieldType;
                 expr->valueState = state;
                 
-                // ─── Set isLValue and isConst ───────────────────────────────
+                // Set isLValue and isConst
                 if (expr->object->isLValue) {
-                    if (f->isConst()) {
-                        expr->isLValue = false;
-                        expr->isConst = true;
-                    } else {
-                        expr->isLValue = true;
-                        expr->isConst = expr->object->isConst;
-                    }
+                    expr->isLValue = !field->isConst();
+                    expr->isConst = field->isConst();
                 } else {
                     expr->isLValue = false;
                     expr->isConst = expr->object->isConst;
                 }
-                
                 return fieldType;
             }
         }
@@ -547,28 +612,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
                               "struct '", ctx.pool.lookup(structDecl->name),
                               "' has no field named '", ctx.pool.lookup(expr->fieldName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 6: Handle enum type ───────────────────────────────────────────
-    if (typeDecl->isa<EnumDeclAST>()) {
-        const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
-
-        for (const EnumVariantAST* v : enumDecl->variants) {
-            if (v->name == expr->fieldName) {
-                expr->resolvedType = ctx.getNamedType(enumDecl->name);
-                expr->valueState = ValueState::Definite;
-                expr->isLValue = false;
-                expr->isConst = true;
-                return ctx.getNamedType(enumDecl->name);
-            }
-        }
-
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                              "enum '", ctx.pool.lookup(enumDecl->name),
-                              "' has no variant named '", ctx.pool.lookup(expr->fieldName), "'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -2091,6 +2134,17 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
         return ctx.getUnknownType();
     }
 
+    // ─── Reject intrinsic calls ────────────────────────────────────────────
+    if (step->callable->isa<IntrinsicCallExprAST>()) {
+        IntrinsicCallExprAST* intrinsic = step->callable->as<IntrinsicCallExprAST>();
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "intrinsic call cannot be used as a pipeline step");
+        ctx.diagnostics.note(step->callable,
+                             "Intrinsic '#", ctx.pool.lookup(intrinsic->intrinsicName),
+                             "' is a complete call. Use a wrapper function.");
+        return ctx.getUnknownType();
+    }
+
     // ─── Step 1: Get the callable type (cached via resolvedType) ────────────
     // The resolvedType is set by resolveExpr and cached on the AST node.
     // This is the single source of truth for this step's callable type.
@@ -2140,6 +2194,60 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                           "' requires generic arguments in pipeline step");
                     ctx.diagnostics.note(step->callable,
                                          "Use '", ctx.pool.lookup(mod->memberName), "<T>' to instantiate");
+                    return ctx.getUnknownType();
+                }
+            }
+        } else if (callable->isa<FieldAccessExprAST>()) {
+            FieldAccessExprAST* field = callable->as<FieldAccessExprAST>();
+            
+            // ─── Use cached information if available ───────────────────────────
+            if (field->resolvedDecl) {
+                if (field->isEnumAccess) {
+                    // Enum variant - not a function
+                    ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, field,
+                                        "enum variant '", ctx.pool.lookup(field->fieldName),
+                                        "' is a value, not a function - cannot use in pipeline");
+                    ctx.diagnostics.note(field,
+                                        "Enum variants are constants. Use a function that returns ",
+                                        "the variant if you need it in a pipeline.");
+                    return ctx.getUnknownType();
+                }
+                
+                // Struct field - check if it's a function
+                // The field's type is already cached in resolvedType
+                if (callableType->isa<FuncTypeAST>()) {
+                    // Valid: field is a function
+                    // No generic args needed - they're already in the type
+                    // Continue with normal flow
+                } else {
+                    ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, field,
+                                        "field '", ctx.pool.lookup(field->fieldName),
+                                        "' is not a function - cannot use in pipeline");
+                    ctx.diagnostics.note(field,
+                                        "Only functions can be used in pipelines. The field type is ",
+                                        debug::typeToString(callableType, ctx.pool));
+                    return ctx.getUnknownType();
+                }
+            } else {
+                // ─── Fallback: resolve the field access ─────────────────────────
+                // This will populate the cache
+                resolveFieldAccessExpr(field, nullptr, ctx);
+                
+                // Now check the cached result
+                if (field->isEnumAccess) {
+                    ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, field,
+                                        "enum variant '", ctx.pool.lookup(field->fieldName),
+                                        "' is a value, not a function - cannot use in pipeline");
+                    return ctx.getUnknownType();
+                }
+                
+                if (!callableType->isa<FuncTypeAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, field,
+                                        "field '", ctx.pool.lookup(field->fieldName),
+                                        "' is not a function - cannot use in pipeline");
+                    ctx.diagnostics.note(field,
+                                        "Only functions can be used in pipelines. The field type is ",
+                                        debug::typeToString(callableType, ctx.pool));
                     return ctx.getUnknownType();
                 }
             }

@@ -658,7 +658,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
 }
 
 // =============================================================================
-// parseArgList - CALL SITE - uses handleCommaGap like parseParamList
+// parseArgList - CALL SITE
 // =============================================================================
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {

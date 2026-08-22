@@ -794,7 +794,13 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
         return nullptr;
     }
     
+    // ─── Parse argument list ──────────────────────────────────────────────
     ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
+    
+    // ─── Check for '!' (argument pack) ────────────────────────────────────
+    // '!' is ONLY valid after an argument list in pipeline context.
+    // But parseCallExpr doesn't know if it's in a pipeline context.
+    // We still parse it and set hasArgPack, then let the caller validate.
     bool hasArgPack = stream.match(TokenType::BANG);
     
     auto* call = ctx.arena.make<CallExprAST>(hasArgPack);
@@ -803,7 +809,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     call->genericArgs = genericArgs;
     call->args = args;
     
-    LOG_PARSER_DETAIL("parseCallExpr: ", args.size(), " args");
+    LOG_PARSER_DETAIL("parseCallExpr: ", args.size(), " args", hasArgPack ? " with pack" : "");
     return call;
 }
 
@@ -1239,7 +1245,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    // Anonymous function step
+    // ─── Anonymous function step ──────────────────────────────────────────
     if (looksLikeAnonFunc(stream, ctx)) {
         ExprAST* anonFunc = parseAnonFuncExpr(stream, ctx);
         if (!anonFunc) {
@@ -1251,93 +1257,69 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         return step;
     }
     
-    /// Expression step
-    /// AnonFuncExprAST, ModuleAccessExprAST, FieldAccessExprAST, IntrinsicCallExprAST or IdentifierExprAST
-    ExprAST* callable = parseExpr(stream, ctx);
-    if (!callable) {
+    // ─── Parse the expression ──────────────────────────────────────────────
+    ExprAST* expr = parseExpr(stream, ctx);
+    if (!expr) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected pipeline step expression");
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
-    // Check for argument pack step: fn(args)!
-    ArenaSpan<ExprAST*> packArgs;
-    bool hasPackArgs = false;
-    
-    if (stream.check(TokenType::LPAREN)) {
-        size_t savedPos = stream.getPos();
-        
-        std::vector<ExprAST*> args;
-        stream.consume(); // Consume '('
-        
-        if (!stream.check(TokenType::RPAREN)) {
-            while (!stream.isAtEnd()) {
-                if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                            "unexpected comma in pipeline arguments");
-                }
-                
-                if (stream.check(TokenType::RPAREN)) {
-                    break;
-                }
-                
-                if (stream.isAtEnd()) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected ')' to close pipeline arguments");
-                    break;
-                }
-                
-                ExprAST* arg = parseExpr(stream, ctx);
-                if (arg) {
-                    args.push_back(arg);
-                } else {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                            "expected pipeline argument");
-                    synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                    if (stream.check(TokenType::COMMA)) {
-                        stream.consume();
-                        continue;
-                    } else if (stream.check(TokenType::RPAREN)) {
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        
-        if (!stream.check(TokenType::RPAREN)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ')', got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.consume();
-            }
-        } else {
-            stream.consume(); // Consume ')'
-        }
-        
-        if (stream.check(TokenType::BANG)) {
-            stream.consume(); // Consume '!'
-            hasPackArgs = true;
-            
-            auto builder = ctx.arena.makeBuilder<ExprAST*>();
-            for (auto* arg : args) {
-                builder.push_back(arg);
-            }
-            packArgs = builder.build();
-        } else {
-            stream.setPos(savedPos);
-            ArenaSpan<ExprAST*> packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
-            auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
-            step->loc = loc;
-            return step;
-        }
+    // ─── REJECT: Intrinsic calls are not allowed in pipeline steps ────────
+    // IntrinsicCallExprAST represents a complete call, not a function reference.
+    // The user should use a wrapper function instead:
+    //   const sqrtWrapper (x float) -> float = { return #sqrt(x) }
+    if (expr->isa<IntrinsicCallExprAST>()) {
+        IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
+        ctx.diagnostics.errorAt(DiagCode::Sem_PipelineMismatch, intrinsic->loc,
+                                "intrinsic call cannot be used as a pipeline step");
+        ctx.diagnostics.noteAt(intrinsic->loc,
+                               "Intrinsic '#", ctx.pool.lookup(intrinsic->intrinsicName),
+                               "' is a complete call, not a function reference");
+        ctx.diagnostics.noteAt(intrinsic->loc,
+                               "Wrap it in a function: 'const wrapper (x T) -> R = { return #",
+                               ctx.pool.lookup(intrinsic->intrinsicName), "(x) }'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
     }
     
-    packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
-    auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
+    // ─── Check for stray '!' after generic args ──────────────────────────
+    if (stream.check(TokenType::BANG)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "unexpected '!' - argument pack '!' must follow an argument list '(args)'");
+        ctx.diagnostics.noteAt(expr->loc,
+                               "Use '", stream.peekValue(), "(args)!' to create an argument pack");
+        stream.consume();
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── Extract callee and pack args ──────────────────────────────────
+    ArenaSpan<ExprAST*> packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
+    ExprAST* callee = expr;
+    
+    // ─── CallExprAST (fn(args) or fn(args)!) ─────────────────────
+    if (expr->isa<CallExprAST>()) {
+        CallExprAST* call = expr->as<CallExprAST>();
+        
+        // ─── Check: fn(args) without '!' is SYNTAX ERROR ────────────────
+        if (!call->hasArgPack) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, call->loc,
+                                    "expected '!' after argument list in pipeline step");
+            ctx.diagnostics.noteAt(call->callee->loc,
+                                   "In a pipeline step, use 'fn(args)!' to inject upstream values");
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+        
+        // Valid: fn(args)! - extract callee and args
+        callee = call->callee;
+        packArgs = call->args;
+    }
+    
+    // ─── Build the pipeline step ──────────────────────────────────────────
+    auto* step = ctx.arena.make<PipelineStepAST>(callee, packArgs);
     step->loc = loc;
     
     LOG_PARSER_DETAIL("parsePipelineStep: parsed step");
@@ -1365,16 +1347,18 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     
     std::vector<ComposeOperandAST*> operands;
     
+    // ─── Parse first operand ──────────────────────────────────────────────
     ComposeOperandAST* operand = parseComposeOperand(stream, ctx);
     if (!operand) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected composition operand");
         synchronizeToContext(stream, ctx);
-        return lhs;
+        return nullptr;
     }
     operands.push_back(operand);
     
-    while (stream.check(TokenType::COMPOSE)) {
+    // ─── Parse additional operands ────────────────────────────────────────
+    while (!stream.isAtEnd() && stream.check(TokenType::COMPOSE)) {
         stream.consume(); // Consume '+>'
         
         operand = parseComposeOperand(stream, ctx);
@@ -1382,7 +1366,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected composition operand");
             synchronizeToContext(stream, ctx);
-            break;
+            return nullptr;
         }
         operands.push_back(operand);
     }
@@ -1412,18 +1396,16 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
         return nullptr;
     }
     
+    // ─── Extract generic arguments if present ─────────────────────────────
+    // FieldAccessExprAST intentionally omitted - no genericArgs field
     ArenaSpan<TypeAST*> genericArgs;
     
     if (callable->isa<IdentifierExprAST>()) {
         auto* idExpr = callable->as<IdentifierExprAST>();
-        if (idExpr->genericArgs.size() > 0) {
-            genericArgs = idExpr->genericArgs;
-        }
+        genericArgs = idExpr->genericArgs;
     } else if (callable->isa<ModuleAccessExprAST>()) {
         auto* moduleAccess = callable->as<ModuleAccessExprAST>();
-        if (moduleAccess->genericArgs.size() > 0) {
-            genericArgs = moduleAccess->genericArgs;
-        }
+        genericArgs = moduleAccess->genericArgs;
     }
     
     auto* operand = ctx.arena.make<ComposeOperandAST>(callable, genericArgs);

@@ -207,6 +207,9 @@ struct IdentifierExprAST : ExprAST {
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}
 };
 
+/// @file ExprAST.hpp
+/// @brief FieldAccessExprAST with caching
+
 /// @brief Accesses a data member (struct field or enum variant) via '.' operator.
 /// 
 /// @example
@@ -214,13 +217,33 @@ struct IdentifierExprAST : ExprAST {
 ///   Direction.North         → object = identifier("Direction"), field = "North"
 /// 
 /// @field object         The object expression.
-/// @field field          The field name.
-/// @field genericArgs   Generic arguments for generic function access.
+/// @field fieldName      The field name.
+/// @field resolvedDecl   Cached field/variant declaration (set by Sema).
+/// @field ownerType      The struct/enum type that owns this field (set by Sema).
+/// @field isEnumAccess   True if this is an enum variant access (set by Sema).
+/// @field fieldIndex     Index of the field in the struct (set by Sema).
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     ExprAST* object = nullptr;
     const InternedString fieldName;
+
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    /// @brief The resolved declaration (FieldDeclAST or EnumVariantAST).
+    /// This is set during semantic analysis and cached for future use.
+    ValueDeclAST* resolvedDecl = nullptr;
+    
+    /// @brief The type that owns this field (StructDeclAST or EnumDeclAST).
+    /// This is the resolved declaration of the object's type.
+    TypeDeclAST* ownerType = nullptr;
+    
+    /// @brief True if this is an enum variant access (e.g., Direction.North).
+    bool isEnumAccess = false;
+    
+    /// @brief The index of this field in the struct (for fast lookup).
+    /// For enum variants, this is the variant index.
+    size_t fieldIndex = SIZE_MAX;
 
     FieldAccessExprAST(InternedString n) 
         : ExprAST(ASTKind::FieldAccessExpr), fieldName(n) {}
@@ -316,8 +339,8 @@ struct CallExprAST : ExprAST {
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<ExprAST*> args;                      // value arguments in order
+    const InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
+    ArenaSpan<ExprAST*> args;           // value arguments in order
     
     // LLVM intrinsic ID - set during semantic analysis
     // Use std::optional because not all intrinsics map to LLVM intrinsics
@@ -521,7 +544,7 @@ struct NullCoalesceExprAST : ExprAST {
 /// 2. **Generic Functions**: Generic functions must be instantiated with
 ///    explicit type arguments at the pipeline step site..
 /// 3. A step, can be an AnonFuncExprAST, ModuleAccessExprAST, FieldAccessExprAST,
-///    IntrinsicCallExprAST or IdentifierExprAST and they must be a function declaration
+///    or IdentifierExprAST and they must be a function declaration
 ///
 /// @field callable       The function reference or anonymous function.
 /// @field packArgs       Non‑empty for argument pack steps (the `!` annotation).
