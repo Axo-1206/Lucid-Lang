@@ -1,5 +1,5 @@
 /// @file cli/frontend/Pipeline.hpp
-/// @brief Compiler pipeline with configurable stop points and output.
+/// @brief Unified compiler pipeline with configurable stop points.
 
 #pragma once
 
@@ -22,44 +22,49 @@ struct PipelineResult {
     bool success = false;
     int exitCode = 0;
     
-    // Intermediate results (only valid if stop point reached)
+    /// @brief Parsed modules (valid after Parse stage)
     std::vector<ModuleAST*> modules;
+    
+    /// @brief Error message if pipeline failed
     std::string errorMessage;
     
-    // Code generation results
-    std::string llvmIR;  // If stopAt == CodeGen
+    /// @brief LLVM IR (valid after CodeGen stage)
+    std::string llvmIR;
+    
+    /// @brief The stage where the pipeline stopped
+    PipelineStage stoppedAt = PipelineStage::Lex;
 };
 
 /**
  * @brief Run the compiler pipeline up to a specified stage.
  *
- * This is the single entry point for all frontend commands.
- * It runs the pipeline stages in order and stops at the specified stage.
- *
- * @param opts CLI options (contains rootFilePath and stopAt)
- * @param ctx CLI context (StringPool, ASTArena, diagnostics)
- * @return PipelineResult with the results of the pipeline
- *
+ * This is the SINGLE entry point for all frontend commands.
+ * 
  * ─── Pipeline Stages ──────────────────────────────────────────────────────
  *
- *   Lex     → Tokenize the source file
- *   Parse   → Build AST from tokens
- *   Sema    → Run semantic analysis on AST
- *   CodeGen → Generate LLVM IR from validated AST
- *   Execute → JIT compile and run (full execution)
+ *   Parse   → Build AST from tokens (stopAt = Parse)
+ *   Sema    → Run semantic analysis on AST (stopAt = Sema)
+ *   CodeGen → Generate LLVM IR (stopAt = CodeGen)
+ *   Execute → JIT compile and run (stopAt = Execute, handled by run.cpp)
+ *   Build   → AOT compile to native binary (stopAt = Build, handled by build.cpp)
+ *
+ * ─── Command Mapping ──────────────────────────────────────────────────────
+ *
+ *   lucid parse  → stopAt = Parse,  output = AST (JSON or text)
+ *   lucid sema   → stopAt = Sema,   output = AST + types (JSON or text)
+ *   lucid run    → stopAt = Execute, output = execution result (no AST)
+ *   lucid build  → stopAt = Build,  output = native binary
+ *
+ * ─── Output Behavior ──────────────────────────────────────────────────────
+ *
+ *   - JSON output: Always sent to stdout (or file with -o)
+ *   - Text output: 
+ *     - parse/sema: Show summary + optional AST (via --dump-ast)
+ *     - run: Show execution summary with emojis
+ *     - build: Show build summary
+ *   - Trace output: Sent to stderr (controlled by --verbose/--trace)
  */
 PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx);
-
-/**
- * @brief Run the compiler pipeline and output results.
- *
- * This handles output formatting (text or JSON) and file writing.
- *
- * @param opts CLI options
- * @param ctx CLI context
- * @return Exit code (0 for success, 1 for error)
- */
-int runPipelineAndOutput(const CLIOptions& opts, CLIContext& ctx);
 
 } // namespace frontend
 } // namespace cli

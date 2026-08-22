@@ -1,8 +1,9 @@
 /// @file cli/frontend/Pipeline.cpp
-/// @brief Implementation of the compiler pipeline.
+/// @brief Implementation of the unified compiler pipeline.
 
 #include "Pipeline.hpp"
 #include "JSONDumper.hpp"
+#include "cli/Trace.hpp"
 
 #include "core/diagnostics/Diagnostic.hpp"
 #include "parser/ModuleResolver.hpp"
@@ -40,8 +41,7 @@ static std::string getAbsolutePath(const std::string& path) {
 PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
     PipelineResult result;
     result.success = true;
-    
-    bool verbose = opts.verbose || opts.interpreter.verbose;
+    result.stoppedAt = opts.stopAt;
     
     // ─── 1. Validate input ─────────────────────────────────────────────
     std::string absRootPath = getAbsolutePath(opts.rootFilePath);
@@ -49,18 +49,18 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
         result.success = false;
         result.exitCode = 1;
         result.errorMessage = "File not found: " + absRootPath;
+        Trace::error("File not found: ", absRootPath);
         return result;
     }
 
     std::string source = readFile(absRootPath);
     
-    // ─── 2. Parse ───────────────────────────────────────────────────────
+    // ─── 2. Parse Stage ────────────────────────────────────────────────
+    // This stage always runs for all commands (parse, sema, run, build)
+    Trace::info("Parsing: ", absRootPath);
+
     parser::ModuleResolver resolver(ctx.packageRoot, ctx.stringPool);
     parser::ParserContext parserCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics, &resolver);
-
-    if (verbose) {
-        std::cout << "[Pipeline] Parsing..." << std::endl;
-    }
 
     result.modules = parser::parseProgram(absRootPath, source, parserCtx);
 
@@ -68,19 +68,22 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
         result.success = false;
         result.exitCode = 1;
         result.errorMessage = "Parsing failed";
+        Trace::error("Parsing failed");
         return result;
     }
 
-    if (verbose) {
-        std::cout << "[Pipeline] Parsed " << result.modules.size() << " module(s)" << std::endl;
-    }
+    Trace::info("Parsed ", result.modules.size(), " module(s)");
 
-    // ─── 3. Stop at Parse? ─────────────────────────────────────────────
+    // If command is 'parse', stop here and return
     if (opts.stopAt == PipelineStage::Parse) {
+        Trace::detail("Stopped at Parse stage");
         return result;
     }
 
-    // ─── 4. Semantic Analysis ──────────────────────────────────────────
+    // ─── 3. Semantic Analysis Stage ────────────────────────────────────
+    // This stage runs for sema, run, and build commands
+    Trace::info("Running semantic analysis");
+    
     sema::SemaContext semaCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics);
     sema::analyze(result.modules, semaCtx);
 
@@ -88,117 +91,34 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
         result.success = false;
         result.exitCode = 1;
         result.errorMessage = "Semantic analysis failed";
+        Trace::error("Semantic analysis failed");
         return result;
     }
 
-    if (verbose) {
-        std::cout << "[Pipeline] Semantic analysis complete" << std::endl;
-    }
+    Trace::info("Semantic analysis complete");
 
-    // ─── 5. Stop at Sema? ──────────────────────────────────────────────
+    // If command is 'sema', stop here and return
     if (opts.stopAt == PipelineStage::Sema) {
+        Trace::detail("Stopped at Sema stage");
         return result;
     }
 
-    // ─── 6. Code Generation ─────────────────────────────────────────────
-    if (opts.stopAt == PipelineStage::CodeGen) {
+    // ─── 4. Code Generation Stage ──────────────────────────────────────
+    // This stage runs for run and build commands
+    if (opts.stopAt == PipelineStage::CodeGen || 
+        opts.stopAt == PipelineStage::Execute ||
+        opts.stopAt == PipelineStage::Build) {
+        
+        Trace::info("Generating code");
+        
         // TODO: Implement code generation
         result.llvmIR = "; LLVM IR generation not yet implemented\n";
-        if (verbose) {
-            std::cout << "[Pipeline] Stopped at CodeGen (LLVM IR generation)" << std::endl;
-        }
-        return result;
+        Trace::info("Stopped at CodeGen stage (LLVM IR generation)");
     }
 
-    // ─── 7. Full Execution ──────────────────────────────────────────────
-    // The run command handles execution separately
-    if (opts.command == CLIOptions::Command::Run) {
-        if (verbose) {
-            std::cout << "[Pipeline] Pipeline complete, handing off to interpreter" << std::endl;
-        }
-        return result;
-    }
-
+    // ─── 5. Return ──────────────────────────────────────────────────────
+    // The caller (run.cpp or build.cpp) handles execution/building
     return result;
-}
-
-// ─── Pipeline with Output ──────────────────────────────────────────────
-
-int runPipelineAndOutput(const CLIOptions& opts, CLIContext& ctx) {
-    bool verbose = opts.verbose || opts.interpreter.verbose;
-    
-    // ─── Run the pipeline ──────────────────────────────────────────────
-    PipelineResult result = runPipeline(opts, ctx);
-    
-    if (!result.success) {
-        std::cerr << "\n[Pipeline] Error: " << result.errorMessage << "\n";
-        if (ctx.diagnostics.hasErrors()) {
-            ctx.diagnostics.dump(std::cerr);
-        }
-        return result.exitCode;
-    }
-
-    // ─── Generate Output ──────────────────────────────────────────────
-    
-    if (opts.outputFormat == OutputFormat::Json || 
-        opts.outputFormat == OutputFormat::JsonPretty) {
-        // JSON output
-        bool pretty = (opts.outputFormat == OutputFormat::JsonPretty);
-        JSONDumper jsonDumper(ctx.stringPool, result.modules, pretty);
-        
-        std::string jsonOutput = jsonDumper.dump(ctx.diagnostics);
-        
-        if (opts.outputFile.has_value()) {
-            // Write to file
-            if (!jsonDumper.dumpToFile(ctx.diagnostics, opts.outputFile.value())) {
-                std::cerr << "[Pipeline] Failed to write JSON output to: " 
-                          << opts.outputFile.value() << "\n";
-                return 1;
-            }
-            if (verbose) {
-                std::cout << "[Pipeline] JSON output written to: " 
-                          << opts.outputFile.value() << "\n";
-            }
-        } else {
-            // Write to stdout
-            std::cout << jsonOutput << "\n";
-        }
-    } else {
-        // Text output (summary only)
-        // Note: AST dumping is now done via JSON output. 
-        // Use --json or --json-pretty for AST inspection.
-
-        // ─── Summary ──────────────────────────────────────────────────
-        std::cout << "\n[Pipeline] Success!\n";
-        std::cout << "  Modules:          " << result.modules.size() << "\n";
-        std::cout << "  Stopped at:       ";
-        
-        switch (opts.stopAt) {
-            case PipelineStage::Lex:    
-                std::cout << "Lex (tokenization)\n"; 
-                break;
-            case PipelineStage::Parse:  
-                std::cout << "Parse (AST)\n"; 
-                break;
-            case PipelineStage::Sema:   
-                std::cout << "Sema (semantic analysis)\n"; 
-                break;
-            case PipelineStage::CodeGen: 
-                std::cout << "CodeGen (LLVM IR)\n"; 
-                break;
-            case PipelineStage::Execute: 
-                std::cout << "Execute (full run)\n"; 
-                break;
-        }
-
-        if (ctx.diagnostics.hasWarnings()) {
-            std::cout << "  Warnings:         " << ctx.diagnostics.warningCount() << "\n";
-        }
-        
-        std::cout << "\n[Pipeline] Tip: Use --json or --json-pretty to see the AST.\n";
-    }
-
-    return 0;
 }
 
 } // namespace frontend

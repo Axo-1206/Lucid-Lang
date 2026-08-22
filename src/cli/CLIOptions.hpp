@@ -25,6 +25,8 @@ enum class PipelineStage {
     CodeGen,
     /// Full execution (default for 'run')
     Execute,
+    /// AOT compilation
+    Build,
 };
 
 /**
@@ -64,8 +66,11 @@ struct CLIOptions {
 
     // ─── CLI-Specific Options ────────────────────────────────────────
 
-    /// @brief CLI verbose output.
+    /// @brief CLI verbose output (overrides interpreter.verbose if true).
     bool verbose = false;
+
+    /// @brief Enable detailed tracing output (shows compilation progress).
+    bool trace = false;
 
     /// @brief Show help message.
     bool showHelp = false;

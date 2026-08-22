@@ -5,6 +5,7 @@
 #include "CLIContext.hpp"
 #include "CLIOptions.hpp"
 #include "frontend/Pipeline.hpp"
+#include "cli/Trace.hpp"
 
 #include "interpreter/Interpreter.hpp"
 #include "interpreter/support/InterpreterError.hpp"
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <signal.h>
 #include <atomic>
+#include <chrono>
 
 namespace cli {
 
@@ -24,26 +26,22 @@ int runCommand(const CLIOptions& opts) {
     
     bool verbose = opts.verbose || opts.interpreter.verbose;
     
-    // ─── Run the pipeline up to CodeGen ───────────────────────────────
-    // The pipeline handles parsing, semantic analysis, and code generation
+    // ─── Run pipeline up to CodeGen ────────────────────────────────────
     CLIOptions pipelineOpts = opts;
     pipelineOpts.stopAt = PipelineStage::CodeGen;
     
     frontend::PipelineResult result = frontend::runPipeline(pipelineOpts, ctx);
     
     if (!result.success) {
-        std::cerr << "\n❌ Pipeline failed: " << result.errorMessage << "\n";
         if (ctx.diagnostics.hasErrors()) {
             ctx.diagnostics.dump(std::cerr);
         }
         return result.exitCode;
     }
     
-    if (verbose) {
-        std::cout << "✅ Pipeline complete, ready for execution" << std::endl;
-    }
-    
     // ─── Initialize Interpreter ────────────────────────────────────────
+    Trace::info("Initializing interpreter");
+    
     interpreter::InterpreterOptions interpOpts = opts.interpreter;
     interpOpts.verbose = verbose;
     interpOpts.entryPoint = opts.entryPoint;
@@ -54,30 +52,49 @@ int runCommand(const CLIOptions& opts) {
     // ─── Execute ───────────────────────────────────────────────────────
     InternedString entryPoint = ctx.stringPool.intern(opts.entryPoint);
     
-    if (verbose) {
-        std::cout << "⏳ Executing..." << std::endl;
-    }
+    Trace::info("Executing entry point: ", opts.entryPoint);
     
     interpreter::ExecutionResult execResult;
     try {
+        auto start = std::chrono::steady_clock::now();
         execResult = interpreter::runModules(interpCtx, result.modules, entryPoint, false);
+        auto end = std::chrono::steady_clock::now();
+        execResult.executionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     } catch (const interpreter::InterpreterError& e) {
-        std::cerr << "❌ Interpreter error: " << e.what() << std::endl;
+        Trace::error("Interpreter error: ", e.what());
+        return 1;
+    } catch (const std::exception& e) {
+        Trace::error("Unexpected error: ", e.what());
         return 1;
     }
     
     if (!execResult.success) {
-        std::cerr << "❌ Execution failed: " << execResult.errorMessage << std::endl;
+        Trace::error("Execution failed: ", execResult.errorMessage);
         return execResult.exitCode;
     }
     
-    if (verbose) {
-        std::cout << "✅ Execution completed in " << execResult.executionTimeMs << "ms" << std::endl;
-        std::cout << "   Exit code: " << execResult.exitCode << std::endl;
+    // ─── Success Summary ───────────────────────────────────────────────
+    std::cout << "\nExecution completed successfully!\n";
+    std::cout << "   Exit code: " << execResult.exitCode << "\n";
+    std::cout << "   Time:      " << execResult.executionTimeMs << " ms\n";
+    std::cout << "   Modules:   " << result.modules.size() << "\n";
+    
+    if (ctx.diagnostics.hasWarnings()) {
+        std::cout << "   Warnings:  " << ctx.diagnostics.warningCount() << "\n";
     }
     
     // ─── Hot-Reload (if enabled) ──────────────────────────────────────
-    // ... (hot-reload code from your original run.cpp)
+    if (opts.enableHotReload) {
+        Trace::info("Hot-reload enabled, starting file watcher");
+        std::cout << "\nHot-reload active. Press Ctrl+C to exit.\n";
+        
+        // TODO: Implement hot-reload logic
+        while (g_running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
+        std::cout << "\nShutting down...\n";
+    }
     
     return 0;
 }

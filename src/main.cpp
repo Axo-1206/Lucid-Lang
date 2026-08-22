@@ -114,6 +114,7 @@ void printUsage() {
               << "  lucid repl                         -- Interactive REPL\n\n"
               << "Run options:\n"
               << "  --verbose            Enable verbose output\n"
+              << "  --trace              Show detailed progress trace\n"
               << "  --no-hot-reload      Disable hot-reload (file watcher)\n"
               << "  -O<level>            Optimization level (0-3, default: 2)\n"
               << "  --entry <name>       Entry point function name (default: main)\n"
@@ -212,6 +213,14 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        // ─── Trace progress ──────────────────────────────────────────────
+        // Track compiler compling progress
+        if (arg == "--trace") {
+            opts.trace = true;
+            opts.verbose = true;  // trace implies verbose
+            continue;
+        }
+
         // ─── Hot-Reload ──────────────────────────────────────────────────
         // Disables the file watcher that automatically recompiles on changes.
         if (arg == "--no-hot-reload") {
@@ -291,14 +300,14 @@ int main(int argc, char* argv[]) {
     // Requires: rootFilePath (the file to parse)
     // Options: --json, --json-pretty, -o, --verbose
     if (command == "parse") {
-        if (opts.rootFilePath.empty()) {
-            std::cerr << "Error: No file specified for 'parse' command.\n";
-            return 1;
-        }
-        opts.command = cli::CLIOptions::Command::Parse;
-        opts.stopAt = cli::PipelineStage::Parse;
-        return cli::frontend::parseCommand(opts);
+    if (opts.rootFilePath.empty()) {
+        std::cerr << "Error: No file specified for 'parse' command.\n";
+        return 1;
     }
+    opts.command = cli::CLIOptions::Command::Parse;
+    opts.stopAt = cli::PipelineStage::Parse;
+    return cli::frontend::parseCommand(opts);
+}
 
     // ─── Sema Command ─────────────────────────────────────────────────────
     // Parses the file and runs semantic analysis, stopping after type checking.
