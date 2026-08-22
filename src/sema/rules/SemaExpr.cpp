@@ -424,6 +424,345 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
 }
 
 // =============================================================================
+// resolveFieldAccessExpr
+// =============================================================================
+
+TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    // ─── Step 1: Resolve object ─────────────────────────────────────────────
+    TypeAST* objectType = resolveExpr(expr->object, ctx);
+    if (!objectType || objectType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
+                              "object has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 2: Check if object is nullable or fallible ────────────────────
+    if (isNullableType(objectType) || isFallibleType(objectType)) {
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "cannot access field on nullable or fallible type '",
+                              debug::typeToString(objectType, ctx.pool),
+                              "'. Narrow the value first using 'if' or '?\?'");
+        ctx.diagnostics.note(expr->object,
+                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Err;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 3: Handle generic type parameter ─────────────────────────────
+    if (objectType->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+
+        if (ctx.isGenericParam(namedType->name)) {
+            if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                      "field '", ctx.pool.lookup(expr->fieldName),
+                                      "' is not accessible on generic type '",
+                                      ctx.pool.lookup(namedType->name),
+                                      "' (no trait constraint provides this field)");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+
+            TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
+            if (!fieldType) {
+                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                      "field '", ctx.pool.lookup(expr->fieldName),
+                                      "' has no type information in generic constraints");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+
+            ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
+                               ? ValueState::Unknown : ValueState::Definite;
+            expr->resolvedType = fieldType;
+            expr->valueState = state;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return fieldType;
+        }
+    }
+
+    // ─── Step 4: Look up type declaration ──────────────────────────────────
+    if (!objectType->isa<NamedTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
+                              "field access requires a struct or enum type, got ",
+                              debug::typeToString(objectType, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+    TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
+    if (!typeDecl) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "undefined type '", ctx.pool.lookup(namedType->name), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 5: Handle struct type ─────────────────────────────────────────
+    if (typeDecl->isa<StructDeclAST>()) {
+        StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+        for (FieldDeclAST* f : structDecl->fields) {
+            if (f->name == expr->fieldName) {
+                // ─── Get field type from resolvedType (resolved) ────────────
+                TypeAST* fieldType = f->type;
+                if (!fieldType) {
+                    // Fallback to parser type if resolvedType not set
+                    fieldType = f->type;
+                }
+                
+                // ─── Propagate value state ──────────────────────────────────
+                ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
+                                   ? ValueState::Unknown : ValueState::Definite;
+                expr->resolvedType = fieldType;
+                expr->valueState = state;
+                
+                // ─── Set isLValue and isConst ───────────────────────────────
+                if (expr->object->isLValue) {
+                    if (f->isConst()) {
+                        expr->isLValue = false;
+                        expr->isConst = true;
+                    } else {
+                        expr->isLValue = true;
+                        expr->isConst = expr->object->isConst;
+                    }
+                } else {
+                    expr->isLValue = false;
+                    expr->isConst = expr->object->isConst;
+                }
+                
+                return fieldType;
+            }
+        }
+
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "struct '", ctx.pool.lookup(structDecl->name),
+                              "' has no field named '", ctx.pool.lookup(expr->fieldName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 6: Handle enum type ───────────────────────────────────────────
+    if (typeDecl->isa<EnumDeclAST>()) {
+        const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
+
+        for (const EnumVariantAST* v : enumDecl->variants) {
+            if (v->name == expr->fieldName) {
+                expr->resolvedType = ctx.getNamedType(enumDecl->name);
+                expr->valueState = ValueState::Definite;
+                expr->isLValue = false;
+                expr->isConst = true;
+                return ctx.getNamedType(enumDecl->name);
+            }
+        }
+
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "enum '", ctx.pool.lookup(enumDecl->name),
+                              "' has no variant named '", ctx.pool.lookup(expr->fieldName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                          "field access on unsupported type");
+    expr->resolvedType = ctx.getUnknownType();
+    expr->valueState = ValueState::Unknown;
+    return ctx.getUnknownType();
+}
+
+// =============================================================================
+// resolveModuleAccessExpr
+// =============================================================================
+
+TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    // ─── Step 1: Look up the member by module alias ─────────────────────────
+    ModuleAST* module = ctx.lookupImport(expr->moduleName);
+    if (!module) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
+                              "undefined module alias '", ctx.pool.lookup(expr->moduleName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->resolvedDecl = nullptr;
+        expr->resolvedModule = nullptr;
+        return ctx.getUnknownType();
+    }
+
+    ValueDeclAST* decl = ctx.lookupModuleValueMember(module, expr->memberName);
+    if (!decl) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
+                              "module '", ctx.pool.lookup(expr->moduleName),
+                              "' has no member named '", ctx.pool.lookup(expr->memberName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->resolvedDecl = nullptr;
+        expr->resolvedModule = module;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 2: Store resolved declaration and module ─────────────────────
+    expr->resolvedDecl = decl;
+    expr->resolvedModule = module;
+
+    // ─── Step 3: Check if the member is exported ───────────────────────────
+    if (!ctx.isValueExported(decl)) {
+        ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
+                              "member '", ctx.pool.lookup(expr->memberName),
+                              "' in module '", ctx.pool.lookup(expr->moduleName),
+                              "' is not exported");
+        ctx.diagnostics.note(expr, "Add @[export] to the member declaration to make it accessible");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 4: Get the declaration's type ──────────────────────────────────
+    // Use the effective type (accounting for any narrowing that might apply)
+    // For module members, narrowing doesn't apply (they're global), but we
+    // use the same pattern for consistency.
+    TypeAST* declType = ctx.getEffectiveType(decl, expr->memberName);
+    if (!declType) {
+        // Fallback to decl->type if effective type is not available
+        declType = decl->type;
+    }
+    
+    if (!declType) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "member '", ctx.pool.lookup(expr->memberName),
+                              "' has no type information");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 5: Set isLValue and isConst based on member's keyword ──────
+    if (decl->isa<VarDeclAST>()) {
+        VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (varDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<EnumVariantAST>()) {
+        expr->isLValue = false;
+        expr->isConst = true;
+    } else {
+        expr->isLValue = false;
+        expr->isConst = false;
+    }
+
+    // ─── Step 6: Handle generic arguments if present ────────────────────────
+    if (!expr->genericArgs.empty()) {
+        if (!decl->isa<FuncDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "member '", ctx.pool.lookup(expr->memberName),
+                                  "' is not a generic function");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+
+        // Resolve each generic argument
+        for (TypeAST* arg : expr->genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                      "invalid generic argument type for '",
+                                      ctx.pool.lookup(expr->memberName), "'");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                expr->isLValue = false;
+                return ctx.getUnknownType();
+            }
+        }
+
+        // Validate generic arguments against the function's parameters
+        if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+
+        // Use the function's type (generic arguments are stored on the expression)
+        declType = funcDecl->type;
+        if (!declType) {
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                                  "member '", ctx.pool.lookup(expr->memberName),
+                                  "' has no type information");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+    }
+
+    // ─── Step 7: Determine value state ──────────────────────────────────────
+    ValueState state;
+    if (decl->isa<EnumVariantAST>()) {
+        state = ValueState::Definite;
+    } else if (isNullableType(declType) || isFallibleType(declType)) {
+        // Nullable/fallible module members are unknown until runtime
+        state = ValueState::Unknown;
+    } else if (decl->isa<FuncDeclAST>()) {
+        // Functions are definite (they exist at compile time)
+        state = ValueState::Definite;
+    } else if (decl->isa<VarDeclAST>()) {
+        VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        if (varDecl->init && varDecl->init->isConst) {
+            state = ValueState::Definite;
+        } else {
+            state = ValueState::Unknown;
+        }
+    } else {
+        state = ValueState::Unknown;
+    }
+
+    // ─── Step 8: Set the expression's type ──────────────────────────────────
+    expr->resolvedType = declType;
+    expr->valueState = state;
+
+    // ─── Step 9: Validate against target type if provided ─────────────────
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (!isAssignable(targetType, declType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ",
+                                  debug::typeToString(declType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+    }
+
+    LOG_SEMA("resolveModuleAccessExpr: ", 
+             ctx.pool.lookup(expr->moduleName), ":",
+             ctx.pool.lookup(expr->memberName),
+             " resolved to ", debug::typeToString(declType, ctx.pool));
+
+    return declType;
+}
+
+// =============================================================================
 // resolveArrayLiteralExpr
 // =============================================================================
 
@@ -1541,345 +1880,6 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& 
 }
 
 // =============================================================================
-// resolveFieldAccessExpr
-// =============================================================================
-
-TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Resolve object ─────────────────────────────────────────────
-    TypeAST* objectType = resolveExpr(expr->object, ctx);
-    if (!objectType || objectType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
-                              "object has unknown type");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 2: Check if object is nullable or fallible ────────────────────
-    if (isNullableType(objectType) || isFallibleType(objectType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "cannot access field on nullable or fallible type '",
-                              debug::typeToString(objectType, ctx.pool),
-                              "'. Narrow the value first using 'if' or '?\?'");
-        ctx.diagnostics.note(expr->object,
-                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Err;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 3: Handle generic type parameter ─────────────────────────────
-    if (objectType->isa<NamedTypeAST>()) {
-        NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
-
-        if (ctx.isGenericParam(namedType->name)) {
-            if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
-                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                                      "field '", ctx.pool.lookup(expr->fieldName),
-                                      "' is not accessible on generic type '",
-                                      ctx.pool.lookup(namedType->name),
-                                      "' (no trait constraint provides this field)");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
-            if (!fieldType) {
-                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                                      "field '", ctx.pool.lookup(expr->fieldName),
-                                      "' has no type information in generic constraints");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
-                               ? ValueState::Unknown : ValueState::Definite;
-            expr->resolvedType = fieldType;
-            expr->valueState = state;
-            expr->isLValue = false;
-            expr->isConst = false;
-            return fieldType;
-        }
-    }
-
-    // ─── Step 4: Look up type declaration ──────────────────────────────────
-    if (!objectType->isa<NamedTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
-                              "field access requires a struct or enum type, got ",
-                              debug::typeToString(objectType, ctx.pool));
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
-    TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
-    if (!typeDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "undefined type '", ctx.pool.lookup(namedType->name), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 5: Handle struct type ─────────────────────────────────────────
-    if (typeDecl->isa<StructDeclAST>()) {
-        StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-
-        for (FieldDeclAST* f : structDecl->fields) {
-            if (f->name == expr->fieldName) {
-                // ─── Get field type from resolvedType (resolved) ────────────
-                TypeAST* fieldType = f->type;
-                if (!fieldType) {
-                    // Fallback to parser type if resolvedType not set
-                    fieldType = f->type;
-                }
-                
-                // ─── Propagate value state ──────────────────────────────────
-                ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
-                                   ? ValueState::Unknown : ValueState::Definite;
-                expr->resolvedType = fieldType;
-                expr->valueState = state;
-                
-                // ─── Set isLValue and isConst ───────────────────────────────
-                if (expr->object->isLValue) {
-                    if (f->isConst()) {
-                        expr->isLValue = false;
-                        expr->isConst = true;
-                    } else {
-                        expr->isLValue = true;
-                        expr->isConst = expr->object->isConst;
-                    }
-                } else {
-                    expr->isLValue = false;
-                    expr->isConst = expr->object->isConst;
-                }
-                
-                return fieldType;
-            }
-        }
-
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                              "struct '", ctx.pool.lookup(structDecl->name),
-                              "' has no field named '", ctx.pool.lookup(expr->fieldName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 6: Handle enum type ───────────────────────────────────────────
-    if (typeDecl->isa<EnumDeclAST>()) {
-        const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
-
-        for (const EnumVariantAST* v : enumDecl->variants) {
-            if (v->name == expr->fieldName) {
-                expr->resolvedType = ctx.getNamedType(enumDecl->name);
-                expr->valueState = ValueState::Definite;
-                expr->isLValue = false;
-                expr->isConst = true;
-                return ctx.getNamedType(enumDecl->name);
-            }
-        }
-
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                              "enum '", ctx.pool.lookup(enumDecl->name),
-                              "' has no variant named '", ctx.pool.lookup(expr->fieldName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                          "field access on unsupported type");
-    expr->resolvedType = ctx.getUnknownType();
-    expr->valueState = ValueState::Unknown;
-    return ctx.getUnknownType();
-}
-
-// =============================================================================
-// resolveModuleAccessExpr
-// =============================================================================
-
-TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Look up the member by module alias ─────────────────────────
-    ModuleAST* module = ctx.lookupImport(expr->moduleName);
-    if (!module) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
-                              "undefined module alias '", ctx.pool.lookup(expr->moduleName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        expr->isLValue = false;
-        expr->resolvedDecl = nullptr;
-        expr->resolvedModule = nullptr;
-        return ctx.getUnknownType();
-    }
-
-    ValueDeclAST* decl = ctx.lookupModuleValueMember(module, expr->memberName);
-    if (!decl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
-                              "module '", ctx.pool.lookup(expr->moduleName),
-                              "' has no member named '", ctx.pool.lookup(expr->memberName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        expr->isLValue = false;
-        expr->resolvedDecl = nullptr;
-        expr->resolvedModule = module;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 2: Store resolved declaration and module ─────────────────────
-    expr->resolvedDecl = decl;
-    expr->resolvedModule = module;
-
-    // ─── Step 3: Check if the member is exported ───────────────────────────
-    if (!ctx.isValueExported(decl)) {
-        ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
-                              "member '", ctx.pool.lookup(expr->memberName),
-                              "' in module '", ctx.pool.lookup(expr->moduleName),
-                              "' is not exported");
-        ctx.diagnostics.note(expr, "Add @[export] to the member declaration to make it accessible");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        expr->isLValue = false;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 4: Get the declaration's type ──────────────────────────────────
-    // Use the effective type (accounting for any narrowing that might apply)
-    // For module members, narrowing doesn't apply (they're global), but we
-    // use the same pattern for consistency.
-    TypeAST* declType = ctx.getEffectiveType(decl, expr->memberName);
-    if (!declType) {
-        // Fallback to decl->type if effective type is not available
-        declType = decl->type;
-    }
-    
-    if (!declType) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "member '", ctx.pool.lookup(expr->memberName),
-                              "' has no type information");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        expr->isLValue = false;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 5: Set isLValue and isConst based on member's keyword ──────
-    if (decl->isa<VarDeclAST>()) {
-        VarDeclAST* varDecl = decl->as<VarDeclAST>();
-        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
-        expr->isConst = (varDecl->keyword == DeclKeyword::Const);
-    } else if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
-        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
-    } else if (decl->isa<EnumVariantAST>()) {
-        expr->isLValue = false;
-        expr->isConst = true;
-    } else {
-        expr->isLValue = false;
-        expr->isConst = false;
-    }
-
-    // ─── Step 6: Handle generic arguments if present ────────────────────────
-    if (!expr->genericArgs.empty()) {
-        if (!decl->isa<FuncDeclAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "member '", ctx.pool.lookup(expr->memberName),
-                                  "' is not a generic function");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            return ctx.getUnknownType();
-        }
-
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-
-        // Resolve each generic argument
-        for (TypeAST* arg : expr->genericArgs) {
-            if (!resolveType(arg, ctx)) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                      "invalid generic argument type for '",
-                                      ctx.pool.lookup(expr->memberName), "'");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                expr->isLValue = false;
-                return ctx.getUnknownType();
-            }
-        }
-
-        // Validate generic arguments against the function's parameters
-        if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            return ctx.getUnknownType();
-        }
-
-        // Use the function's type (generic arguments are stored on the expression)
-        declType = funcDecl->type;
-        if (!declType) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                                  "member '", ctx.pool.lookup(expr->memberName),
-                                  "' has no type information");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            return ctx.getUnknownType();
-        }
-    }
-
-    // ─── Step 7: Determine value state ──────────────────────────────────────
-    ValueState state;
-    if (decl->isa<EnumVariantAST>()) {
-        state = ValueState::Definite;
-    } else if (isNullableType(declType) || isFallibleType(declType)) {
-        // Nullable/fallible module members are unknown until runtime
-        state = ValueState::Unknown;
-    } else if (decl->isa<FuncDeclAST>()) {
-        // Functions are definite (they exist at compile time)
-        state = ValueState::Definite;
-    } else if (decl->isa<VarDeclAST>()) {
-        VarDeclAST* varDecl = decl->as<VarDeclAST>();
-        if (varDecl->init && varDecl->init->isConst) {
-            state = ValueState::Definite;
-        } else {
-            state = ValueState::Unknown;
-        }
-    } else {
-        state = ValueState::Unknown;
-    }
-
-    // ─── Step 8: Set the expression's type ──────────────────────────────────
-    expr->resolvedType = declType;
-    expr->valueState = state;
-
-    // ─── Step 9: Validate against target type if provided ─────────────────
-    if (targetType && !targetType->isa<UnknownTypeAST>()) {
-        if (!isAssignable(targetType, declType, ctx)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                                  "type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
-                                  ", got ",
-                                  debug::typeToString(declType, ctx.pool));
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            return ctx.getUnknownType();
-        }
-    }
-
-    LOG_SEMA("resolveModuleAccessExpr: ", 
-             ctx.pool.lookup(expr->moduleName), ":",
-             ctx.pool.lookup(expr->memberName),
-             " resolved to ", debug::typeToString(declType, ctx.pool));
-
-    return declType;
-}
-
-// =============================================================================
 // resolveNullCoalesceExpr
 // =============================================================================
 
@@ -2064,7 +2064,7 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
 }
 
 // =============================================================================
-// resolvePipelineStep
+// resolvePipelineStep - Optimized with Caching
 // =============================================================================
 
 /// @brief Resolve a single pipeline step with variadic parameter support.
@@ -2091,20 +2091,32 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve the callable expression ───────────────────────────
-    TypeAST* callableType = resolveExpr(step->callable, ctx);
+    // ─── Step 1: Get the callable type (cached via resolvedType) ────────────
+    // The resolvedType is set by resolveExpr and cached on the AST node.
+    // This is the single source of truth for this step's callable type.
+    TypeAST* callableType = step->callable->resolvedType;
+    
+    // If not already resolved, resolve it now and cache the result.
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_NotCallable, step->callable,
-                              "pipeline step callable has unknown type");
-        return ctx.getUnknownType();
+        callableType = resolveExpr(step->callable, ctx);
+        if (!callableType || callableType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_NotCallable, step->callable,
+                                  "pipeline step callable has unknown type");
+            return ctx.getUnknownType();
+        }
+        // resolvedType is already set by resolveExpr
     }
 
     // ─── Step 2: Must be a function type ────────────────────────────────────
     if (!callableType->isa<FuncTypeAST>()) {
-        // Check if it's a generic function reference that wasn't instantiated
-        if (step->callable->isa<IdentifierExprAST>()) {
-            IdentifierExprAST* id = step->callable->as<IdentifierExprAST>();
-            ValueDeclAST* decl = ctx.lookupValue(id->name);
+        // ─── Check if it's a generic function reference that wasn't instantiated ──
+        // Use cached resolvedDecl when available
+        ExprAST* callable = step->callable;
+        
+        if (callable->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = callable->as<IdentifierExprAST>();
+            // Use cached resolvedDecl (set by resolveIdentifierExpr)
+            ValueDeclAST* decl = id->resolvedDecl;
             if (decl && decl->isa<FuncDeclAST>()) {
                 FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
                 if (!funcDecl->genericParams.empty() && id->genericArgs.empty()) {
@@ -2113,6 +2125,21 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                           "' requires generic arguments in pipeline step");
                     ctx.diagnostics.note(step->callable,
                                          "Use '", ctx.pool.lookup(id->name), "<T>' to instantiate");
+                    return ctx.getUnknownType();
+                }
+            }
+        } else if (callable->isa<ModuleAccessExprAST>()) {
+            ModuleAccessExprAST* mod = callable->as<ModuleAccessExprAST>();
+            // Use cached resolvedDecl (set by resolveModuleAccessExpr)
+            ValueDeclAST* decl = mod->resolvedDecl;
+            if (decl && decl->isa<FuncDeclAST>()) {
+                FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+                if (!funcDecl->genericParams.empty() && mod->genericArgs.empty()) {
+                    ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, step->callable,
+                                          "generic function '", ctx.pool.lookup(mod->memberName),
+                                          "' requires generic arguments in pipeline step");
+                    ctx.diagnostics.note(step->callable,
+                                         "Use '", ctx.pool.lookup(mod->memberName), "<T>' to instantiate");
                     return ctx.getUnknownType();
                 }
             }
@@ -2153,11 +2180,15 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
     
     // ─── 4b: Resolve pack arguments ──────────────────────────────────────
     for (ExprAST* packArg : step->packArgs) {
-        TypeAST* argType = resolveExpr(packArg, ctx);
+        // packArg->resolvedType is already set by resolveExpr
+        TypeAST* argType = packArg->resolvedType;
         if (!argType || argType->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, packArg,
-                                  "pack argument has unknown type");
-            return ctx.getUnknownType();
+            argType = resolveExpr(packArg, ctx);
+            if (!argType || argType->isa<UnknownTypeAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, packArg,
+                                      "pack argument has unknown type");
+                return ctx.getUnknownType();
+            }
         }
         argTypes.push_back(argType);
     }
@@ -2179,7 +2210,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                     " (", discardedTypes, ")");
             ctx.diagnostics.note(step->callable,
                                  "The function '", debug::typeToString(callableType, ctx.pool),
-                                 "' ignores all upstream values.", "removing this step if the values are not needed.");
+                                 "' ignores all upstream values. Consider removing this step.");
         }
         
         if (!funcType->returnType) {
@@ -2322,7 +2353,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
 }
 
 // =============================================================================
-// resolvePipelineExpr
+// resolvePipelineExpr - Optimized
 // =============================================================================
 
 TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
@@ -2335,17 +2366,21 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
     }
 
     // ─── Step 1: Resolve the seed expression ──────────────────────────────
-    TypeAST* currentType = resolveExpr(expr->seed, ctx);
+    TypeAST* currentType = expr->seed->resolvedType;
     if (!currentType || currentType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->seed,
-                              "pipeline seed has unknown type");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+        currentType = resolveExpr(expr->seed, ctx);
+        if (!currentType || currentType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->seed,
+                                  "pipeline seed has unknown type");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
     }
 
     // ─── Step 2: Walk through each step ────────────────────────────────────
     for (PipelineStepAST* step : expr->steps) {
+        // resolvePipelineStep uses cached resolvedType from the AST
         TypeAST* stepResult = resolvePipelineStep(step, currentType, ctx);
         
         if (!stepResult || stepResult->isa<UnknownTypeAST>()) {
@@ -2358,7 +2393,6 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
     }
 
     // ─── Step 3: Validate against target type if provided ──────────────────
-    // The final result of the pipeline must match the target type
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, currentType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
@@ -2393,17 +2427,44 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
 // resolveComposeOperand
 // =============================================================================
 
+/// @brief Resolve a composition operand with caching.
+/// 
+/// Caches the resolved type and declaration information on the
+/// operand AST node itself, avoiding double lookup.
+/// First call to resolveComposeOperand:
+///   ├── operand->callable->resolvedType = nullptr (not resolved yet)
+///   ├── call resolveExpr(operand->callable) → sets resolvedType and resolvedDecl
+///   ├── cache both on the AST node
+///   └── return resolvedType
+///
+/// Subsequent calls to resolveComposeOperand (same operand):
+///   ├── operand->callable->resolvedType != nullptr ✅
+///   ├── operand->callable->resolvedDecl != nullptr ✅ (if applicable)
+///   └── use cached values directly
+/// 
+/// @param operand The composition operand.
+/// @param targetType The target type (for context-dependent resolution).
+/// @param ctx The semantic context.
+/// @return The resolved function type, or nullptr on error.
 TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, SemaContext& ctx) {
     if (!operand) {
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve callable ──────────────────────────────────────────
-    TypeAST* callableType = resolveExpr(operand->callable, ctx);
+    // ─── Step 1: Resolve callable (cached via resolvedType) ────────────────
+    // The resolvedType is set by resolveExpr and cached on the AST node.
+    // This is the single source of truth for this operand's type.
+    TypeAST* callableType = operand->callable->resolvedType;
+    
+    // If not already resolved, resolve it now and cache the result.
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_NotCallable, operand->callable,
-                              "composition operand has unknown type");
-        return ctx.getUnknownType();
+        callableType = resolveExpr(operand->callable, ctx);
+        if (!callableType || callableType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_NotCallable, operand->callable,
+                                  "composition operand has unknown type");
+            return ctx.getUnknownType();
+        }
+        // resolvedType is already set by resolveExpr
     }
 
     // ─── Step 2: Check if callable is nullable or fallible ─────────────────
@@ -2416,23 +2477,110 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
 
     // ─── Step 3: Must be a function type ───────────────────────────────────
     if (!callableType->isa<FuncTypeAST>()) {
-        // Check if it's a generic function reference that wasn't instantiated
-        if (operand->callable->isa<IdentifierExprAST>()) {
-            IdentifierExprAST* id = operand->callable->as<IdentifierExprAST>();
-            ValueDeclAST* decl = ctx.lookupValue(id->name);
+        // ─── Handle generic function references ──────────────────────────────
+        // We need to check if the callable is a generic function reference
+        // that requires instantiation. This applies to:
+        //   1. IdentifierExprAST   → plain function name
+        //   2. ModuleAccessExprAST → module:function
+        
+        ExprAST* callable = operand->callable;
+        bool hasGenericParams = false;
+        bool hasGenericArgs = false;
+        FuncDeclAST* funcDecl = nullptr;
+        
+        // ─── Case 1: IdentifierExprAST ─────────────────────────────────────
+        if (callable->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = callable->as<IdentifierExprAST>();
+            hasGenericArgs = !id->genericArgs.empty();
+            
+            // Use cached resolvedDecl (set by resolveIdentifierExpr)
+            ValueDeclAST* decl = id->resolvedDecl;
             if (decl && decl->isa<FuncDeclAST>()) {
-                FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-                if (!funcDecl->genericParams.empty() && id->genericArgs.empty()) {
-                    ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, operand->callable,
-                                          "generic function '", ctx.pool.lookup(id->name),
-                                          "' requires generic arguments in composition");
-                    ctx.diagnostics.note(operand->callable,
-                                         "Use '", ctx.pool.lookup(id->name), "<T>' to instantiate");
-                    return ctx.getUnknownType();
-                }
+                funcDecl = decl->as<FuncDeclAST>();
+                hasGenericParams = !funcDecl->genericParams.empty();
             }
         }
         
+        // ─── Case 2: ModuleAccessExprAST ──────────────────────────────────
+        else if (callable->isa<ModuleAccessExprAST>()) {
+            ModuleAccessExprAST* mod = callable->as<ModuleAccessExprAST>();
+            hasGenericArgs = !mod->genericArgs.empty();
+            
+            // Use cached resolvedDecl (set by resolveModuleAccessExpr)
+            ValueDeclAST* decl = mod->resolvedDecl;
+            if (decl && decl->isa<FuncDeclAST>()) {
+                funcDecl = decl->as<FuncDeclAST>();
+                hasGenericParams = !funcDecl->genericParams.empty();
+            }
+        }
+        
+        // ─── Case 3: FieldAccessExprAST ────────────────────────────────────
+        // Field access in composition:
+        //   - If the field type is a function, it can be used in composition
+        //   - Generic information comes from the struct literal, NOT from
+        //     the field access itself (FieldAccessExprAST has no genericArgs)
+        //   - We need to resolve the field's type and check if it's a function
+        else if (callable->isa<FieldAccessExprAST>()) {
+            FieldAccessExprAST* field = callable->as<FieldAccessExprAST>();
+            
+            // ─── Check: Is this an enum variant access? ──────────────────
+            // Enum variants are values, not functions. They should not be
+            // used in composition.
+            TypeAST* objectType = field->object->resolvedType;
+            if (objectType && objectType->isa<NamedTypeAST>()) {
+                NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+                TypeDeclAST* decl = namedType->resolvedDecl;
+                if (decl && decl->isa<EnumDeclAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, field,
+                                          "enum variant '", ctx.pool.lookup(field->fieldName),
+                                          "' is a value, not a function - cannot use in composition");
+                    ctx.diagnostics.note(field,
+                                         "Enum variants are constants. Use a function that returns ",
+                                         "the variant if you need it in a composition chain.");
+                    return ctx.getUnknownType();
+                }
+            }
+            
+            // ─── Check: Is this a struct field access? ────────────────────
+            // The field type must be a function for composition.
+            // FieldAccessExprAST itself has no genericArgs - the generic
+            // information is already resolved in the field's type from the
+            // struct literal that instantiated it.
+            if (callableType->isa<FuncTypeAST>()) {
+                // The field IS a function - valid for composition
+                // No generic args needed here - they're already in the type
+                return callableType;
+            }
+            
+            // ─── Field access is not a function ───────────────────────────
+            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, field,
+                                  "field '", ctx.pool.lookup(field->fieldName),
+                                  "' is not a function - cannot use in composition");
+            ctx.diagnostics.note(field,
+                                 "Only functions can be composed. The field type is ",
+                                 debug::typeToString(callableType, ctx.pool));
+            return ctx.getUnknownType();
+        }
+        
+        // ─── Validate generic instantiation ───────────────────────────────
+        if (funcDecl) {
+            if (hasGenericParams && !hasGenericArgs) {
+                ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, operand->callable,
+                                      "generic function '", ctx.pool.lookup(funcDecl->name),
+                                      "' requires generic arguments in composition");
+                ctx.diagnostics.note(operand->callable,
+                                     "Use '", ctx.pool.lookup(funcDecl->name), "<T>' to instantiate");
+                return ctx.getUnknownType();
+            }
+            if (!hasGenericParams && hasGenericArgs) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
+                                      "function '", ctx.pool.lookup(funcDecl->name),
+                                      "' is not generic but generic arguments were provided");
+                return ctx.getUnknownType();
+            }
+        }
+        
+        // ─── If we still don't have a function type, error ──────────────
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                               "composition operand is not a function type, got ",
                               debug::typeToString(callableType, ctx.pool));
@@ -2443,7 +2591,27 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
 
     // ─── Step 4: Validate generic arguments ────────────────────────────────
     if (!operand->genericArgs.empty()) {
-        FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
+        // Use cached resolvedDecl if available
+        FuncDeclAST* funcDecl = nullptr;
+        
+        if (operand->callable->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = operand->callable->as<IdentifierExprAST>();
+            ValueDeclAST* decl = id->resolvedDecl;
+            if (decl && decl->isa<FuncDeclAST>()) {
+                funcDecl = decl->as<FuncDeclAST>();
+            }
+        } else if (operand->callable->isa<ModuleAccessExprAST>()) {
+            ModuleAccessExprAST* mod = operand->callable->as<ModuleAccessExprAST>();
+            ValueDeclAST* decl = mod->resolvedDecl;
+            if (decl && decl->isa<FuncDeclAST>()) {
+                funcDecl = decl->as<FuncDeclAST>();
+            }
+        } else {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
+                                  "generic arguments can only be applied to named functions");
+            return ctx.getUnknownType();
+        }
+        
         if (!funcDecl) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
                                   "generic arguments applied to non-generic function");
@@ -2491,7 +2659,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
 }
 
 // =============================================================================
-// resolveComposeExpr - REFACTORED
+// resolveComposeExpr - Optimized with Caching
 // =============================================================================
 
 TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
@@ -2513,6 +2681,7 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
     }
 
     // ─── Step 2: Resolve left operand ──────────────────────────────────────
+    // resolveComposeOperand uses cached resolvedType from the AST.
     TypeAST* leftType = resolveComposeOperand(expr->left->as<ComposeOperandAST>(), nullptr, ctx);
     if (!leftType || leftType->isa<UnknownTypeAST>()) {
         return ctx.getUnknownType();
@@ -2529,7 +2698,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
     FuncTypeAST* leftFunc = leftType->as<FuncTypeAST>();
 
     // ─── Step 3: Extract left operand's input and output ───────────────────
-    // Input: the left operand's single parameter type
     TypeAST* inputType = leftFunc->params[0]->type;
     if (!inputType) {
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr->left,
@@ -2539,15 +2707,11 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
-    // Output: the left operand's return type (may be void or a value)
     TypeAST* currentOutput = leftFunc->returnType;
 
     // ─── Step 4: Process each right operand ─────────────────────────────────
-    // The output type flows through the chain: left.output → right.input → right.output → ...
-    // If left.output is void, then the next operand must take void (no parameters)
-    // If left.output is a value, then the next operand must take that value type
     for (ComposeOperandAST* operand : expr->operands) {
-        // ─── 4a: Resolve the operand ─────────────────────────────────────
+        // resolveComposeOperand uses cached resolvedType from the AST.
         TypeAST* operandType = resolveComposeOperand(operand, nullptr, ctx);
         if (!operandType || operandType->isa<UnknownTypeAST>()) {
             return ctx.getUnknownType();
@@ -2563,9 +2727,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
 
         FuncTypeAST* rightFunc = operandType->as<FuncTypeAST>();
 
-        // ─── 4b: Extract right operand's input and output ─────────────────
-        // Input: the right operand's single parameter type
-        // Output: the right operand's return type (may be void or a value)
         TypeAST* rightInput = rightFunc->params[0]->type;
         if (!rightInput) {
             ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
@@ -2578,37 +2739,23 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         TypeAST* rightOutput = rightFunc->returnType;
 
         // ─── 4c: Validate type compatibility ──────────────────────────────
-        // The current output must match the right operand's input.
-        // This works for both value and void types:
-        //   - If currentOutput is void and rightInput is void → ✅
-        //   - If currentOutput is T and rightInput is T → ✅
-        //   - If currentOutput is void and rightInput is T → ❌
-        //   - If currentOutput is T and rightInput is void → ❌
-        
-        // Special case: both are void
         bool currentIsVoid = (currentOutput == nullptr);
         bool rightInputIsVoid = (rightInput == nullptr);
         
         if (currentIsVoid && rightInputIsVoid) {
-            // Both are void → valid composition
-            // Nothing to assign, just continue
+            // Both void - valid
         } else if (!currentIsVoid && !rightInputIsVoid) {
-            // Both are values → must be assignable
             if (!isAssignable(rightInput, currentOutput, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                                       "composition type mismatch: previous output ",
                                       debug::typeToString(currentOutput, ctx.pool),
                                       " is not assignable to next input ",
                                       debug::typeToString(rightInput, ctx.pool));
-                ctx.diagnostics.note(operand->callable,
-                                     "In composition: (", debug::typeToString(currentOutput, ctx.pool),
-                                     ") -> (", debug::typeToString(rightInput, ctx.pool), ")");
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
         } else {
-            // One is void, the other is a value → mismatch
             if (currentIsVoid && !rightInputIsVoid) {
                 ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                                       "composition type mismatch: previous output is void, "
@@ -2625,8 +2772,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
             return ctx.getUnknownType();
         }
 
-        // ─── 4d: Update the current output ─────────────────────────────────
-        // The new output is the right operand's return type
         currentOutput = rightOutput;
     }
 
@@ -2634,22 +2779,16 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
     FuncTypeAST* composedType = ctx.arena.make<FuncTypeAST>();
     composedType->loc = expr->loc;
     
-    // ─── 5a: Copy the left operand's parameter ─────────────────────────────
     auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
     paramBuilder.push_back(leftFunc->params[0]);
     composedType->params = paramBuilder.build();
-    
-    // ─── 5b: Set return type ────────────────────────────────────────────────
-    // If the last operand returned void, currentOutput is nullptr
     composedType->returnType = currentOutput;
     
     // ─── 5c: Set hasArrow based on context ──────────────────────────────────
     if (targetType && targetType->isa<FuncTypeAST>()) {
-        // Target type provides the context (declaration site)
         FuncTypeAST* targetFunc = targetType->as<FuncTypeAST>();
         composedType->hasArrow = targetFunc->hasArrow;
     } else {
-        // No target type - derive from the return type
         composedType->hasArrow = (currentOutput != nullptr);
     }
 
@@ -2666,7 +2805,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         }
     }
 
-    // ─── Step 7: Store result ──────────────────────────────────────────────
     expr->resolvedType = composedType;
     expr->valueState = ValueState::Definite;
     expr->isLValue = false;
