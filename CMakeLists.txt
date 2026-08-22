@@ -101,7 +101,6 @@ endif()
 #
 # =============================================================================
 
-
 # Common paths where LLVM might be installed
 set(LLVM_PATHS
     # vcpkg default installation
@@ -162,7 +161,6 @@ if(LLVM_FOUND)
     message(STATUS "  Include dir: ${LLVM_INCLUDE_DIRS}")
     message(STATUS "  Library dir: ${LLVM_LIBRARY_DIRS}")
     message(STATUS "  Targets:     ${LLVM_TARGETS_TO_BUILD}")
-    message(STATUS "========================================")
 else()
     message(FATAL_ERROR "LLVM not found! Please install LLVM or set LLVM_ROOT")
 endif()
@@ -179,15 +177,6 @@ file(GLOB_RECURSE SOURCES "src/*.cpp")
 # Create executable
 add_executable(lucid-comp ${SOURCES})
 
-# =============================================================================
-# DEBUG BUILD COMMANDS FOR LucCompiler
-# =============================================================================
-#
-# BASIC USAGE:
-#   cmake -B build                                          # Configure with defaults (debug OFF)
-#   cmake --build build                                     # Build the project
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc    # Run compiler
-#
 # =============================================================================
 # DEBUG FLAGS (enable specific components)
 # =============================================================================
@@ -231,7 +220,7 @@ add_executable(lucid-comp ${SOURCES})
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_SEMANTIC=ON
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
-#
+
 # =============================================================================
 # VERBOSITY LEVELS (controls output detail)
 # =============================================================================
@@ -252,23 +241,7 @@ add_executable(lucid-comp ${SOURCES})
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
-#
-# =============================================================================
-# OUTPUT TO FILE (instead of console)
-# =============================================================================
-#
-# Log to default file (debug.log):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON
-#   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
-#   type debug.log  # View the log
-#
-# Log to custom file path:
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="parser_output.log"
-#   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
-#   type parser_output.log
-#
+
 # =============================================================================
 # COMBINED EXAMPLES (most common debugging scenarios)
 # =============================================================================
@@ -283,11 +256,10 @@ add_executable(lucid-comp ${SOURCES})
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
-# Scenario 3: Debug type parsing and save to file:
-#   cmake -B build -DDEBUG_TYPE=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="type_debug.log"
+# Scenario 3: Debug type parsing:
+#   cmake -B build -DDEBUG_TYPE=ON
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
-#   notepad type_debug.log
 #
 # Scenario 4: Debug semantic analysis with detail output:
 #   cmake -B build -DDEBUG_SEMANTIC=ON -DDEBUG_VERBOSITY=2
@@ -302,8 +274,8 @@ add_executable(lucid-comp ${SOURCES})
 # Scenario 6: Debug everything with detail verbosity (use for hard-to-find bugs):
 #   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc 2>&1 | tee full_debug.log
-#
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
+
 # =============================================================================
 # CLEAN BUILD (remove cache and rebuild from scratch)
 # =============================================================================
@@ -317,7 +289,7 @@ add_executable(lucid-comp ${SOURCES})
 #   rm -rf build
 #   cmake -B build -DDEBUG_PARSER=ON
 #   cmake --build build
-#
+
 # =============================================================================
 # RELEASE BUILD (no debug logging, optimized)
 # =============================================================================
@@ -325,7 +297,7 @@ add_executable(lucid-comp ${SOURCES})
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build --config Release
 #   .\build\Release\lucid-comp.exe tests\attribute_test.luc
-#
+
 # =============================================================================
 # QUICK REFERENCE CARD
 # =============================================================================
@@ -341,11 +313,9 @@ add_executable(lucid-comp ${SOURCES})
 # | -DDEBUG_CODEGEN=ON            | Enable codegen logging           | OFF     |
 # | -DDEBUG_VERBOSITY=LEVEL       | Output detail (0=MINIMAL,        | 1       |
 # |                               | 1=NORMAL, 2=DETAIL)              |         |
-# | -DDEBUG_TO_FILE=ON            | Write logs to file               | OFF     |
-# | -DDEBUG_FILE_PATH=path        | Custom log file path             | debug.log|
 # | -DCMAKE_BUILD_TYPE=Release    | Release build (no debug symbols) | Debug   |
 # | -DCMAKE_BUILD_TYPE=Debug      | Debug build (with symbols)       | Debug   |
-#
+
 # =============================================================================
 # TROUBLESHOOTING
 # =============================================================================
@@ -360,8 +330,6 @@ add_executable(lucid-comp ${SOURCES})
 #   1. Update vcpkg: cd C:/Users/TaiAx/vcpkg && git pull && .\bootstrap-vcpkg.bat
 #   2. Reinstall LLVM: .\vcpkg install llvm:x64-windows
 #   3. Clear CMake cache and reconfigure
-#
-# =============================================================================
 
 # =============================================================================
 # DEBUG LOGGING OPTIONS
@@ -382,10 +350,6 @@ option(DEBUG_CODEGEN     "Enable code generation debug logging" OFF)
 set(DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=DETAIL")
 set_property(CACHE DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2)
 
-# Option to output debug logs to file instead of stdout
-option(DEBUG_TO_FILE "Write debug logs to file instead of stdout" OFF)
-set(DEBUG_FILE_PATH "debug.log" CACHE STRING "Path to debug log file when DEBUG_TO_FILE is ON")
-
 # Print summary of debug configuration
 message(STATUS "========================================")
 message(STATUS "Debug Configuration:")
@@ -401,11 +365,6 @@ if(NOT DEBUG_MASTER)
 endif()
 
 message(STATUS "  Verbosity:   ${DEBUG_VERBOSITY} (0=MINIMAL, 1=NORMAL, 2=DETAIL)")
-message(STATUS "  Log to file: ${DEBUG_TO_FILE}")
-if(DEBUG_TO_FILE)
-    message(STATUS "  Log file:   ${DEBUG_FILE_PATH}")
-endif()
-message(STATUS "========================================")
 
 # Build the debug definitions string
 set(DEBUG_DEFINITIONS "")
@@ -444,17 +403,9 @@ endif()
 # Add verbosity level 
 list(APPEND DEBUG_DEFINITIONS "DEBUG_VERBOSITY=${DEBUG_VERBOSITY}")
 
-# Add file logging option
-if(DEBUG_TO_FILE)
-    list(APPEND DEBUG_DEFINITIONS "DEBUG_TO_FILE=1")
-    string(REPLACE "\\" "\\\\" DEBUG_FILE_PATH_ESCAPED "${DEBUG_FILE_PATH}")
-    list(APPEND DEBUG_DEFINITIONS "DEBUG_FILE_PATH=\"${DEBUG_FILE_PATH_ESCAPED}\"")
-endif()
-
 # Apply definitions only if at least one debug option is enabled
 if(DEBUG_DEFINITIONS)
     target_compile_definitions(lucid-comp PRIVATE ${DEBUG_DEFINITIONS})
-    message(STATUS "Debug definitions applied: ${DEBUG_DEFINITIONS}")
 endif()
 
 # =============================================================================
@@ -501,7 +452,6 @@ target_link_libraries(lucid-comp PRIVATE ${llvm_libs} ZLIB::ZLIB)
 # FINAL CONFIGURATION SUMMARY
 # =============================================================================
 
-message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "FINAL BUILD CONFIGURATION")
 message(STATUS "========================================")
