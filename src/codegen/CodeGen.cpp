@@ -4,6 +4,7 @@
 #include "CodeGen.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/memory/StringPool.hpp"
+#include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
@@ -46,7 +47,7 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
         return nullptr;
     }
 
-    LOG_CODEGEN("Generating IR for module: ", 
+    Trace::info("Generating IR for module: ", 
                 StringPool::instance().lookup(module->filePath));
 
     // ─── Phase 1: Lower all declarations ──────────────────────────────────
@@ -68,7 +69,7 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
         return nullptr;
     }
 
-    LOG_CODEGEN("Generated IR successfully for module");
+    Trace::info("Generated IR successfully for module");
     return std::unique_ptr<llvm::Module>(ctx.module);
 }
 

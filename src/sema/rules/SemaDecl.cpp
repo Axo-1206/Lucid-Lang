@@ -155,7 +155,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             defaultExpr->valueState = ValueState::Nil;
             decl->init = defaultExpr;
             
-            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+            Trace::info("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to nil (nullable type)");
             return;
         }
@@ -166,7 +166,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             defaultExpr->valueState = ValueState::Err;
             decl->init = defaultExpr;
             
-            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+            Trace::info("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to err (fallible type)");
             return;
         }
@@ -177,7 +177,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             defaultExpr->valueState = ValueState::Nil;
             decl->init = defaultExpr;
             
-            LOG_SEMA("Variable '", ctx.pool.lookup(decl->name),
+            Trace::detail("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to nil (combined type)");
             return;
         }
@@ -252,7 +252,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     if (decl->isForeignFunction) {
         // Foreign functions use their original name as the symbol
         decl->mangledName = decl->name;
-        LOG_SEMA("Foreign function '", ctx.pool.lookup(decl->name),
+        Trace::info("Foreign function '", ctx.pool.lookup(decl->name),
                  "' uses symbol name: ", ctx.pool.lookup(decl->mangledName));
         return;
     }
@@ -324,8 +324,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
-        LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
-                 ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
         analyzeCaptures(decl, ctx);
     }
 

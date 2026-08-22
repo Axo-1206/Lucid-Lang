@@ -39,6 +39,7 @@
 #include "../CodeGenType.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
+#include "core/trace/Trace.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -246,7 +247,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     // ─── 10. Store the closure value on the AST node ───────────────────────
     expr->llvmValue = closure;
 
-    LOG_CODEGEN("Lowered closure with ", expr->captures.size(), " captures");
+    Trace::detail("Lowered closure with ", expr->captures.size(), " captures");
     return closure;
 }
 
@@ -297,7 +298,7 @@ llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr, CodeGenContext&
     // ─── Store the environment type on the AST node ──────────────────────
     expr->environmentType = envType;
 
-    LOG_CODEGEN_DETAIL("Built closure environment with ", fieldTypes.size(), " fields");
+    Trace::info("Built closure environment with ", fieldTypes.size(), " fields");
     return envType;
 }
 
@@ -387,7 +388,7 @@ llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx
         return nullptr;
     }
 
-    LOG_CODEGEN("Created closure function: ", funcName);
+    Trace::detail("Created closure function: ", funcName);
     return closureFunc;
 }
 

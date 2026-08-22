@@ -797,7 +797,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         }
     }
 
-    LOG_SEMA("resolveModuleAccessExpr: ", 
+    Trace::info("resolveModuleAccessExpr: ", 
              ctx.pool.lookup(expr->moduleName), ":",
              ctx.pool.lookup(expr->memberName),
              " resolved to ", debug::typeToString(declType, ctx.pool));
@@ -2918,10 +2918,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
     expr->isLValue = false;
     expr->isConst = false;
     
-    LOG_SEMA("resolveComposeExpr: composed (", 
-             debug::typeToString(inputType, ctx.pool), ") -> (",
-             debug::typeToString(currentOutput, ctx.pool), ")");
-
     return composedType;
 }
 
@@ -3046,11 +3042,6 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
             return ctx.getUnknownType();
         }
     }
-
-    LOG_SEMA("resolveAnonFuncExpr: resolved anonymous function at depth ",
-             ctx.getClosureDepth(), " with ",
-             expr->captures.size(), " captures",
-             expr->hasClosure ? " (closure)" : " (no closure)");
 
     return funcType;
 }

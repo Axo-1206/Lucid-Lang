@@ -26,6 +26,7 @@
 
 #include "../context/CodeGenContext.hpp"
 #include "core/ast/ExprAST.hpp"
+#include "core/trace/Trace.hpp"
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/DerivedTypes.h>

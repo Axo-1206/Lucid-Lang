@@ -152,7 +152,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         ctx.storeFunction(decl, func);
         decl->llvmFunction = func;
 
-        LOG_CODEGEN("Lowered foreign function declaration: ", funcName);
+        Trace::info("Lowered foreign function declaration: ", funcName);
         return;
     }
 
@@ -162,7 +162,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
             // ─── @[specialize]: Register as template for lazy generation ──
             // The actual specialized functions are generated on-demand
             // when getOrCreateSpecializedFunction() is called in Phase 2.
-            LOG_CODEGEN("Registered generic function template: ",
+            Trace::detail("Registered generic function template: ",
                        ctx.pool.lookup(decl->name));
             return;
         } else {
@@ -173,7 +173,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
             if (erasedFunc) {
                 ctx.storeFunction(decl, erasedFunc);
                 decl->llvmFunction = erasedFunc;
-                LOG_CODEGEN("Lowered type-erased generic function: ",
+                Trace::detail("Lowered type-erased generic function: ",
                            ctx.pool.lookup(decl->name));
             }
             return;
@@ -236,7 +236,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         funcType
     );
 
-    LOG_CODEGEN("Lowered function declaration: ", funcName,
+    Trace::detail("Lowered function declaration: ", funcName,
                 " (", func->arg_size(), " params, ",
                 decl->hasClosure ? "closure" : "plain", ")");
 }
@@ -271,7 +271,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     if (isGenericFunction(decl) && shouldSpecialize(decl)) {
         // Body will be generated when getOrCreateSpecializedFunction() is called
         // and then lowerSpecializedFunctionBody() is invoked.
-        LOG_CODEGEN_DETAIL("Generic specialized function '",
+        Trace::detail("Generic specialized function '",
                           ctx.pool.lookup(decl->name),
                           "' body will be generated lazily");
         return;
@@ -358,7 +358,7 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
                                 "' failed verification: ", error);
     }
 
-    LOG_CODEGEN("Lowered function body: ", ctx.pool.lookup(decl->name));
+    Trace::detail("Lowered function body: ", ctx.pool.lookup(decl->name));
 }
 
 /// @brief Lower a specialized function body for a specific instantiation.
@@ -466,7 +466,7 @@ void lowerSpecializedFunctionBody(
                                 "' failed verification: ", error);
     }
 
-    LOG_CODEGEN("Lowered specialized function body: ", 
+    Trace::detail("Lowered specialized function body: ", 
                 specializedFunc->getName().str());
 }
 
@@ -531,8 +531,6 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     ctx.storeValue(param, alloca);
     param->llvmAlloca = alloca;
     param->llvmValue = argValue;
-
-    LOG_CODEGEN_DETAIL("Lowered parameter: ", ctx.pool.lookup(param->name));
 }
 
 // =============================================================================
@@ -603,7 +601,7 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         ctx.storeValue(decl, global);
         decl->llvmGlobal = global;
 
-        LOG_CODEGEN("Lowered global variable: ", varName);
+        Trace::info("Lowered global variable: ", varName);
         return;
     }
 
@@ -626,7 +624,7 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     ctx.storeValue(decl, alloca);
     decl->llvmAlloca = alloca;
 
-    LOG_CODEGEN_DETAIL("Lowered local variable: ", varName);
+    Trace::detail("Lowered local variable: ", varName);
 }
 
 // =============================================================================
@@ -677,7 +675,7 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
             // ─── @[specialize]: Register as template for lazy generation ──
             // The actual specialized struct types are generated on-demand
             // when getOrCreateSpecializedStruct() is called in Phase 2.
-            LOG_CODEGEN("Registered generic struct template: ",
+            Trace::detail("Registered generic struct template: ",
                        ctx.pool.lookup(decl->name));
             return;
         } else {
@@ -688,7 +686,7 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
             if (erasedType) {
                 ctx.cacheStruct(decl, llvm::cast<llvm::StructType>(erasedType));
                 decl->llvmType = llvm::cast<llvm::StructType>(erasedType);
-                LOG_CODEGEN("Lowered type-erased generic struct: ",
+                Trace::detail("Lowered type-erased generic struct: ",
                            ctx.pool.lookup(decl->name));
             }
             return;
@@ -741,7 +739,7 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     ctx.cacheStruct(decl, structType);
     decl->llvmType = structType;
 
-    LOG_CODEGEN("Lowered struct: ", structName, " (", fieldTypes.size(), " fields)");
+    Trace::detail("Lowered struct: ", structName, " (", fieldTypes.size(), " fields)");
 }
 
 // =============================================================================
@@ -792,13 +790,13 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
             varName
         );
 
-        LOG_CODEGEN_DETAIL("Lowered enum variant: ", varName, " = ",
+        Trace::detail("Lowered enum variant: ", varName, " = ",
                            variant->value);
     }
 
     decl->backingLLVMType = backingType;
 
-    LOG_CODEGEN("Lowered enum: ", ctx.pool.lookup(decl->name), " (",
+    Trace::detail("Lowered enum: ", ctx.pool.lookup(decl->name), " (",
                 variantConstants.size(), " variants)");
 }
 

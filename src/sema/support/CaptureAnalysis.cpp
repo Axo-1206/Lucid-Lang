@@ -4,6 +4,7 @@
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaResolve.hpp"
 #include "../types/SemaCompare.hpp"
+#include "core/trace/Trace.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -233,7 +234,7 @@ struct CaptureAnalyzer {
         captures.push_back(capture);
         seenCaptures.insert(name);
 
-        LOG_SEMA("CaptureAnalysis: captured '", ctx.pool.lookup(name),
+        Trace::info("CaptureAnalysis: captured '", ctx.pool.lookup(name),
                  "' by ", capture.byReference ? "reference" : "value",
                  " at depth ", currentClosureDepth);
     }
@@ -674,12 +675,12 @@ struct CaptureAnalyzer {
         if (closure) {
             closure->captures = captureSpan;
             closure->hasClosure = true;
-            LOG_SEMA("analyzeCaptures: anonymous closure captures ", 
+            Trace::detail("analyzeCaptures: anonymous closure captures ", 
                      captures.size(), " variables");
         } else if (function) {
             function->captures = captureSpan;
             function->hasClosure = true;
-            LOG_SEMA("analyzeCaptures: function '", 
+            Trace::detail("analyzeCaptures: function '", 
                      ctx.pool.lookup(function->name),
                      "' captures ", captures.size(), " variables");
         }
@@ -695,7 +696,7 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
         return;
     }
     
-    LOG_SEMA("analyzeCaptures: analyzing anonymous closure at depth ", 
+    Trace::detail("analyzeCaptures: analyzing anonymous closure at depth ", 
              ctx.getClosureDepth());
     
     CaptureAnalyzer analyzer(ctx, expr);
@@ -716,7 +717,7 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     analyzer.storeCaptures();
     
     if (!expr->hasClosure) {
-        LOG_SEMA("analyzeCaptures: no captures detected for anonymous closure");
+        Trace::detail("analyzeCaptures: no captures detected for anonymous closure");
     }
 }
 
@@ -732,13 +733,13 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
     size_t currentDepth = ctx.getClosureDepth();
     if (currentDepth == 0) {
         // Top-level function - cannot capture anything
-        LOG_SEMA("analyzeCaptures: top-level function '", 
+        Trace::detail("analyzeCaptures: top-level function '", 
                  ctx.pool.lookup(func->name), 
                  "' cannot capture variables");
         return;
     }
     
-    LOG_SEMA("analyzeCaptures: analyzing nested function '", 
+    Trace::detail("analyzeCaptures: analyzing nested function '", 
              ctx.pool.lookup(func->name),
              "' at depth ", currentDepth);
     
@@ -765,11 +766,11 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
         func->captures = builder.build();
         func->hasClosure = true;
         
-        LOG_SEMA("analyzeCaptures: function '", ctx.pool.lookup(func->name),
+        Trace::detail("analyzeCaptures: function '", ctx.pool.lookup(func->name),
                  "' captures ", func->captures.size(), " variables");
     } else {
         func->hasClosure = false;
-        LOG_SEMA("analyzeCaptures: no captures detected for function '", 
+        Trace::detail("analyzeCaptures: no captures detected for function '", 
                  ctx.pool.lookup(func->name), "'");
     }
 }
@@ -785,7 +786,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
         case ASTKind::AnonFuncExpr: {
             AnonFuncExprAST* closure = expr->as<AnonFuncExprAST>();
             closure->isReturned = true;
-            LOG_SEMA("markClosureIfEscaping: direct anonymous function returned");
+            Trace::detail("markClosureIfEscaping: direct anonymous function returned");
             return;
         }
 
@@ -800,7 +801,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             // ─── 2a. Module member (static) ──────────────────────────────
             // Module members live for the entire program - no heap allocation needed.
             if (ctx.isModuleMember(id->name)) {
-                LOG_SEMA("markClosureIfEscaping: '", ctx.pool.lookup(id->name),
+                Trace::detail("markClosureIfEscaping: '", ctx.pool.lookup(id->name),
                          "' is a module member (static) - not marking as escaping");
                 return;
             }
@@ -818,7 +819,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
                 // If it's NOT a module member, it's a nested function.
                 if (!ctx.isModuleMember(funcDecl->name)) {
                     funcDecl->isReturned = true;
-                    LOG_SEMA("markClosureIfEscaping: nested function '",
+                    Trace::detail("markClosureIfEscaping: nested function '",
                             ctx.pool.lookup(id->name),
                             "' returned - marking as closure");
                 }
@@ -831,7 +832,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
         // `return module:myFunc;` - static member, no escaping needed.
         case ASTKind::ModuleAccessExpr: {
             const ModuleAccessExprAST* access = expr->as<ModuleAccessExprAST>();
-            LOG_SEMA("markClosureIfEscaping: module member '",
+            Trace::detail("markClosureIfEscaping: module member '",
                      ctx.pool.lookup(access->moduleName), ":",
                      ctx.pool.lookup(access->memberName),
                      "' is static - not marking as escaping");
@@ -847,7 +848,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
                 IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
                 
                 if (ctx.isModuleMember(id->name)) {
-                    LOG_SEMA("markClosureIfEscaping: static struct field '",
+                    Trace::detail("markClosureIfEscaping: static struct field '",
                              ctx.pool.lookup(id->name), ".", 
                              ctx.pool.lookup(field->fieldName),
                              "' is static - not marking as escaping");
@@ -855,7 +856,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
                 }
             }
             
-            LOG_SEMA("markClosureIfEscaping: field access '",
+            Trace::detail("markClosureIfEscaping: field access '",
                      ctx.pool.lookup(field->fieldName),
                      "' may be a closure - conservative mark");
             return;
@@ -866,7 +867,7 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             const CallExprAST* call = expr->as<CallExprAST>();
             FuncDeclAST* funcDecl = resolveCalleeOrError(call->callee, ctx);
             if (funcDecl) {
-                LOG_SEMA("markClosureIfEscaping: call to '",
+                Trace::detail("markClosureIfEscaping: call to '",
                          ctx.pool.lookup(funcDecl->name),
                          "' returns a function - may be a closure");
             }

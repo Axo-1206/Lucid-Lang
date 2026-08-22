@@ -1555,7 +1555,7 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     }
 
     for (PipelineStepAST* step : expr->steps) {
-        // ─── FIX: Pass currentValue to lowerPipelineStep ─────────────────
+        // ─── Pass currentValue to lowerPipelineStep ─────────────────
         currentValue = lowerPipelineStep(step, currentValue, ctx);
         if (!currentValue) {
             return nullptr;

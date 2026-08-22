@@ -1004,7 +1004,7 @@ bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
     // ─── Store in pending list for later await ─────────────────────────────
     ctx.addPendingAsync(stmt->binding->name, stmt->call, stmt->loc);
 
-    LOG_SEMA("resolveAsyncStmt: registered async '", 
+    Trace::info("resolveAsyncStmt: registered async '", 
              ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
@@ -1076,7 +1076,7 @@ bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx) {
             // Mark the async as resolved
             ctx.resolveAsync(targetName);
             
-            LOG_SEMA("resolveAwaitStmt: narrowed '", ctx.pool.lookup(targetName),
+            Trace::detail("resolveAwaitStmt: narrowed '", ctx.pool.lookup(targetName),
                      "' from Future<", debug::typeToString(innerType, ctx.pool),
                      "> to ", debug::typeToString(innerType, ctx.pool));
         } else if (ctx.hasPendingSpawn(targetName)) {
@@ -1133,7 +1133,7 @@ bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
             return false;
         }
 
-        LOG_SEMA("resolveSpawnStmt: parsed spawn discard (fire-and-forget)");
+        Trace::info("resolveSpawnStmt: spawn discard (fire-and-forget)");
         return false;
     }
 
@@ -1188,7 +1188,7 @@ bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
     // ─── Store in pending list for later join ──────────────────────────────
     ctx.addPendingSpawn(stmt->binding->name, stmt->call, stmt->loc);
 
-    LOG_SEMA("resolveSpawnStmt: registered spawn '", 
+    Trace::info("resolveSpawnStmt: registered spawn '", 
              ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
@@ -1260,7 +1260,7 @@ bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
             // Mark the spawn as resolved
             ctx.resolveSpawn(targetName);
             
-            LOG_SEMA("resolveJoinStmt: narrowed '", ctx.pool.lookup(targetName),
+            Trace::detail("resolveJoinStmt: narrowed '", ctx.pool.lookup(targetName),
                      "' from Thread<", debug::typeToString(innerType, ctx.pool),
                      "> to ", debug::typeToString(innerType, ctx.pool));
         } else if (ctx.hasPendingAsync(targetName)) {

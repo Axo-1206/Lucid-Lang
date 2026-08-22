@@ -13,6 +13,7 @@
 #include "../context/CodeGenContext.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/trace/Trace.hpp"
 #include "GenericSubstitution.hpp"
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Type.h>

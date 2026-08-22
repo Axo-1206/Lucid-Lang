@@ -6,6 +6,7 @@
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "GenericMangledName.hpp"
+#include "core/trace/Trace.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
 
@@ -151,7 +152,7 @@ llvm::Function* createSpecializedFunction(
         paramTypeIter = paramTypeIter->getNext();
     }
 
-    LOG_CODEGEN("Created specialized function: ", funcName,
+    Trace::detail("Created specialized function: ", funcName,
                 " (", paramTypes.size(), " params)");
 
     return func;
@@ -215,7 +216,7 @@ llvm::Type* createSpecializedStruct(
         // lives under a different, divergent name. Completing the existing
         // type in place keeps a single canonical type for this name.
         existingType->setBody(fieldTypes);
-        LOG_CODEGEN("Completed forward-declared specialized struct: ", structName,
+        Trace::detail("Completed forward-declared specialized struct: ", structName,
                     " (", fieldTypes.size(), " fields)");
         return existingType;
     }
@@ -227,7 +228,7 @@ llvm::Type* createSpecializedStruct(
         structName
     );
 
-    LOG_CODEGEN("Created specialized struct: ", structName,
+    Trace::detail("Created specialized struct: ", structName,
                 " (", fieldTypes.size(), " fields)");
 
     return structType;
@@ -303,7 +304,7 @@ llvm::Function* generateErasedGenericFunction(
         paramTypeIter = paramTypeIter->getNext();
     }
 
-    LOG_CODEGEN("Created type-erased generic function: ", mangledName,
+    Trace::detail("Created type-erased generic function: ", mangledName,
                 " (", paramTypes.size(), " params)");
 
     return func;
@@ -355,7 +356,7 @@ llvm::Type* generateErasedGenericStruct(
         mangledName
     );
 
-    LOG_CODEGEN("Created type-erased generic struct: ", mangledName,
+    Trace::detail("Created type-erased generic struct: ", mangledName,
                 " (", fieldTypes.size(), " fields)");
 
     return structType;

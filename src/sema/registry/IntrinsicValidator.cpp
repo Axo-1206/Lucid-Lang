@@ -723,7 +723,7 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     
     currentBlock->scopeExits = exitsBuilder.build();
 
-    LOG_SEMA("validateScopeExit: registered #scope_exit in block with ",
+    Trace::info("validateScopeExit: registered #scope_exit in block with ",
              currentBlock->scopeExits.size(), " total registrations");
 
     return true;
