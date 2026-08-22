@@ -1,24 +1,24 @@
-/// @file cli/frontend/parse.cpp
-/// @brief Implementation of 'lucid parse' command.
+/// @file cli/frontend/sema.cpp
+/// @brief Implementation of 'lucid sema' command.
 
-#include "parse.hpp"
-#include "Pipeline.hpp"
-#include "JSONDumper.hpp"
+#include "sema.hpp"
+#include "../pipeline/Pipeline.hpp"
+#include "../pipeline/JSONDumper.hpp"
 #include "../CLIContext.hpp"
 #include "../CLIOptions.hpp"
-#include "cli/Trace.hpp"
+#include "core/trace/Trace.hpp"
 
 namespace cli {
 namespace frontend {
 
-int parseCommand(const CLIOptions& opts) {
+int semaCommand(const CLIOptions& opts) {
     // ─── Initialize context ────────────────────────────────────────────
     std::filesystem::path packageRoot = std::filesystem::current_path();
     CLIContext ctx(packageRoot);
     
-    // ─── Run pipeline up to Parse stage ──────────────────────────────
+    // ─── Run pipeline up to Sema stage ──────────────────────────────
     CLIOptions pipelineOpts = opts;
-    pipelineOpts.stopAt = PipelineStage::Parse;
+    pipelineOpts.stopAt = PipelineStage::Sema;
     
     PipelineResult result = runPipeline(pipelineOpts, ctx);
     
@@ -48,14 +48,14 @@ int parseCommand(const CLIOptions& opts) {
         }
     } else {
         // Text summary
-        std::cout << "\n[Parse] Success!\n";
+        std::cout << "\n[Sema] Success!\n";
         std::cout << "  Modules: " << result.modules.size() << "\n";
         
         if (ctx.diagnostics.hasWarnings()) {
             std::cout << "  Warnings: " << ctx.diagnostics.warningCount() << "\n";
         }
         
-        std::cout << "\n[Parse] Tip: Use --json or --json-pretty to see the AST.\n";
+        std::cout << "\n[Sema] Tip: Use --json or --json-pretty to see the validated AST.\n";
     }
     
     return 0;

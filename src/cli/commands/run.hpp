@@ -3,10 +3,10 @@
 
 #pragma once
 
-#include "CLIOptions.hpp"
-#include "RunOptions.hpp"
-#include "DependencyGraph.hpp"
-#include "FileWatcher.hpp"
+#include "../CLIOptions.hpp"
+#include "../RunOptions.hpp"
+#include "../DependencyGraph.hpp"
+#include "../FileWatcher.hpp"
 #include "interpreter/Interpreter.hpp"
 
 #include <string>

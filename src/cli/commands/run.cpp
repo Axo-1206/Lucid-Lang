@@ -2,10 +2,9 @@
 /// @brief Implementation of the 'lucid run' command.
 
 #include "run.hpp"
-#include "CLIContext.hpp"
-#include "CLIOptions.hpp"
-#include "frontend/Pipeline.hpp"
-#include "cli/Trace.hpp"
+#include "../CLIContext.hpp"
+#include "core/trace//Trace.hpp"
+#include "../pipeline/Pipeline.hpp"
 
 #include "interpreter/Interpreter.hpp"
 #include "interpreter/support/InterpreterError.hpp"

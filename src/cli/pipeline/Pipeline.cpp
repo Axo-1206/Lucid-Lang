@@ -3,7 +3,7 @@
 
 #include "Pipeline.hpp"
 #include "JSONDumper.hpp"
-#include "cli/Trace.hpp"
+#include "core/trace/Trace.hpp"
 
 #include "core/diagnostics/Diagnostic.hpp"
 #include "parser/ModuleResolver.hpp"

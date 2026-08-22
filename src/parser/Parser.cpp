@@ -15,7 +15,6 @@
 #include "Parser.hpp"
 #include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
-#include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
 #include <filesystem>
@@ -34,7 +33,7 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
     ModuleAST* root = parse(rootPath, rootSource, ctx);
 
     if (!ctx.resolver) {
-        LOG_PARSER_MINIMAL("parseProgram: no resolver, returning root module only");
+        Trace::detail("parseProgram: no resolver, returning root module only");
         return { root };
     }
 
@@ -47,7 +46,7 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
         }
     }
 
-    LOG_PARSER_MINIMAL("parseProgram: ", modules.size(), " module(s)");
+    Trace::info("Total modules in program: ", modules.size());
     return modules;
 }
 
@@ -58,13 +57,14 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
 ModuleAST* parse(const std::string& path, 
                   const std::string& source,
                   ParserContext& ctx) {
-    LOG_PARSER_MINIMAL("Parsing file: ", path);
+    Trace::info("Parsing file: ", path);
     
     InternedString filePath = ctx.pool.intern(path);
 
     // ─── Check cache ──────────────────────────────────────────────────
     if (ctx.resolver) {
         if (auto* cached = ctx.resolver->getParsedModule(filePath)) {
+            Trace::detail("Using cached module: ", path);
             return cached;
         }
     }
@@ -74,7 +74,8 @@ ModuleAST* parse(const std::string& path,
     
     // ─── Circular import detection ────────────────────────────────────
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
-        LOG_PARSER("Circular import detected: ", path);
+        // Infrastructure error - compiler can't resolve the cycle
+        Trace::error("Circular import detected: ", path);
         auto* dummy = ctx.arena.make<ModuleAST>();
         dummy->filePath = filePath;
         dummy->hasErrors = true;
@@ -84,9 +85,11 @@ ModuleAST* parse(const std::string& path,
     ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
     
     // ─── Lex the source ────────────────────────────────────────────────
+    Trace::detail("Lexing: ", path);
     std::vector<Token> tokens = lexer::tokenize(source, ctx.diagnostics);
 
     if (tokens.empty()) {
+        Trace::detail("Empty file: ", path);
         auto* mod = ctx.arena.make<ModuleAST>();
         mod->filePath = filePath;
         mod->hasErrors = false;
@@ -95,6 +98,7 @@ ModuleAST* parse(const std::string& path,
     }
 
     // ─── Check for lexer errors ────────────────────────────────────────
+    // User code errors - use Diagnostic only
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
             ctx.diagnostics.errorAt(DiagCode::Lex_UnknownCharacter,
@@ -114,10 +118,11 @@ ModuleAST* parse(const std::string& path,
     module->filePath = filePath;
     module->imports.clear();  // Will be populated during parsing
     
-    // ─── NEW: Set current module in context ───────────────────────────
+    // ─── Set current module in context ──────────────────────────────
     ctx.currentModule = module;
     
     // ─── Parse declarations ────────────────────────────────────────────
+    Trace::detail("Parsing declarations in: ", path);
     TokenStream stream(std::move(tokens));
     std::vector<DeclAST*> allDecls;
     parseInternal(stream, ctx, allDecls);
@@ -136,11 +141,11 @@ ModuleAST* parse(const std::string& path,
     // ─── Cache the result ──────────────────────────────────────────────
     if (ctx.resolver) {
         ctx.resolver->cacheModule(filePath, module);
-        LOG_PARSER_DETAIL("Cached module: ", path, " with ", 
-                         module->imports.size(), " imports");
+        Trace::detail("Cached module: ", path, " with ", 
+                     module->imports.size(), " imports");
     }
     
-    LOG_PARSER_MINIMAL("Parse completed: ", allDecls.size(), " declarations");
+    Trace::info("Parsed ", allDecls.size(), " declarations in ", path);
     return module;
 }
 
@@ -149,7 +154,7 @@ ModuleAST* parse(const std::string& path,
 // =============================================================================
 
 void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*>& outDecls) {
-    LOG_PARSER_MINIMAL("Parsing internal declarations");
+    Trace::detail("Parsing internal declarations");
     
     int declCount = 0;
     int consecutiveFailures = 0;
@@ -162,7 +167,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
         
         // Skip stray semicolons
         if (stream.check(TokenType::SEMICOLON)) {
-            LOG_PARSER_DETAIL("Skipping stray semicolon");
+            Trace::detail("Skipping stray semicolon");
             stream.consume();
             continue;
         }
@@ -173,20 +178,20 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             if (ctx.diagnostics.hasErrors()) {
                 break;
             }
-            LOG_PARSER_DETAIL("Reached EOF after declarations");
+            Trace::detail("Reached EOF after declarations");
             break;
         }
         
         if (stream.getPos() == savedPos) {
             consecutiveFailures++;
-            LOG_PARSER("NO PROGRESS - stuck on: ", stream.peekValue());
+            Trace::detail("No progress, stuck on: ", stream.peekValue());
             
             if (!stream.isAtEnd()) {
                 stream.consume();
             }
             
             if (consecutiveFailures > 5) {
-                LOG_PARSER("Aggressive recovery");
+                Trace::detail("Aggressive recovery");
                 synchronizeToContext(stream, ctx);
             }
         } else if (decl) {
@@ -194,7 +199,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             consecutiveFailures = 0;
             lastPos = stream.getPos();
             
-            LOG_PARSER_DETAIL("Parsed declaration #", declCount);
+            Trace::detail("Parsed declaration #", declCount);
             
             if (doc) {
                 decl->doc = std::move(doc);
@@ -202,11 +207,12 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             outDecls.push_back(decl);
         } else {
             consecutiveFailures = 0;
-            LOG_PARSER("parseDecl returned nullptr but made progress");
+            Trace::detail("parseDecl returned nullptr but made progress");
         }
         
+        // Critical protection - prevent infinite loops
         if (stream.getPos() == lastPos && consecutiveFailures > 10) {
-            LOG_PARSER("CRITICAL - no progress after ", consecutiveFailures, " attempts");
+            Trace::detail("CRITICAL - no progress after ", consecutiveFailures, " attempts");
             if (!stream.isAtEnd()) {
                 stream.consume();
             }
@@ -215,15 +221,15 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
     }
     
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        // User code error - too many syntax errors to recover
         ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
                                 stream.currentLoc(),
                                 "Too many consecutive parse failures (", 
                                 MAX_CONSECUTIVE_FAILURES, "), aborting");
-        LOG_PARSER("ERROR: Too many consecutive failures, aborting");
         return;
     }
     
-    LOG_PARSER_MINIMAL("Parsed ", declCount, " declarations");
+    Trace::info("Parsed ", declCount, " declarations");
 }
 
 } // namespace parser

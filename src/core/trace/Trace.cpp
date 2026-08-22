@@ -3,8 +3,4 @@
 
 #include "Trace.hpp"
 
-namespace cli {
-
 int Trace::s_level = 0;  // Default: no tracing
-
-} // namespace cli

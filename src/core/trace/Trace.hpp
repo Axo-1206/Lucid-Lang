@@ -1,4 +1,4 @@
-/// @file cli/Trace.hpp
+/// @file core/trace/Trace.hpp
 /// @brief Runtime tracing system for user-facing compilation progress.
 
 #pragma once
@@ -6,18 +6,20 @@
 #include <string>
 #include <iostream>
 
-namespace cli {
-
 /**
  * @brief Runtime tracing system for compilation progress.
  * 
  * This is a user-facing feature, controlled by --verbose and --trace flags.
  * Output goes to stderr, so stdout remains clean for structured output (JSON).
  * 
+ * This is a core infrastructure component (like Diagnostic), not CLI-specific.
+ * 
  * Usage:
  *   Trace::info("Parsing file: ", filePath);
  *   Trace::detail("Resolved ", imports.size(), " imports");
  *   Trace::error("Failed to open file: ", path);
+ * 
+ * @note This is header-only to avoid a separate .cpp file.
  */
 class Trace {
 public:
@@ -68,5 +70,3 @@ private:
 
     static void buildMessage(std::ostream&) {}
 };
-
-} // namespace cli

@@ -17,6 +17,7 @@
 #include "ModuleResolver.hpp"
 #include "context/ParserContext.hpp"
 #include "context/TokenStream.hpp"
+#include "core/trace/Trace.hpp"
 
 #include <vector>
 #include <string>
