@@ -1,0 +1,416 @@
+/**
+ * @file core/ASTStrings.hpp
+ * @brief String conversion helpers for AST enums and tokens.
+ * 
+ * These utilities convert AST enum values (kinds, operators, primitive types,
+ * token types, etc.) to human-readable strings. Used throughout the compiler
+ * for debug output, serialization, and diagnostics.
+ * 
+ * All functions are inline and header-only for easy inclusion without
+ * creating unnecessary compilation dependencies.
+ */
+
+#pragma once
+
+#include "core/Tokens.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "core/ast/ExprAST.hpp"
+#include <string>
+#include <cstdint>
+
+namespace core {
+
+// ─── ASTKind to String ─────────────────────────────────────────────────────
+
+/// @brief Convert an ASTKind to a human-readable string.
+inline std::string astKindToString(ASTKind kind) {
+    switch (kind) {
+        // Unknown
+        case ASTKind::Unknown:          return "Unknown";
+        case ASTKind::UnknownDecl:      return "UnknownDecl";
+        case ASTKind::UnknownExpr:      return "UnknownExpr";
+        case ASTKind::UnknownStmt:      return "UnknownStmt";
+        case ASTKind::UnknownType:      return "UnknownType";
+
+        // Special
+        case ASTKind::ValueDecl:        return "ValueDecl";
+        case ASTKind::TypeDecl:         return "TypeDecl";
+
+        // Declarations
+        case ASTKind::ImportDecl:       return "ImportDecl";
+        case ASTKind::VarDecl:          return "VarDecl";
+        case ASTKind::Param:            return "Param";
+        case ASTKind::GenericParamDecl: return "GenericParamDecl";
+        case ASTKind::FuncDecl:         return "FuncDecl";
+        case ASTKind::FieldDecl:        return "FieldDecl";
+        case ASTKind::StructDecl:       return "StructDecl";
+        case ASTKind::EnumVariant:      return "EnumVariant";
+        case ASTKind::EnumDecl:         return "EnumDecl";
+        case ASTKind::TraitFieldDecl:   return "TraitFieldDecl";
+        case ASTKind::TraitDecl:        return "TraitDecl";
+
+        // Statements
+        case ASTKind::BlockStmt:        return "BlockStmt";
+        case ASTKind::ExprStmt:         return "ExprStmt";
+        case ASTKind::DeclStmt:         return "DeclStmt";
+        case ASTKind::IfStmt:           return "IfStmt";
+        case ASTKind::SwitchStmt:       return "SwitchStmt";
+        case ASTKind::SwitchCase:       return "SwitchCase";
+        case ASTKind::ForStmt:          return "ForStmt";
+        case ASTKind::WhileStmt:        return "WhileStmt";
+        case ASTKind::DoWhileStmt:      return "DoWhileStmt";
+        case ASTKind::ReturnStmt:       return "ReturnStmt";
+        case ASTKind::BreakStmt:        return "BreakStmt";
+        case ASTKind::ContinueStmt:     return "ContinueStmt";
+        case ASTKind::FuncRefStmt:      return "FuncRefStmt";
+        case ASTKind::AsyncStmt:        return "AsyncStmt";
+        case ASTKind::AwaitStmt:        return "AwaitStmt";
+        case ASTKind::SpawnStmt:        return "SpawnStmt";
+        case ASTKind::JoinStmt:         return "JoinStmt";
+
+        // Expressions
+        case ASTKind::LiteralExpr:         return "LiteralExpr";
+        case ASTKind::IdentifierExpr:      return "IdentifierExpr";
+        case ASTKind::ArrayLiteralExpr:    return "ArrayLiteralExpr";
+        case ASTKind::StructLiteralExpr:   return "StructLiteralExpr";
+        case ASTKind::FieldInit:           return "FieldInit";
+        case ASTKind::BinaryExpr:          return "BinaryExpr";
+        case ASTKind::UnaryExpr:           return "UnaryExpr";
+        case ASTKind::CallExpr:            return "CallExpr";
+        case ASTKind::IntrinsicCallExpr:   return "IntrinsicCallExpr";
+        case ASTKind::IndexExpr:           return "IndexExpr";
+        case ASTKind::SliceExpr:           return "SliceExpr";
+        case ASTKind::FieldAccessExpr:     return "FieldAccessExpr";
+        case ASTKind::ModuleAccessExpr:    return "ModuleAccessExpr";
+        case ASTKind::AssignExpr:          return "AssignExpr";
+        case ASTKind::NullableChainExpr:   return "NullableChainExpr";
+        case ASTKind::NullCoalesceExpr:    return "NullCoalesceExpr";
+        case ASTKind::PipelineExpr:        return "PipelineExpr";
+        case ASTKind::PipelineStep:        return "PipelineStep";
+        case ASTKind::ComposeExpr:         return "ComposeExpr";
+        case ASTKind::ComposeOperand:      return "ComposeOperand";
+        case ASTKind::AnonFuncExpr:        return "AnonFuncExpr";
+        case ASTKind::IfExpr:              return "IfExpr";
+        case ASTKind::RangeExpr:           return "RangeExpr";
+
+        // Types
+        case ASTKind::PrimitiveType:     return "PrimitiveType";
+        case ASTKind::NamedType:         return "NamedType";
+        case ASTKind::ModuleTypeAccess:  return "ModuleTypeAccess";
+        case ASTKind::ArrayType:         return "ArrayType";
+        case ASTKind::NullableType:      return "NullableType";
+        case ASTKind::FallibleType:      return "FallibleType";
+        case ASTKind::CombinedType:      return "CombinedType";
+        case ASTKind::RefType:           return "RefType";
+        case ASTKind::PtrType:           return "PtrType";
+        case ASTKind::FuncType:          return "FuncType";
+        case ASTKind::FutureType:        return "FutureType";
+        case ASTKind::ThreadType:        return "ThreadType";
+
+        // Root
+        case ASTKind::Program:           return "Program";
+
+        // Compiler directives
+        case ASTKind::Attribute:         return "Attribute";
+
+        default: return "Unknown(" + std::to_string(static_cast<int>(kind)) + ")";
+    }
+}
+
+// ─── LiteralKind to String ─────────────────────────────────────────────────
+
+/// @brief Convert a LiteralKind to a human-readable string.
+inline std::string literalKindToString(LiteralKind kind) {
+    switch (kind) {
+        case LiteralKind::Int:       return "Int";
+        case LiteralKind::Float:     return "Float";
+        case LiteralKind::String:    return "String";
+        case LiteralKind::RawString: return "RawString";
+        case LiteralKind::Char:      return "Char";
+        case LiteralKind::Hex:       return "Hex";
+        case LiteralKind::Binary:    return "Binary";
+        case LiteralKind::True:      return "True";
+        case LiteralKind::False:     return "False";
+        case LiteralKind::Nil:       return "Nil";
+        case LiteralKind::Err:       return "Err";
+        default: return "Unknown";
+    }
+}
+
+// ─── BinaryOp to String ─────────────────────────────────────────────────────
+
+/// @brief Convert a BinaryOp to a human-readable string.
+inline std::string binaryOpToString(BinaryOp op) {
+    switch (op) {
+        case BinaryOp::Add:     return "+";
+        case BinaryOp::Sub:     return "-";
+        case BinaryOp::Mul:     return "*";
+        case BinaryOp::Div:     return "/";
+        case BinaryOp::Pow:     return "**";
+        case BinaryOp::Mod:     return "%";
+        case BinaryOp::Eq:      return "==";
+        case BinaryOp::Ne:      return "!=";
+        case BinaryOp::Lt:      return "<";
+        case BinaryOp::Gt:      return ">";
+        case BinaryOp::Le:      return "<=";
+        case BinaryOp::Ge:      return ">=";
+        case BinaryOp::And:     return "and";
+        case BinaryOp::Or:      return "or";
+        case BinaryOp::BitAnd:  return "&";
+        case BinaryOp::BitOr:   return "|";
+        case BinaryOp::BitXor:  return "^";
+        case BinaryOp::Shl:     return "<<";
+        case BinaryOp::Shr:     return ">>";
+        default: return "Unknown";
+    }
+}
+
+// ─── UnaryOp to String ─────────────────────────────────────────────────────
+
+/// @brief Convert a UnaryOp to a human-readable string.
+inline std::string unaryOpToString(UnaryOp op) {
+    switch (op) {
+        case UnaryOp::Neg:    return "-";
+        case UnaryOp::Not:    return "not";
+        case UnaryOp::BitNot: return "~";
+        default: return "Unknown";
+    }
+}
+
+// ─── AssignOp to String ────────────────────────────────────────────────────
+
+/// @brief Convert an AssignOp to a human-readable string.
+inline std::string assignOpToString(AssignOp op) {
+    switch (op) {
+        case AssignOp::Assign:       return "=";
+        case AssignOp::AddAssign:    return "+=";
+        case AssignOp::SubAssign:    return "-=";
+        case AssignOp::MulAssign:    return "*=";
+        case AssignOp::DivAssign:    return "/=";
+        case AssignOp::PowAssign:    return "**=";
+        case AssignOp::ModAssign:    return "%=";
+        case AssignOp::BitAndAssign: return "&=";
+        case AssignOp::BitOrAssign:  return "|=";
+        case AssignOp::BitXorAssign: return "^=";
+        case AssignOp::ShlAssign:    return "<<=";
+        case AssignOp::ShrAssign:    return ">>=";
+        default: return "Unknown";
+    }
+}
+
+// ─── PrimitiveKind to String ──────────────────────────────────────────────
+
+/// @brief Convert a PrimitiveKind to a human-readable string.
+inline std::string primitiveKindToString(PrimitiveKind kind) {
+    switch (kind) {
+        case PrimitiveKind::Bool:    return "bool";
+        case PrimitiveKind::Byte:    return "byte";
+        case PrimitiveKind::Short:   return "short";
+        case PrimitiveKind::Int:     return "int";
+        case PrimitiveKind::Long:    return "long";
+        case PrimitiveKind::Ubyte:   return "ubyte";
+        case PrimitiveKind::Ushort:  return "ushort";
+        case PrimitiveKind::Uint:    return "uint";
+        case PrimitiveKind::Ulong:   return "ulong";
+        case PrimitiveKind::Int8:    return "int8";
+        case PrimitiveKind::Int16:   return "int16";
+        case PrimitiveKind::Int32:   return "int32";
+        case PrimitiveKind::Int64:   return "int64";
+        case PrimitiveKind::Uint8:   return "uint8";
+        case PrimitiveKind::Uint16:  return "uint16";
+        case PrimitiveKind::Uint32:  return "uint32";
+        case PrimitiveKind::Uint64:  return "uint64";
+        case PrimitiveKind::Float:   return "float";
+        case PrimitiveKind::Double:  return "double";
+        case PrimitiveKind::Decimal: return "decimal";
+        case PrimitiveKind::String:  return "string";
+        case PrimitiveKind::Char:    return "char";
+        default: return "Unknown";
+    }
+}
+
+// ─── ArrayKind to String ──────────────────────────────────────────────────
+
+/// @brief Convert an ArrayKind to a human-readable string.
+inline std::string arrayKindToString(ArrayKind kind) {
+    switch (kind) {
+        case ArrayKind::Slice:   return "Slice";
+        case ArrayKind::Dynamic: return "Dynamic";
+        case ArrayKind::Fixed:   return "Fixed";
+        default: return "Unknown";
+    }
+}
+
+// ─── DeclKeyword to String ─────────────────────────────────────────────────
+
+/// @brief Convert a DeclKeyword to a human-readable string.
+inline std::string declKeywordToString(DeclKeyword keyword) {
+    switch (keyword) {
+        case DeclKeyword::Let:   return "let";
+        case DeclKeyword::Const: return "const";
+        default: return "Unknown";
+    }
+}
+
+// ─── ValueState to String ──────────────────────────────────────────────────
+
+/// @brief Convert a ValueState to a human-readable string.
+inline std::string valueStateToString(ValueState state) {
+    switch (state) {
+        case ValueState::None:     return "None";
+        case ValueState::Definite: return "Definite";
+        case ValueState::Nil:      return "Nil";
+        case ValueState::Err:      return "Err";
+        case ValueState::Unknown:  return "Unknown";
+        default: return "Unknown";
+    }
+}
+
+// ─── TokenType to String ───────────────────────────────────────────────────
+
+/// @brief Convert a TokenType to a human-readable string.
+inline std::string tokenTypeToString(TokenType type) {
+    switch (type) {
+        case TokenType::EOF_TOKEN:      return "EOF";
+        case TokenType::IDENTIFIER:     return "IDENTIFIER";
+        case TokenType::INT_LITERAL:    return "INT_LITERAL";
+        case TokenType::FLOAT_LITERAL:  return "FLOAT_LITERAL";
+        case TokenType::STRING_LITERAL: return "STRING_LITERAL";
+        case TokenType::RAW_STRING_LITERAL: return "RAW_STRING_LITERAL";
+        case TokenType::CHAR_LITERAL:   return "CHAR_LITERAL";
+        case TokenType::HEX_LITERAL:    return "HEX_LITERAL";
+        case TokenType::BINARY_LITERAL: return "BINARY_LITERAL";
+        case TokenType::TRUE:           return "TRUE";
+        case TokenType::FALSE:          return "FALSE";
+        case TokenType::NIL:            return "NIL";
+        case TokenType::ERR:            return "ERR";
+        case TokenType::UNDERSCORE:     return "_";
+        
+        // Keywords
+        case TokenType::IMPORT:         return "import";
+        case TokenType::AS:             return "as";
+        case TokenType::STRUCT:         return "struct";
+        case TokenType::ENUM:           return "enum";
+        case TokenType::TRAIT:          return "trait";
+        case TokenType::LET:            return "let";
+        case TokenType::CONST:          return "const";
+        case TokenType::IF:             return "if";
+        case TokenType::ELSE:           return "else";
+        case TokenType::SWITCH:         return "switch";
+        case TokenType::CASE:           return "case";
+        case TokenType::DEFAULT:        return "default";
+        case TokenType::WHILE:          return "while";
+        case TokenType::FOR:            return "for";
+        case TokenType::IN:             return "in";
+        case TokenType::DO:             return "do";
+        case TokenType::RETURN:         return "return";
+        case TokenType::BREAK:          return "break";
+        case TokenType::CONTINUE:       return "continue";
+        case TokenType::SPAWN:          return "spawn";
+        case TokenType::JOIN:           return "join";
+        case TokenType::ASYNC:          return "async";
+        case TokenType::AWAIT:          return "await";
+        case TokenType::AND:            return "and";
+        case TokenType::OR:             return "or";
+        case TokenType::NOT:            return "not";
+        
+        // Types
+        case TokenType::TYPE_BOOL:      return "bool";
+        case TokenType::TYPE_INT8:      return "int8";
+        case TokenType::TYPE_INT16:     return "int16";
+        case TokenType::TYPE_INT32:     return "int32";
+        case TokenType::TYPE_INT64:     return "int64";
+        case TokenType::TYPE_UINT8:     return "uint8";
+        case TokenType::TYPE_UINT16:    return "uint16";
+        case TokenType::TYPE_UINT32:    return "uint32";
+        case TokenType::TYPE_UINT64:    return "uint64";
+        case TokenType::TYPE_BYTE:      return "byte";
+        case TokenType::TYPE_SHORT:     return "short";
+        case TokenType::TYPE_INT:       return "int";
+        case TokenType::TYPE_LONG:      return "long";
+        case TokenType::TYPE_UBYTE:     return "ubyte";
+        case TokenType::TYPE_USHORT:    return "ushort";
+        case TokenType::TYPE_UINT:      return "uint";
+        case TokenType::TYPE_ULONG:     return "ulong";
+        case TokenType::TYPE_FLOAT:     return "float";
+        case TokenType::TYPE_DOUBLE:    return "double";
+        case TokenType::TYPE_DECIMAL:   return "decimal";
+        case TokenType::TYPE_STRING:    return "string";
+        case TokenType::TYPE_CHAR:      return "char";
+        case TokenType::TYPE_FUTURE:    return "Future";
+        
+        // Operators
+        case TokenType::PLUS:           return "+";
+        case TokenType::MINUS:          return "-";
+        case TokenType::MUL:            return "*";
+        case TokenType::DIV:            return "/";
+        case TokenType::MOD:            return "%";
+        case TokenType::POW:            return "**";
+        case TokenType::BIT_AND:        return "&";
+        case TokenType::BIT_OR:         return "|";
+        case TokenType::BIT_XOR:        return "^";
+        case TokenType::BIT_NOT:        return "~";
+        case TokenType::SHL:            return "<<";
+        case TokenType::SHR:            return ">>";
+        case TokenType::EQUAL_EQUAL:    return "==";
+        case TokenType::NOT_EQUAL:      return "!=";
+        case TokenType::LESS:           return "<";
+        case TokenType::LESS_EQUAL:     return "<=";
+        case TokenType::GREATER:        return ">";
+        case TokenType::GREATER_EQUAL:  return ">=";
+        case TokenType::ASSIGN:         return "=";
+        case TokenType::PLUS_ASSIGN:    return "+=";
+        case TokenType::MINUS_ASSIGN:   return "-=";
+        case TokenType::MUL_ASSIGN:     return "*=";
+        case TokenType::DIV_ASSIGN:     return "/=";
+        case TokenType::MOD_ASSIGN:     return "%=";
+        case TokenType::POW_ASSIGN:     return "**=";
+        case TokenType::BIT_AND_ASSIGN: return "&=";
+        case TokenType::BIT_OR_ASSIGN:  return "|=";
+        case TokenType::BIT_XOR_ASSIGN: return "^=";
+        case TokenType::SHL_ASSIGN:     return "<<=";
+        case TokenType::SHR_ASSIGN:     return ">>=";
+        case TokenType::ARROW:          return "->";
+        case TokenType::COMPOSE:        return "+>";
+        case TokenType::PIPELINE:       return "|>";
+        case TokenType::RANGE:          return "..";
+        case TokenType::RANGE_EXCLUSIVE:return "..<";
+        case TokenType::BANG:           return "!";
+        case TokenType::QUESTION:       return "?";
+        case TokenType::QUESTION_DOT:   return "?.";
+        case TokenType::QUESTION_QUESTION: return "??";
+        case TokenType::VARIADIC:       return "...";
+        case TokenType::DOT:            return ".";
+        case TokenType::COLON:          return ":";
+        case TokenType::COMMA:          return ",";
+        case TokenType::SEMICOLON:      return ";";
+        case TokenType::LPAREN:         return "(";
+        case TokenType::RPAREN:         return ")";
+        case TokenType::LBRACE:         return "{";
+        case TokenType::RBRACE:         return "}";
+        case TokenType::LBRACKET:       return "[";
+        case TokenType::RBRACKET:       return "]";
+        case TokenType::AT_SIGN:        return "@";
+        case TokenType::HASH:           return "#";
+        case TokenType::AMPERSAND:      return "&";
+        case TokenType::ARRAY_STAR:     return "[*]";
+        case TokenType::ARRAY_UNDER:    return "[_]";
+        case TokenType::DOC_COMMENT:    return "/-- ... --/";
+        case TokenType::LINE_COMMENT:   return "-- ...";
+        case TokenType::UNKNOWN:        return "UNKNOWN";
+        default: return "Token(" + std::to_string(static_cast<int>(type)) + ")";
+    }
+}
+
+// ─── Token to String ──────────────────────────────────────────────────────
+
+/// @brief Convert a Token to a human-readable string.
+inline std::string tokenToString(const Token& token) {
+    std::string result = tokenTypeToString(token.type);
+    if (!token.value.empty()) {
+        result += "('" + token.value + "')";
+    }
+    return result;
+}
+
+} // namespace core
