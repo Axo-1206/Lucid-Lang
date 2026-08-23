@@ -20,6 +20,7 @@
 /// 
 
 #include "../Parser.hpp"
+#include "core/SourceLocation.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -359,12 +360,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     ///       is returned before this run
     
     // ─── 4. Parse return type ──────────────────────────────────────────────
-    if (stream.check(TokenType::LPAREN)) {
-        TypeAST* returnType = parseFuncType(stream, ctx);
-        funcType->returnType = returnType;
-        return funcType;
-    }
-    
     TypeAST* returnType = parseType(stream, ctx);
     if (!returnType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),

@@ -72,6 +72,7 @@ public:
     
     /// @brief Get the current source location.
     SourceLocation currentLoc() const;
+    SourceLocation previousLoc() const;
     
     /// @brief Consume all consecutive tokens of the given type.
     int consumeTrailing(TokenType type);

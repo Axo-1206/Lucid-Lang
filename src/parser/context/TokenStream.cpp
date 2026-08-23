@@ -60,6 +60,13 @@ SourceLocation TokenStream::currentLoc() const {
     return SourceLocation(1, 1);
 }
 
+SourceLocation TokenStream::previousLoc() const {
+    if (pos_ < tokens_.size()) {
+        return SourceLocation(tokens_[pos_ - 1].line, tokens_[pos_ - 1].column);
+    }
+    return SourceLocation(1, 1);
+}
+
 // ─── Trailing Token Consumption ────────────────────────────────────────
 
 int TokenStream::consumeTrailing(TokenType type) {

@@ -283,6 +283,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // has parameter names. parseFuncType() always uses allowNames=false,
     // so we need to parse the leading cluster separately.
     
+    SourceLocation funcTypeLoc = stream.currentLoc();
     std::vector<ParamAST*> leadingParams;
     
     // Parse the leading cluster - this one has names
@@ -328,6 +329,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     funcType->params = paramBuilder.build();
     funcType->returnType = restType;
     funcType->hasArrow = (restType != nullptr);
+    funcType->loc = funcTypeLoc;
     
     // ─── 6. Parse '=' and body ──────────────────────────────────────────────
     StmtAST* body = nullptr;

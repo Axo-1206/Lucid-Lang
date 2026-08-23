@@ -176,7 +176,10 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 ///       it's for diagnostic log context, this function only parse statements
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     BlockStmtAST* block = ctx.arena.make<BlockStmtAST>();
-    block->loc = stream.currentLoc();
+
+    /// NOTE: the caller of parseBlock already consume '{', 
+    ///       so we have to get previous location
+    block->loc = stream.previousLoc();
 
     auto builder = ctx.arena.makeBuilder<StmtAST*>();
     

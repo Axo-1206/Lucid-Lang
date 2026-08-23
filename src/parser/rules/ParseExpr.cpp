@@ -541,7 +541,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 // =============================================================================
 
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
+    SourceLocation funcTypeLoc = stream.currentLoc();
     
     // ─── Parse the leading cluster - this one has names ──────────────────
     std::vector<ParamAST*> leadingParams;
@@ -573,7 +573,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     
     // ─── Build the FuncTypeAST ─────────────────────────────────────────────
     auto* funcType = ctx.arena.make<FuncTypeAST>();
-    funcType->loc = loc;
+    funcType->loc = funcTypeLoc;
     
     auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : leadingParams) {
@@ -608,7 +608,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     }
     
     auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
-    anonFunc->loc = loc;
+    anonFunc->loc = funcTypeLoc;
     
     return anonFunc;
 }
