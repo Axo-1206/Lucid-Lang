@@ -18,6 +18,9 @@
 ///  so it's easier and less bugs that we warp the node directly in parseAsyncStmt and
 ///  parseSpawnStmt instead of implement their own parser here
 /// 
+/// NOTE: Do not synchronize or attempt to error handling when we attempt to parse a
+///  type, because we lack of context at declaration site, we may skip essential token
+///  like '=' or ';' or '}'
 
 #include "../Parser.hpp"
 #include "core/SourceLocation.hpp"
@@ -76,9 +79,8 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
         return parseNamedType(stream, ctx);
     }
     
-    // The caller will diagnostic this error based on their context,
-    // we do not create diagnostic here
-    synchronizeToContext(stream, ctx);
+    // The caller will diagnostic and synchronize to its context
+    // this error based on their context, we do not create diagnostic here
     return nullptr;
 }
 
@@ -92,7 +94,6 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
     if (!stream.isPrimitiveTypeToken(stream.peekType())) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected primitive type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -151,7 +152,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected type name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -204,7 +204,6 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '[', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume(); // Consume '['
@@ -223,18 +222,23 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
         Token sizeTok = stream.consume();
         size = std::stoull(sizeTok.value);
     } else {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '*, '_, or integer for array size, got '", 
-                                stream.peekValue(), "'");
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
-        stream.consume();
-        return nullptr;
+        if (stream.check(TokenType::RBRACKET)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                        "expected '*, '_, or integer for array size, but found none");
+            // The code below will consume ']' for us
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                        "expected '*, '_, or integer for array size, got '", 
+                        stream.peekValue(), "'");
+
+            stream.consume();
+        }
+        // Continue parse the type if possible
     }
     
     if (!stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ']', got '", stream.peekValue(), "'");
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
         if (!stream.check(TokenType::RBRACKET)) {
             return nullptr;
         }
@@ -245,7 +249,6 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     if (!element) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected array element type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -262,7 +265,6 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::AMPERSAND)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '&', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume(); // Consume '&'
@@ -271,7 +273,6 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     if (!inner) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected reference target type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -288,7 +289,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::MUL)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '*', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume(); // Consume '*'
@@ -297,7 +297,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     if (!inner) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected pointer target type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -364,7 +363,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     if (!returnType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected return type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return funcType;
     }
     funcType->returnType = returnType;
