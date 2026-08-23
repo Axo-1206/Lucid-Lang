@@ -82,9 +82,9 @@
 #include <string>
 
 #include "cli/CLIOptions.hpp"
-#include "cli/run.hpp"
-#include "cli/frontend/parse.hpp"
-#include "cli/frontend/sema.hpp"
+#include "cli/commands/run.hpp"
+#include "cli/commands/parse.hpp"
+#include "cli/commands/sema.hpp"
 #include "interpreter/support/InterpreterOptions.hpp"
 
 /**

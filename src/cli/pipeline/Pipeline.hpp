@@ -58,13 +58,29 @@ struct PipelineResult {
  * ─── Output Behavior ──────────────────────────────────────────────────────
  *
  *   - JSON output: Always sent to stdout (or file with -o)
+ *     - File is always overwritten (truncated)
  *   - Text output: 
- *     - parse/sema: Show summary + optional AST (via --dump-ast)
+ *     - parse/sema: Show summary
  *     - run: Show execution summary with emojis
  *     - build: Show build summary
  *   - Trace output: Sent to stderr (controlled by --verbose/--trace)
  */
 PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx);
+
+/**
+ * @brief Write the pipeline output to file or stdout.
+ *
+ * This handles output formatting (text or JSON) and file writing.
+ * Files are always overwritten (truncated) to ensure fresh results.
+ *
+ * @param opts CLI options
+ * @param result The pipeline result
+ * @param ctx CLI context
+ * @return Exit code (0 for success, 1 for error)
+ */
+int writePipelineOutput(const CLIOptions& opts, 
+                        const PipelineResult& result, 
+                        CLIContext& ctx);
 
 } // namespace frontend
 } // namespace cli

@@ -3,10 +3,9 @@
 
 #include "parse.hpp"
 #include "../pipeline/Pipeline.hpp"
-#include "../pipeline/JSONDumper.hpp"
 #include "../CLIContext.hpp"
 #include "../CLIOptions.hpp"
-#include "core/trace//Trace.hpp"
+#include "core/trace/Trace.hpp"
 
 namespace cli {
 namespace frontend {
@@ -29,36 +28,8 @@ int parseCommand(const CLIOptions& opts) {
         return result.exitCode;
     }
     
-    // ─── Output ────────────────────────────────────────────────────────
-    if (opts.outputFormat == OutputFormat::Json || 
-        opts.outputFormat == OutputFormat::JsonPretty) {
-        bool pretty = (opts.outputFormat == OutputFormat::JsonPretty);
-        JSONDumper jsonDumper(ctx.stringPool, result.modules, pretty);
-        
-        std::string jsonOutput = jsonDumper.dump(ctx.diagnostics);
-        
-        if (opts.outputFile.has_value()) {
-            if (!jsonDumper.dumpToFile(ctx.diagnostics, opts.outputFile.value())) {
-                Trace::error("Failed to write JSON output to: ", opts.outputFile.value());
-                return 1;
-            }
-            Trace::info("JSON output written to: ", opts.outputFile.value());
-        } else {
-            std::cout << jsonOutput << "\n";
-        }
-    } else {
-        // Text summary
-        std::cout << "\n[Parse] Success!\n";
-        std::cout << "  Modules: " << result.modules.size() << "\n";
-        
-        if (ctx.diagnostics.hasWarnings()) {
-            std::cout << "  Warnings: " << ctx.diagnostics.warningCount() << "\n";
-        }
-        
-        std::cout << "\n[Parse] Tip: Use --json or --json-pretty to see the AST.\n";
-    }
-    
-    return 0;
+    // ─── Write output ─────────────────────────────────────────────────
+    return writePipelineOutput(opts, result, ctx);
 }
 
 } // namespace frontend
