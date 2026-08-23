@@ -1,6 +1,5 @@
 /**
  * @file Lexer.cpp
- * @brief Implementation of pure lexing functions.
  */
 
 #include "Lexer.hpp"
@@ -9,43 +8,70 @@
 
 namespace lexer {
 
-// ─── Internal Lexer State ──────────────────────────────────────────────
+// ─── Internal State ──────────────────────────────────────────────────
 
 namespace detail {
 
 struct LexerState {
     const std::string& source;
-    DiagnosticEngine& diagnostics;
-    std::vector<Token> tokens;
-    size_t position = 0;
-    unsigned int line = 1;
-    unsigned short column = 1;
+    std::string filename;
+    size_t position;
+    unsigned int line;
+    unsigned short column;
     bool hadErrors = false;
     
-    LexerState(const std::string& src, DiagnosticEngine& diag)
-        : source(src), diagnostics(diag) {}
+    LexerState(const std::string& src, const std::string& file)
+        : source(src), filename(file), position(0), line(1), column(1) {}
 };
 
-// ─── Character Helpers ──────────────────────────────────────────────────
+// ─── Character Helpers ──────────────────────────────────────────────
 
-inline bool isAtEnd(const LexerState& state) {
+inline bool is_identifier_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+inline bool is_identifier_char(char c) {
+    return is_identifier_start(c) || (c >= '0' && c <= '9');
+}
+
+inline bool is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+inline bool is_hex_digit(char c) {
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+inline bool is_bin_digit(char c) {
+    return c == '0' || c == '1';
+}
+
+inline bool is_oct_digit(char c) {
+    return c >= '0' && c <= '7';
+}
+
+inline bool is_ascii(char c) {
+    return static_cast<unsigned char>(c) <= 0x7F;
+}
+
+inline bool is_at_end(const LexerState& state) {
     return state.position >= state.source.length();
 }
 
-inline char currentChar(const LexerState& state) {
-    if (isAtEnd(state)) return '\0';
+inline char current_char(const LexerState& state) {
+    if (is_at_end(state)) return '\0';
     return state.source[state.position];
 }
 
-inline char peekChar(const LexerState& state, int offset = 0) {
+inline char peek_char(const LexerState& state, int offset = 0) {
     size_t pos = state.position + offset;
     if (pos >= state.source.length()) return '\0';
     return state.source[pos];
 }
 
 inline void advance(LexerState& state) {
-    if (isAtEnd(state)) return;
-    if (currentChar(state) == '\n') {
+    if (is_at_end(state)) return;
+    if (current_char(state) == '\n') {
         state.line++;
         state.column = 1;
     } else {
@@ -55,39 +81,38 @@ inline void advance(LexerState& state) {
 }
 
 inline bool match(LexerState& state, char expected) {
-    if (isAtEnd(state)) return false;
-    if (currentChar(state) != expected) return false;
+    if (is_at_end(state)) return false;
+    if (current_char(state) != expected) return false;
     advance(state);
     return true;
 }
 
-inline bool matchTwo(LexerState& state, char first, char second) {
-    if (isAtEnd(state)) return false;
-    if (currentChar(state) != first) return false;
-    if (peekChar(state, 1) != second) return false;
+inline bool match_two(LexerState& state, char first, char second) {
+    if (is_at_end(state)) return false;
+    if (current_char(state) != first) return false;
+    if (peek_char(state, 1) != second) return false;
     advance(state);
     advance(state);
     return true;
 }
 
-inline Token makeToken(TokenType type, const std::string& value, 
-                       const LexerState& state) {
+inline Token make_token(TokenType type, const std::string& value, 
+                        const LexerState& state) {
     return Token{type, value, state.line, state.column};
 }
 
-inline void reportError(LexerState& state, DiagCode code, 
-                        const std::string& message) {
-    SourceLocation loc(state.line, state.column);
-    state.diagnostics.errorAt(code, loc, message);
-    state.hadErrors = true;
+inline Token error_token(const std::string& message, const LexerState& state) {
+    return Token{TokenType::UNKNOWN, message, state.line, state.column};
 }
 
-// ─── Skip Whitespace ─────────────────────────────────────────────────────
+// ─── Skip Whitespace ─────────────────────────────────────────────────
 
-void skipWhitespace(LexerState& state) {
-    while (!isAtEnd(state)) {
-        char c = currentChar(state);
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+void skip_whitespace(LexerState& state) {
+    while (!is_at_end(state)) {
+        char c = current_char(state);
+        if (c == ' ' || c == '\t' || c == '\r') {
+            advance(state);
+        } else if (c == '\n') {
             advance(state);
         } else {
             break;
@@ -95,166 +120,159 @@ void skipWhitespace(LexerState& state) {
     }
 }
 
-// ─── Lex Identifier ──────────────────────────────────────────────────────
+// ─── Lex Identifier ──────────────────────────────────────────────────
 
-Token lexIdentifier(LexerState& state) {
+Token lex_identifier(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
-    while (!isAtEnd(state) && isIdentifierChar(currentChar(state))) {
-        value += currentChar(state);
+    while (!is_at_end(state) && is_identifier_char(current_char(state))) {
+        value += current_char(state);
         advance(state);
     }
     
     TokenType type = keyword_to_type(value);
     if (type != TokenType::IDENTIFIER) {
-        return Token{type, value, startLine, startCol};
+        return Token{type, value, start_line, start_col};
     }
     
-    return Token{TokenType::IDENTIFIER, value, startLine, startCol};
+    return Token{TokenType::IDENTIFIER, value, start_line, start_col};
 }
 
-// ─── Lex Number ──────────────────────────────────────────────────────────
+// ─── Lex Number ──────────────────────────────────────────────────────
 
-Token lexNumber(LexerState& state) {
+Token lex_number(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
-    char c = currentChar(state);
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
+    char c = current_char(state);
     
     // Hexadecimal: 0x...
-    if (c == '0' && (peekChar(state, 1) == 'x' || peekChar(state, 1) == 'X')) {
+    if (c == '0' && (peek_char(state, 1) == 'x' || peek_char(state, 1) == 'X')) {
         advance(state);
         advance(state);
         value = "0x";
         
-        if (!isHexDigit(currentChar(state))) {
-            reportError(state, DiagCode::Lex_InvalidNumberLiteral,
-                        "Invalid hex literal: expected hex digit");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+        if (!is_hex_digit(current_char(state))) {
+            return error_token("Invalid hex literal: expected hex digit", state);
         }
         
-        while (!isAtEnd(state) && isHexDigit(currentChar(state))) {
-            value += currentChar(state);
+        while (!is_at_end(state) && is_hex_digit(current_char(state))) {
+            value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::HEX_LITERAL, value, startLine, startCol};
+        return Token{TokenType::HEX_LITERAL, value, start_line, start_col};
     }
     
     // Binary: 0b...
-    if (c == '0' && (peekChar(state, 1) == 'b' || peekChar(state, 1) == 'B')) {
+    if (c == '0' && (peek_char(state, 1) == 'b' || peek_char(state, 1) == 'B')) {
         advance(state);
         advance(state);
         value = "0b";
         
-        if (!isBinDigit(currentChar(state))) {
-            reportError(state, DiagCode::Lex_InvalidNumberLiteral,
-                        "Invalid binary literal: expected 0 or 1");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+        if (!is_bin_digit(current_char(state))) {
+            return error_token("Invalid binary literal: expected 0 or 1", state);
         }
         
-        while (!isAtEnd(state) && isBinDigit(currentChar(state))) {
-            value += currentChar(state);
+        while (!is_at_end(state) && is_bin_digit(current_char(state))) {
+            value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::BINARY_LITERAL, value, startLine, startCol};
+        return Token{TokenType::BINARY_LITERAL, value, start_line, start_col};
     }
     
     // Octal: 0o...
-    if (c == '0' && (peekChar(state, 1) == 'o' || peekChar(state, 1) == 'O')) {
+    if (c == '0' && (peek_char(state, 1) == 'o' || peek_char(state, 1) == 'O')) {
         advance(state);
         advance(state);
         value = "0o";
         
-        if (!isOctDigit(currentChar(state))) {
-            reportError(state, DiagCode::Lex_InvalidNumberLiteral,
-                        "Invalid octal literal: expected octal digit (0-7)");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+        if (!is_oct_digit(current_char(state))) {
+            return error_token("Invalid octal literal: expected octal digit (0-7)", state);
         }
         
-        while (!isAtEnd(state) && isOctDigit(currentChar(state))) {
-            value += currentChar(state);
+        while (!is_at_end(state) && is_oct_digit(current_char(state))) {
+            value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::INT_LITERAL, value, startLine, startCol};
+        return Token{TokenType::INT_LITERAL, value, start_line, start_col};
     }
     
     // Decimal integer or float
-    bool isFloat = false;
+    bool is_float = false;
     
     // Integer part
-    while (!isAtEnd(state) && isDigit(currentChar(state))) {
-        value += currentChar(state);
+    while (!is_at_end(state) && is_digit(current_char(state))) {
+        value += current_char(state);
         advance(state);
     }
     
     // Fractional part
-    if (currentChar(state) == '.' && isDigit(peekChar(state, 1))) {
-        isFloat = true;
-        value += currentChar(state);
+    if (current_char(state) == '.' && is_digit(peek_char(state, 1))) {
+        is_float = true;
+        value += current_char(state);
         advance(state);
         
-        while (!isAtEnd(state) && isDigit(currentChar(state))) {
-            value += currentChar(state);
+        while (!is_at_end(state) && is_digit(current_char(state))) {
+            value += current_char(state);
             advance(state);
         }
     }
     
     // Exponent part
-    if (currentChar(state) == 'e' || currentChar(state) == 'E') {
-        isFloat = true;
-        value += currentChar(state);
+    if (current_char(state) == 'e' || current_char(state) == 'E') {
+        is_float = true;
+        value += current_char(state);
         advance(state);
         
-        if (currentChar(state) == '+' || currentChar(state) == '-') {
-            value += currentChar(state);
+        if (current_char(state) == '+' || current_char(state) == '-') {
+            value += current_char(state);
             advance(state);
         }
         
-        if (!isDigit(currentChar(state))) {
-            reportError(state, DiagCode::Lex_InvalidNumberLiteral,
-                        "Invalid float literal: expected digit after exponent");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+        if (!is_digit(current_char(state))) {
+            return error_token("Invalid float literal: expected digit after exponent", state);
         }
         
-        while (!isAtEnd(state) && isDigit(currentChar(state))) {
-            value += currentChar(state);
+        while (!is_at_end(state) && is_digit(current_char(state))) {
+            value += current_char(state);
             advance(state);
         }
     }
     
-    if (isFloat) {
-        return Token{TokenType::FLOAT_LITERAL, value, startLine, startCol};
+    if (is_float) {
+        return Token{TokenType::FLOAT_LITERAL, value, start_line, start_col};
     }
     
-    return Token{TokenType::INT_LITERAL, value, startLine, startCol};
+    return Token{TokenType::INT_LITERAL, value, start_line, start_col};
 }
 
-// ─── Lex String ──────────────────────────────────────────────────────────
+// ─── Lex Strings ─────────────────────────────────────────────────────
 
-Token lexString(LexerState& state) {
+Token lex_string(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     advance(state); // consume opening "
     
-    while (!isAtEnd(state) && currentChar(state) != '"') {
-        char c = currentChar(state);
+    while (!is_at_end(state) && current_char(state) != '"') {
+        char c = current_char(state);
         
         // Handle interpolation: \(expr)
-        if (c == '\\' && peekChar(state, 1) == '(') {
+        if (c == '\\' && peek_char(state, 1) == '(') {
             value += c;
-            value += peekChar(state, 1);
+            value += peek_char(state, 1);
             advance(state);
             advance(state);
             
-            int parenCount = 1;
-            while (!isAtEnd(state) && parenCount > 0) {
-                char ch = currentChar(state);
-                if (ch == '(') parenCount++;
-                if (ch == ')') parenCount--;
+            // Parse expression inside interpolation
+            int paren_count = 1;
+            while (!is_at_end(state) && paren_count > 0) {
+                char ch = current_char(state);
+                if (ch == '(') paren_count++;
+                if (ch == ')') paren_count--;
                 value += ch;
                 advance(state);
             }
@@ -263,7 +281,7 @@ Token lexString(LexerState& state) {
         
         // Handle escape sequences
         if (c == '\\') {
-            char next = peekChar(state, 1);
+            char next = peek_char(state, 1);
             switch (next) {
                 case 'n': value += '\n'; advance(state); break;
                 case 't': value += '\t'; advance(state); break;
@@ -272,89 +290,82 @@ Token lexString(LexerState& state) {
                 case '"': value += '"'; advance(state); break;
                 case '0': value += '\0'; advance(state); break;
                 default:
-                    reportError(state, DiagCode::Lex_InvalidEscapeSequence,
-                                "Invalid escape sequence: \\" + std::string(1, next));
-                    return Token{TokenType::UNKNOWN, value, startLine, startCol};
+                    return error_token("Invalid escape sequence: \\" + std::string(1, next), state);
             }
             advance(state);
             continue;
         }
         
-        // Check for unescaped newline
+        // Check for unescaped newline in string
         if (c == '\n') {
-            reportError(state, DiagCode::Lex_UnterminatedString,
-                        "Unterminated string: newline not allowed (use \"\"\" for multiline)");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+            return error_token("Unterminated string: newline not allowed (use \"\"\" for multiline)", state);
         }
         
+        // Any character is valid inside a string (including non-ASCII)
         value += c;
         advance(state);
     }
     
-    if (isAtEnd(state)) {
-        reportError(state, DiagCode::Lex_UnterminatedString,
-                    "Unterminated string literal");
-        return Token{TokenType::UNKNOWN, value, startLine, startCol};
+    if (is_at_end(state)) {
+        return error_token("Unterminated string literal", state);
     }
     
     advance(state); // consume closing "
-    return Token{TokenType::STRING_LITERAL, value, startLine, startCol};
+    return Token{TokenType::STRING_LITERAL, value, start_line, start_col};
 }
 
-// ─── Lex Raw String ──────────────────────────────────────────────────────
+// ─── Lex Raw Strings ─────────────────────────────────────────────────
 
-Token lexRawString(LexerState& state) {
+Token lex_raw_string(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
+    // Consume """
     advance(state);
     advance(state);
-    advance(state); // consume """
+    advance(state);
     
-    while (!isAtEnd(state)) {
-        if (currentChar(state) == '"' && peekChar(state, 1) == '"' && peekChar(state, 2) == '"') {
+    while (!is_at_end(state)) {
+        // Check for closing """
+        if (current_char(state) == '"' && peek_char(state, 1) == '"' && peek_char(state, 2) == '"') {
             advance(state);
             advance(state);
             advance(state);
-            return Token{TokenType::RAW_STRING_LITERAL, value, startLine, startCol};
+            return Token{TokenType::RAW_STRING_LITERAL, value, start_line, start_col};
         }
         
-        value += currentChar(state);
+        // Raw strings accept ANY character (including non-ASCII)
+        value += current_char(state);
         advance(state);
     }
     
-    reportError(state, DiagCode::Lex_UnterminatedRawString,
-                "Unterminated raw string literal (expected \"\"\")");
-    return Token{TokenType::UNKNOWN, value, startLine, startCol};
+    return error_token("Unterminated raw string literal (expected \"\"\")", state);
 }
 
-// ─── Lex Character ───────────────────────────────────────────────────────
+// ─── Lex Character ──────────────────────────────────────────────────
 
-Token lexChar(LexerState& state) {
+Token lex_char(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     advance(state); // consume opening '
     
-    if (isAtEnd(state)) {
-        reportError(state, DiagCode::Lex_UnterminatedCharLiteral,
-                    "Unterminated character literal");
-        return Token{TokenType::UNKNOWN, value, startLine, startCol};
+    if (is_at_end(state)) {
+        return error_token("Unterminated character literal", state);
     }
     
-    char c = currentChar(state);
+    char c = current_char(state);
     
+    // Handle escape sequences
     if (c == '\\') {
         advance(state);
-        if (isAtEnd(state)) {
-            reportError(state, DiagCode::Lex_UnterminatedCharLiteral,
-                        "Unterminated character literal");
-            return Token{TokenType::UNKNOWN, value, startLine, startCol};
+        if (is_at_end(state)) {
+            return error_token("Unterminated character literal", state);
         }
         
-        char next = currentChar(state);
+        char next = current_char(state);
         switch (next) {
             case 'n': value = "\\n"; break;
             case 't': value = "\\t"; break;
@@ -363,9 +374,7 @@ Token lexChar(LexerState& state) {
             case '\'': value = "\\'"; break;
             case '0': value = "\\0"; break;
             default:
-                reportError(state, DiagCode::Lex_InvalidEscapeSequence,
-                            "Invalid escape sequence: \\" + std::string(1, next));
-                return Token{TokenType::UNKNOWN, value, startLine, startCol};
+                return error_token("Invalid escape sequence: \\" + std::string(1, next), state);
         }
         advance(state);
     } else {
@@ -373,47 +382,102 @@ Token lexChar(LexerState& state) {
         advance(state);
     }
     
-    if (isAtEnd(state) || currentChar(state) != '\'') {
-        reportError(state, DiagCode::Lex_UnterminatedCharLiteral,
-                    "Unterminated character literal");
-        return Token{TokenType::UNKNOWN, value, startLine, startCol};
+    if (is_at_end(state) || current_char(state) != '\'') {
+        return error_token("Unterminated character literal", state);
     }
     
     advance(state); // consume closing '
-    return Token{TokenType::CHAR_LITERAL, value, startLine, startCol};
+    return Token{TokenType::CHAR_LITERAL, value, start_line, start_col};
 }
 
-// ─── Lex Block Comment ───────────────────────────────────────────────────
+// ─── Lex Comments ────────────────────────────────────────────────────
 
-Token lexBlockComment(LexerState& state) {
+Token lex_comment(LexerState& state) {
     std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
-    int nestingDepth = 1;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
+    // Consume /-
     advance(state);
-    advance(state); // consume /-
+    advance(state);
     
-    while (!isAtEnd(state) && nestingDepth > 0) {
-        char c = currentChar(state);
+    while (!is_at_end(state)) {
+        if (current_char(state) == '-' && peek_char(state, 1) == '/') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::LINE_COMMENT, value, start_line, start_col};
+        }
         
-        if (c == '/' && peekChar(state, 1) == '-') {
-            nestingDepth++;
+        value += current_char(state);
+        advance(state);
+    }
+    
+    return error_token("Unterminated block comment (expected -/)", state);
+}
+
+// ─── Lex Doc Comments ────────────────────────────────────────────────
+
+Token lex_doc_comment(LexerState& state) {
+    std::string value;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
+    
+    // Consume /--
+    advance(state);
+    advance(state);
+    advance(state);
+    
+    while (!is_at_end(state)) {
+        if (current_char(state) == '-' && peek_char(state, 1) == '-' && peek_char(state, 2) == '/') {
+            advance(state);
+            advance(state);
+            advance(state);
+            return Token{TokenType::DOC_COMMENT, value, start_line, start_col};
+        }
+        
+        value += current_char(state);
+        advance(state);
+    }
+    
+    return error_token("Unterminated documentation comment (expected --/)", state);
+}
+
+// ─── Lex Block Comments ────────────────────────────────────────────────
+
+Token lex_block_comment(LexerState& state) {
+    std::string value;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
+    int nesting_depth = 1;  // We're already inside one /- ...
+    
+    // Consume /-
+    advance(state);
+    advance(state);
+    
+    while (!is_at_end(state) && nesting_depth > 0) {
+        char c = current_char(state);
+        
+        // Check for nested block comment start: /-
+        if (c == '/' && peek_char(state, 1) == '-') {
+            nesting_depth++;
             value += c;
-            value += peekChar(state, 1);
+            value += peek_char(state, 1);
             advance(state);
             advance(state);
             continue;
         }
         
-        if (c == '-' && peekChar(state, 1) == '/') {
-            nestingDepth--;
-            if (nestingDepth > 0) {
+        // Check for block comment end: -/
+        if (c == '-' && peek_char(state, 1) == '/') {
+            nesting_depth--;
+            if (nesting_depth > 0) {
                 value += c;
-                value += peekChar(state, 1);
+                value += peek_char(state, 1);
                 advance(state);
                 advance(state);
             } else {
+                // This is the closing of the outermost comment
+                // Don't add it to value (we want the content only)
                 advance(state);
                 advance(state);
             }
@@ -424,255 +488,390 @@ Token lexBlockComment(LexerState& state) {
         advance(state);
     }
     
-    if (nestingDepth > 0) {
-        reportError(state, DiagCode::Lex_UnterminatedBlockComment,
-                    "Unterminated block comment (expected -/)");
-        return Token{TokenType::UNKNOWN, value, startLine, startCol};
+    if (nesting_depth > 0) {
+        return error_token("Unterminated block comment (expected -/)", state);
     }
     
-    return Token{TokenType::BLOCK_COMMENT, value, startLine, startCol};
+    return Token{TokenType::BLOCK_COMMENT, value, start_line, start_col};
 }
 
-// ─── Lex Doc Comment ─────────────────────────────────────────────────────
+// ─── Lex Operators and Punctuation ──────────────────────────────────
 
-Token lexDocComment(LexerState& state) {
-    std::string value;
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
+Token lex_operator_or_punctuation(LexerState& state) {
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
+    char c = current_char(state);
     
-    advance(state);
-    advance(state);
-    advance(state); // consume /--
+    // ─── Two-character operators ────────────────────────────────────
     
-    while (!isAtEnd(state)) {
-        if (currentChar(state) == '-' && peekChar(state, 1) == '-' && peekChar(state, 2) == '/') {
-            advance(state);
-            advance(state);
-            advance(state);
-            return Token{TokenType::DOC_COMMENT, value, startLine, startCol};
-        }
-        
-        value += currentChar(state);
-        advance(state);
-    }
-    
-    reportError(state, DiagCode::Lex_UnterminatedBlockComment,
-                "Unterminated documentation comment (expected --/)");
-    return Token{TokenType::UNKNOWN, value, startLine, startCol};
-}
-
-// ─── Lex Operator or Punctuation ────────────────────────────────────────
-
-Token lexOperatorOrPunctuation(LexerState& state) {
-    unsigned int startLine = state.line;
-    unsigned short startCol = state.column;
-    char c = currentChar(state);
-    
-    // ─── Two-character operators ──────────────────────────────────────
-    
-    // ** and **=
+    // Exponentiation: ** and **=
     if (c == '*') {
-        if (peekChar(state, 1) == '*') {
+        if (peek_char(state, 1) == '*') {
             advance(state);
-            if (peekChar(state, 1) == '=') {
+            if (peek_char(state, 1) == '=') {
                 advance(state);
-                return Token{TokenType::POW_ASSIGN, "**=", startLine, startCol};
+                return Token{TokenType::POW_ASSIGN, "**=", start_line, start_col};
             }
             advance(state);
-            return Token{TokenType::POW, "**", startLine, startCol};
+            return Token{TokenType::POW, "**", start_line, start_col};
         }
     }
     
-    // <<, <<=, >>, >>=
-    if (c == '<' && peekChar(state, 1) == '<') {
+    // Bitwise shift: <<, <<=, >>, >>=
+    if (c == '<' && peek_char(state, 1) == '<') {
         advance(state);
-        if (peekChar(state, 1) == '=') {
+        if (peek_char(state, 1) == '=') {
             advance(state);
-            return Token{TokenType::SHL_ASSIGN, "<<=", startLine, startCol};
+            return Token{TokenType::SHL_ASSIGN, "<<=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::SHL, "<<", startLine, startCol};
+        return Token{TokenType::SHL, "<<", start_line, start_col};
     }
     
-    if (c == '>' && peekChar(state, 1) == '>') {
+    if (c == '>' && peek_char(state, 1) == '>') {
         advance(state);
-        if (peekChar(state, 1) == '=') {
+        if (peek_char(state, 1) == '=') {
             advance(state);
-            return Token{TokenType::SHR_ASSIGN, ">>=", startLine, startCol};
+            return Token{TokenType::SHR_ASSIGN, ">>=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::SHR, ">>", startLine, startCol};
+        return Token{TokenType::SHR, ">>", start_line, start_col};
     }
     
-    // .. and ..<
-    if (c == '.' && peekChar(state, 1) == '.') {
+    // Ranges: .. and ..<
+    if (c == '.' && peek_char(state, 1) == '.') {
         advance(state);
-        if (peekChar(state, 1) == '<') {
+        if (peek_char(state, 1) == '<') {
             advance(state);
-            return Token{TokenType::RANGE_EXCLUSIVE, "..<", startLine, startCol};
+            return Token{TokenType::RANGE_EXCLUSIVE, "..<", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::RANGE, "..", startLine, startCol};
+        return Token{TokenType::RANGE, "..", start_line, start_col};
     }
     
-    // +>
-    if (c == '+' && peekChar(state, 1) == '>') {
+    // Composition: +>
+    if (c == '+' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::COMPOSE, "+>", startLine, startCol};
+        return Token{TokenType::COMPOSE, "+>", start_line, start_col};
     }
     
-    // |>
-    if (c == '|' && peekChar(state, 1) == '>') {
+    // Pipeline: |>
+    if (c == '|' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::PIPELINE, "|>", startLine, startCol};
+        return Token{TokenType::PIPELINE, "|>", start_line, start_col};
     }
     
-    // ?.
-    if (c == '?' && peekChar(state, 1) == '.') {
+    // Nullable access: ?.
+    if (c == '?' && peek_char(state, 1) == '.') {
         advance(state);
         advance(state);
-        return Token{TokenType::QUESTION_DOT, "?.", startLine, startCol};
+        return Token{TokenType::QUESTION_DOT, "?.", start_line, start_col};
     }
     
-    // ??
-    if (c == '?' && peekChar(state, 1) == '?') {
+    // Nullable/fallback: ??
+    if (c == '?' && peek_char(state, 1) == '?') {
         advance(state);
         advance(state);
-        return Token{TokenType::QUESTION_QUESTION, "??", startLine, startCol};
+        return Token{TokenType::QUESTION_QUESTION, "??", start_line, start_col};
     }
     
-    // ->
-    if (c == '-' && peekChar(state, 1) == '>') {
+    // Function arrow: ->
+    if (c == '-' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::ARROW, "->", startLine, startCol};
+        return Token{TokenType::ARROW, "->", start_line, start_col};
     }
     
-    // ─── Single-character operators ──────────────────────────────────
+    // ─── Single-character operators ─────────────────────────────────
     
     if (c == '=') {
-        if (peekChar(state, 1) == '=') {
+        if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::EQUAL_EQUAL, "==", startLine, startCol};
+            return Token{TokenType::EQUAL_EQUAL, "==", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::ASSIGN, "=", startLine, startCol};
+        return Token{TokenType::ASSIGN, "=", start_line, start_col};
     }
     
     if (c == '+') {
-        if (peekChar(state, 1) == '=') {
+        if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::PLUS_ASSIGN, "+=", startLine, startCol};
+            return Token{TokenType::PLUS_ASSIGN, "+=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::PLUS, "+", startLine, startCol};
+        return Token{TokenType::PLUS, "+", start_line, start_col};
     }
     
     if (c == '-') {
-        if (peekChar(state, 1) == '=') {
+        if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::MINUS_ASSIGN, "-=", startLine, startCol};
+            return Token{TokenType::MINUS_ASSIGN, "-=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::MINUS, "-", startLine, startCol};
+        return Token{TokenType::MINUS, "-", start_line, start_col};
     }
     
-    // ... continue for all other operators (same as before) ...
+    if (c == '*') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::MUL_ASSIGN, "*=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::MUL, "*", start_line, start_col};
+    }
+    
+    if (c == '/') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::DIV_ASSIGN, "/=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::DIV, "/", start_line, start_col};
+    }
+    
+    if (c == '%') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::MOD_ASSIGN, "%=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::MOD, "%", start_line, start_col};
+    }
+    
+    if (c == '^') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::BIT_XOR_ASSIGN, "^=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::BIT_XOR, "^", start_line, start_col};
+    }
+    
+    if (c == '&') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::BIT_AND_ASSIGN, "&=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::BIT_AND, "&", start_line, start_col};
+    }
+    
+    if (c == '|') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::BIT_OR_ASSIGN, "|=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::BIT_OR, "|", start_line, start_col};
+    }
+    
+    if (c == '~') {
+        advance(state);
+        return Token{TokenType::BIT_NOT, "~", start_line, start_col};
+    }
+    
+    if (c == '!') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::NOT_EQUAL, "!=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::BANG, "!", start_line, start_col};
+    }
+    
+    if (c == '<') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::LESS_EQUAL, "<=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::LESS, "<", start_line, start_col};
+    }
+    
+    if (c == '>') {
+        if (peek_char(state, 1) == '=') {
+            advance(state);
+            advance(state);
+            return Token{TokenType::GREATER_EQUAL, ">=", start_line, start_col};
+        }
+        advance(state);
+        return Token{TokenType::GREATER, ">", start_line, start_col};
+    }
     
     // ─── Punctuation ─────────────────────────────────────────────────
     
-    // ... continue for punctuation ...
+    if (c == '.') {
+        advance(state);
+        return Token{TokenType::DOT, ".", start_line, start_col};
+    }
     
-    // ─── Unknown character ────────────────────────────────────────────
+    if (c == ':') {
+        advance(state);
+        return Token{TokenType::COLON, ":", start_line, start_col};
+    }
     
+    if (c == ',') {
+        advance(state);
+        return Token{TokenType::COMMA, ",", start_line, start_col};
+    }
+    
+    if (c == ';') {
+        advance(state);
+        return Token{TokenType::SEMICOLON, ";", start_line, start_col};
+    }
+    
+    if (c == '(') {
+        advance(state);
+        return Token{TokenType::LPAREN, "(", start_line, start_col};
+    }
+    
+    if (c == ')') {
+        advance(state);
+        return Token{TokenType::RPAREN, ")", start_line, start_col};
+    }
+    
+    if (c == '{') {
+        advance(state);
+        return Token{TokenType::LBRACE, "{", start_line, start_col};
+    }
+    
+    if (c == '}') {
+        advance(state);
+        return Token{TokenType::RBRACE, "}", start_line, start_col};
+    }
+    
+    if (c == '[') {
+        advance(state);
+        return Token{TokenType::LBRACKET, "[", start_line, start_col};
+    }
+    
+    if (c == ']') {
+        advance(state);
+        return Token{TokenType::RBRACKET, "]", start_line, start_col};
+    }
+    
+    if (c == '@') {
+        advance(state);
+        return Token{TokenType::AT_SIGN, "@", start_line, start_col};
+    }
+    
+    if (c == '#') {
+        advance(state);
+        return Token{TokenType::HASH, "#", start_line, start_col};
+    }
+    
+    if (c == '_') {
+        advance(state);
+        return Token{TokenType::UNDERSCORE, "_", start_line, start_col};
+    }
+    
+    // Variadic: ...
+    if (c == '.' && peek_char(state, 1) == '.' && peek_char(state, 2) == '.') {
+        advance(state);
+        advance(state);
+        advance(state);
+        return Token{TokenType::VARIADIC, "...", start_line, start_col};
+    }
+    
+    // Unknown character
     std::string msg = "Unexpected character: '";
     msg += c;
     msg += "'";
-    reportError(state, DiagCode::Lex_InvalidCharacter, msg);
     advance(state);
-    return Token{TokenType::UNKNOWN, msg, startLine, startCol};
+    return Token{TokenType::UNKNOWN, msg, start_line, start_col};
 }
 
-// ─── Main Tokenization Loop ─────────────────────────────────────────────
+// ─── Main Tokenization Loop ─────────────────────────────────────────
 
-Token nextToken(LexerState& state) {
-    skipWhitespace(state);
+Token next_token(detail::LexerState& state) {
+    detail::skip_whitespace(state);
     
-    if (isAtEnd(state)) {
+    if (detail::is_at_end(state)) {
         return Token{TokenType::EOF_TOKEN, "EOF", state.line, state.column};
     }
     
-    char c = currentChar(state);
+    char c = detail::current_char(state);
     
     // Comments
-    if (c == '/' && peekChar(state, 1) == '-') {
-        if (peekChar(state, 2) == '-') {
-            return lexDocComment(state);
+    if (c == '/' && detail::peek_char(state, 1) == '-') {
+        // Check for doc comment: /--
+        if (detail::peek_char(state, 2) == '-') {
+            return detail::lex_doc_comment(state);
         }
-        return lexBlockComment(state);
+        // Block comment: /- (not followed by another -)
+        // Note: Doc comment check must come first, then block comment
+        return detail::lex_block_comment(state);
     }
     
     // Identifiers and keywords
-    if (isIdentifierStart(c)) {
-        return lexIdentifier(state);
+    if (detail::is_identifier_start(c)) {
+        return detail::lex_identifier(state);
     }
     
     // Numbers
-    if (isDigit(c) || (c == '.' && isDigit(peekChar(state, 1)))) {
-        return lexNumber(state);
+    if (detail::is_digit(c) || (c == '.' && detail::is_digit(detail::peek_char(state, 1)))) {
+        return detail::lex_number(state);
     }
     
     // Strings
     if (c == '"') {
-        if (peekChar(state, 1) == '"' && peekChar(state, 2) == '"') {
-            return lexRawString(state);
+        if (detail::peek_char(state, 1) == '"' && detail::peek_char(state, 2) == '"') {
+            return detail::lex_raw_string(state);
         }
-        return lexString(state);
+        return detail::lex_string(state);
     }
     
     // Characters
     if (c == '\'') {
-        return lexChar(state);
+        return detail::lex_char(state);
     }
     
     // Operators and punctuation
-    return lexOperatorOrPunctuation(state);
+    return detail::lex_operator_or_punctuation(state);
 }
 
 } // namespace detail
 
-// ─── Public API ─────────────────────────────────────────────────────────
+// ─── Public API Implementation ──────────────────────────────────────
 
-std::vector<Token> tokenize(const std::string& source, 
-                            DiagnosticEngine& diagnostics) {
-    detail::LexerState state(source, diagnostics);
+std::vector<Token> tokenize(const std::string& source, const std::string& filename) {
+    detail::LexerState state(source, filename);
+    std::vector<Token> tokens;
     
     while (true) {
-        Token token = detail::nextToken(state);
-        state.tokens.push_back(token);
+        Token token = detail::next_token(state);
+        tokens.push_back(token);
         if (token.type == TokenType::EOF_TOKEN) break;
     }
     
-    return state.tokens;
+    return tokens;
 }
 
-std::vector<Token> tokenize_n(const std::string& source, 
-                              size_t max_tokens,
-                              DiagnosticEngine& diagnostics) {
-    detail::LexerState state(source, diagnostics);
+std::vector<Token> tokenize_n(const std::string& source, size_t max_tokens, 
+                               const std::string& filename) {
+    detail::LexerState state(source, filename);
+    std::vector<Token> tokens;
     
     for (size_t i = 0; i < max_tokens; ++i) {
-        Token token = detail::nextToken(state);
-        state.tokens.push_back(token);
+        Token token = detail::next_token(state);
+        tokens.push_back(token);
         if (token.type == TokenType::EOF_TOKEN) break;
     }
     
-    return state.tokens;
+    return tokens;
 }
 
 } // namespace lexer
