@@ -10,193 +10,303 @@
 #include "core/ast/TypeAST.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/memory/StringPool.hpp"
+#include "core/ASTStrings.hpp"
+#include "core/JSONFormatter.hpp"
 
 #include <string>
 #include <vector>
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
+#include <sstream>
 
 namespace cli {
 namespace frontend {
 
+// ─── JSON Writer ─────────────────────────────────────────────────────────
+
 /**
- * @brief Complete JSON serializer for all AST node types.
+ * @brief Simple JSON builder with manual comma control.
  * 
- * This class produces a complete, machine-readable JSON representation
- * of the entire AST, including:
- *   - All declaration types (Var, Func, Struct, Enum, Trait, etc.)
- *   - All statement types (Block, If, Switch, For, While, etc.)
- *   - All expression types (Literal, Binary, Call, Pipeline, etc.)
- *   - All type annotations (Primitive, Named, Array, Func, etc.)
- *   - Source locations with file paths
- *   - Diagnostic messages
+ * This class builds a raw JSON string without formatting.
+ * Formatting is applied by JSONFormatter when str() is called.
  * 
- * The output format is designed for:
- *   - LSP integration (complete AST for analysis)
- *   - Tooling (AST inspection, code generation)
- *   - Debugging (human-readable with --json-pretty)
- *   - CI/CD pipelines (structured validation)
+ * Usage:
+ *   JSONWriter json;
+ *   json.beginObject();              // {
+ *   json.key("name");                // "name":
+ *   json.string("test");             // "test"
+ *   json.key("age");                 // "age":
+ *   json.number(42);                 // 42
+ *   json.endObject();                // }
+ *   std::string result = json.str(); // {"name":"test","age":42}
  */
+class JSONWriter {
+public:
+    explicit JSONWriter(bool pretty = false) : m_pretty(pretty) {}
+
+    std::string str() const {
+        std::string raw = m_oss.str();
+        if (m_pretty) {
+            return JSONFormatter::format(raw);
+        }
+        return raw;
+    }
+
+    // ─── Object ──────────────────────────────────────────────────────────
+
+    void beginObject() {
+        writeCommaIfNeeded();
+        m_oss << "{";
+        m_needComma = false;
+    }
+
+    void endObject() {
+        m_oss << "}";
+        m_needComma = true;
+    }
+
+    // ─── Array ───────────────────────────────────────────────────────────
+
+    void beginArray() {
+        writeCommaIfNeeded();
+        m_oss << "[";
+        m_needComma = false;
+    }
+
+    void endArray() {
+        m_oss << "]";
+        m_needComma = true;
+    }
+
+    // ─── Key ────────────────────────────────────────────────────────────
+
+    void key(const std::string& k) {
+        writeCommaIfNeeded();
+        m_oss << "\"" << escape(k) << "\": ";
+        m_needComma = false;
+    }
+
+    // ─── Values ─────────────────────────────────────────────────────────
+
+    void null() {
+        writeCommaIfNeeded();
+        m_oss << "null";
+        m_needComma = true;
+    }
+
+    void bool_(bool v) {
+        writeCommaIfNeeded();
+        m_oss << (v ? "true" : "false");
+        m_needComma = true;
+    }
+
+    void number(int64_t v) {
+        writeCommaIfNeeded();
+        m_oss << v;
+        m_needComma = true;
+    }
+
+    void number(uint64_t v) {
+        writeCommaIfNeeded();
+        m_oss << v;
+        m_needComma = true;
+    }
+
+    void number(double v) {
+        writeCommaIfNeeded();
+        m_oss << std::setprecision(17) << v;
+        m_needComma = true;
+    }
+
+    void string(const std::string& v) {
+        writeCommaIfNeeded();
+        m_oss << "\"" << escape(v) << "\"";
+        m_needComma = true;
+    }
+
+    // ─── Key + Value Convenience ───────────────────────────────────────
+
+    void kv(const std::string& k, const std::string& v) {
+        key(k);
+        string(v);
+    }
+
+    void kv(const std::string& k, bool v) {
+        key(k);
+        bool_(v);
+    }
+
+    void kv(const std::string& k, int64_t v) {
+        key(k);
+        number(v);
+    }
+
+    void kv(const std::string& k, uint64_t v) {
+        key(k);
+        number(v);
+    }
+
+    void kv(const std::string& k, double v) {
+        key(k);
+        number(v);
+    }
+
+    void kvNull(const std::string& k) {
+        key(k);
+        null();
+    }
+
+    // ─── Array Key Convenience ─────────────────────────────────────────
+
+    void arrayKey(const std::string& k) {
+        key(k);
+        beginArray();
+    }
+
+private:
+    void writeCommaIfNeeded() {
+        if (m_needComma) {
+            m_oss << ",";
+        }
+    }
+
+    static std::string escape(const std::string& str) {
+        std::ostringstream oss;
+        for (char c : str) {
+            switch (c) {
+                case '"':  oss << "\\\""; break;
+                case '\\': oss << "\\\\"; break;
+                case '\b': oss << "\\b"; break;
+                case '\f': oss << "\\f"; break;
+                case '\n': oss << "\\n"; break;
+                case '\r': oss << "\\r"; break;
+                case '\t': oss << "\\t"; break;
+                default:
+                    if (static_cast<unsigned char>(c) < 0x20) {
+                        oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                            << static_cast<int>(c);
+                    } else {
+                        oss << c;
+                    }
+                    break;
+            }
+        }
+        return oss.str();
+    }
+
+    std::ostringstream m_oss;
+    bool m_pretty = false;
+    bool m_needComma = false;
+};
+
+// ─── JSONDumper ─────────────────────────────────────────────────────────
+
 class JSONDumper {
 public:
-    /**
-     * @brief Construct a JSON dumper with a string pool.
-     * 
-     * @param pool The StringPool used to resolve InternedString IDs.
-     * @param modules The modules being serialized (for file path lookup).
-     * @param pretty Whether to pretty-print with indentation.
-     */
     explicit JSONDumper(StringPool& pool, 
                         const std::vector<ModuleAST*>& modules,
                         bool pretty = false);
     ~JSONDumper() = default;
 
-    // ─── Public API ──────────────────────────────────────────────────────
-
-    /**
-     * @brief Dump modules and diagnostics to a JSON string.
-     * 
-     * @param diagnostics The diagnostics to include.
-     * @return std::string The JSON representation.
-     */
     std::string dump(const DiagnosticEngine& diagnostics);
-
-    /**
-     * @brief Dump modules and diagnostics to a file.
-     * 
-     * @param diagnostics The diagnostics to include.
-     * @param filePath The output file path.
-     * @return bool True on success, false on failure.
-     */
     bool dumpToFile(const DiagnosticEngine& diagnostics,
                     const std::string& filePath);
 
 private:
-    // ─── Forward declarations for circular references ───────────────────
-    // These are needed because serializeDecl calls serializeType which
-    // may call serializeDecl again (for function types with params).
+    // ─── Serialization Methods ────────────────────────────────────────
 
-    std::string serializeNode(BaseAST* node);
-    std::string serializeDecl(DeclAST* decl);
-    std::string serializeStmt(StmtAST* stmt);
-    std::string serializeExpr(ExprAST* expr);
-    std::string serializeType(TypeAST* type);
-
-    // ─── Module Serialization ──────────────────────────────────────────
-
-    std::string serializeModules();
-    std::string serializeModule(ModuleAST* module);
+    void serializeModules(JSONWriter& json);
+    void serializeModule(JSONWriter& json, ModuleAST* module);
+    void serializeDecl(JSONWriter& json, DeclAST* decl);
+    void serializeStmt(JSONWriter& json, StmtAST* stmt);
+    void serializeExpr(JSONWriter& json, ExprAST* expr);
+    void serializeType(JSONWriter& json, TypeAST* type);
+    void serializeDiagnostics(JSONWriter& json, const DiagnosticEngine& diagnostics);
+    void serializeLocation(JSONWriter& json, const SourceLocation& loc, ModuleAST* module = nullptr);
 
     // ─── Declaration Serializers ──────────────────────────────────────
 
-    std::string serializeImportDecl(ImportDeclAST* decl);
-    std::string serializeVarDecl(VarDeclAST* decl);
-    std::string serializeParam(ParamAST* param);
-    std::string serializeFuncDecl(FuncDeclAST* decl);
-    std::string serializeStructDecl(StructDeclAST* decl);
-    std::string serializeEnumDecl(EnumDeclAST* decl);
-    std::string serializeTraitDecl(TraitDeclAST* decl);
-    std::string serializeFieldDecl(FieldDeclAST* field);
-    std::string serializeTraitFieldDecl(TraitFieldDeclAST* field);
-    std::string serializeEnumVariant(EnumVariantAST* variant);
-    std::string serializeGenericParam(GenericParamDeclAST* param);
+    void serializeImportDecl(JSONWriter& json, ImportDeclAST* decl);
+    void serializeVarDecl(JSONWriter& json, VarDeclAST* decl);
+    void serializeParam(JSONWriter& json, ParamAST* param);
+    void serializeFuncDecl(JSONWriter& json, FuncDeclAST* decl);
+    void serializeStructDecl(JSONWriter& json, StructDeclAST* decl);
+    void serializeEnumDecl(JSONWriter& json, EnumDeclAST* decl);
+    void serializeTraitDecl(JSONWriter& json, TraitDeclAST* decl);
+    void serializeFieldDecl(JSONWriter& json, FieldDeclAST* field);
+    void serializeTraitFieldDecl(JSONWriter& json, TraitFieldDeclAST* field);
+    void serializeEnumVariant(JSONWriter& json, EnumVariantAST* variant);
+    void serializeGenericParam(JSONWriter& json, GenericParamDeclAST* param);
 
     // ─── Statement Serializers ────────────────────────────────────────
 
-    std::string serializeBlockStmt(BlockStmtAST* stmt);
-    std::string serializeExprStmt(ExprStmtAST* stmt);
-    std::string serializeDeclStmt(DeclStmtAST* stmt);
-    std::string serializeIfStmt(IfStmtAST* stmt);
-    std::string serializeSwitchStmt(SwitchStmtAST* stmt);
-    std::string serializeSwitchCase(SwitchCaseAST* case_);
-    std::string serializeForStmt(ForStmtAST* stmt);
-    std::string serializeWhileStmt(WhileStmtAST* stmt);
-    std::string serializeDoWhileStmt(DoWhileStmtAST* stmt);
-    std::string serializeReturnStmt(ReturnStmtAST* stmt);
-    std::string serializeBreakStmt(BreakStmtAST* stmt);
-    std::string serializeContinueStmt(ContinueStmtAST* stmt);
-    std::string serializeFuncRefStmt(FuncRefStmtAST* stmt);
-    std::string serializeAsyncStmt(AsyncStmtAST* stmt);
-    std::string serializeAwaitStmt(AwaitStmtAST* stmt);
-    std::string serializeSpawnStmt(SpawnStmtAST* stmt);
-    std::string serializeJoinStmt(JoinStmtAST* stmt);
+    void serializeBlockStmt(JSONWriter& json, BlockStmtAST* stmt);
+    void serializeExprStmt(JSONWriter& json, ExprStmtAST* stmt);
+    void serializeDeclStmt(JSONWriter& json, DeclStmtAST* stmt);
+    void serializeIfStmt(JSONWriter& json, IfStmtAST* stmt);
+    void serializeSwitchStmt(JSONWriter& json, SwitchStmtAST* stmt);
+    void serializeSwitchCase(JSONWriter& json, SwitchCaseAST* case_);
+    void serializeForStmt(JSONWriter& json, ForStmtAST* stmt);
+    void serializeWhileStmt(JSONWriter& json, WhileStmtAST* stmt);
+    void serializeDoWhileStmt(JSONWriter& json, DoWhileStmtAST* stmt);
+    void serializeReturnStmt(JSONWriter& json, ReturnStmtAST* stmt);
+    void serializeBreakStmt(JSONWriter& json, BreakStmtAST* stmt);
+    void serializeContinueStmt(JSONWriter& json, ContinueStmtAST* stmt);
+    void serializeFuncRefStmt(JSONWriter& json, FuncRefStmtAST* stmt);
+    void serializeAsyncStmt(JSONWriter& json, AsyncStmtAST* stmt);
+    void serializeAwaitStmt(JSONWriter& json, AwaitStmtAST* stmt);
+    void serializeSpawnStmt(JSONWriter& json, SpawnStmtAST* stmt);
+    void serializeJoinStmt(JSONWriter& json, JoinStmtAST* stmt);
 
     // ─── Expression Serializers ──────────────────────────────────────
 
-    std::string serializeLiteralExpr(LiteralExprAST* expr);
-    std::string serializeIdentifierExpr(IdentifierExprAST* expr);
-    std::string serializeArrayLiteralExpr(ArrayLiteralExprAST* expr);
-    std::string serializeStructLiteralExpr(StructLiteralExprAST* expr);
-    std::string serializeFieldInit(FieldInitAST* init);
-    std::string serializeBinaryExpr(BinaryExprAST* expr);
-    std::string serializeUnaryExpr(UnaryExprAST* expr);
-    std::string serializeCallExpr(CallExprAST* expr);
-    std::string serializeIntrinsicCallExpr(IntrinsicCallExprAST* expr);
-    std::string serializeIndexExpr(IndexExprAST* expr);
-    std::string serializeSliceExpr(SliceExprAST* expr);
-    std::string serializeFieldAccessExpr(FieldAccessExprAST* expr);
-    std::string serializeModuleAccessExpr(ModuleAccessExprAST* expr);
-    std::string serializeAssignExpr(AssignExprAST* expr);
-    std::string serializeNullCoalesceExpr(NullCoalesceExprAST* expr);
-    std::string serializePipelineExpr(PipelineExprAST* expr);
-    std::string serializePipelineStep(PipelineStepAST* step);
-    std::string serializeComposeExpr(ComposeExprAST* expr);
-    std::string serializeComposeOperand(ComposeOperandAST* operand);
-    std::string serializeAnonFuncExpr(AnonFuncExprAST* expr);
-    std::string serializeIfExpr(IfExprAST* expr);
-    std::string serializeRangeExpr(RangeExprAST* expr);
+    void serializeLiteralExpr(JSONWriter& json, LiteralExprAST* expr);
+    void serializeIdentifierExpr(JSONWriter& json, IdentifierExprAST* expr);
+    void serializeArrayLiteralExpr(JSONWriter& json, ArrayLiteralExprAST* expr);
+    void serializeStructLiteralExpr(JSONWriter& json, StructLiteralExprAST* expr);
+    void serializeFieldInit(JSONWriter& json, FieldInitAST* init);
+    void serializeBinaryExpr(JSONWriter& json, BinaryExprAST* expr);
+    void serializeUnaryExpr(JSONWriter& json, UnaryExprAST* expr);
+    void serializeCallExpr(JSONWriter& json, CallExprAST* expr);
+    void serializeIntrinsicCallExpr(JSONWriter& json, IntrinsicCallExprAST* expr);
+    void serializeIndexExpr(JSONWriter& json, IndexExprAST* expr);
+    void serializeSliceExpr(JSONWriter& json, SliceExprAST* expr);
+    void serializeFieldAccessExpr(JSONWriter& json, FieldAccessExprAST* expr);
+    void serializeModuleAccessExpr(JSONWriter& json, ModuleAccessExprAST* expr);
+    void serializeAssignExpr(JSONWriter& json, AssignExprAST* expr);
+    void serializeNullCoalesceExpr(JSONWriter& json, NullCoalesceExprAST* expr);
+    void serializePipelineExpr(JSONWriter& json, PipelineExprAST* expr);
+    void serializePipelineStep(JSONWriter& json, PipelineStepAST* step);
+    void serializeComposeExpr(JSONWriter& json, ComposeExprAST* expr);
+    void serializeComposeOperand(JSONWriter& json, ComposeOperandAST* operand);
+    void serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr);
+    void serializeIfExpr(JSONWriter& json, IfExprAST* expr);
+    void serializeRangeExpr(JSONWriter& json, RangeExprAST* expr);
 
     // ─── Type Serializers ─────────────────────────────────────────────
 
-    std::string serializePrimitiveType(PrimitiveTypeAST* type);
-    std::string serializeNamedType(NamedTypeAST* type);
-    std::string serializeArrayType(ArrayTypeAST* type);
-    std::string serializeNullableType(NullableTypeAST* type);
-    std::string serializeFallibleType(FallibleTypeAST* type);
-    std::string serializeCombinedType(CombinedTypeAST* type);
-    std::string serializeRefType(RefTypeAST* type);
-    std::string serializePtrType(PtrTypeAST* type);
-    std::string serializeFuncType(FuncTypeAST* type);
-    std::string serializeModuleTypeAccess(ModuleTypeAccessAST* type);
-    std::string serializeFutureType(FutureTypeAST* type);
-    std::string serializeThreadType(ThreadTypeAST* type);
+    void serializePrimitiveType(JSONWriter& json, PrimitiveTypeAST* type);
+    void serializeNamedType(JSONWriter& json, NamedTypeAST* type);
+    void serializeModuleTypeAccess(JSONWriter& json, ModuleTypeAccessAST* type);
+    void serializeArrayType(JSONWriter& json, ArrayTypeAST* type);
+    void serializeNullableType(JSONWriter& json, NullableTypeAST* type);
+    void serializeFallibleType(JSONWriter& json, FallibleTypeAST* type);
+    void serializeCombinedType(JSONWriter& json, CombinedTypeAST* type);
+    void serializeRefType(JSONWriter& json, RefTypeAST* type);
+    void serializePtrType(JSONWriter& json, PtrTypeAST* type);
+    void serializeFuncType(JSONWriter& json, FuncTypeAST* type);
+    void serializeFutureType(JSONWriter& json, FutureTypeAST* type);
+    void serializeThreadType(JSONWriter& json, ThreadTypeAST* type);
 
-    // ─── Diagnostics Serialization ──────────────────────────────────
+    // ─── Helpers ──────────────────────────────────────────────────────
 
-    std::string serializeDiagnostics(const DiagnosticEngine& diagnostics);
-    std::string serializeLocation(const SourceLocation& loc, ModuleAST* module = nullptr);
-
-    // ─── Helper Methods ──────────────────────────────────────────────
-
-    std::string getModulePath(InternedString filePath) const;
-    std::string escapeString(const std::string& str) const;
     std::string str(InternedString s) const;
-    std::string indent(int level) const;
-    std::string quote(const std::string& str) const;
-    std::string jsonBool(bool value) const;
-    std::string jsonNull() const;
-    std::string jsonNumber(int64_t value) const;
-    std::string jsonNumber(uint64_t value) const;
-    std::string jsonNumber(double value) const;
-    
-    // Kind to string helpers
-    std::string kindToString(ASTKind kind) const;
-    std::string literalKindToString(LiteralKind kind) const;
-    std::string binaryOpToString(BinaryOp op) const;
-    std::string unaryOpToString(UnaryOp op) const;
-    std::string assignOpToString(AssignOp op) const;
-    std::string primitiveKindToString(PrimitiveKind kind) const;
-    std::string arrayKindToString(ArrayKind kind) const;
-    std::string declKeywordToString(DeclKeyword keyword) const;
-    std::string valueStateToString(ValueState state) const;
+    std::string getModulePath(InternedString filePath) const;
     
     StringPool& pool;
     const std::vector<ModuleAST*>& modules;
     bool pretty;
-    int indentLevel = 0;
-    
-    // Cache for module file path lookups
     std::unordered_map<InternedString, ModuleAST*> moduleMap;
 };
 
