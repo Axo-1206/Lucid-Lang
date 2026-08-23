@@ -171,14 +171,10 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 // parseBlock – Parses a brace-delimited block
 // =============================================================================
 
+/// NOTE: parse block will not consume '{}', the caller will do it
+///       it's for diagnostic log context, this function only parse statements
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
-    
-    if (!stream.match(TokenType::LBRACE)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, loc,
-                                "expected '{', got '", stream.peekValue(), "'");
-        return ctx.arena.make<BlockStmtAST>();
-    }
     
     BlockStmtAST* block = ctx.arena.make<BlockStmtAST>();
     auto builder = ctx.arena.makeBuilder<StmtAST*>();
@@ -194,13 +190,6 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
                 break;
             }
         }
-    }
-    
-    if (stream.isAtEnd()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected '}' to close block");
-    } else {
-        stream.consume(); // Consume '}'
     }
     
     block->stmts = builder.build();

@@ -71,7 +71,7 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    if (stream.consumeTrailing(TokenType::COMMA) == 0) {
+    if (stream.consumeTrailing(TokenType::SEMICOLON) == 0) {
         if (isFuncDecl) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                                 "expected ';' after function declaration");

@@ -255,7 +255,7 @@ int writePipelineOutput(const CLIOptions& opts,
             file.close();
             
             Trace::info("JSON output written to: ", filePath);
-            std::cout << "\n✅ Output written to: " << filePath << "\n";
+            std::cout << "\nOutput written to: " << filePath << "\n";
         } else {
             // Write to stdout
             std::cout << jsonOutput << "\n";
