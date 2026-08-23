@@ -11,6 +11,7 @@
  */
 
 #include "../Parser.hpp"
+#include "core/SourceLocation.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -32,11 +33,11 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     auto doc = harvestDocComment(stream, ctx);
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
     
+    SourceLocation loc = stream.currentLoc();
+
     DeclAST* decl = nullptr;
     bool isFuncDecl = false;
     bool isVarDecl = false;
-
-    decl->loc = stream.currentLoc();
     
     if (stream.check(TokenType::IMPORT)) {
         if (ctx.currentContext() == SyntacticContext::FuncBody) {
@@ -90,6 +91,7 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
+    decl->loc = loc;
     return decl;
 }
 

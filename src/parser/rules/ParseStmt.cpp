@@ -57,11 +57,10 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         stream.consume();
         return nullptr;
     }
-
-    StmtAST* result = nullptr;
     
     Token current = stream.peek();
-    result->loc = stream.currentLoc();
+    SourceLocation loc = stream.currentLoc();
+    StmtAST* result = nullptr;
     
     switch (current.type) {
         // Control Flow - these DO NOT take semicolon
@@ -120,7 +119,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             break;
 
         case TokenType::IMPORT:
-            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, stream.currentLoc(),
+            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, loc,
                                     "import statement is only valid at top level");
             synchronizeToContext(stream, ctx);
             return nullptr;
@@ -165,6 +164,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             break;
     }
     
+    result->loc = loc;
     return result;
 }
 
@@ -175,9 +175,9 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 /// NOTE: parse block will not consume '{}', the caller will do it
 ///       it's for diagnostic log context, this function only parse statements
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     BlockStmtAST* block = ctx.arena.make<BlockStmtAST>();
+    block->loc = stream.currentLoc();
+
     auto builder = ctx.arena.makeBuilder<StmtAST*>();
     
     stream.consumeTrailing(TokenType::SEMICOLON); // Skip stray semicolons
@@ -194,7 +194,6 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     }
     
     block->stmts = builder.build();
-    block->loc = loc;
     
     return block;
 }
@@ -204,16 +203,13 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::IF)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'if', got '", stream.peekValue(), "'");
         return ctx.arena.make<IfStmtAST>();
     }
     
     IfStmtAST* ifStmt = ctx.arena.make<IfStmtAST>();
-    ifStmt->loc = loc;
     
     ExprAST* condition = parseExpr(stream, ctx);
     if (!condition) {
@@ -268,17 +264,14 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::SWITCH)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'switch', got '", stream.peekValue(), "'");
         return ctx.arena.make<SwitchStmtAST>();
     }
     
     SwitchStmtAST* switchStmt = ctx.arena.make<SwitchStmtAST>();
-    switchStmt->loc = loc;
-    
+
     // ─── Parse subject ──────────────────────────────────────────────────────
     ExprAST* subject = parseExpr(stream, ctx);
     if (!subject) {
@@ -513,10 +506,8 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::FOR)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'for', got '", stream.peekValue(), "'");
         return ctx.arena.make<ForStmtAST>();
     }
@@ -585,7 +576,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         
         // ─── 3. Create ForStmtAST with collection iteration ──────────────
         ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-        forStmt->loc = loc;
         forStmt->indexVar = indexParam;
         forStmt->valueVar = valueParam;
         
@@ -638,13 +628,11 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
             // Return a partial AST
             ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-            forStmt->loc = loc;
             forStmt->indexVar = indexParam;
             return forStmt;
         }
         // Return a partial AST
         ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-        forStmt->loc = loc;
         forStmt->indexVar = indexParam;
         return forStmt;
     }
@@ -656,12 +644,10 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
                                 "expected range expression (start..end)");
         if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
             ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-            forStmt->loc = loc;
             forStmt->indexVar = indexParam;
             return forStmt;
         }
         ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-        forStmt->loc = loc;
         forStmt->indexVar = indexParam;
         return forStmt;
     }
@@ -675,7 +661,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
                                     "expected step expression after '..'");
             if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
                 ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-                forStmt->loc = loc;
                 forStmt->indexVar = indexParam;
                 forStmt->iterable = iterable;
                 return forStmt;
@@ -690,14 +675,12 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
                                 "expected loop body block");
         if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
             ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-            forStmt->loc = loc;
             forStmt->indexVar = indexParam;
             forStmt->iterable = iterable;
             forStmt->step = step;
             return forStmt;
         }
         ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-        forStmt->loc = loc;
         forStmt->indexVar = indexParam;
         forStmt->iterable = iterable;
         forStmt->step = step;
@@ -706,7 +689,6 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 7. Create ForStmtAST with all fields ──────────────────────────────
     ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
-    forStmt->loc = loc;
     forStmt->indexVar = indexParam;
     forStmt->valueVar = nullptr;  // No value variable in range loops
     forStmt->iterable = iterable;
@@ -905,14 +887,14 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation bindingLoc = stream.currentLoc();
+
     // 1. Parse 'async' keyword
     if (!stream.match(TokenType::ASYNC)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, bindingLoc,
                                 "expected 'async', got '", stream.peekValue(), "'");
         return ctx.arena.make<AsyncStmtAST>();
     }
-
-    SourceLocation bindingLoc = stream.currentLoc();
     
     // 2. Parse declaration keyword (let/const)
     bool isConst = stream.match(TokenType::CONST);
@@ -1014,15 +996,16 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 }
 
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation bindingLoc = stream.currentLoc();
+    
     // 1. Parse 'spawn' keyword
     if (!stream.match(TokenType::SPAWN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, bindingLoc,
                                 "expected 'spawn', got '", stream.peekValue(), "'");
         return ctx.arena.make<SpawnStmtAST>();
     }
-
+    
     VarDeclAST* binding = nullptr;
-    binding->loc = stream.currentLoc();
     
     // 2. Check for discard pattern ('_') first
     if (stream.check(TokenType::UNDERSCORE)) {
@@ -1095,7 +1078,8 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     
     // 7. Create the VarDeclAST for the binding
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
-
+    binding->loc = bindingLoc;
+    
     // 8. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
