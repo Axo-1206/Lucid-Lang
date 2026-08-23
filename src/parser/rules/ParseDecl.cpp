@@ -63,6 +63,32 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
             isVarDecl = true;
         }
     } else {
+        TokenType currentType = stream.peekType();
+        
+        // Statements at top level are invalid
+        if (
+            ctx.isTopLevel() && 
+            (is_control_flow_keyword(currentType) || is_concurrency_keyword(currentType))
+        ) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
+                                    stream.currentLoc(),
+                                    "statement keyword '", stream.peekValue(), 
+                                    "' cannot appear at top level - expected a declaration");
+            // Consume the offending token to avoid infinite loops
+            stream.consume();
+            return nullptr;
+        }
+        
+        // In function body, let the caller (parseStmt) handle statement parsing
+        if (ctx.isInsideFuncBody()) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
+                                    stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), 
+                                    "' - expected statement or declaration");
+            // Return nullptr - parseStmt will handle recovery
+            return nullptr;
+        }
+        
         ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
                                 stream.currentLoc(),
                                 "unexpected token '", stream.peekValue(), 
@@ -286,36 +312,26 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 4. Parse function type ─────────────────────────────────────────────
-    // For function declarations, the leading cluster (before first `->`) 
-    // has parameter names. parseFuncType() always uses allowNames=false,
-    // so we need to parse the leading cluster separately.
-    
     SourceLocation funcTypeLoc = stream.currentLoc();
     std::vector<ParamAST*> leadingParams;
     
     // Parse the leading cluster - this one has names
     while (stream.check(TokenType::LPAREN)) {
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);  // allowNames = true
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);
         for (auto* p : groupParams) {
             leadingParams.push_back(p);
         }
         if (stream.check(TokenType::ARROW)) {
             break;
         }
-        // No '->' means more adjacent groups
     }
     
-    // Now parse the rest of the function type (after the first `->`)
-    // This will use parseFuncType which always uses allowNames=false
+    // ─── Parse the rest of the function type ──────────────────────────────
     TypeAST* restType = nullptr;
     
     if (stream.check(TokenType::ARROW)) {
-        // There's a `->`, so parse the rest as a function type
-        // But we need to parse it carefully - parseFuncType would parse the
-        // entire function type, but we already have the leading cluster.
-        // So we need to parse just the return type part.
         stream.consume(); // Consume '->'
-        restType = parseType(stream, ctx);  // This could be another FuncTypeAST
+        restType = parseType(stream, ctx);
         if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected return type");
@@ -325,8 +341,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 5. Build the FuncTypeAST ──────────────────────────────────────────
-    // The FuncTypeAST has the leading params as its params,
-    // and the rest type as its return type.
     auto* funcType = ctx.arena.make<FuncTypeAST>();
     
     auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
@@ -338,77 +352,92 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     funcType->hasArrow = (restType != nullptr);
     funcType->loc = funcTypeLoc;
     
-    // ─── 6. Parse '=' and body ──────────────────────────────────────────────
+    // ─── 6. Parse body ──────────────────────────────────────────────────────
     StmtAST* body = nullptr;
+    bool hasExplicitAssign = false;
     
+    // ─── 6a. Check for '=' ──────────────────────────────────────────────────
     if (stream.match(TokenType::ASSIGN)) {
-        // ─── Has body ──────────────────────────────────────────────────────
-        if (stream.check(TokenType::LBRACE)) {
-            // ─── Block body ──────────────────────────────────────────────────
-            stream.consume(); // Consume '{'
-            ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
+        hasExplicitAssign = true;
+    }
+    
+    // ─── 6b. Parse body if we see '{' ─────────────────────────────────────
+    if (stream.match(TokenType::LBRACE)) {
+        // If there was no '=', report the error but still parse the body
+        if (!hasExplicitAssign) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.previousLoc(),
+                                    "expected '=' before function body");
+            // Continue parsing the body anyway to provide better error recovery
+            // We'll still report the error, but we'll have a partial AST
+        }
+        
+        // ─── Parse block body ──────────────────────────────────────────────
+        // parseBlock handles consuming '{' and matching '}'
+        ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
+        body = parseBlock(stream, ctx);
+        stream.consume(); // consume '}'
+        
+        // Check if parseBlock actually got a valid block
+        if (!body) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                    "expected block body");
+            // Don't synchronize - let the caller handle recovery
+            return nullptr;
+        }
+        
+    } else if (hasExplicitAssign) {
+        // ─── Has '=' but no '{' - expression body ─────────────────────────
+        if (looksLikeAnonFunc(stream, ctx)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
+                                    stream.currentLoc(),
+                                    "anonymous function not allowed at declaration site");
+            ctx.diagnostics.noteAt(stream.currentLoc(),
+                                   "Use a block body instead: '{ ... }'");
+            ctx.diagnostics.noteAt(stream.currentLoc(),
+                                   "The block body borrows its signature from the function declaration");
             
-            body = parseBlock(stream, ctx);
-            if (!stream.check(TokenType::RBRACE)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                        "expected '}' to close function body");
-                synchronizeTo(stream, ctx, TokenType::RBRACE);
-                if (stream.check(TokenType::RBRACE)) {
-                    stream.consume();
-                }
-            } else {
-                stream.consume(); // Consume '}'
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            return nullptr;
+        }
+        
+        ExprAST* exprBody = parseExpr(stream, ctx);
+        if (!exprBody) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected function body expression");
+            if (ctx.isInsideFuncBody()) {
+                return nullptr;
             }
-            
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+        
+        // ─── Determine if this is a pure function reference ──────────────
+        bool isPureFunctionRef = false;
+        
+        if (exprBody->isa<IdentifierExprAST>() ||
+            exprBody->isa<ModuleAccessExprAST>() ||
+            exprBody->isa<FieldAccessExprAST>() ||
+            exprBody->isa<ComposeExprAST>() ||
+            exprBody->isa<CallExprAST>()) {
+            isPureFunctionRef = true;
+        }
+        
+        if (isPureFunctionRef) {
+            auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
+            refStmt->loc = exprBody->loc;
+            refStmt->target = exprBody;
+            body = refStmt;
         } else {
-            // ─── Expression body ──────────────────────────────────────────
-            if (looksLikeAnonFunc(stream, ctx)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
-                                        stream.currentLoc(),
-                                        "anonymous function not allowed at declaration site");
-                ctx.diagnostics.noteAt(stream.currentLoc(),
-                                       "Use a block body instead: '{ ... }'");
-                ctx.diagnostics.noteAt(stream.currentLoc(),
-                                       "The block body borrows its signature from the function declaration");
-                
-                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-                return nullptr;
-            }
-            
-            ExprAST* exprBody = parseExpr(stream, ctx);
-            if (!exprBody) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                        "expected function body expression");
-                synchronizeToContext(stream, ctx);
-                return nullptr;
-            }
-            
-            // ─── Determine if this is a pure function reference ──────────
-            bool isPureFunctionRef = false;
-            
-            if (exprBody->isa<IdentifierExprAST>() ||
-                exprBody->isa<ModuleAccessExprAST>() ||
-                exprBody->isa<FieldAccessExprAST>() ||
-                exprBody->isa<ComposeExprAST>() ||
-                exprBody->isa<CallExprAST>()) {
-                isPureFunctionRef = true;
-            }
-            
-            if (isPureFunctionRef) {
-                auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
-                refStmt->loc = exprBody->loc;
-                refStmt->target = exprBody;
-                body = refStmt;
-            } else {
-                auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-                returnStmt->loc = exprBody->loc;
-                returnStmt->value = exprBody;
-                body = returnStmt;
-            }
+            auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+            returnStmt->loc = exprBody->loc;
+            returnStmt->value = exprBody;
+            body = returnStmt;
         }
         
     } else {
-        // ─── No '=' - foreign function ─────────────────────────────────────
+        // ─── No '=' and no '{' - foreign function ──────────────────────────
+        // This is a valid foreign function declaration.
+        // The body remains nullptr, and the caller will handle the ';'
         body = nullptr;
     }
     
@@ -434,8 +463,13 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     
     // 2. Parse struct name
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        if (stream.check(TokenType::LBRACE)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected struct name, but found none");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name, got '", stream.peekValue(), "'");
+        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -637,8 +671,13 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     stream.consume();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        if (stream.check(TokenType::LBRACE)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected enum name, but found none");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected enum name, got '", stream.peekValue(), "'");
+        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -762,8 +801,13 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     stream.consume();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        if (stream.check(TokenType::LBRACE)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected trait name, but found none");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected trait name, got '", stream.peekValue(), "'");
+        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }

@@ -13,6 +13,7 @@
  */
 
 #include "Parser.hpp"
+#include "core/Tokens.hpp"
 #include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugUtils.hpp"
@@ -165,18 +166,15 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
     
     int declCount = 0;
     int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 100;
+    const int MAX_CONSECUTIVE_FAILURES = 10;
     size_t lastPos = stream.getPos();
+
+    // Skip stray semicolons
+    stream.consumeTrailing(TokenType::SEMICOLON);
     
     while (!stream.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
         auto doc = harvestDocComment(stream, ctx);
         size_t savedPos = stream.getPos();
-        
-        // Skip stray semicolons
-        if (stream.check(TokenType::SEMICOLON)) {
-            stream.consume();
-            continue;
-        }
         
         auto* decl = parseDecl(stream, ctx);
         
@@ -205,15 +203,12 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             consecutiveFailures = 0;
             lastPos = stream.getPos();
             
-            Trace::detail("Parsed declaration: ", declCount);
-            
             if (doc) {
                 decl->doc = std::move(doc);
             }
             outDecls.push_back(decl);
         } else {
             consecutiveFailures = 0;
-            Trace::detail("parseDecl returned nullptr but made progress");
         }
         
         // Critical protection - prevent infinite loops

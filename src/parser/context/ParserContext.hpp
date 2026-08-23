@@ -133,6 +133,17 @@ struct ParserContext {
 
     size_t contextDepth() const { return contextStack.size(); }
 
+    /// @brief Check if we're currently parsing at top level.
+    bool isTopLevel() const {
+        return currentContext() == SyntacticContext::TopLevel;
+    }
+
+    /// @brief Check if we're currently inside a function body.
+    bool isInsideFuncBody() const {
+        return isInsideContext(SyntacticContext::FuncBody) ||
+            isInsideContext(SyntacticContext::FieldBody);
+    }
+
     // ─── Constructor ──────────────────────────────────────────────────────
     ParserContext(StringPool& p, ASTArena& a, DiagnosticEngine& d, ModuleResolver* r = nullptr)
         : pool(p)

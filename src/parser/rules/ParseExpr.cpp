@@ -608,9 +608,8 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         if (stream.check(TokenType::RBRACE)) {
             stream.consume();
         }
-    } else {
-        stream.consume(); // Consume '}'
     }
+    stream.consume(); // Consume '}'
     
     auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
     anonFunc->loc = funcTypeLoc;
