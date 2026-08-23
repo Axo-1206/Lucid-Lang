@@ -20,7 +20,6 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/memory/ASTArena.hpp"
-#include "debug/DebugMacros.hpp"
 #include "parser/Parser.hpp"
 
 #include <vector>

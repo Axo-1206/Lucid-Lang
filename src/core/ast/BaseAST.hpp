@@ -42,7 +42,6 @@
 
 #pragma once
 
-#include "debug/DebugMacros.hpp"
 #include "../SourceLocation.hpp"
 #include "../memory/ASTArena.hpp"
 #include "../memory/InternedString.hpp"

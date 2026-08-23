@@ -32,6 +32,7 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/DiagCode.hpp"
 
+#include <iostream>
 #include <vector>
 #include <string>
 #include <sstream>

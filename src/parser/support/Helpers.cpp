@@ -28,7 +28,6 @@
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
 namespace parser {
