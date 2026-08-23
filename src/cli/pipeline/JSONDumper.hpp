@@ -125,7 +125,24 @@ public:
         m_needComma = true;
     }
 
+    void string(const char* v) {
+        string(std::string(v));
+    }
+
     // ─── Key + Value Convenience ───────────────────────────────────────
+
+    // IMPORTANT: this overload must exist. Without it, calls like
+    // json.kv("kind", "FuncDecl") pass a `const char*` for `v`, and that
+    // char* is an EXACT match for kv(const std::string&, bool) via the
+    // standard pointer-to-bool conversion, but only a USER-DEFINED
+    // conversion away from kv(const std::string&, const std::string&).
+    // Overload resolution prefers standard conversions over user-defined
+    // ones, so every such call silently picked the bool overload and
+    // serialized "kind": true instead of the actual AST node name.
+    void kv(const std::string& k, const char* v) {
+        key(k);
+        string(v);
+    }
 
     void kv(const std::string& k, const std::string& v) {
         key(k);

@@ -116,7 +116,8 @@ void JSONDumper::serializeDecl(JSONWriter& json, DeclAST* decl) {
         case ASTKind::GenericParamDecl: serializeGenericParam(json, decl->as<GenericParamDeclAST>()); break;
         default:
             json.beginObject();
-            json.kv("kind", astKindToString(decl->kind));
+            // Explicitly call core::astKindToString and pass the result as a string literal
+            json.kv("kind", std::string(astKindToString(decl->kind)));
             json.kv("name", str(decl->name));
             json.endObject();
             break;
