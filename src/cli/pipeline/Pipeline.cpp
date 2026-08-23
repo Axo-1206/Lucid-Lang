@@ -169,6 +169,12 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 
     // If command is 'parse', stop here and return (even if there were errors)
     if (opts.stopAt == PipelineStage::Parse) {
+        // Report errors BEFORE the "stopped" message
+        if (ctx.diagnostics.hasErrors()) {
+            std::cerr << "\n";
+            ctx.diagnostics.dump(std::cerr);
+            Trace::detail("Partial AST available despite parse errors");
+        }
         Trace::detail("Stopped at Parse stage");
         return result;
     }
@@ -195,6 +201,12 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 
     // If command is 'sema', stop here and return (even if there were errors)
     if (opts.stopAt == PipelineStage::Sema) {
+        // Report errors BEFORE the "stopped" message
+        if (ctx.diagnostics.hasErrors()) {
+            std::cerr << "\n";
+            ctx.diagnostics.dump(std::cerr);
+            Trace::detail("Partial AST available despite semantic errors");
+        }
         Trace::detail("Stopped at Sema stage");
         return result;
     }
@@ -276,6 +288,10 @@ int writePipelineOutput(const CLIOptions& opts,
             
             if (ctx.diagnostics.hasErrors()) {
                 std::cout << "Completed with errors!\n";
+                std::cout << "────────────────────────────────────────────────────\n";
+                ctx.diagnostics.dump(std::cout);
+                std::cout << "────────────────────────────────────────────────────\n";
+                std::cout << "Partial AST available (use --json to see it)\n";
             } else {
                 std::cout << "Success!\n";
             }
@@ -311,11 +327,6 @@ int writePipelineOutput(const CLIOptions& opts,
                 default:
                     std::cout << "Unknown\n";
                     break;
-            }
-
-            if (ctx.diagnostics.hasErrors()) {
-                std::cout << "\n[Pipeline] Errors detected!\n";
-                ctx.diagnostics.dump(std::cout);
             }
             
             std::cout << "\n[Pipeline] Tip: Use --json or --json-pretty to see the AST.\n";
