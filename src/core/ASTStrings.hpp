@@ -18,8 +18,6 @@
 #include <string>
 #include <cstdint>
 
-namespace core {
-
 // ─── ASTKind to String ─────────────────────────────────────────────────────
 
 /// @brief Convert an ASTKind to a human-readable string.
@@ -412,5 +410,3 @@ inline std::string tokenToString(const Token& token) {
     }
     return result;
 }
-
-} // namespace core
