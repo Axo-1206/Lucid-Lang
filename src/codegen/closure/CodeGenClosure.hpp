@@ -26,7 +26,6 @@
 
 #include "../context/CodeGenContext.hpp"
 #include "core/ast/ExprAST.hpp"
-#include "core/trace/Trace.hpp"
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -92,6 +91,47 @@ llvm::Value* emitClosureCall(
     llvm::ArrayRef<llvm::Value*> args,
     llvm::Type* returnType,
     CodeGenContext& ctx
+);
+
+/// @brief Call a callable value, whatever shape it is.
+///
+/// A "callable value" in this codebase is one of three things at the LLVM
+/// level:
+///   1. A closure - the { funcPtr, envPtr } fat-pointer struct built by
+///      lowerClosure. Detected by callee->getType()->isStructTy().
+///   2. A plain named function reference - callee is already a literal
+///      llvm::Function*, the common case for calling a top-level/nested
+///      function by name directly.
+///   3. An indirect function pointer - callee is a bare `ptr`-typed value,
+///      e.g. loaded from a variable holding a (non-closure) function
+///      value. dyn_cast<llvm::Function> fails here even though it's
+///      dynamically the address of a real function, because it reflects
+///      the IR node's static C++ class, not what address it holds at
+///      runtime - this needs an explicit cast to the expected signature
+///      before it can be called.
+///
+/// This is the single place all three cases are discriminated and
+/// dispatched - lowerCallExpr, lowerPipelineStep, and
+/// createCompositionWrapper (CodeGenExpr.cpp) all call through here
+/// instead of each re-implementing the same three-way check.
+///
+/// @param callee The lowered callable value (already loaded if it came
+///        from an lvalue).
+/// @param args The (already-lowered) call arguments.
+/// @param fnType The callable's LLVM function type - its return type is
+///        used for the closure-call case, and the full type is used to
+///        cast an indirect function pointer before calling it.
+/// @param ctx The code generation context.
+/// @param name A short name used to label the generated IR (e.g. "call",
+///        "pipeline_call") - purely cosmetic, shows up in `-emit-llvm`
+///        output.
+/// @return The LLVM value, or nullptr on error.
+llvm::Value* emitCallableCall(
+    llvm::Value* callee,
+    llvm::ArrayRef<llvm::Value*> args,
+    llvm::FunctionType* fnType,
+    CodeGenContext& ctx,
+    const std::string& name = "call"
 );
 
 /// @brief Check if a closure is needed.

@@ -37,6 +37,7 @@
 #include "CodeGenClosure.hpp"
 #include "../CodeGen.hpp"
 #include "../CodeGenType.hpp"
+#include "../generic/CodeGenGeneric.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "core/trace/Trace.hpp"
@@ -50,6 +51,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <cassert>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Verifier.h>
 
@@ -473,7 +475,7 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
 
     // ─── 5. Lower the body ──────────────────────────────────────────────
     if (expr->body) {
-        lowerStatement(expr->body, ctx);
+        lowerStatement(const_cast<StmtAST*>(expr->body), ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, expr->loc,
                                 "anonymous function has no body");
@@ -557,6 +559,51 @@ llvm::Value* emitClosureCall(
     );
 
     return result;
+}
+
+// ─── Callable Dispatch ─────────────────────────────────────────────────────
+
+llvm::Value* emitCallableCall(
+    llvm::Value* callee,
+    llvm::ArrayRef<llvm::Value*> args,
+    llvm::FunctionType* fnType,
+    CodeGenContext& ctx,
+    const std::string& name
+) {
+    if (!callee || !fnType) return nullptr;
+
+    // ─── 1. Closure value: { funcPtr, envPtr } fat pointer struct ─────────
+    if (callee->getType()->isStructTy()) {
+        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(callee, 0, name + "_closure_func");
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(callee, 1, name + "_closure_env");
+        return emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
+    }
+
+    // ─── 2. Plain named function reference - the common, fast path ─────────
+    if (llvm::Function* fn = llvm::dyn_cast<llvm::Function>(callee)) {
+        return ctx.builder.CreateCall(fn, args, name);
+    }
+
+    // ─── 3. Indirect function pointer (e.g. loaded from a variable) ────────
+    // A function value stored in and loaded from a variable is just a bare
+    // `ptr`-typed SSA value at this point - dyn_cast<llvm::Function> above
+    // reflects the IR node's static C++ class, not what address it
+    // dynamically holds, so it always fails here even though the pointer
+    // genuinely does refer to a real function. It needs an explicit cast
+    // to the expected signature before it can be called.
+    if (callee->getType()->isPointerTy()) {
+        llvm::Value* casted = ctx.builder.CreatePointerCast(
+            callee, llvm::PointerType::get(fnType, 0), name + "_cast");
+        return ctx.builder.CreateCall(fnType, casted, args, name);
+    }
+
+    // ─── 4. Neither shape ───────────────────────────────────────────────────
+    // Sema already guarantees the source expression resolves to a
+    // FuncTypeAST, so reaching here means CodeGen and Sema have gone out
+    // of sync, not that the user wrote something uncallable.
+    assert(false && "callee is neither a closure value, a plain llvm::Function, "
+                     "nor an indirect function pointer - Sema should have caught this");
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

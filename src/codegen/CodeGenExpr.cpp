@@ -766,7 +766,6 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     }
 
     // ─── Lower arguments ───────────────────────────────────────────────────
-    // Shared by both the closure-value and plain-function call paths below.
     std::vector<llvm::Value*> args;
     for (ExprAST* arg : expr->args) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
@@ -785,55 +784,31 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
         args.push_back(argVal);
     }
 
-    // ─── Closure value call ────────────────────────────────────────────────
-    // A closure value is the { funcPtr, envPtr } fat pointer struct built by
-    // lowerClosure (CodeGenClosure.cpp). getType() on a FuncTypeAST returns
-    // the callable *signature* (llvm::FunctionType), not this runtime shape,
-    // so we can't discriminate the two cases from expr->callee's Lucid-level
-    // type - we check the actual lowered value's LLVM type instead, which
-    // matches what CodeGenClosure.cpp really builds.
-    if (calleeVal->getType()->isStructTy()) {
-        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(calleeVal, 0, "closure_func");
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(calleeVal, 1, "closure_env");
-
-        // NOTE: if this call's own result is itself a closure (a curried
-        // return, e.g. f(1)()), expr->resolvedType is a FuncTypeAST, and
-        // getType() on a FuncTypeAST hands back a bare llvm::FunctionType -
-        // not a valid LLVM return/value type on its own, and not the same
-        // thing as the fat-pointer struct a closure value actually needs.
-        // There's no canonical closure-value LLVM type registered anywhere
-        // in CodeGenType.cpp to substitute here yet, so that case is
-        // explicitly left unhandled (rather than silently passed through
-        // to fail an opaque LLVM assertion inside emitClosureCall).
-        assert((!expr->resolvedType || !expr->resolvedType->isa<FuncTypeAST>()) &&
-               "calling a closure that itself returns a closure (curried "
-               "return) is not supported yet - see note in lowerCallExpr");
-
-        llvm::Type* returnType = expr->resolvedType
-            ? getType(ctx, expr->resolvedType)
-            : nullptr;
-        if (!returnType) {
-            returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
-        }
-
-        llvm::Value* result = emitClosureCall(funcPtr, envPtr, args, returnType, ctx);
-        expr->llvmValue = result;
-        return result;
-    }
-
-    // ─── Plain named-function call ──────────────────────────────────────────
-    llvm::Function* callee = llvm::dyn_cast<llvm::Function>(calleeVal);
+    // ─── Build the callable's real signature ───────────────────────────────
     // Sema (resolveCallExpr) already guarantees expr->callee resolves to a
-    // FuncTypeAST - a value that's neither the closure struct shape above
-    // nor a plain llvm::Function here means CodeGen and Sema have gone out
-    // of sync, not that the user wrote something uncallable.
-    assert(callee && "call callee is neither a closure value nor an llvm::Function - "
-                      "Sema should have caught this");
-    if (!callee) {
+    // FuncTypeAST - a value that's neither the closure struct shape nor a
+    // callable pointer means CodeGen and Sema have gone out of sync, not
+    // that the user wrote something uncallable.
+    FuncTypeAST* calleeFuncType = expr->callee->resolvedType
+        ? expr->callee->resolvedType->as<FuncTypeAST>()
+        : nullptr;
+    assert(calleeFuncType && "call callee does not resolve to a FuncTypeAST - "
+                              "Sema should have caught this");
+    if (!calleeFuncType) {
         return nullptr;
     }
 
-    llvm::Value* result = ctx.builder.CreateCall(callee, args, "call");
+    llvm::FunctionType* fnType = getFunctionType(ctx, calleeFuncType);
+    if (!fnType) {
+        return nullptr;
+    }
+
+    // emitCallableCall (closure/CodeGenClosure.hpp) discriminates closure
+    // values, plain llvm::Function references, and indirect function
+    // pointers - the same shared dispatch lowerPipelineStep and
+    // createCompositionWrapper use, instead of a fourth independent copy
+    // of that three-way check here.
+    llvm::Value* result = emitCallableCall(calleeVal, args, fnType, ctx, "call");
     expr->llvmValue = result;
     return result;
 }
@@ -1555,7 +1530,7 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     }
 
     for (PipelineStepAST* step : expr->steps) {
-        // ─── Pass currentValue to lowerPipelineStep ─────────────────
+        // ─── FIX: Pass currentValue to lowerPipelineStep ─────────────────
         currentValue = lowerPipelineStep(step, currentValue, ctx);
         if (!currentValue) {
             return nullptr;
@@ -1769,9 +1744,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         }
     }
 
-    // =========================================================================
-    // BUG 5 FIX: Handle closure callable vs plain function
-    // =========================================================================
     llvm::Value* calleeVal = lowerExpression(step->callable, ctx);
     if (!calleeVal) {
         return nullptr;
@@ -1785,36 +1757,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
             calleeVal = loadIfNeeded(calleeVal, true, ctx);
         }
         if (!calleeVal) return nullptr;
-    }
-
-    // ─── Check if callee is a closure (struct { funcPtr, envPtr }) ──────
-    if (calleeVal->getType()->isStructTy()) {
-        // ─── Closure call ──────────────────────────────────────────────────
-        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(calleeVal, 0, "closure_func");
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(calleeVal, 1, "closure_env");
-
-        llvm::Type* returnType = fnType->getReturnType();
-        return emitClosureCall(funcPtr, envPtr, args, returnType, ctx);
-    }
-
-    // ─── Plain function call ──────────────────────────────────────────────
-    llvm::Function* callee = llvm::dyn_cast<llvm::Function>(calleeVal);
-    if (!callee) {
-        // If calleeVal is a pointer to a function (but not a Function*),
-        // we need to cast it to the correct function type.
-        if (calleeVal->getType()->isPointerTy()) {
-            llvm::FunctionType* expectedFnType = fnType;
-            llvm::Value* casted = ctx.builder.CreatePointerCast(
-                calleeVal,
-                llvm::PointerType::get(expectedFnType, 0),
-                "pipeline_func_cast"
-            );
-            return ctx.builder.CreateCall(expectedFnType, casted, args, "pipeline_call");
-        }
-
-        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, step->callable->loc,
-                                "pipeline step callee is not a function");
-        return nullptr;
     }
 
     // ─── Verify argument count matches function signature ────────────────
@@ -1831,7 +1773,11 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         }
     }
 
-    return ctx.builder.CreateCall(callee, args, "pipeline_call");
+    // emitCallableCall (closure/CodeGenClosure.hpp) discriminates closure
+    // values, plain llvm::Function references, and indirect function
+    // pointers - the same shared dispatch lowerCallExpr and
+    // createCompositionWrapper use.
+    return emitCallableCall(calleeVal, args, fnType, ctx, "pipeline_call");
 }
 
 // =============================================================================
@@ -1858,21 +1804,22 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
         if (!callable) return nullptr;
     }
 
-    // ─── 3. Ensure the result is a function pointer ─────────────────────────
-    // If callable is a function value, cast to function pointer
-    if (callable->getType()->isFunctionTy()) {
-        llvm::FunctionType* funcType = llvm::cast<llvm::FunctionType>(callable->getType());
-        callable = ctx.builder.CreatePointerCast(
-            callable,
-            llvm::PointerType::get(funcType, 0),
-            "func_ptr_cast"
-        );
-    }
-
-    // ─── 4. Validate it's callable ──────────────────────────────────────────
-    if (!callable->getType()->isPointerTy()) {
+    // ─── 3. Validate the shape ──────────────────────────────────────────────
+    // A composition operand is either a plain callable (a bare
+    // llvm::Function* or an indirect function pointer) or a closure value
+    // (the { funcPtr, envPtr } fat-pointer struct from lowerClosure) -
+    // both are legal per resolveComposeOperand (single parameter, no
+    // variadics; nothing there requires a bare function). Leave the value
+    // exactly as lowered - emitCallableCall (used by
+    // createCompositionWrapper) discriminates the shapes itself, the same
+    // way lowerCallExpr/lowerPipelineStep already do. The old
+    // isFunctionTy() special-case is gone: nothing in this codebase
+    // actually represents a callable as a bare LLVM function *value*
+    // needing a cast - named functions are llvm::Function* globals,
+    // closures are structs, and neither takes that path.
+    if (!callable->getType()->isPointerTy() && !callable->getType()->isStructTy()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, operand->loc,
-                                "composition operand is not a function pointer");
+                                "composition operand is not callable");
         return nullptr;
     }
 
@@ -1884,9 +1831,11 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
 // =============================================================================
 
 /// @brief Create a wrapper function that composes two functions: f +> g
-/// @param f The first function (returns R)
+/// @param f The first function (returns R) - a closure value or plain
+///        callable, dispatched via emitCallableCall.
 /// @param fType The function type of f (T -> R)
-/// @param g The second function (takes R)
+/// @param g The second function (takes R) - a closure value or plain
+///        callable, dispatched via emitCallableCall.
 /// @param gType The function type of g (R -> U)
 /// @param ctx The code generation context
 /// @return A function pointer to the composed function (T -> U)
@@ -1899,46 +1848,40 @@ static llvm::Function* createCompositionWrapper(
 ) {
     if (!f || !fType || !g || !gType) return nullptr;
 
-    // ─── 1. Extract parameter types from f ──────────────────────────────────
-    std::vector<llvm::Type*> paramTypes;
-    for (ParamAST* param : fType->params) {
-        llvm::Type* paramType = getType(ctx, param->type);
-        if (!paramType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-                                    "invalid parameter type in composition");
-            return nullptr;
-        }
-        paramTypes.push_back(paramType);
+    // ─── 1. Build f's and g's real LLVM function types ─────────────────────
+    // Reuses CodeGenType.cpp's canonical FuncTypeAST -> llvm::FunctionType
+    // mapping (getFunctionType) instead of hand-rebuilding param/return
+    // types here - same fact, one source, and it's also what
+    // emitCallableCall needs to call each of f/g correctly regardless of
+    // whether they're closures or plain functions.
+    llvm::FunctionType* fLLVMType = getFunctionType(ctx, fType);
+    if (!fLLVMType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, fType->loc,
+                                "invalid function type in composition (left operand)");
+        return nullptr;
     }
-
-    // ─── 2. Get return type (which becomes the input to g) ─────────────────
-    llvm::Type* intermediateType = getType(ctx, fType->returnType);
-    if (!intermediateType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, fType->loc,
-                                "invalid return type in composition");
+    llvm::FunctionType* gLLVMType = getFunctionType(ctx, gType);
+    if (!gLLVMType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, gType->loc,
+                                "invalid function type in composition (right operand)");
         return nullptr;
     }
 
-    // ─── 3. Get final return type from g ──────────────────────────────────
-    llvm::Type* returnType = getType(ctx, gType->returnType);
-    if (!returnType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, gType->loc,
-                                "invalid return type in composition");
-        return nullptr;
-    }
+    llvm::Type* returnType = gLLVMType->getReturnType();
 
-    // ─── 4. Build the LLVM function type ──────────────────────────────────
+    // ─── 2. Build the wrapper's own LLVM function type ─────────────────────
+    // The wrapper takes f's parameters and returns g's return type.
     llvm::FunctionType* composedFuncType = llvm::FunctionType::get(
         returnType,
-        paramTypes,
+        fLLVMType->params(),
         false
     );
 
-    // ─── 5. Generate a unique name for the wrapper ─────────────────────────
+    // ─── 3. Generate a unique name for the wrapper ─────────────────────────
     static int wrapperCounter = 0;
     std::string wrapperName = "_compose_wrapper_" + std::to_string(wrapperCounter++);
 
-    // ─── 6. Create the LLVM function ──────────────────────────────────────
+    // ─── 4. Create the LLVM function ────────────────────────────────────────
     llvm::Function* wrapper = llvm::Function::Create(
         composedFuncType,
         llvm::Function::InternalLinkage,
@@ -1946,7 +1889,7 @@ static llvm::Function* createCompositionWrapper(
         ctx.module
     );
 
-    // ─── 7. Set parameter names ────────────────────────────────────────────
+    // ─── 5. Set parameter names ─────────────────────────────────────────────
     size_t paramIndex = 0;
     for (ParamAST* param : fType->params) {
         if (paramIndex < wrapper->arg_size()) {
@@ -1955,66 +1898,53 @@ static llvm::Function* createCompositionWrapper(
         }
     }
 
-    // ─── 8. Create entry block ─────────────────────────────────────────────
+    // ─── 6. Create entry block ──────────────────────────────────────────────
+    // Building the wrapper's body means moving the builder's insertion
+    // point into a different function - save the caller's insertion point
+    // and restore it before returning, or every statement CodeGen emits
+    // after this composition expression would land inside this wrapper
+    // instead of the caller's actual function. (The previous version of
+    // this function never restored it at all.)
     llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
         ctx.llvmCtx,
         "entry",
         wrapper
     );
+    llvm::IRBuilderBase::InsertPoint savedIP = ctx.builder.saveIP();
     ctx.builder.SetInsertPoint(entryBlock);
 
-    // ─── 9. Call f with the parameters ────────────────────────────────────
-    // First, cast f to the correct function type
-    llvm::FunctionType* fLLVMType = llvm::FunctionType::get(
-        intermediateType,
-        paramTypes,
-        false
-    );
-    llvm::Value* fCasted = ctx.builder.CreatePointerCast(
-        f,
-        llvm::PointerType::get(fLLVMType, 0),
-        "f_cast"
-    );
-
-    // Build argument list for f
+    // ─── 7. Call f with the wrapper's own parameters ───────────────────────
     std::vector<llvm::Value*> fArgs;
     for (size_t i = 0; i < wrapper->arg_size(); ++i) {
         fArgs.push_back(wrapper->getArg(i));
     }
 
-    llvm::Value* intermediate = ctx.builder.CreateCall(
-        fLLVMType,
-        fCasted,
-        fArgs,
-        "f_result"
-    );
+    llvm::Value* intermediate = emitCallableCall(f, fArgs, fLLVMType, ctx, "f_result");
+    if (!intermediate) {
+        ctx.builder.restoreIP(savedIP);
+        wrapper->eraseFromParent();
+        return nullptr;
+    }
 
-    // ─── 10. Call g with the intermediate result ──────────────────────────
-    // g takes exactly one parameter (the result of f)
-    std::vector<llvm::Type*> gParamTypes = {intermediateType};
-    llvm::FunctionType* gLLVMType = llvm::FunctionType::get(
-        returnType,
-        gParamTypes,
-        false
-    );
-    llvm::Value* gCasted = ctx.builder.CreatePointerCast(
-        g,
-        llvm::PointerType::get(gLLVMType, 0),
-        "g_cast"
-    );
+    // ─── 8. Call g with f's result ──────────────────────────────────────────
+    // g takes exactly one parameter (the result of f) - already guaranteed
+    // by resolveComposeOperand (composition operands have exactly one
+    // parameter).
+    llvm::Value* result = emitCallableCall(g, {intermediate}, gLLVMType, ctx, "g_result");
+    if (!result) {
+        ctx.builder.restoreIP(savedIP);
+        wrapper->eraseFromParent();
+        return nullptr;
+    }
 
-    llvm::Value* result = ctx.builder.CreateCall(
-        gLLVMType,
-        gCasted,
-        {intermediate},
-        "g_result"
-    );
-
-    // ─── 11. Return the result ─────────────────────────────────────────────
+    // ─── 9. Return the result ────────────────────────────────────────────────
     ctx.builder.CreateRet(result);
 
-    // ─── 12. Verify the wrapper function ──────────────────────────────────
+    // ─── 10. Verify the wrapper function ────────────────────────────────────
     llvm::verifyFunction(*wrapper);
+
+    // ─── 11. Restore the caller's insertion point ──────────────────────────
+    ctx.builder.restoreIP(savedIP);
 
     return wrapper;
 }
