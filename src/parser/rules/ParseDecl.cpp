@@ -89,9 +89,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         if (doc.has_value()) {
             decl->doc = doc;
         }
+        decl->loc = loc;
     }
-    
-    decl->loc = loc;
     return decl;
 }
 
@@ -222,10 +221,17 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     // Parse type (required)
     TypeAST* type = parseType(stream, ctx);
     if (!type) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
+        if (stream.peekType() == TokenType::ASSIGN) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected type for variable declaration '", ctx.pool.lookup(name));
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected type for variable declaration '", ctx.pool.lookup(name), "', but got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx, TokenType::ASSIGN, TokenType::SEMICOLON, TokenType::CONST, TokenType::LET);
+            if (!stream.check(TokenType::ASSIGN)) {
+                return nullptr;
+            }
+        }
     }
     
     // Parse initializer
@@ -238,7 +244,8 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
-    } else if (isConst) {
+    } 
+    if (isConst && !init) {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingInitializer, stream.currentLoc(),
                                 "const variable '", ctx.pool.lookup(name), "' requires an initializer");
         synchronizeToContext(stream, ctx);

@@ -271,9 +271,14 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── Unknown primary expression ─────────────────────────────────────
-    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                            "unexpected token '", stream.peekValue(), "' in expression");
-    synchronizeToContext(stream, ctx);
+    if (stream.check(TokenType::SEMICOLON)) {
+        // The call site (parse declaration) will handle error diagnostic for this case
+        return nullptr;
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+                        "unexpected token '", stream.peekValue(), "' in expression");
+    }
+
     return nullptr;
 }
 

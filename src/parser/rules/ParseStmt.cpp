@@ -164,7 +164,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             break;
     }
     
-    result->loc = loc;
+    if (result) result->loc = loc;
     return result;
 }
 
@@ -872,8 +872,7 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
 DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
     DeclAST* decl = parseDecl(stream, ctx);
     if (!decl) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected declaration");
+        /// Error already reported by parseDecl
         if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
             return ctx.arena.make<DeclStmtAST>(nullptr);
         }
