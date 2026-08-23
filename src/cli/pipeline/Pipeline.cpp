@@ -101,7 +101,6 @@ static std::optional<std::string> resolveOutputPath(const CLIOptions& opts) {
     }
     
     // ─── It's a file path ─────────────────────────────────────────────
-    // Ensure the parent directory exists
     return resolvedPath;
 }
 
@@ -154,17 +153,21 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 
     result.modules = parser::parseProgram(absRootPath, source, parserCtx);
 
+    /// IMPORTANT: We do NOT return early on parse errors!
+    /// We want to keep the partial AST for debugging and analysis.
+    /// The result.modules will contain whatever was successfully parsed,
+    /// and ctx.diagnostics.hasErrors() tells us if there were errors.
+    /// The JSON dumper will include both the partial AST and the diagnostics.
+
     if (ctx.diagnostics.hasErrors()) {
-        result.success = false;
-        result.exitCode = 1;
-        result.errorMessage = "Parsing failed";
-        Trace::error("Parsing failed");
-        return result;
+        Trace::error("Parsing encountered errors (partial AST available)");
+        // We still have result.modules with partial AST
+        // The diagnostics will be included in the JSON output
     }
 
     Trace::info("Parsed ", result.modules.size(), " module(s)");
 
-    // If command is 'parse', stop here and return
+    // If command is 'parse', stop here and return (even if there were errors)
     if (opts.stopAt == PipelineStage::Parse) {
         Trace::detail("Stopped at Parse stage");
         return result;
@@ -172,22 +175,25 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 
     // ─── 3. Semantic Analysis Stage ────────────────────────────────────
     // This stage runs for sema, run, and build commands
-    Trace::info("Running semantic analysis");
-    
-    sema::SemaContext semaCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics);
-    sema::analyze(result.modules, semaCtx);
+    // Only run semantic analysis if there were no parsing errors, or if
+    // we want to attempt to recover partial semantic info.
+    // Currently, we skip sema if there were parse errors to avoid crashes.
+    if (!ctx.diagnostics.hasErrors()) {
+        Trace::info("Running semantic analysis");
+        
+        sema::SemaContext semaCtx(ctx.stringPool, ctx.astArena, ctx.diagnostics);
+        sema::analyze(result.modules, semaCtx);
 
-    if (ctx.diagnostics.hasErrors()) {
-        result.success = false;
-        result.exitCode = 1;
-        result.errorMessage = "Semantic analysis failed";
-        Trace::error("Semantic analysis failed");
-        return result;
+        if (ctx.diagnostics.hasErrors()) {
+            Trace::error("Semantic analysis encountered errors (partial AST available)");
+        } else {
+            Trace::info("Semantic analysis complete");
+        }
+    } else {
+        Trace::detail("Skipping semantic analysis due to parse errors");
     }
 
-    Trace::info("Semantic analysis complete");
-
-    // If command is 'sema', stop here and return
+    // If command is 'sema', stop here and return (even if there were errors)
     if (opts.stopAt == PipelineStage::Sema) {
         Trace::detail("Stopped at Sema stage");
         return result;
@@ -195,15 +201,20 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 
     // ─── 4. Code Generation Stage ──────────────────────────────────────
     // This stage runs for run and build commands
-    if (opts.stopAt == PipelineStage::CodeGen || 
-        opts.stopAt == PipelineStage::Execute ||
-        opts.stopAt == PipelineStage::Build) {
-        
-        Trace::info("Generating code");
-        
-        // TODO: Implement code generation
-        result.llvmIR = "; LLVM IR generation not yet implemented\n";
-        Trace::info("Stopped at CodeGen stage (LLVM IR generation)");
+    // Skip codegen if there were errors (can't generate valid IR from invalid AST)
+    if (!ctx.diagnostics.hasErrors()) {
+        if (opts.stopAt == PipelineStage::CodeGen || 
+            opts.stopAt == PipelineStage::Execute ||
+            opts.stopAt == PipelineStage::Build) {
+            
+            Trace::info("Generating code");
+            
+            // TODO: Implement code generation
+            result.llvmIR = "; LLVM IR generation not yet implemented\n";
+            Trace::info("Stopped at CodeGen stage (LLVM IR generation)");
+        }
+    } else {
+        Trace::detail("Skipping code generation due to errors");
     }
 
     // ─── 5. Return ──────────────────────────────────────────────────────
@@ -216,12 +227,9 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
 int writePipelineOutput(const CLIOptions& opts, 
                         const PipelineResult& result, 
                         CLIContext& ctx) {
-    if (!result.success) {
-        if (ctx.diagnostics.hasErrors()) {
-            ctx.diagnostics.dump(std::cerr);
-        }
-        return result.exitCode;
-    }
+    // Always write output regardless of errors (for debugging)
+    // The JSON output will include the diagnostics so the user knows
+    // what went wrong.
 
     // ─── JSON Output ──────────────────────────────────────────────────
     if (opts.outputFormat == OutputFormat::Json || 
@@ -264,8 +272,24 @@ int writePipelineOutput(const CLIOptions& opts,
         // ─── Text Output ──────────────────────────────────────────────
         // Only show summary for parse/sema commands (not run)
         if (opts.command != CLIOptions::Command::Run) {
-            std::cout << "\n[Pipeline] Success!\n";
+            std::cout << "\n[Pipeline] ";
+            
+            if (ctx.diagnostics.hasErrors()) {
+                std::cout << "Completed with errors!\n";
+            } else {
+                std::cout << "Success!\n";
+            }
+            
             std::cout << "  Modules:          " << result.modules.size() << "\n";
+            
+            if (ctx.diagnostics.hasErrors()) {
+                std::cout << "  Errors:           " << ctx.diagnostics.errorCount() << "\n";
+            }
+            
+            if (ctx.diagnostics.hasWarnings()) {
+                std::cout << "  Warnings:         " << ctx.diagnostics.warningCount() << "\n";
+            }
+            
             std::cout << "  Stopped at:       ";
             
             switch (opts.stopAt) {
@@ -289,11 +313,19 @@ int writePipelineOutput(const CLIOptions& opts,
                     break;
             }
 
-            if (ctx.diagnostics.hasWarnings()) {
-                std::cout << "  Warnings:         " << ctx.diagnostics.warningCount() << "\n";
+            if (ctx.diagnostics.hasErrors()) {
+                std::cout << "\n[Pipeline] Errors detected!\n";
+                ctx.diagnostics.dump(std::cout);
             }
             
             std::cout << "\n[Pipeline] Tip: Use --json or --json-pretty to see the AST.\n";
+        } else {
+            // Run command - show errors if any
+            if (ctx.diagnostics.hasErrors()) {
+                std::cerr << "\n[Pipeline] Errors detected!\n";
+                ctx.diagnostics.dump(std::cerr);
+                return 1;
+            }
         }
     }
 
