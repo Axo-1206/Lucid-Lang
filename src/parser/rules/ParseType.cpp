@@ -33,10 +33,13 @@ namespace parser {
 // =============================================================================
 
 TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+
     TypeAST* type = parseBaseType(stream, ctx);
     if (!type) {
         return nullptr;
     }
+    type->loc = loc;
     
     return parseTypeWithQualifier(stream, ctx, type);
 }
@@ -125,7 +128,6 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
     }
     
     auto* type = ctx.arena.make<PrimitiveTypeAST>(kind);
-    type->loc = loc;
     
     return type;
 }
@@ -144,7 +146,6 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
 /// @param ctx The parsing context
 /// @return TypeAST* - NamedTypeAST or ModuleTypeAccessAST
 TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
@@ -175,7 +176,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         }
         
         auto* moduleType = ctx.arena.make<ModuleTypeAccessAST>();
-        moduleType->loc = loc;
         moduleType->moduleName = firstName;
         moduleType->typeName = typeName;
         moduleType->genericArgs = genericArgs;
@@ -190,7 +190,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     }
     
     auto* namedType = ctx.arena.make<NamedTypeAST>(firstName);
-    namedType->loc = loc;
     namedType->genericArgs = genericArgs;
     
     return namedType;
@@ -201,8 +200,6 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '[', got '", stream.peekValue(), "'");
@@ -252,7 +249,6 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     }
     
     auto* type = ctx.arena.make<ArrayTypeAST>(kind, size, element);
-    type->loc = loc;
     
     return type;
 }
@@ -262,8 +258,6 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.check(TokenType::AMPERSAND)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '&', got '", stream.peekValue(), "'");
@@ -281,7 +275,6 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     }
     
     auto* type = ctx.arena.make<RefTypeAST>(inner);
-    type->loc = loc;
     
     return type;
 }
@@ -291,8 +284,6 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.check(TokenType::MUL)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '*', got '", stream.peekValue(), "'");
@@ -312,7 +303,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     // Semantic validation will reject invalid pointer targets
     // (arrays, nullable/fallible, traits, etc.)
     auto* type = ctx.arena.make<PtrTypeAST>(inner);
-    type->loc = loc;
     
     return type;
 }
@@ -332,8 +322,6 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 /// @param ctx The parsing context
 /// @return TypeAST* The parsed function type
 TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // ─── 1. Parse all parameter groups before the first `->` ──────────────
     // Parameter names are NEVER allowed in a function type.
     std::vector<ParamAST*> allParams;
@@ -352,8 +340,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 2. Create function type node ──────────────────────────────────────
     auto* funcType = ctx.arena.make<FuncTypeAST>();
-    funcType->loc = loc;
-    
+
     auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : allParams) {
         paramBuilder.push_back(p);
@@ -399,7 +386,6 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
         return nullptr;
     }
     
-    SourceLocation loc = stream.currentLoc();
     bool hasQuestion = stream.match(TokenType::QUESTION);
     bool hasBang = stream.match(TokenType::BANG);
     
@@ -409,19 +395,16 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
     
     if (hasQuestion && hasBang) {
         auto* type = ctx.arena.make<CombinedTypeAST>(inner);
-        type->loc = loc;
         return type;
     }
     
     if (hasQuestion && !hasBang) {
         auto* type = ctx.arena.make<NullableTypeAST>(inner);
-        type->loc = loc;
         return type;
     }
     
     // hasBang && !hasQuestion
     auto* type = ctx.arena.make<FallibleTypeAST>(inner);
-    type->loc = loc;
     return type;
 }
 

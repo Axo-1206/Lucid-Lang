@@ -57,10 +57,11 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         stream.consume();
         return nullptr;
     }
+
+    StmtAST* result = nullptr;
     
     Token current = stream.peek();
-    SourceLocation loc = stream.currentLoc();
-    StmtAST* result = nullptr;
+    result->loc = stream.currentLoc();
     
     switch (current.type) {
         // Control Flow - these DO NOT take semicolon
@@ -119,7 +120,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             break;
 
         case TokenType::IMPORT:
-            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, loc,
+            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, stream.currentLoc(),
                                     "import statement is only valid at top level");
             synchronizeToContext(stream, ctx);
             return nullptr;
@@ -720,18 +721,14 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
-    
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::WHILE)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'while', got '", stream.peekValue(), "'");
         return ctx.arena.make<WhileStmtAST>();
     }
     
     WhileStmtAST* whileStmt = ctx.arena.make<WhileStmtAST>();
-    whileStmt->loc = loc;
-    
+
     ExprAST* condition = parseExpr(stream, ctx);
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -762,17 +759,13 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
-    
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::DO)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'do', got '", stream.peekValue(), "'");
         return ctx.arena.make<DoWhileStmtAST>();
     }
     
     DoWhileStmtAST* doWhileStmt = ctx.arena.make<DoWhileStmtAST>();
-    doWhileStmt->loc = loc;
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
@@ -813,16 +806,13 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::RETURN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'return', got '", stream.peekValue(), "'");
         return ctx.arena.make<ReturnStmtAST>();
     }
     
     ReturnStmtAST* returnStmt = ctx.arena.make<ReturnStmtAST>();
-    returnStmt->loc = loc;
     
     ExprAST* value = parseExpr(stream, ctx);
     if (!value) {
@@ -840,16 +830,13 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::BREAK)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'break', got '", stream.peekValue(), "'");
         return ctx.arena.make<BreakStmtAST>();
     }
     
     BreakStmtAST* breakStmt = ctx.arena.make<BreakStmtAST>();
-    breakStmt->loc = loc;
 
     return breakStmt;
 }
@@ -859,16 +846,13 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::CONTINUE)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'continue', got '", stream.peekValue(), "'");
         return ctx.arena.make<ContinueStmtAST>();
     }
     
     ContinueStmtAST* continueStmt = ctx.arena.make<ContinueStmtAST>();
-    continueStmt->loc = loc;
     
     return continueStmt;
 }
@@ -878,8 +862,6 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     ExprAST* expr = parseExpr(stream, ctx);
     if (!expr) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -891,7 +873,6 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
     }
     
     ExprStmtAST* exprStmt = ctx.arena.make<ExprStmtAST>(expr);
-    exprStmt->loc = loc;
 
     return exprStmt;
 }
@@ -900,9 +881,10 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
 // parseDeclStmt – Parses a declaration statement
 // =============================================================================
 
+/// NOTE: we are unwanted double assign the SourceLocation to the declaration here
+///       the parseDecl will set the SourceLocation for the node but the parseStmt
+///       also do it, it's double assignment, but this is acceptable
 DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-
     DeclAST* decl = parseDecl(stream, ctx);
     if (!decl) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -914,8 +896,7 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
     }
     
     DeclStmtAST* declStmt = ctx.arena.make<DeclStmtAST>(decl);
-    declStmt->loc = loc;
-    
+
     return declStmt;
 }
 
@@ -924,14 +905,14 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // 1. Parse 'async' keyword
     if (!stream.match(TokenType::ASYNC)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'async', got '", stream.peekValue(), "'");
         return ctx.arena.make<AsyncStmtAST>();
     }
+
+    SourceLocation bindingLoc = stream.currentLoc();
     
     // 2. Parse declaration keyword (let/const)
     bool isConst = stream.match(TokenType::CONST);
@@ -973,7 +954,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     
     // 6. Create the VarDeclAST for the binding
     VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
-    binding->loc = loc;
+    binding->loc = bindingLoc;
     
     // 7. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
@@ -998,7 +979,6 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     
     // 9. Create AsyncStmtAST
     AsyncStmtAST* asyncStmt = ctx.arena.make<AsyncStmtAST>();
-    asyncStmt->loc = loc;
     asyncStmt->binding = binding;
     asyncStmt->call = call;
     
@@ -1006,16 +986,13 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
 }
 
 AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::AWAIT)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'await', got '", stream.peekValue(), "'");
         return ctx.arena.make<AwaitStmtAST>();
     }
     
     AwaitStmtAST* awaitStmt = ctx.arena.make<AwaitStmtAST>();
-    awaitStmt->loc = loc;
     
     auto targetBuilder = ctx.arena.makeBuilder<ExprAST*>();
     
@@ -1037,16 +1014,15 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 }
 
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // 1. Parse 'spawn' keyword
     if (!stream.match(TokenType::SPAWN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'spawn', got '", stream.peekValue(), "'");
         return ctx.arena.make<SpawnStmtAST>();
     }
-    
+
     VarDeclAST* binding = nullptr;
+    binding->loc = stream.currentLoc();
     
     // 2. Check for discard pattern ('_') first
     if (stream.check(TokenType::UNDERSCORE)) {
@@ -1073,7 +1049,6 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         }
         
         SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
-        spawnStmt->loc = loc;
         spawnStmt->binding = nullptr;
         spawnStmt->call = call;
         
@@ -1120,8 +1095,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     
     // 7. Create the VarDeclAST for the binding
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
-    binding->loc = loc;
-    
+
     // 8. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -1145,7 +1119,6 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     
     // 10. Create SpawnStmtAST
     SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
-    spawnStmt->loc = loc;
     spawnStmt->binding = binding;
     spawnStmt->call = call;
     
@@ -1153,16 +1126,13 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
 }
 
 JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.match(TokenType::JOIN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'join', got '", stream.peekValue(), "'");
         return ctx.arena.make<JoinStmtAST>();
     }
     
     JoinStmtAST* joinStmt = ctx.arena.make<JoinStmtAST>();
-    joinStmt->loc = loc;
     
     auto targetBuilder = ctx.arena.makeBuilder<ExprAST*>();
     

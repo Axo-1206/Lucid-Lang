@@ -25,9 +25,6 @@ namespace parser {
 // =============================================================================
 
 DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
-    // Don't consume semicolons here - let each declaration parser handle it
-    // or the caller handle it based on the declaration type.
-    
     if (stream.isAtEnd()) {
         return nullptr;
     }
@@ -38,6 +35,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     DeclAST* decl = nullptr;
     bool isFuncDecl = false;
     bool isVarDecl = false;
+
+    decl->loc = stream.currentLoc();
     
     if (stream.check(TokenType::IMPORT)) {
         if (ctx.currentContext() == SyntacticContext::FuncBody) {
@@ -148,7 +147,6 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     
     // 4. Create the ImportDeclAST
     auto* importDecl = ctx.arena.make<ImportDeclAST>(importPath, alias);
-    importDecl->loc = loc;
     
     // 5. Resolve the import path to a file path ──────────────────────────
     // This converts "io.math" → "io/math.luc"
@@ -199,8 +197,6 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
 }
 
 VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // Parse keyword
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst && !stream.match(TokenType::LET)) {
@@ -249,14 +245,11 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     
     // Create VarDeclAST using constructor (all parser fields immutable)
     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
-    varDecl->loc = loc;
     
     return varDecl;
 }
 
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // ─── 1. Parse keyword ──────────────────────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst && !stream.match(TokenType::LET)) {
@@ -325,7 +318,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // The FuncTypeAST has the leading params as its params,
     // and the rest type as its return type.
     auto* funcType = ctx.arena.make<FuncTypeAST>();
-    funcType->loc = loc;
     
     auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : leadingParams) {
@@ -411,7 +403,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 7. Build FuncDeclAST ────────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
-    funcDecl->loc = loc;
     
     return funcDecl;
 }
@@ -421,8 +412,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     // 1. Parse 'struct' keyword
     if (!stream.check(TokenType::STRUCT)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -519,7 +508,6 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         fieldBuilder.build(),
         traitBuilder.build()
     );
-    structDecl->loc = loc;
     
     return structDecl;
 }
@@ -629,8 +617,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.check(TokenType::ENUM)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'enum', got '", stream.peekValue(), "'");
@@ -697,7 +683,6 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     
     // Create EnumDeclAST using constructor
     auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, builder.build(), backingType);
-    enumDecl->loc = loc;
     
     return enumDecl;
 }
@@ -757,8 +742,6 @@ EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
     if (!stream.check(TokenType::TRAIT)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'trait', got '", stream.peekValue(), "'");
@@ -817,8 +800,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     
     // Create TraitDeclAST using constructor
     auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, builder.build());
-    traitDecl->loc = loc;
-    
+
     return traitDecl;
 }
 
