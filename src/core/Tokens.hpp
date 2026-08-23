@@ -236,6 +236,10 @@ struct Token {
     bool is_declaration_keyword() const;
     bool is_concurrency_keyword() const;
     bool is_type_keyword() const;
+    bool is_statement_keyword() const;
+    bool is_control_flow_keyword() const;
+    bool is_concurrency_statement_keyword() const;
+    bool is_declaration_statement_keyword() const;
     std::string to_string() const;
 };
 
@@ -551,6 +555,85 @@ inline bool is_keyword(TokenType type) {
     }
 }
 
+
+inline bool is_statement_keyword(TokenType type) {
+    switch (type) {
+        // Control Flow
+        case TokenType::IF:
+        case TokenType::ELSE:
+        case TokenType::SWITCH:
+        case TokenType::CASE:
+        case TokenType::DEFAULT:
+        case TokenType::WHILE:
+        case TokenType::FOR:
+        case TokenType::IN:
+        case TokenType::DO:
+        case TokenType::RETURN:
+        case TokenType::BREAK:
+        case TokenType::CONTINUE:
+        // Concurrency
+        case TokenType::ASYNC:
+        case TokenType::AWAIT:
+        case TokenType::SPAWN:
+        case TokenType::JOIN:
+        // Declarations
+        case TokenType::LET:
+        case TokenType::CONST:
+        case TokenType::STRUCT:
+        case TokenType::ENUM:
+        case TokenType::TRAIT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_control_flow_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::IF:
+        case TokenType::ELSE:
+        case TokenType::SWITCH:
+        case TokenType::CASE:
+        case TokenType::DEFAULT:
+        case TokenType::WHILE:
+        case TokenType::FOR:
+        case TokenType::IN:
+        case TokenType::DO:
+        case TokenType::RETURN:
+        case TokenType::BREAK:
+        case TokenType::CONTINUE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_concurrency_statement_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::ASYNC:
+        case TokenType::AWAIT:
+        case TokenType::SPAWN:
+        case TokenType::JOIN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_declaration_statement_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::LET:
+        case TokenType::CONST:
+        case TokenType::STRUCT:
+        case TokenType::ENUM:
+        case TokenType::TRAIT:
+        case TokenType::IMPORT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ─── Token Method Implementations ─────────────────────────────────────────
 
 inline bool Token::is_operator() const {
@@ -603,6 +686,23 @@ inline bool Token::is_concurrency_keyword() const {
 
 inline bool Token::is_type_keyword() const {
     return ::is_type_keyword(type);
+}
+
+
+inline bool Token::is_statement_keyword() const {
+    return ::is_statement_keyword(type);
+}
+
+inline bool Token::is_control_flow_keyword() const {
+    return ::is_control_flow_keyword(type);
+}
+
+inline bool Token::is_concurrency_statement_keyword() const {
+    return ::is_concurrency_statement_keyword(type);
+}
+
+inline bool Token::is_declaration_statement_keyword() const {
+    return ::is_declaration_statement_keyword(type);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
