@@ -16,6 +16,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
+#include "parser/Parser.hpp"
 
 #include <vector>
 
@@ -531,19 +532,21 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     stream.consume();
     
     // 2. Parse struct name
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        if (stream.check(TokenType::LBRACE)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected struct name, but found none");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+    InternedString name;
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    } else if (stream.check(TokenType::LESS) || stream.check(TokenType::LBRACE) || stream.check(TokenType::COLON)) {
+        // The name is missing, but generics, trait list, or body still follow
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected struct name");
+        name = ctx.pool.intern("");
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name, got '", stream.peekValue(), "'");
-        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
     
     // 3. Parse generic parameters
     ArenaSpan<GenericParamDeclAST*> genericParams;
@@ -567,7 +570,14 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
             }
             
-            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            int count = stream.consumeTrailing(TokenType::COMMA);
+            if (count == 0) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ',' to separate traits");
+            } else if (count == 2) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.previousLoc(),
+                                        "expected a type after ',' in trait list");
+            } else if (count > 3) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
                                         "unexpected trailing comma in trait list");
             }
@@ -588,11 +598,33 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     std::vector<FieldDeclAST*> fields;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+        //  filter all invalid token in this context
+        // a field start with IDENTIFIER or CONST, end with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                            "unexpected token(s) '", stream.peekValue(), "' inside struct body");
+            
+            // Synchronize to nearest valid field to recover
+            // we use synchonize here because we don't want to log too much diagnostic about the same error
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
+                break;
+            }
+        }
+
+        // consume stray ';'
+        if (stream.check(SEMICOLON)) {
+            stream.consume();
+            continue;
+        }
+
         FieldDeclAST* field = parseFieldDecl(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            // parseFieldDecl already reported the error and did recovery
+            // Just skip to the next field or closing brace
+            // if the parseFieldDecl synchronize to RBRACE or EOF, the loop will automatically break
         }
     }
     
@@ -626,6 +658,8 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     return structDecl;
 }
 
+/// NOTE: parseStructDecl already filter the context for us, we will
+///  start with tokens IDENTIFIER or CONST in this function
 FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
@@ -636,23 +670,37 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse const modifier ────────────────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     
-    // ─── 3. Parse field name ────────────────────────────────────────────────
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected field name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
+    // ─── 3. Parse field name and type ─────────────────────────────────────
+    InternedString name;
     
-    // ─── 4. Parse field type ────────────────────────────────────────────────
+    // Field name is always provided (filtered by parseStructDecl)
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    }
+
     TypeAST* type = parseType(stream, ctx);
     if (!type) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+        /// Check the next token
+        if (stream.check(TokenType::ASSIGN)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                            "expected field type, before '='");
+        } else if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                    "incomplete field declaration '", ctx.pool.lookup(name), "'");
+            return nullptr;
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected field type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
+        }
+        
+        /// Try to skip multiple unrelated tokens
+        synchronizeTo(stream, ctx, TokenType::ASSIGN, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                    "broken field declaration '", ctx.pool.lookup(name), "'");
+            return nullptr;
+        }
     }
     
     // ─── 5. Parse default value ─────────────────────────────────────────────
@@ -682,7 +730,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         } else {
             // ─── 5b. Expression default ─────────────────────────────────────
             if (looksLikeAnonFunc(stream, ctx)) {
-                // Anonymous function at declaration site
                 ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration,
                                         stream.currentLoc(),
                                         "anonymous function not allowed at declaration site");
@@ -691,19 +738,21 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
                 ctx.diagnostics.noteAt(stream.currentLoc(),
                                        "The block body borrows its signature from the field type");
                 
-                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE, TokenType::COMMA);
-                if (stream.checkAny(TokenType::SEMICOLON, TokenType::COMMA)) {
+                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+                if (stream.check(TokenType::SEMICOLON)) {
                     stream.consume();
                 }
                 return nullptr;
             }
             
-            // Parse as an expression (function reference, etc.)
             defaultVal = parseExpr(stream, ctx);
             if (!defaultVal) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                         "expected default value expression");
-                synchronizeToContext(stream, ctx);
+                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+                if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
+                    return nullptr;
+                }
                 return nullptr;
             }
         }
@@ -718,9 +767,9 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         fieldDecl->doc = doc;
     }
 
-    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+    if (stream.consumeTrailing(TokenType::SEMICOLON) == 0) { 
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ';' after field declaration");
+                                "expected ';' after field declaration");
     }
     
     return fieldDecl;
@@ -731,6 +780,7 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
+    // 1. Parse 'enum' keyword
     if (!stream.check(TokenType::ENUM)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'enum', got '", stream.peekValue(), "'");
@@ -739,20 +789,24 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     }
     stream.consume();
     
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        if (stream.check(TokenType::LBRACE)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected enum name, but found none");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+    // 2. Parse enum name
+    InternedString name;
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    } else if (stream.check(TokenType::COLON) || stream.check(TokenType::LBRACE)) {
+        // The name is missing, but backing type or body still follow
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected enum name");
+        name = ctx.pool.intern("");
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected enum name, got '", stream.peekValue(), "'");
-        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
     
+    // 3. Parse backing type
     PrimitiveTypeAST* backingType = nullptr;
     if (stream.match(TokenType::COLON)) {
         TypeAST* type = parseType(stream, ctx);
@@ -766,6 +820,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
+    // 4. Parse enum body
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for enum body");
@@ -779,11 +834,31 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     std::vector<EnumVariantAST*> variants;
 
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+        // Filter all invalid token in this context
+        // An enum variant starts with IDENTIFIER and ends with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token(s) '", stream.peekValue(), "' inside enum body");
+            
+            // Synchronize to nearest valid variant to recover
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::RBRACE);
+            if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
+                break;
+            }
+        }
+
+        // Consume stray ';'
+        if (stream.check(TokenType::SEMICOLON)) {
+            stream.consume();
+            continue;
+        }
+
         EnumVariantAST* variant = parseEnumVariant(stream, ctx);
         if (variant) {
             variants.push_back(variant);
         } else {
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            // parseEnumVariant already reported the error and did recovery
+            // Just skip to the next variant or closing brace
         }
     }
     
@@ -806,51 +881,82 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     return enumDecl;
 }
 
+/// NOTE: parseEnumDecl already filters the context for us, we will
+///  start with token IDENTIFIER in this function
 EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
+    // ─── 1. Parse attributes ──────────────────────────────────────────────
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
     
-    if (!stream.check(TokenType::IDENTIFIER)) {
+    // ─── 2. Parse variant name ──────────────────────────────────────────────
+    InternedString name;
+    
+    // Variant name is always provided (filtered by parseEnumDecl)
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected variant name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.checkAny(TokenType::SEMICOLON, TokenType::RBRACE)) {
+            stream.consume();
+        }
         return nullptr;
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
     
+    // ─── 3. Parse '=' ─────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.checkAny(TokenType::SEMICOLON, TokenType::RBRACE)) {
+            stream.consume();
+        }
         return nullptr;
     }
     
-    if (!stream.check(TokenType::INT_LITERAL) &&
-        !stream.check(TokenType::HEX_LITERAL) &&
-        !stream.check(TokenType::BINARY_LITERAL)) {
+    // ─── 4. Parse variant value ──────────────────────────────────────────────
+    int64_t value = 0;
+    if (stream.check(TokenType::INT_LITERAL) ||
+        stream.check(TokenType::HEX_LITERAL) ||
+        stream.check(TokenType::BINARY_LITERAL)) {
+        Token valueTok = stream.consume();
+        value = std::stoll(valueTok.value);
+    } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected integer literal, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.checkAny(TokenType::SEMICOLON, TokenType::RBRACE)) {
+            stream.consume();
+        }
         return nullptr;
     }
     
-    Token valueTok = stream.consume();
-    int64_t value = std::stoll(valueTok.value);
-    
-    // Create EnumVariantAST using constructor
+    // ─── 5. Build AST using constructor ──────────────────────────────────
     auto* variant = ctx.arena.make<EnumVariantAST>(name, value);
     variant->loc = loc;
     variant->attributes = attrs;
     if (doc.has_value()) {
         variant->doc = doc;
     }
-        
-    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+
+    // ─── 6. Consume trailing semicolon  ───────────────────────────
+    if (stream.match(TokenType::SEMICOLON)) {
+        // Variant ends with semicolon - valid (alternative syntax)
+    } else if (!stream.check(TokenType::RBRACE)) {
+        // Neither semicolon nor closing brace - something's wrong
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ';' after enum variant declaration");
+                                "expected ',', ';', or '}' after enum variant, got '", 
+                                stream.peekValue(), "'");
+        
+        // Skip to the next variant or closing brace
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.checkAny(TokenType::SEMICOLON, TokenType::RBRACE)) {
+            stream.consume();
+        }
     }
     
     return variant;
@@ -861,6 +967,7 @@ EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
+    // 1. Parse 'trait' keyword
     if (!stream.check(TokenType::TRAIT)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'trait', got '", stream.peekValue(), "'");
@@ -869,25 +976,30 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     }
     stream.consume();
     
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        if (stream.check(TokenType::LBRACE)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected trait name, but found none");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+    // 2. Parse trait name
+    InternedString name;
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    } else if (stream.check(TokenType::LESS) || stream.check(TokenType::LBRACE)) {
+        // The name is missing, but generics or body still follow
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected trait name");
+        name = ctx.pool.intern("");
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected trait name, got '", stream.peekValue(), "'");
-        }
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
     
+    // 3. Parse generic parameters
     ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
     
+    // 4. Parse trait body
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for trait body");
@@ -901,11 +1013,31 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     std::vector<TraitFieldDeclAST*> fields;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+        // Filter all invalid token in this context
+        // A trait field starts with IDENTIFIER or CONST, ends with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token(s) '", stream.peekValue(), "' inside trait body");
+            
+            // Synchronize to nearest valid field to recover
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
+                break;
+            }
+        }
+
+        // Consume stray ';'
+        if (stream.check(TokenType::SEMICOLON)) {
+            stream.consume();
+            continue;
+        }
+
         TraitFieldDeclAST* field = parseTraitField(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            // parseTraitField already reported the error and did recovery
+            // Just skip to the next field or closing brace
         }
     }
     
@@ -928,31 +1060,49 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     return traitDecl;
 }
 
+/// NOTE: parseTraitDecl already filters the context for us, we will
+///  start with tokens IDENTIFIER or CONST in this function
 TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
+    // ─── 1. Parse attributes ──────────────────────────────────────────────
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 2. Parse const modifier ────────────────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected trait field name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
+    // ─── 3. Parse trait field name and type ──────────────────────────────
+    InternedString name;
     
+    // Field name is always provided (filtered by parseTraitDecl)
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    }
+
     TypeAST* type = parseType(stream, ctx);
     if (!type) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected trait field type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
+        /// Check the next token
+        if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                    "incomplete trait field declaration '", ctx.pool.lookup(name), "'");
+            return nullptr;
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected trait field type, got '", stream.peekValue(), "'");
+        }
+        
+        /// Try to skip multiple unrelated tokens
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                    "broken trait field declaration '", ctx.pool.lookup(name), "'");
+            return nullptr;
+        }
     }
     
-    // Create TraitFieldDeclAST using constructor
+    // ─── 4. Build AST using constructor ──────────────────────────────────
     auto* traitField = ctx.arena.make<TraitFieldDeclAST>(name, type, isConst);
     traitField->loc = loc;
     traitField->attributes = attrs;
@@ -962,7 +1112,7 @@ TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
 
     if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ';' after trait field declaration");
+                                "expected ';' after trait field declaration");
     }
     
     return traitField;
