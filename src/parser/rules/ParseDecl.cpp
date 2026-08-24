@@ -336,14 +336,24 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
     // ─── 2. Parse function name ─────────────────────────────────────────────
-    if (!stream.check(TokenType::IDENTIFIER)) {
+    InternedString name;
+    if (stream.check(TokenType::IDENTIFIER)) {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+    } else if (stream.check(TokenType::LESS) || stream.check(TokenType::LPAREN)) {
+        // The name is missing, but generics/a parameter list still follow -
+        // exactly like parseVarDecl continuing when a type parses even
+        // though the name didn't, this is decisive enough to keep going
+        // instead of throwing away the rest of the signature.
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected function name");
+        name = ctx.pool.intern("");
+    } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected function name, got '", stream.peekValue(), "'");
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
     
     // ─── 3. Parse generic parameters ────────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
