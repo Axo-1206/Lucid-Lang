@@ -95,6 +95,27 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
 }
 
 // =============================================================================
+// synchronizeToDeclBoundary - Decl/Stmt-Keyword-Aware Recovery
+// =============================================================================
+
+// See doc comment in Parser.hpp. Unlike synchronizeTo(), this always includes
+// is_declaration_keyword()/is_statement_keyword() in the stop set, so it can
+// never skip past the start of the next declaration or statement - only past
+// tokens that belong to the current, already-broken production.
+void synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
+                                std::initializer_list<TokenType> extraStops) {
+    synchronizeUntil(stream, ctx, [&](TokenType t) {
+        if (is_declaration_keyword(t) || is_statement_keyword(t)) {
+            return true;
+        }
+        for (TokenType stop : extraStops) {
+            if (t == stop) return true;
+        }
+        return false;
+    });
+}
+
+// =============================================================================
 // synchronizeToContext - Context-Aware Recovery
 // =============================================================================
 
@@ -103,13 +124,13 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
         case SyntacticContext::Attribute: {
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::COMMA
-                    || t == TokenType::RBRACKET
+                    || t == TokenType::GREATER
                     || t == TokenType::SEMICOLON
                     || is_declaration_keyword(t);
             });
             if (!stream.isAtEnd()) {
                 TokenType t = stream.peekType();
-                if (t == TokenType::COMMA || t == TokenType::RBRACKET) {
+                if (t == TokenType::COMMA || t == TokenType::GREATER) {
                     return SyncOutcome::Continuable;
                 }
             }

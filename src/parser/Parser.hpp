@@ -137,6 +137,34 @@ enum class SyncOutcome {
 
 SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
 
+/**
+ * @brief Skip to the nearest declaration/statement boundary, honoring extra
+ *        construct-specific stop tokens.
+ *
+ * Used when a declaration parser fails mid-production (e.g. a variable's
+ * type, or a function's return type) and needs to resynchronize without
+ * swallowing whatever comes next. Unlike a fixed-token synchronizeTo() call,
+ * this ALWAYS also stops at any declaration keyword (is_declaration_keyword)
+ * or statement keyword (is_statement_keyword) in addition to `extraStops`,
+ * so it can never skip past the start of the next declaration/statement -
+ * a bracket-aware skip that only watches a narrow fixed set (e.g. just
+ * ASSIGN/SEMICOLON/CONST/LET) will happily consume an entire unrelated
+ * `struct { ... }` or `if { ... }` looking for one of its targets, since
+ * neither the keyword nor '{' belongs to that set. This function closes
+ * that gap.
+ *
+ * After calling, the caller should inspect stream.peekType() (or
+ * stream.check(...)) to see which token it actually landed on - this
+ * function does not consume it and does not report a diagnostic itself,
+ * matching the existing synchronizeTo()/synchronizeToContext() convention.
+ *
+ * @param extraStops Construct-specific tokens to also stop at (e.g. '=' and
+ *        ';' for a variable declaration, or additionally '{' for a function
+ *        declaration's body).
+ */
+void synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
+                                std::initializer_list<TokenType> extraStops = {});
+
 // =============================================================================
 // Internal Parser Functions
 // =============================================================================

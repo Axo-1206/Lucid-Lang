@@ -234,33 +234,73 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     }
     DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
-    // Parse name
+    InternedString name;
+    TypeAST* type = nullptr;
+
+    // ─── Parse name ────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
+        // The name specifically may just be missing rather than the whole
+        // declaration being garbage - try the type directly at this
+        // position. If it parses cleanly, we know exactly what happened
+        // and can recover without throwing away any tokens.
+        type = parseType(stream, ctx);
+        if (!type) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected variable name, got '", stream.peekValue(), "'");
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected variable name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    // Parse type (required)
-    TypeAST* type = parseType(stream, ctx);
-    if (!type) {
-        if (stream.peekType() == TokenType::ASSIGN) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected type for variable declaration '", ctx.pool.lookup(name));
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected type for variable declaration '", ctx.pool.lookup(name), "', but got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::ASSIGN, TokenType::SEMICOLON, TokenType::CONST, TokenType::LET);
-            if (!stream.check(TokenType::ASSIGN)) {
-                return nullptr;
+                                "expected variable name before type");
+        // No symbol to record - parse has diagnostics, so semantic analysis
+        // never runs on this AST. Still a defined, lookup-safe value.
+        name = ctx.pool.intern("");
+
+        // A stray token between the recovered type and '=' / ';' means the
+        // type and name were most likely written in the wrong order
+        // (e.g. `const int x = 5;`). Report it and resync past it without
+        // wandering into the next declaration/statement.
+        if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), "'");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+        }
+    } else {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+
+        // ─── Parse type (required) ─────────────────────────────────────
+        type = parseType(stream, ctx);
+        if (!type) {
+            if (stream.check(TokenType::ASSIGN)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected type for variable declaration '", ctx.pool.lookup(name), "'");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected type for variable declaration '", ctx.pool.lookup(name), "', but got '", stream.peekValue(), "'");
+                // Only stop at '=' / ';' for this construct, plus - always -
+                // the start of the next declaration/statement. A fixed
+                // token set here would happily swallow an entire following
+                // `struct { ... }` looking for one of its targets.
+                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+
+                if (!stream.check(TokenType::ASSIGN)) {
+                    if (!stream.check(TokenType::SEMICOLON)) {
+                        // Stopped at a new declaration/statement keyword,
+                        // not at '=' or ';' - this declaration was
+                        // abandoned mid-way, which is more specific and
+                        // more useful than repeating "expected type".
+                        ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                                "incomplete variable declaration '", ctx.pool.lookup(name), "'");
+                    }
+                    return nullptr;
+                }
             }
         }
     }
     
-    // Parse initializer
+    // ─── Parse initializer ─────────────────────────────────────────────
     ExprAST* init = nullptr;
     if (stream.match(TokenType::ASSIGN)) {
         init = parseExpr(stream, ctx);
@@ -328,15 +368,34 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── Parse the rest of the function type ──────────────────────────────
     TypeAST* restType = nullptr;
+    bool sawArrow = false;
     
     if (stream.check(TokenType::ARROW)) {
         stream.consume(); // Consume '->'
+        sawArrow = true;
         restType = parseType(stream, ctx);
         if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected return type");
-            synchronizeToContext(stream, ctx);
-            return nullptr;
+
+            // A broken return type shouldn't cost us the rest of the
+            // declaration. Look for '{' (block body), '=' (expression
+            // body), or ';' (foreign fn) - and never wander past the start
+            // of the next declaration/statement while looking for them.
+            synchronizeToDeclBoundary(stream, ctx,
+                {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
+
+            if (!stream.check(TokenType::LBRACE) &&
+                !stream.check(TokenType::ASSIGN) &&
+                !stream.check(TokenType::SEMICOLON)) {
+                // Nothing recoverable found before the next declaration or
+                // statement - the declaration was abandoned mid-way.
+                ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                        "incomplete function declaration '", ctx.pool.lookup(name), "'");
+                return nullptr;
+            }
+            // restType stays nullptr (error type) - fall through and still
+            // parse/diagnose the body below instead of losing it.
         }
     }
     
@@ -349,7 +408,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     funcType->params = paramBuilder.build();
     funcType->returnType = restType;
-    funcType->hasArrow = (restType != nullptr);
+    funcType->hasArrow = sawArrow;
     funcType->loc = funcTypeLoc;
     
     // ─── 6. Parse body ──────────────────────────────────────────────────────
