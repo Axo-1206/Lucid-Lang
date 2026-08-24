@@ -445,8 +445,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // parseBlock handles consuming '{' and matching '}'
         ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
         body = parseBlock(stream, ctx);
-        
-        // Check if parseBlock actually got a valid block
         if (!body) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                     "expected block body");

@@ -208,11 +208,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         if (!stream.check(TokenType::RPAREN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ')', got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.consume();
-            }
-            return expr;
+            return nullptr;
         }
         stream.consume(); // Consume ')'
         return expr;
@@ -302,7 +298,6 @@ LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
         default:
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                                     "expected literal, got '", stream.peekValue(), "'");
-            synchronizeToContext(stream, ctx);
             return nullptr;
     }
     
@@ -325,7 +320,6 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '[', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume();
@@ -352,22 +346,19 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         } else {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected array element expression");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACKET)) {
-                break;
-            }
-            continue;
+            return nullptr;
         }
         
         int count = stream.consumeTrailing(TokenType::COMMA);
         if (count == 0) {
              ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected ',' to separate array elements");
-        } else if (stream.consumeTrailing(TokenType::PIPELINE) > 2) {
+        } else if (count == 2) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
+                                    "expected array element after ',' in array");
+        } else if (count > 3) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected consecutive commas in array literal");
-            stream.consume();
-            continue;
         }
     }
     
@@ -399,7 +390,6 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::IF)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected 'if', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -407,14 +397,12 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected if condition");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
     if (!stream.match(TokenType::QUESTION_QUESTION)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '\?\?', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -422,14 +410,12 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     if (!thenBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected then branch");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
     if (!stream.match(TokenType::ELSE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'else', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -437,7 +423,6 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     if (!elseBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected else branch");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -451,18 +436,18 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
 // Struct Literal
 // =============================================================================
 
-StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx,
-                                              InternedString typeName, ArenaSpan<TypeAST*> genericArgs) {
+StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx, InternedString typeName, ArenaSpan<TypeAST*> genericArgs) {
     SourceLocation loc = stream.currentLoc();
     
+    // ─── Parse opening brace ──────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '{', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume();
     
+    // ─── Handle empty struct literal ──────────────────────────────────────
     if (stream.check(TokenType::RBRACE)) {
         ArenaSpan<FieldInitAST*> inits = ctx.arena.makeBuilder<FieldInitAST*>().build();
         stream.consume();
@@ -471,58 +456,110 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         return structLit;
     }
     
-    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                "unexpected leading comma in struct literal");
-    }
-    
+    // ─── Parse field initializers ────────────────────────────────────────
     std::vector<FieldInitAST*> inits;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected field name, got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE)) {
+        // ─── Filter invalid tokens in this context ──────────────────────
+        // A struct literal field starts with IDENTIFIER. We also skip stray
+        // semicolons and commas.
+        if (!stream.checkAny(TokenType::SEMICOLON, TokenType::COMMA, TokenType::IDENTIFIER)) {
+            
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), "' inside struct literal");
+            
+            // Synchronize to nearest valid field to recover
+            synchronizeTo(stream, ctx, 
+                TokenType::IDENTIFIER,     // Field name
+                TokenType::SEMICOLON,      // Skip stray semicolons
+                TokenType::COMMA,          // Skip stray commas
+                TokenType::RBRACE          // End of struct literal
+            );
+            
+            if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
                 break;
             }
+        }
+
+        // ─── Skip stray semicolons and commas ───────────────────────────
+        if (stream.checkAny(TokenType::SEMICOLON, TokenType::COMMA)) {
+            stream.consume();
             continue;
+        }
+
+        // ─── Parse field name ──────────────────────────────────────────────
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            // This should not happen due to filtering, but just in case
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected field name, got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
+                stream.consume();
+                continue;
+            }
+            break;
         }
         
         Token fieldTok = stream.consume();
         InternedString fieldName = ctx.pool.intern(fieldTok.value);
         
+        // ─── Parse '=' ─────────────────────────────────────────────────────
         if (!stream.match(TokenType::ASSIGN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected '=', got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE)) {
-                break;
+            
+            // Try to recover by skipping to the next field or closing brace
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
+                stream.consume();
+                continue;
             }
-            continue;
+            break;
         }
         
+        // ─── Parse field value ─────────────────────────────────────────────
         ExprAST* value = parseExpr(stream, ctx);
         if (!value) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected field value");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE)) {
-                break;
+            
+            // Try to recover to the next field or closing brace
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
+                stream.consume();
+                continue;
             }
-            continue;
+            break;
         }
         
+        // ─── Build and store field initializer ───────────────────────────
         auto* init = ctx.arena.make<FieldInitAST>(fieldName, value);
         init->loc = stream.currentLoc();
         inits.push_back(init);
         
-        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                    "unexpected consecutive commas in struct literal");
+        // ─── Handle trailing comma ──────────────────────────────────────
+        if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
+            // Consume the ',' or ';' and continue to the next field
+            // This is valid, so we don't need to report an error
+            stream.consume();
+            // Continue loop to parse next field
+        } else if (!stream.check(TokenType::RBRACE)) {
+            // If we're not at a comma or closing brace, something's wrong
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' or '}', got '", stream.peekValue(), "'");
+            
+            // Try to recover to the next field or closing brace
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
+                stream.consume();
+                // Continue loop to parse next field
+            } else {
+                break;
+            }
         }
     }
     
+    // ─── Parse closing brace ──────────────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '}' to close struct literal");
@@ -530,6 +567,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         stream.consume(); // Consume '}'
     }
     
+    // ─── Build AST ────────────────────────────────────────────────────────
     auto builder = ctx.arena.makeBuilder<FieldInitAST*>();
     for (auto* init : inits) {
         builder.push_back(init);
@@ -571,7 +609,6 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected return type");
-            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
@@ -592,24 +629,17 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '{', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
 
     ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
     
-    stream.consume(); // Consume '{'
     StmtAST* body = parseBlock(stream, ctx);
-    
-    if (!stream.check(TokenType::RBRACE)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '}', got '", stream.peekValue(), "'");
-        synchronizeTo(stream, ctx, TokenType::RBRACE);
-        if (stream.check(TokenType::RBRACE)) {
-            stream.consume();
-        }
+    if (!body) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                "expected block body");
+        return nullptr;
     }
-    stream.consume(); // Consume '}'
     
     auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
     anonFunc->loc = funcTypeLoc;
@@ -773,7 +803,6 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '(', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -801,7 +830,6 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     if (!stream.check(TokenType::HASH)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '#', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume();
@@ -809,7 +837,6 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
                                 "expected intrinsic name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.consume();
@@ -835,15 +862,14 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
     
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                                "expected '[', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
+                                "expected '[' for index expression, got '", stream.peekValue(), "'");
         return nullptr;
     }
     stream.consume();
     
     if (stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected index expression");
+                                "empty index expression '[]', please fill a value '[ <?> ]'");
         stream.consume(); // Consume ']'
         return nullptr;
     }
@@ -851,24 +877,14 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
     ExprAST* index = parseExpr(stream, ctx);
     if (!index) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected index expression");
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
-        if (stream.check(TokenType::RBRACKET)) {
-            stream.consume();
-        }
+                                "expected index expression, got '", stream.peekValue(),  "'");
         return nullptr;
     }
     
     if (!stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ']', got '", stream.peekValue(), "'");
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
-        if (stream.check(TokenType::RBRACKET)) {
-            stream.consume();
-        }
-        auto* indexExpr = ctx.arena.make<IndexExprAST>(target, index);
-        indexExpr->loc = loc;
-        return indexExpr;
+                                "expected ']' to close index expression, got '", stream.peekValue(), "'");
+        return nullptr;
     }
     stream.consume(); // Consume ']'
     
@@ -889,124 +905,73 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
     
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                                "expected '[', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
+                                "expected '[' for slice expression, got '", stream.peekValue(), "'");
         return nullptr;
     }
     stream.consume();
     
-    ExprAST* start = nullptr;
-    ExprAST* end = nullptr;
-    bool isExclusive = false;
-    bool hasRangeOp = false;
-    
+    // ─── Check for empty slice ──────────────────────────────────────────────
     if (stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected slice bounds");
+                                "empty slice expression '[]', expected 'low..high' or '..high'");
         stream.consume(); // Consume ']'
         return nullptr;
     }
     
-    // Check for [..] or [..<] (start omitted)
+    ExprAST* start = nullptr;
+    ExprAST* end = nullptr;
+    bool isExclusive = false;
+    
+    // ─── Parse start expression ──────────────────────────────────────────
+    // Check if we have a range operator first (meaning start is omitted)
     if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
-        hasRangeOp = true;
-        isExclusive = stream.match(TokenType::RANGE_EXCLUSIVE);
-        if (!isExclusive) {
-            stream.match(TokenType::RANGE);
-        }
-        
-        if (!stream.check(TokenType::RBRACKET)) {
-            end = parseExpr(stream, ctx);
-            if (!end) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                        "expected slice end expression");
-                synchronizeTo(stream, ctx, TokenType::RBRACKET);
-                if (stream.check(TokenType::RBRACKET)) {
-                    stream.consume();
-                }
-                auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-                slice->loc = loc;
-                return slice;
-            }
-        }
+        // Start is omitted (e.g., [..end] or [..<end])
+        start = nullptr;
     } else {
         // Parse start expression
         start = parseExpr(stream, ctx);
         if (!start) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected slice start expression");
-            synchronizeTo(stream, ctx, TokenType::RANGE, TokenType::RANGE_EXCLUSIVE, TokenType::RBRACKET);
-            if (stream.checkAny(TokenType::RANGE, TokenType::RANGE_EXCLUSIVE)) {
-                hasRangeOp = true;
-            } else if (stream.check(TokenType::RBRACKET)) {
-                stream.consume();
-                auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-                slice->loc = loc;
-                return slice;
-            } else {
-                synchronizeTo(stream, ctx, TokenType::RBRACKET);
-                if (stream.check(TokenType::RBRACKET)) {
-                    stream.consume();
-                }
-                return nullptr;
-            }
-        }
-        
-        // Check for range operator: [start..end] or [start..<end]
-        if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
-            hasRangeOp = true;
-            isExclusive = stream.match(TokenType::RANGE_EXCLUSIVE);
-            if (!isExclusive) {
-                stream.match(TokenType::RANGE);
-            }
-            
-            if (!stream.check(TokenType::RBRACKET)) {
-                end = parseExpr(stream, ctx);
-                if (!end) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                            "expected slice end expression");
-                    synchronizeTo(stream, ctx, TokenType::RBRACKET);
-                    if (stream.check(TokenType::RBRACKET)) {
-                        stream.consume();
-                    }
-                    auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-                    slice->loc = loc;
-                    return slice;
-                }
-            }
-        } else if (stream.check(TokenType::RBRACKET)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected '..' or '..<', got '", stream.peekValue(), "'");
-            stream.consume(); // Consume ']'
-            auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-            slice->loc = loc;
-            return slice;
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected '..', '..<', or ']', got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::RBRACKET);
-            if (stream.check(TokenType::RBRACKET)) {
-                stream.consume();
-            }
-            auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-            slice->loc = loc;
-            return slice;
+                                    "expected slice start expression or '..'");
+            return nullptr;
         }
     }
     
+    // ─── Parse range operator ──────────────────────────────────────────────
+    if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
+        isExclusive = stream.match(TokenType::RANGE_EXCLUSIVE);
+        if (!isExclusive) {
+            stream.match(TokenType::RANGE);
+        }
+    } else {
+        // No range operator - this is an error
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '..' or '..<', got '", stream.peekValue(), "'");
+        return nullptr;
+    }
+    
+    // ─── Parse end expression ──────────────────────────────────────────────
+    if (stream.check(TokenType::RBRACKET)) {
+        // End is omitted (e.g., [start..] or [..])
+        end = nullptr;
+    } else {
+        end = parseExpr(stream, ctx);
+        if (!end) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected slice end expression");
+            return nullptr;
+        }
+    }
+    
+    // ─── Parse closing bracket ──────────────────────────────────────────────
     if (!stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ']', got '", stream.peekValue(), "'");
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
-        if (stream.check(TokenType::RBRACKET)) {
-            stream.consume();
-        }
-        auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
-        slice->loc = loc;
-        return slice;
+        return nullptr;
     }
     stream.consume(); // Consume ']'
     
+    // ─── Build and return the slice ──────────────────────────────────────
     auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
     slice->loc = loc;
 
@@ -1039,7 +1004,6 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
     if (!stream.match(TokenType::DOT)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '.', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1047,7 +1011,6 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected field name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1065,13 +1028,9 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
         
         ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedColonAfterField, colonLoc,
                                 "unexpected ':' after field access. Did you mean to use '.' instead of ':'?");
-        ctx.diagnostics.noteAt(loc, "field access starts here");
         
         // ─── Error Recovery: Consume the ':' and skip to the next statement ──
         stream.consume(); // Consume ':'
-        
-        // Skip the rest of the invalid expression
-        synchronizeToContext(stream, ctx);
         
         // Return a field access with the parsed field name (partial recovery)
         auto* fieldAccess = ctx.arena.make<FieldAccessExprAST>(fieldName);
@@ -1107,7 +1066,6 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected module name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1118,7 +1076,6 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     if (!stream.match(TokenType::COLON)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ':', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1126,7 +1083,6 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected member name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1167,11 +1123,12 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
         if (count == 0) {
              ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected pipeline step after '|>'");
-        } else if (stream.consumeTrailing(TokenType::PIPELINE) > 2) {
+        } else if (count == 2) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
+                                    "expected step in pipeline");
+        } else if (count > 3) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected consecutive '|>' operators");
-            stream.consume();
-            continue;
         }
         
         PipelineStepAST* step = parsePipelineStep(stream, ctx);
@@ -1184,7 +1141,7 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
     if (steps.empty()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "pipeline requires at least one step");
-        return seed;
+        return nullptr;
     }
 
     auto builder = ctx.arena.makeBuilder<PipelineStepAST*>();
@@ -1224,7 +1181,6 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     if (!expr) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected pipeline step expression");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1242,7 +1198,6 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.noteAt(intrinsic->loc,
                                "Wrap it in a function: 'const wrapper (x T) -> R = { return #",
                                ctx.pool.lookup(intrinsic->intrinsicName), "(x) }'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1253,7 +1208,6 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.noteAt(expr->loc,
                                "Use '", stream.peekValue(), "(args)!' to create an argument pack");
         stream.consume();
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1271,7 +1225,6 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
                                     "expected '!' after argument list in pipeline step");
             ctx.diagnostics.noteAt(call->callee->loc,
                                    "In a pipeline step, use 'fn(args)!' to inject upstream values");
-            synchronizeToContext(stream, ctx);
             return nullptr;
         }
         
@@ -1299,7 +1252,6 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     if (!stream.check(TokenType::COMPOSE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected '+>', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.consume(); // Consume '+>'
@@ -1311,20 +1263,28 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     if (!operand) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected composition operand");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     operands.push_back(operand);
     
     // ─── Parse additional operands ────────────────────────────────────────
     while (!stream.isAtEnd() && stream.check(TokenType::COMPOSE)) {
-        stream.consume(); // Consume '+>'
+        int count = stream.consumeTrailing(TokenType::COMPOSE);
+        if (count == 0) {
+             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected '+>' to separate operand");
+        } else if (count == 2) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
+                                    "expected operand after '+>'");
+        } else if (count > 3) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected consecutive '+>'");
+        }
         
         operand = parseComposeOperand(stream, ctx);
         if (!operand) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected composition operand");
-            synchronizeToContext(stream, ctx);
             return nullptr;
         }
         operands.push_back(operand);
@@ -1348,7 +1308,6 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
     if (!callable) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected composition operand");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1460,7 +1419,6 @@ ExprAST* parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprAST* lhs,
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1487,7 +1445,6 @@ ExprAST* parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprAST
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1515,7 +1472,6 @@ ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprAST* lhs,
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
