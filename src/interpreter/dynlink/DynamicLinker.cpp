@@ -122,7 +122,7 @@ void DynamicLinker::registerLibrariesFromModule(DiagnosticEngine& diagnostics,
 
     InternedString linkName = pool.intern("link");
     for (DeclAST* decl : module->decls) {
-        for (AttributePtr attr : decl->attributes) {
+        for (AttributeAST* attr : decl->attributes) {
             if (attr->name == linkName) {
                 for (LiteralExprAST* arg : attr->args) {
                     if (arg->kind == LiteralKind::String || 

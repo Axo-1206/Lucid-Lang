@@ -351,8 +351,13 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         
         int count = stream.consumeTrailing(TokenType::COMMA);
         if (count == 0) {
-             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+            if (stream.check(TokenType::RBRACKET)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "expected array element after ',' in array");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected ',' to separate array elements");
+            }
         } else if (count == 2) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
                                     "expected array element after ',' in array");

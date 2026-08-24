@@ -18,7 +18,7 @@ static bool isFunctionExported(FuncDeclAST* func, InterpreterContext& ctx) {
     if (!func) return false;
     
     InternedString exportName = ctx.pool.intern("export");
-    for (AttributePtr attr : func->attributes) {
+    for (AttributeAST* attr : func->attributes) {
         if (attr->name == exportName) {
             return true;
         }

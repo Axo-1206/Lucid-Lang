@@ -682,7 +682,7 @@ parseAttributes(stream, ctx)
 │   │       └── create AttributeAST
 │   │
 │   ├── consume ']'
-│   └── return ArenaSpan<AttributePtr>
+│   └── return ArenaSpan<AttributeAST*>
 │
 └── else return empty span
 

@@ -168,22 +168,22 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
 // parseAttributes - LIST LEVEL - handles commas
 // =============================================================================
 
-ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
+ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx) {
     Trace::detail("parseAttributes: checking for attributes");
     
-    std::vector<AttributePtr> attrs;
+    std::vector<AttributeAST*> attrs;
     
     if (!stream.check(TokenType::AT_SIGN)) {
-        return ctx.arena.makeBuilder<AttributePtr>().build();
+        return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
     
     stream.consume(); // Consume '@'
     
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '[', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return ctx.arena.makeBuilder<AttributePtr>().build();
+                                "expected '[' for attribute list, got '", stream.peekValue(), "'");
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER}); // IDENTIFIER is for field declaration
+        return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
     stream.consume(); // Consume '['
 
@@ -197,12 +197,20 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
         isFirst = false;
         
         // Parse single attribute (NO comma handling inside)
-        AttributePtr attr = parseAttribute(stream, ctx);
+        AttributeAST* attr = parseAttribute(stream, ctx);
         if (attr) {
             attrs.push_back(attr);
         } else {
-            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
-                break;
+            synchronizeToDeclBoundary(stream, ctx, 
+                {TokenType::IDENTIFIER, TokenType::RBRACKET}); // IDENTIFIER is for field declaration
+            
+            // Not recoverable, the user may forget to close ']' before the declaration
+            if (!stream.check(TokenType::RBRACKET)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected ']' to close attribute list");
+
+                auto builder = ctx.arena.makeBuilder<AttributeAST*>();
+                return builder.build();
             }
         }
     }
@@ -214,7 +222,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
         stream.consume(); // Consume ']'
     }
     
-    auto builder = ctx.arena.makeBuilder<AttributePtr>();
+    auto builder = ctx.arena.makeBuilder<AttributeAST*>();
     for (auto* attr : attrs) {
         builder.push_back(attr);
     }
@@ -225,13 +233,12 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
 // parseAttribute - ITEM LEVEL - NO comma handling
 // =============================================================================
 
-AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
+AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected attribute name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -256,10 +263,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
             if (arg) {
                 args.push_back(arg);
             } else {
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                    break;
-                }
+                return nullptr;
             }
         }
         
@@ -282,7 +286,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
-// parseAttributeArgLiteral - ITEM LEVEL - NO comma handling
+// parseAttributeArgLiteral
 // =============================================================================
 
 LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
@@ -330,7 +334,6 @@ LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
         default:
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, stream.currentLoc(),
                                     "expected literal, got '", stream.peekValue(), "'");
-            synchronizeToContext(stream, ctx);
             return nullptr;
     }
     
@@ -406,7 +409,6 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected generic parameter name, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -416,55 +418,50 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
     auto* param = ctx.arena.make<GenericParamDeclAST>(name);
     param->loc = loc;
     
-    // Constraints (sub-list, handle commas here)
+    // ─── Parse constraints ──────────────────────────────────────────────────
     if (stream.match(TokenType::COLON)) {
         std::vector<NamedTypeAST*> constraints;
         bool hasConstraint = false;
-        bool isFirstConstraint = true;
+
+        if (stream.consumeTrailing(TokenType::PLUS) > 0) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
+                                    "unexpected leading '+' in generic constraints");
+        }
         
+        // ─── Filter invalid tokens ────────────────────────────────────────
+        // A constraint starts with a type (IDENTIFIER or module:type)
         while (!stream.isAtEnd() && 
                !stream.check(TokenType::GREATER) && 
                !stream.check(TokenType::COMMA)) {
             
-            // Handle pluses before this constraint
-            int plusCount = stream.consumeTrailing(TokenType::PLUS);
-            if (plusCount > 0) {
-                if (!isFirstConstraint) {
-                    // Plus before constraint is a separator
-                    if (plusCount <= 2) {
-                        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                                "expected trait constraint, got '+'");
-                    } else {
-                        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                                "unexpected multiple '+' in generic constraints");
-                    }
-                } else {
-                    // Leading plus before first constraint
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                            "expected trait constraint, got '+'");
-                }
-            }
-            isFirstConstraint = false;
-            
+            // ─── Parse the constraint type ────────────────────────────────
             NamedTypeAST* traitRef = parseNamedType(stream, ctx)->as<NamedTypeAST>();
             if (traitRef) {
                 constraints.push_back(traitRef);
                 hasConstraint = true;
             } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                        "expected trait constraint, got '", stream.peekValue(), "'");
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
                 break;
             }
             
             // Check for trailing plus
-            plusCount = stream.consumeTrailing(TokenType::PLUS);
-            if (plusCount == 1) {
-                if (stream.check(TokenType::GREATER) || stream.check(TokenType::COMMA)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                            "unexpected trailing '+' in generic constraints");
+            int count = stream.consumeTrailing(TokenType::PLUS);
+            if (count == 0) {
+                if (stream.check(TokenType::GREATER)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "expected generic constraint after '+'");
+                } else {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                        "expected '+' to separate generic constraints");
                 }
-            } else if (plusCount > 1) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                        "unexpected multiple '+' in generic constraints");
+            } else if (count == 2) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
+                                        "expected generic constraint after '+'");
+            } else if (count > 3) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "unexpected consecutive '+' in generic constraints'");
             }
         }
         
@@ -518,9 +515,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
         if (type) {
             args.push_back(type);
         } else {
-            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
-                break;
-            }
+            break;
         }
     }
 

@@ -504,7 +504,6 @@ struct AttributeAST : BaseAST {
 
     AttributeAST() : BaseAST(ASTKind::Attribute) {}
 };
-using AttributePtr = AttributeAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ValueDeclAST – base for declarations that produce values

@@ -168,7 +168,7 @@ struct ParserContext {
 /// ## Usage
 /// 
 /// ```cpp
-/// ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
+/// ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx) {
 ///     if (!stream.check(TokenType::AT_SIGN)) return {};
 ///     stream.consume(); // consume '@'
 ///     stream.consume(); // consume '['

@@ -270,8 +270,8 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx);
-ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx);
-AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx);
+ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx);
+AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx);
 LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx);
 
 GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& ctx);

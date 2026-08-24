@@ -8,8 +8,6 @@
  * - parseInternal(): Parses internal declarations of a file
  * - parseDecl(): Dispatch to specific declaration parsers
  * 
- * Error recovery is in ErrorRecovery.cpp (synchronizeUntil, synchronizeTo,
- * synchronizeToContext).
  */
 
 #include "Parser.hpp"
