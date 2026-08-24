@@ -8,6 +8,7 @@
  */
 
 #include "../Parser.hpp"
+#include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
@@ -217,7 +218,8 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::SEMICOLON
                     || t == TokenType::RBRACE
-                    || is_declaration_keyword(t);
+                    || is_declaration_keyword(t)
+                    || is_statement_keyword(t);
             });
             return SyncOutcome::Abandoned;
         }
@@ -225,7 +227,10 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
         case SyntacticContext::TopLevel:
         default: {
             synchronizeUntil(stream, ctx, [](TokenType t) {
-                return t == TokenType::SEMICOLON || is_declaration_keyword(t);
+                return t == TokenType::SEMICOLON 
+                || is_declaration_keyword(t)
+                || is_control_flow_keyword(t) // flow control or concurrency is forbidden at top-level
+                || is_concurrency_keyword(t); // we stop at these token to correctly diagnose the problem
             });
             return SyncOutcome::Abandoned;
         }

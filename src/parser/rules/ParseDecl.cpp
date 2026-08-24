@@ -432,7 +432,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 6b. Parse body if we see '{' ─────────────────────────────────────
-    if (stream.match(TokenType::LBRACE)) {
+    if (stream.check(TokenType::LBRACE)) {
         // If there was no '=', report the error but still parse the body
         if (!hasExplicitAssign) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.previousLoc(),
@@ -445,13 +445,11 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // parseBlock handles consuming '{' and matching '}'
         ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
         body = parseBlock(stream, ctx);
-        stream.consume(); // consume '}'
         
         // Check if parseBlock actually got a valid block
         if (!body) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                     "expected block body");
-            // Don't synchronize - let the caller handle recovery
             return nullptr;
         }
         
@@ -710,23 +708,19 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::ASSIGN)) {
         // ─── 5a. Check for block body ──────────────────────────────────────
         if (stream.check(TokenType::LBRACE)) {
-            stream.consume();
             
             // Push struct field context for the body
             ScopedContext bodyGuard(ctx, SyntacticContext::FieldBody, stream.currentLoc());
             
             defaultBody = parseBlock(stream, ctx);
-            if (!stream.check(TokenType::RBRACE)) {
+
+            /// Check if parseBlock actually got a valid block
+            /// NOTE: this should not happen (fatal error)
+            if (!defaultBody) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                        "expected '}' to close block body");
-                synchronizeTo(stream, ctx, TokenType::RBRACE);
-                if (stream.check(TokenType::RBRACE)) {
-                    stream.consume();
-                }
-            } else {
-                stream.consume(); // Consume '}'
+                                        "expected block body");
+                return nullptr;
             }
-            
         } else {
             // ─── 5b. Expression default ─────────────────────────────────────
             if (looksLikeAnonFunc(stream, ctx)) {

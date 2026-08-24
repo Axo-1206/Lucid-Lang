@@ -172,28 +172,88 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 // parseBlock – Parses a brace-delimited block
 // =============================================================================
 
-/// NOTE: parse block will not consume '{}', the caller will do it
-///       it's for diagnostic log context, this function only parse statements
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     BlockStmtAST* block = ctx.arena.make<BlockStmtAST>();
 
-    /// NOTE: the caller of parseBlock already consume '{', 
-    ///       so we have to get previous location
+    // ─── Parse opening brace ──────────────────────────────────────────────
+    if (!stream.match(TokenType::LBRACE)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                "expected '{' to open block body");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+
     block->loc = stream.previousLoc();
 
     auto builder = ctx.arena.makeBuilder<StmtAST*>();
     
-    stream.consumeTrailing(TokenType::SEMICOLON); // Skip stray semicolons
-
+    // ─── Parse statements until '}' ──────────────────────────────────────
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+        // ─── Filter invalid tokens in this context ──────────────────────
+        // A statement starts with a statement keyword, declaration keyword,
+        // or an identifier/expression. We also skip stray semicolons.
+        if (!stream.check(TokenType::SEMICOLON) &&
+            !is_statement_keyword(stream.peekType()) &&
+            !is_declaration_keyword(stream.peekType()) &&
+            stream.peekType() != TokenType::IDENTIFIER) {
+            
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), "' inside block body");
+            
+            // Synchronize to nearest valid statement to recover
+            synchronizeTo(stream, ctx, 
+                TokenType::SEMICOLON,      // Skip stray semicolons
+                TokenType::RBRACE,         // Block closing
+                TokenType::IDENTIFIER,     // Expression statement start
+                TokenType::IF,             // Control flow
+                TokenType::SWITCH,
+                TokenType::FOR,
+                TokenType::WHILE,
+                TokenType::DO,
+                TokenType::RETURN,
+                TokenType::BREAK,
+                TokenType::CONTINUE,
+                TokenType::ASYNC,          // Concurrency
+                TokenType::AWAIT,
+                TokenType::SPAWN,
+                TokenType::JOIN,
+                TokenType::LET,            // Declarations
+                TokenType::CONST,
+                TokenType::STRUCT,
+                TokenType::ENUM,
+                TokenType::TRAIT
+            );
+            
+            if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
+                break;
+            }
+        }
+
+        // ─── Skip stray semicolons ──────────────────────────────────────
+        if (stream.match(TokenType::SEMICOLON)) {
+            continue;
+        }
+
+        // ─── Parse statement ──────────────────────────────────────────────
         StmtAST* stmt = parseStmt(stream, ctx);
         if (stmt) {
             builder.push_back(stmt);
         } else {
-            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
-                break;
-            }
+            // parseStmt already reported the error and did recovery
+            // Try to continue to the next statement
         }
+    }
+
+    // ─── Parse closing brace ──────────────────────────────────────────────
+    if (!stream.check(TokenType::RBRACE)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                "expected '}' to close block body");
+        synchronizeTo(stream, ctx, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE)) {
+            stream.consume();
+        }
+    } else {
+        stream.consume(); // Consume '}'
     }
     
     block->stmts = builder.build();
@@ -218,9 +278,8 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected if condition");
-        if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
-            return ifStmt;
-        }
+        synchronizeToContext(stream, ctx);
+        return nullptr;
     }
     ifStmt->condition = condition;
     
@@ -228,10 +287,8 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     if (!thenBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected then branch block");
-        if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
-            return ifStmt;
-        }
-        return ifStmt;
+        synchronizeToContext(stream, ctx);
+        return nullptr;
     }
     ifStmt->thenBranch = thenBranch;
     
