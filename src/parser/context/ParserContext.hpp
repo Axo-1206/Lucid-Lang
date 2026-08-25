@@ -230,4 +230,29 @@ private:
     std::vector<ContextFrame> savedContextStack_;
 };
 
+/// @brief RAII guard tagging every diagnostic raised while active with a
+///        file identity. Needed because DiagnosticEngine is shared across
+///        every file in a program - parse() recurses into imports against
+///        the same ParserContext - so without this, restoring the *previous*
+///        file on exit (not just clearing it) is required for the outer
+///        file's diagnostics to keep attributing correctly after a nested
+///        import returns. Mirrors ScopedFileContext exactly.
+struct ScopedDiagnosticFile {
+    ScopedDiagnosticFile(ParserContext& ctx, InternedString file)
+        : ctx_(ctx), saved_(ctx.diagnostics.currentFile()) {
+        ctx_.diagnostics.setCurrentFile(file);
+    }
+    ~ScopedDiagnosticFile() {
+        ctx_.diagnostics.setCurrentFile(saved_);
+    }
+    ScopedDiagnosticFile(const ScopedDiagnosticFile&) = delete;
+    ScopedDiagnosticFile& operator=(const ScopedDiagnosticFile&) = delete;
+    ScopedDiagnosticFile(ScopedDiagnosticFile&&) = delete;
+    ScopedDiagnosticFile& operator=(ScopedDiagnosticFile&&) = delete;
+
+private:
+    ParserContext& ctx_;
+    InternedString saved_;
+};
+
 } // namespace parser

@@ -1007,7 +1007,7 @@ TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
         traitField->doc = doc;
     }
 
-    if (stream.consumeTrailing(TokenType::COMMA) == 0) { 
+    if (stream.consumeTrailing(TokenType::SEMICOLON) == 0) { 
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ';' after trait field declaration");
     }

@@ -288,6 +288,7 @@ struct DocComment {
 struct BaseAST {
     ASTKind kind;
     SourceLocation loc;
+    bool hasError = false;
 
     explicit BaseAST(ASTKind k) : kind(k) {}
     virtual ~BaseAST() = default;
@@ -673,7 +674,7 @@ struct ModuleAST : BaseAST {
 /// @field name        The identifier of the type parameter (e.g., "T", "K", "V").
 /// @field constraints Trait types that this parameter must satisfy.
 ///                    Empty span means the parameter is unconstrained.
-///                    Each constraint is a NamedTypeAST node.
+///                    Each constraint 'should' be a NamedTypeAST or ModuleTypeAccess node.
 /// 
 /// @note Multiple constraints are joined with `+` in source (e.g., `T : Vector2 + Named`).
 ///       The semantic pass verifies that all constraint types resolve to traits
@@ -682,7 +683,7 @@ struct ModuleAST : BaseAST {
 struct GenericParamDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
-    ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
+    ArenaSpan<TypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
         : TypeDeclAST(ASTKind::GenericParamDecl, n) {}
@@ -700,7 +701,7 @@ using ParamGroup        = std::vector<ParamAST*>;
 /// specific unknown node types when possible.
 struct UnknownAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownAST() : BaseAST(ASTKind::Unknown) {}
+    UnknownAST() : BaseAST(ASTKind::Unknown) { hasError = true; }
 };
 
 inline bool isUnknown(BaseAST* node) {
@@ -719,20 +720,20 @@ inline bool isUnknown(BaseAST* node) {
 
 struct UnknownDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownDecl;
-    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl, InternedString()) {}
+    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl, InternedString()) { hasError = true; }
 };
 
 struct UnknownExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownExpr;
-    UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) {}
+    UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) { hasError = true; }
 };
 
 struct UnknownStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownStmt;
-    UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) {}
+    UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) { hasError = true; }
 };
 
 struct UnknownTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownType;
-    UnknownTypeAST() : TypeAST(ASTKind::UnknownType) {}
+    UnknownTypeAST() : TypeAST(ASTKind::UnknownType) { hasError = true; }
 };

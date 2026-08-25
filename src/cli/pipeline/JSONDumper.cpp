@@ -1497,7 +1497,29 @@ void JSONDumper::serializeDiagnostics(JSONWriter& json, const DiagnosticEngine& 
     json.kv("warningCount", static_cast<uint64_t>(diagnostics.warningCount()));
     json.key("messages");
     json.beginArray();
-    // TODO: Serialize individual diagnostic messages
+    for (const auto& d : diagnostics.all()) {
+        json.beginObject();
+        json.kv("severity", severityName(d.severity));
+        json.kv("category", d.category());
+
+        if (d.code != DiagCode(0)) {
+            json.kv("code", static_cast<uint64_t>(d.code));
+        } else {
+            json.kvNull("code");
+        }
+
+        json.kv("message", d.message);
+
+        if (d.file.isValid()) {
+            json.kv("file", str(d.file));
+        } else {
+            json.kvNull("file");
+        }
+
+        json.key("location");
+        serializeLocation(json, d.location);
+        json.endObject();
+    }
     json.endArray();
     json.endObject();
 }

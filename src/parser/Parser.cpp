@@ -71,6 +71,7 @@ ModuleAST* parse(const std::string& path,
 
     // ─── File context ──────────────────────────────────────────────────
     ScopedFileContext fileContext(ctx);
+    ScopedDiagnosticFile fileTag(ctx, filePath);
     
     // ─── Circular import detection ────────────────────────────────────
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {

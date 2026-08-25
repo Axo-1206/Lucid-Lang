@@ -280,6 +280,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
 std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowName);
+ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool allowNames);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
 // ─── Lookahead Helpers ────────────────────────────────────────────────────

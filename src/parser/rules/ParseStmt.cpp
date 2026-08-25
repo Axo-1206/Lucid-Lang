@@ -289,10 +289,11 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected if condition");
-        return nullptr;
+        synchronizeTo(stream, ctx, TokenType::LBRACE);
+        ifStmt->hasError = true;
     }
     ifStmt->condition = condition;
-    
+
     StmtAST* thenBranch = parseBlock(stream, ctx);
     if (!thenBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
@@ -747,6 +748,9 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
             }
         }
         forStmt->iterable = iterable;
+        if (!iterable) {
+            forStmt->hasError = true;
+        }
         
         // ─── 6. Parse loop body ──────────────────────────────────────────────
         StmtAST* body = parseBlock(stream, ctx);
@@ -774,10 +778,13 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 4. Parse range expression ──────────────────────────────────────────
     ExprAST* iterable = parseExpr(stream, ctx);
-    if (!iterable || !iterable->isa<RangeExprAST>()) {
+    bool rangeValid = (iterable && iterable->isa<RangeExprAST>());
+    if (!rangeValid) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected range expression (start..end)");
-        return nullptr;
+        if (!stream.check(TokenType::LBRACE)) {
+            return nullptr;
+        }
     }
     
     // ─── 5. Parse optional step ─────────────────────────────────────────────
@@ -787,7 +794,9 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (!step) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected step expression after '..'");
-            return nullptr;
+            if (!stream.check(TokenType::LBRACE)) {
+                return nullptr;
+            }
         }
     }
     
@@ -806,6 +815,9 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     forStmt->iterable = iterable;
     forStmt->step = step;
     forStmt->body = body;
+    if (!rangeValid || (stream.match(TokenType::RANGE) && !step)) {
+        forStmt->hasError = true;
+    }
     
     return forStmt;
 }
@@ -833,6 +845,9 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
         }
     }
     whileStmt->condition = condition;
+    if (!condition) {
+        whileStmt->hasError = true;
+    }
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
@@ -869,14 +884,17 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::WHILE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'while', got '", stream.peekValue(), "'");
-        return nullptr;
+        doWhileStmt->hasError = true;
+        return doWhileStmt;
     }
     
     ExprAST* condition = parseExpr(stream, ctx);
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected do-while condition");
-        return nullptr;
+        doWhileStmt->condition = nullptr;
+        doWhileStmt->hasError = true;
+        return doWhileStmt;
     }
     doWhileStmt->condition = condition;
     

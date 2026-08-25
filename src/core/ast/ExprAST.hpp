@@ -37,6 +37,7 @@ enum class LiteralKind {
     False,      // false
     Nil,        // nil
     Err,        // err
+    Unknown     // broken/related syntax or token
 };
 
 /// @brief Identifies the assignment operator written in source.

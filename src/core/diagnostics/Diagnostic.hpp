@@ -56,6 +56,11 @@ struct Diagnostic {
     DiagCode code;
     SourceLocation location;
     std::string message;
+    InternedString file;   // Which file this diagnostic belongs to. May be
+                            // invalid (isValid() == false) for diagnostics
+                            // raised outside any file's parse (e.g. driver-
+                            // level errors) - callers should treat that as
+                            // "unknown file", not crash.
 
     std::string category() const {
         return categoryName(code);
@@ -76,6 +81,21 @@ struct Diagnostic {
 ///   ctx.dump(std::cerr);
 class DiagnosticEngine {
 public:
+    // ─── Current File Tracking ───────────────────────────────────────
+    //
+    // A single DiagnosticEngine is shared across every file in a program
+    // (parse() recurses into imports against the same ParserContext), so
+    // without this every diagnostic collapses to "line N, column M" with
+    // no way to say which file that even refers to once more than one
+    // file is involved. Callers (parse()) set this on entry to a file and
+    // must restore the previous value on exit - see ScopedDiagnosticFile
+    // in ParserContext.hpp, which does this automatically for recursive
+    // imports the same way ScopedFileContext already does for the
+    // syntactic context stack.
+
+    InternedString currentFile() const { return m_currentFile; }
+    void setCurrentFile(InternedString f) { m_currentFile = f; }
+
     // ─── Report Functions ──────────────────────────────────────────────
 
     /// Report an error with a diagnostic code.
@@ -256,9 +276,10 @@ public:
 
 private:
     std::vector<Diagnostic> m_diagnostics;
+    InternedString m_currentFile;
 
     void add(Severity sev, DiagCode code, const SourceLocation& loc, std::string msg) {
-        m_diagnostics.push_back({sev, code, loc, std::move(msg)});
+        m_diagnostics.push_back({sev, code, loc, std::move(msg), m_currentFile});
     }
 
     // ─── Message Building ──────────────────────────────────────────────
