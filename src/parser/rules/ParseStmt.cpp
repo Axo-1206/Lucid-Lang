@@ -44,7 +44,7 @@ bool isStatementTerminator(TokenStream& stream) {
 } // anonymous namespace
 
 // =============================================================================
-// parseStmt – Top-Level Statement Entry Point
+// parseStmt – Statement Entry Point
 // =============================================================================
 
 StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
@@ -121,7 +121,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         case TokenType::IMPORT:
             ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget, loc,
                                     "import statement is only valid at top level");
-            synchronizeToContext(stream, ctx);
+            // Remove synchronizeToContext - let parseBlock's loop handle recovery
             return nullptr;
 
         // Concurrency - async/await/spawn/join are statements with their own rules
@@ -188,7 +188,7 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     auto builder = ctx.arena.makeBuilder<StmtAST*>();
     
     // ─── Parse statements until '}' ──────────────────────────────────────
-    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE) && ctx.canContinue()) {
         // ─── Filter invalid tokens in this context ──────────────────────
         // A statement starts with a statement keyword, declaration keyword,
         // or an identifier/expression. We also skip stray semicolons.
@@ -234,13 +234,22 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
             continue;
         }
 
+        // ─── Progress guard ──────────────────────────────────────────────
+        // Save position before parsing to detect zero-progress
+        size_t savedPos = stream.getPos();
+
         // ─── Parse statement ──────────────────────────────────────────────
         StmtAST* stmt = parseStmt(stream, ctx);
         if (stmt) {
             builder.push_back(stmt);
         } else {
-            // parseStmt already reported the error and did recovery
-            // Try to continue to the next statement
+            // parseStmt reported the error. If no progress was made, consume
+            // one token to avoid infinite loop.
+            if (stream.getPos() == savedPos && !stream.isAtEnd()) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "skipping unexpected token '", stream.peekValue(), "'");
+                stream.consume();
+            }
         }
     }
 

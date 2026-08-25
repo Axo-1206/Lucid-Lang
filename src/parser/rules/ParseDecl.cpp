@@ -40,14 +40,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     bool isFuncDecl = false;
     bool isVarDecl = false;
     
+    // ─── Pure dispatcher: caller guarantees current token is a declaration keyword ───
     if (stream.check(TokenType::IMPORT)) {
-        if (ctx.currentContext() == SyntacticContext::FuncBody) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_InvalidAttributeTarget,
-                                    stream.currentLoc(),
-                                    "import cannot appear inside function body");
-            synchronizeToContext(stream, ctx);
-            return nullptr;
-        }
         decl = parseImportDecl(stream, ctx);
     } else if (stream.check(TokenType::STRUCT)) {
         decl = parseStructDecl(stream, ctx);
@@ -64,47 +58,23 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
             isVarDecl = true;
         }
     } else {
-        TokenType currentType = stream.peekType();
-        
-        // Statements at top level are invalid
-        if (
-            ctx.isTopLevel() && 
-            (is_control_flow_keyword(currentType) || is_concurrency_keyword(currentType))
-        ) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
-                                    stream.currentLoc(),
-                                    "statement keyword '", stream.peekValue(), 
-                                    "' cannot appear at top level - expected a declaration");
-            // Consume the offending token to avoid infinite loops
-            stream.consume();
-            return nullptr;
-        }
-        
-        // In function body, let the caller (parseStmt) handle statement parsing
-        if (ctx.isInsideFuncBody()) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
-                                    stream.currentLoc(),
-                                    "unexpected token '", stream.peekValue(), 
-                                    "' - expected statement or declaration");
-            // Return nullptr - parseStmt will handle recovery
-            return nullptr;
-        }
-        
+        // Should never happen - caller filters before calling parseDecl
         ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
                                 stream.currentLoc(),
-                                "unexpected token '", stream.peekValue(), 
-                                "' - expected declaration");
-        synchronizeToContext(stream, ctx);
+                                "internal error: parseDecl called with non-declaration token '", 
+                                stream.peekValue(), "'");
+        // Consume the token to avoid infinite loops
+        stream.consume();
         return nullptr;
     }
 
     if (stream.consumeTrailing(TokenType::SEMICOLON) == 0) {
         if (isFuncDecl) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                                "expected ';' after function declaration");
+                                    "expected ';' after function declaration");
         } else if (isVarDecl) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected ';' after variable declaration");
+                                    "expected ';' after variable declaration");
         } else {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ';' after declaration");
@@ -117,12 +87,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
             decl->doc = doc;
         }
         decl->loc = loc;
-    } else {
-        /// The parseDecl  handle synchronizeToContext, this mean the calls below
-        /// just need to return nullptr on failure, they should not attempt to synchronizeToContext
-        /// but they are allow to synchronize in their sub-context, like parse field/trait, enum variant
-        synchronizeToContext(stream, ctx);
     }
+    
     return decl;
 }
 
@@ -603,7 +569,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         }
 
         // consume stray ';'
-        if (stream.check(SEMICOLON)) {
+        if (stream.check(TokenType::SEMICOLON)) {
             stream.consume();
             continue;
         }
@@ -673,23 +639,16 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         /// Check the next token
         if (stream.check(TokenType::ASSIGN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                            "expected field type, before '='");
+                            "expected field type before '='");
         } else if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
                                     "incomplete field declaration '", ctx.pool.lookup(name), "'");
-            return nullptr;
         } else {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected field type, got '", stream.peekValue(), "'");
         }
         
-        /// Try to skip multiple unrelated tokens
-        synchronizeTo(stream, ctx, TokenType::ASSIGN, TokenType::SEMICOLON, TokenType::RBRACE);
-        if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
-                                    "broken field declaration '", ctx.pool.lookup(name), "'");
-            return nullptr;
-        }
+        return nullptr;
     }
     
     // ─── 5. Parse default value ─────────────────────────────────────────────
@@ -722,11 +681,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
                                        "Use a block body instead: '{ ... }'");
                 ctx.diagnostics.noteAt(stream.currentLoc(),
                                        "The block body borrows its signature from the field type");
-                
-                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-                if (stream.check(TokenType::SEMICOLON)) {
-                    stream.consume();
-                }
                 return nullptr;
             }
             
@@ -734,10 +688,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
             if (!defaultVal) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                         "expected default value expression");
-                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-                if (stream.check(TokenType::RBRACE) || stream.match(TokenType::SEMICOLON)) {
-                    return nullptr;
-                }
                 return nullptr;
             }
         }

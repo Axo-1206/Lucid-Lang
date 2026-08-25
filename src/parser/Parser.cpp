@@ -163,69 +163,58 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
     Trace::detail("Parsing internal declarations");
     
     int declCount = 0;
-    int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 10;
-    size_t lastPos = stream.getPos();
-
-    // Skip stray semicolons
-    stream.consumeTrailing(TokenType::SEMICOLON);
     
-    while (!stream.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
-        auto doc = harvestDocComment(stream, ctx);
-        size_t savedPos = stream.getPos();
-        
-        auto* decl = parseDecl(stream, ctx);
-        
-        if (!decl && stream.isAtEnd()) {
-            if (ctx.diagnostics.hasErrors()) {
+    // ─── Parse declarations until EOF ──────────────────────────────────────
+    while (!stream.isAtEnd() && ctx.canContinue()) {
+        // ─── Filter invalid tokens in this context ──────────────────────
+        // A top-level declaration starts with a declaration keyword
+        // We also skip stray semicolons
+        if (!stream.check(TokenType::SEMICOLON) &&
+            !is_declaration_keyword(stream.peekType())) {
+            
+            // Check if it's a control flow or concurrency keyword (invalid at top level)
+            if (is_control_flow_keyword(stream.peekType()) || 
+                is_concurrency_keyword(stream.peekType())) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "statement keyword '", stream.peekValue(), 
+                                        "' cannot appear at top level - expected a declaration");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "unexpected token '", stream.peekValue(), 
+                                        "' - expected declaration");
+            }
+            
+            // Synchronize to nearest valid declaration to recover
+            synchronizeToDeclBoundary(stream, ctx, {});
+            
+            if (stream.isAtEnd()) {
                 break;
             }
-            Trace::detail("Reached EOF after declarations");
-            break;
         }
-        
-        if (stream.getPos() == savedPos) {
-            consecutiveFailures++;
-            Trace::detail("No progress, stuck on: ", stream.peekValue());
-            
-            if (!stream.isAtEnd()) {
-                stream.consume();
-            }
-            
-            if (consecutiveFailures > 5) {
-                Trace::detail("Aggressive recovery");
-                synchronizeToContext(stream, ctx);
-            }
-        } else if (decl) {
-            declCount++;
-            consecutiveFailures = 0;
-            lastPos = stream.getPos();
-            
-            if (doc) {
-                decl->doc = std::move(doc);
-            }
+
+        // ─── Skip stray semicolons ──────────────────────────────────────
+        if (stream.match(TokenType::SEMICOLON)) {
+            continue;
+        }
+
+        // ─── Progress guard ──────────────────────────────────────────────
+        // Save position before parsing to detect zero-progress
+        size_t savedPos = stream.getPos();
+
+        // ─── Parse declaration ──────────────────────────────────────────
+        DeclAST* decl = parseDecl(stream, ctx);
+        if (decl) {
             outDecls.push_back(decl);
+            declCount++;
         } else {
-            consecutiveFailures = 0;
-        }
-        
-        // Critical protection - prevent infinite loops
-        if (stream.getPos() == lastPos && consecutiveFailures > 10) {
-            Trace::detail("CRITICAL - no progress after ", consecutiveFailures, " attempts");
-            if (!stream.isAtEnd()) {
+            // parseDecl reported the error. If no progress was made, consume
+            // one token to avoid infinite loop.
+            if (stream.getPos() == savedPos && !stream.isAtEnd()) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "skipping unexpected token '", stream.peekValue(), "'");
                 stream.consume();
             }
-            lastPos = stream.getPos();
         }
-    }
-    
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        // User code error - too many syntax errors to recover
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken,
-                                stream.currentLoc(),
-                                "Too many consecutive parse failures (", 
-                                MAX_CONSECUTIVE_FAILURES, "), aborting");
-        return;
     }
     
     Trace::info("Parsed ", declCount, " declarations");
