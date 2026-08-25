@@ -554,15 +554,14 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     std::vector<FieldDeclAST*> fields;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
-        //  filter all invalid token in this context
-        // a field start with IDENTIFIER or CONST, end with SEMICOLON
-        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::SEMICOLON)) {
+        // filter all invalid token in this context
+        // a field starts with IDENTIFIER, CONST, or AT_SIGN (attributes), ends with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                             "unexpected token(s) '", stream.peekValue(), "' inside struct body");
             
             // Synchronize to nearest valid field to recover
-            // we use synchonize here because we don't want to log too much diagnostic about the same error
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::RBRACE);
             if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
                 break;
             }
@@ -579,7 +578,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             fields.push_back(field);
         } else {
             // Synchronize to nearest valid field to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::RBRACE);
         }
     }
     
@@ -766,13 +765,13 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
 
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         // Filter all invalid token in this context
-        // An enum variant starts with IDENTIFIER and ends with SEMICOLON
-        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::SEMICOLON)) {
+        // An enum variant starts with IDENTIFIER or AT_SIGN (attributes), ends with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::AT_SIGN, TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected token(s) '", stream.peekValue(), "' inside enum body");
             
             // Synchronize to nearest valid variant to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::AT_SIGN, TokenType::RBRACE);
             if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
                 break;
             }
@@ -789,7 +788,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
             variants.push_back(variant);
         } else {
             // Synchronize to nearest valid variant to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::AT_SIGN, TokenType::RBRACE);
         }
     }
     
@@ -919,13 +918,13 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         // Filter all invalid token in this context
-        // A trait field starts with IDENTIFIER or CONST, ends with SEMICOLON
-        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::SEMICOLON)) {
+        // A trait field starts with IDENTIFIER, CONST, or AT_SIGN (attributes), ends with SEMICOLON
+        if (!stream.checkAny(TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected token(s) '", stream.peekValue(), "' inside trait body");
             
             // Synchronize to nearest valid field to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::RBRACE);
             if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
                 break;
             }
@@ -942,7 +941,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
             fields.push_back(field);
         } else {
             // Synchronize to nearest valid field to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::RBRACE);
+            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::RBRACE);
         }
     }
     

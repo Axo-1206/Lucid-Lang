@@ -170,6 +170,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
         // A top-level declaration starts with a declaration keyword
         // We also skip stray semicolons
         if (!stream.check(TokenType::SEMICOLON) &&
+            !stream.check(TokenType::AT_SIGN) &&  // Attributes are part of declarations
             !is_declaration_keyword(stream.peekType())) {
             
             // Check if it's a control flow or concurrency keyword (invalid at top level)

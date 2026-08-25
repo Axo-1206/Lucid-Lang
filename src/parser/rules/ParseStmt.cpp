@@ -115,6 +115,7 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         case TokenType::STRUCT:
         case TokenType::ENUM:
         case TokenType::TRAIT:
+        case TokenType::AT_SIGN: // Attributes start a declaration
             result = parseDeclStmt(stream, ctx);
             break;
 
@@ -217,6 +218,7 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
                 TokenType::AWAIT,
                 TokenType::SPAWN,
                 TokenType::JOIN,
+                TokenType::AT_SIGN,        // Attributes
                 TokenType::LET,            // Declarations
                 TokenType::CONST,
                 TokenType::STRUCT,
