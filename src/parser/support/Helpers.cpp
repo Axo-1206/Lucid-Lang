@@ -32,59 +32,6 @@
 
 namespace parser {
 
-// =============================================================================
-// Helper: handleCommaGap - Hybrid strategy for comma gaps at LIST level
-// =============================================================================
-
-/**
- * @brief Handle comma gaps intelligently at the list level.
- * 
- * - 1-2 commas: report "expected X" once (user probably forgot the element)
- * - 3+ commas: report "unexpected trailing comma" once (user has trailing commas)
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @param what The thing that was expected (e.g., "attribute", "argument", "type")
- * @param isFirst Whether this is the first item in the list
- * @return int The number of commas consumed
- */
-int handleCommaGap(TokenStream& stream, ParserContext& ctx, const std::string& what, bool isFirst) {
-    int commaCount = stream.consumeTrailing(TokenType::COMMA);
-    
-    if (commaCount == 0) {
-        return 0;
-    }
-    
-    if (isFirst) {
-        // Leading commas before first item
-        if (commaCount <= 2) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected ", what, ", got ','");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                    "unexpected leading comma in ", what, " list");
-        }
-        return commaCount;
-    }
-    
-    // Commas between items (after at least one item was parsed)
-    if (commaCount <= 2) {
-        // Small gap - user probably forgot the element
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected ", what, ", got ','");
-    } else {
-        // Large gap - user has trailing commas
-        ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                "unexpected trailing comma in ", what, " list");
-    }
-    
-    return commaCount;
-}
-
-// =============================================================================
-// harvestDocComment
-// =============================================================================
-
 std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx) {
     Trace::detail("harvestDocComment: checking for doc comment");
     
@@ -164,10 +111,9 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
     return std::nullopt;
 }
 
-// =============================================================================
-// parseAttributes - LIST LEVEL - handles commas
-// =============================================================================
 
+/// NOTE: this function should synchronize to the start of declaration when error
+///  happen
 ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx) {
     Trace::detail("parseAttributes: checking for attributes");
     
@@ -182,39 +128,33 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '[' for attribute list, got '", stream.peekValue(), "'");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER}); // IDENTIFIER is for field declaration
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER});
         return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
     stream.consume(); // Consume '['
-
-    ScopedContext attrGuard(ctx, SyntacticContext::Attribute, stream.currentLoc());
-
-    bool isFirst = true;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
-        // Handle commas before this item (list-level comma handling)
-        handleCommaGap(stream, ctx, "attribute", isFirst);
-        isFirst = false;
-        
-        // Parse single attribute (NO comma handling inside)
+        // ─── Parse single attribute ──────────────────────────────────────
         AttributeAST* attr = parseAttribute(stream, ctx);
         if (attr) {
             attrs.push_back(attr);
         } else {
-            synchronizeToDeclBoundary(stream, ctx, 
-                {TokenType::IDENTIFIER, TokenType::RBRACKET}); // IDENTIFIER is for field declaration
-            
-            // Not recoverable, the user may forget to close ']' before the declaration
-            if (!stream.check(TokenType::RBRACKET)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ']' to close attribute list");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER});
+            break;
+        }
 
-                auto builder = ctx.arena.makeBuilder<AttributeAST*>();
-                return builder.build();
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RBRACKET)) {
+                break;
             }
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate attributes");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER});
+            break;
         }
     }
     
+    // ─── Handle missing closing ']' ──────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ']' to close attribute list");
@@ -229,13 +169,17 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx
     return builder.build();
 }
 
-// =============================================================================
-// parseAttribute - ITEM LEVEL - NO comma handling
-// =============================================================================
-
+// This function will not attempt to recover on error, the parseAttributes above
+// will handle it
 AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
+    if (stream.check(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected attribute name before ','");
+        return nullptr;
+    }
+
     SourceLocation loc = stream.currentLoc();
-    
+
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected attribute name, got '", stream.peekValue(), "'");
@@ -249,47 +193,54 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     attr->loc = loc;
     attr->name = name;
     
-    // Attribute arguments - this is a sub-list, handle commas here
-    std::vector<LiteralExprAST*> args;
+    // ─── Parse attribute arguments ──────────────────────────────────────────
     if (stream.match(TokenType::LPAREN)) {
-        bool isFirstArg = true;
+        std::vector<LiteralExprAST*> args;
         
         while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-            // Handle commas before this argument (sub-list level)
-            handleCommaGap(stream, ctx, "attribute argument", isFirstArg);
-            isFirstArg = false;
-            
+            // ─── Parse argument literal ──────────────────────────────────────
             LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
             if (arg) {
                 args.push_back(arg);
             } else {
                 return nullptr;
             }
+            
+            if (!stream.match(TokenType::COMMA)) {
+                if (stream.check(TokenType::RPAREN)) {
+                    break;
+                }
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ',' to separate attribute literal arguments");
+                synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER});
+                return nullptr;
+            }
         }
         
+        // ─── Handle missing closing ')' ──────────────────────────────────────
         if (stream.isAtEnd()) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ')' to close attribute arguments");
         } else {
             stream.consume(); // Consume ')'
         }
+        
+        auto builder = ctx.arena.makeBuilder<LiteralExprAST*>();
+        for (auto* arg : args) {
+            builder.push_back(arg);
+        }
+        attr->args = builder.build();
     }
-    
-    auto builder = ctx.arena.makeBuilder<LiteralExprAST*>();
-    for (auto* arg : args) {
-        builder.push_back(arg);
-    }
-    attr->args = builder.build();
-    
-    Trace::detail("parseAttribute: parsed '", ctx.pool.lookup(name), "' with ", args.size(), " args");
     return attr;
 }
 
-// =============================================================================
-// parseAttributeArgLiteral
-// =============================================================================
-
 LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
+    if (stream.check(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected attribute literal argument before ','");
+        return nullptr;
+    }
+    
     SourceLocation loc = stream.currentLoc();
     Token tok = stream.peek();
     
@@ -343,47 +294,56 @@ LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
     return literal;
 }
 
-// =============================================================================
-// parseGenericParamDecls - LIST LEVEL - handles commas
-// =============================================================================
 
+/// Generic parameter declaration can appear in generic struct/trait/function
+///
+/// - for struct or trait the best recovery is stop at '{'
+/// - for function declaration the best recovery is stop at '('
 ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
     std::vector<GenericParamDeclAST*> params;
     
     if (!stream.check(TokenType::LESS)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '<', got '", stream.peekValue(), "'");
+                                "expected '<' for generic parameter list, got '", stream.peekValue(), "'");
         return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
     }
     stream.consume(); // Consume '<'
     
     if (stream.check(TokenType::GREATER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected generic parameter name, got '>'");
+                                "empty generic list, please fill a parameter or remove empty '<>'");
         stream.consume(); // Consume '>'
         return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
     }
     
-    ScopedContext guard(ctx, SyntacticContext::GenericParams, stream.currentLoc());
-
-    bool isFirst = true;
-    
     while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
-        // Handle commas before this parameter (list-level comma handling)
-        handleCommaGap(stream, ctx, "generic parameter", isFirst);
-        isFirst = false;
-        
-        // Parse single generic parameter (NO comma handling inside)
         GenericParamDeclAST* param = parseGenericParamDecl(stream, ctx);
         if (param) {
             params.push_back(param);
-        } else {
-            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
+
+            if (!stream.match(TokenType::COMMA)) {
+                if (stream.check(TokenType::GREATER)) {
+                    break;
+                }
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ',' to separate generic parameters");
+                synchronizeTo(stream, ctx, TokenType::GREATER, TokenType::SEMICOLON);
                 break;
             }
+        } else {            
+            // Check if we stopped at an incomplete state (LBRACE, LPAREN, SEMICOLON)
+            if (stream.checkAny(TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                        "incomplete generic parameter list");
+                break;
+            }
+            
+            synchronizeTo(stream, ctx, TokenType::GREATER, TokenType::SEMICOLON);
+            break;
         }
     }
     
+    // ─── Handle missing closing '>' ──────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '>' to close generic parameter list");
@@ -399,11 +359,13 @@ ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, Pars
     return builder.build();
 }
 
-// =============================================================================
-// parseGenericParamDecl - ITEM LEVEL - NO comma handling
-// =============================================================================
-
 GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& ctx) {
+    if (stream.check(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected generic parameter name before ','");
+        return nullptr;
+    }
+    
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -423,16 +385,17 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
         std::vector<NamedTypeAST*> constraints;
         bool hasConstraint = false;
 
-        if (stream.consumeTrailing(TokenType::PLUS) > 0) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                    "unexpected leading '+' in generic constraints");
+        if (stream.check(TokenType::PLUS)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected trait constraint name before '+'");
+            return nullptr;
         }
         
-        // ─── Filter invalid tokens ────────────────────────────────────────
-        // A constraint starts with a type (IDENTIFIER or module:type)
-        while (!stream.isAtEnd() && 
-               !stream.check(TokenType::GREATER) && 
-               !stream.check(TokenType::COMMA)) {
+        while (!stream.isAtEnd() && !stream.check(TokenType::GREATER) &&
+               !stream.check(TokenType::LBRACE) &&
+               !stream.check(TokenType::LPAREN) &&
+               !stream.check(TokenType::SEMICOLON)
+            ) {
             
             // ─── Parse the constraint type ────────────────────────────────
             NamedTypeAST* traitRef = parseNamedType(stream, ctx)->as<NamedTypeAST>();
@@ -442,32 +405,24 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                         "expected trait constraint, got '", stream.peekValue(), "'");
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
-                break;
+                return nullptr;
             }
             
-            // Check for trailing plus
-            int count = stream.consumeTrailing(TokenType::PLUS);
-            if (count == 0) {
+
+            if (!stream.match(TokenType::PLUS)) {
                 if (stream.check(TokenType::GREATER)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "expected generic constraint after '+'");
-                } else {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                        "expected '+' to separate generic constraints");
+                    break;
                 }
-            } else if (count == 2) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
-                                        "expected generic constraint after '+'");
-            } else if (count > 3) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "unexpected consecutive '+' in generic constraints'");
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected '+' to separate trait constraints");
+                return nullptr;
             }
         }
         
         if (!hasConstraint) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected trait constraint after ':'");
+            return nullptr;
         }
         
         auto builder = ctx.arena.makeBuilder<NamedTypeAST*>();
@@ -480,45 +435,57 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
     return param;
 }
 
-// =============================================================================
-// parseGenericArgs - LIST LEVEL - handles commas
-// =============================================================================
 
 ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     std::vector<TypeAST*> args;
 
     if (!stream.check(TokenType::LESS)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '<', got '", stream.peekValue(), "'");
+                                "expected '<' for generic argument list, got '", stream.peekValue(), "'");
         return ctx.arena.makeBuilder<TypeAST*>().build();
     }
     stream.consume(); // Consume '<'
 
     if (stream.check(TokenType::GREATER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected generic argument type, got '>'");
+                                "expected generic argument type, please fill a type or remove empty '<>'");
         stream.consume(); // Consume '>'
         return ctx.arena.makeBuilder<TypeAST*>().build();
     }
 
-    ScopedContext guard(ctx, SyntacticContext::GenericArgs, stream.currentLoc());
+    if (stream.match(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected generic argument type before ','");
+         synchronizeTo(stream, ctx, TokenType::GREATER);
+    }
 
-    bool isFirst = true;
 
     while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
-        // Handle commas before this argument (list-level comma handling)
-        handleCommaGap(stream, ctx, "generic argument", isFirst);
-        isFirst = false;
-        
-        // Parse single type (NO comma handling inside)
         TypeAST* type = parseType(stream, ctx);
         if (type) {
             args.push_back(type);
         } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "failed to parse generic argument, got '", stream.peekValue(), "'");
+            
+            synchronizeTo(stream, ctx, TokenType::GREATER);
+            break;
+        }
+
+        // ─── Check for comma after argument ──────────────────────────────
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::GREATER)) {
+                break;
+            }
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate generic arguments");
+
+            synchronizeTo(stream, ctx, TokenType::GREATER);
             break;
         }
     }
 
+    // ─── Handle missing closing '>' ──────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '>' to close generic argument list");
@@ -534,16 +501,13 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-// =============================================================================
-// parseParamList - LIST LEVEL - handles commas
-// =============================================================================
 
 std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
     std::vector<ParamAST*> params;
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(', got '", stream.peekValue(), "'");
+                                "expected '(' for parameter list, got '", stream.peekValue(), "'");
         return params;
     }
     stream.consume(); // Consume '('
@@ -553,15 +517,17 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         return params;
     }
 
-    bool isFirst = true;
     bool hasVariadic = false;
     
+    if (stream.match(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected parameter before ','");
+        synchronizeTo(stream, ctx, TokenType::RPAREN);
+    }
+
     while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        // Handle commas before this parameter (list-level comma handling)
-        handleCommaGap(stream, ctx, "parameter", isFirst);
-        isFirst = false;
-        
-        // Parse single parameter (NO comma handling inside)
+
+        // ─── Parse single parameter ──────────────────────────────────────────
         SourceLocation loc = stream.currentLoc();
         
         bool isConstParam = stream.match(TokenType::CONST);
@@ -573,11 +539,9 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
             if (!stream.check(TokenType::IDENTIFIER)) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                         "expected parameter name, got '", stream.peekValue(), "'");
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                    break;
-                }
-                continue;
+                
+                synchronizeTo(stream, ctx, TokenType::RPAREN);
+                break;
             }
             
             Token nameTok = stream.consume();
@@ -592,28 +556,24 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected parameter type, got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                break;
-            }
-            continue;
+            
+            // Synchronize to the next comma or ')'
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            break;
         }
         
         // ─── If variadic, wrap the type in [*]T ──────────────────────────────
-        // The grammar says: `...T` is a parameter that collects arguments into [*]T
-        // So the parameter type should be [*]T, not T
         TypeAST* finalType = type;
         if (isVariadic) {
-            // Store as [*]T (dynamic array) - the element type is 'type'
             finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
         }
         
-        // ─── Create ParamAST using constructor ──────────────────────────────
-        // Parameters are always `let` by default (mutable bindings)
+        // ─── Create ParamAST ──────────────────────────────────────────────────
         ParamAST* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
         param->loc = loc;
         params.push_back(param);
         
+        // ─── Validation ──────────────────────────────────────────────────────
         if (allowNames && !hasName) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
                                     "expected parameter name before type");
@@ -632,9 +592,25 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         if (isVariadic && stream.check(TokenType::COMMA)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "variadic parameter must be the last parameter");
+            // Still consume the comma to avoid infinite loop
+            stream.consume();
+        }
+
+        // ─── Check for comma after parameter ──────────────────────────────────
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RPAREN)) {
+                break;
+            }
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate parameters");
+            
+            // Synchronize to ')'
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            break;
         }
     }
     
+    // ─── Handle missing closing ')' ──────────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close parameter list");
@@ -645,16 +621,13 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
     return params;
 }
 
-// =============================================================================
-// parseArgList - CALL SITE
-// =============================================================================
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     std::vector<ExprAST*> args;
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(', got '", stream.peekValue(), "'");
+                                "expected '(' for argument list, got '", stream.peekValue(), "'");
         return ctx.arena.makeBuilder<ExprAST*>().build();
     }
     stream.consume(); // Consume '('
@@ -664,27 +637,37 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.makeBuilder<ExprAST*>().build();
     }
 
-    bool isFirst = true;
-    
+    if (stream.match(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                "expected argument expression before ','");
+        synchronizeTo(stream, ctx, TokenType::RPAREN);
+    }
+
     while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        // Handle commas before this argument (list-level comma handling)
-        handleCommaGap(stream, ctx, "argument", isFirst);
-        isFirst = false;
-        
         ExprAST* arg = parseExpr(stream, ctx);
         if (arg) {
             args.push_back(arg);
         } else {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected argument expression, got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
+                                    "failed to parse argument, got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            break;
+        }
+
+        // ─── Check for comma after argument ──────────────────────────────────
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RPAREN)) {
                 break;
             }
-            continue;
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate arguments");
+
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            break;
         }
     }
     
+    // ─── Handle missing closing ')' ──────────────────────────────────────────
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close argument list");
@@ -711,7 +694,7 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected identifier in import path, got '", stream.peekValue(), "'");
-            synchronizeTo(stream, ctx, TokenType::AS, TokenType::SEMICOLON);
+            synchronizeToDeclBoundary(stream, ctx);
             break;
         }
         

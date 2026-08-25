@@ -524,7 +524,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             
             int count = stream.consumeTrailing(TokenType::COMMA);
             if (count == 0) {
-                if (stream.check(TokenType::LBRACE)) {
+                if (!stream.check(TokenType::LBRACE)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                         "expected a type after ',' in trait list");
                 } else {

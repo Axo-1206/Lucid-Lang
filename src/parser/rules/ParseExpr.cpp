@@ -350,14 +350,9 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         }
         
         int count = stream.consumeTrailing(TokenType::COMMA);
-        if (count == 0) {
-            if (stream.check(TokenType::RBRACKET)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "expected array element after ',' in array");
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected ',' to separate array elements");
-            }
+        if (count == 0 && !stream.check(TokenType::RBRACKET)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                "expected ',' to separate array elements");
         } else if (count == 2) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
                                     "expected array element after ',' in array");
@@ -1125,10 +1120,8 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
     
     while (!stream.isAtEnd() && stream.check(TokenType::PIPELINE)) {
         int count = stream.consumeTrailing(TokenType::PIPELINE);
-        if (count == 0) {
-             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected pipeline step after '|>'");
-        } else if (count == 2) {
+        // We already consume atleast 1 '|>' so there's no need for 'count == 0' case
+        if (count == 2) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
                                     "expected step in pipeline");
         } else if (count > 3) {
@@ -1138,7 +1131,7 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
         
         PipelineStepAST* step = parsePipelineStep(stream, ctx);
         if (!step) {
-            break;
+            return nullptr;
         }
         steps.push_back(step);
     }
@@ -1254,31 +1247,12 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
         return nullptr;
     }
     
-    if (!stream.check(TokenType::COMPOSE)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                                "expected '+>', got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    stream.consume(); // Consume '+>'
-    
     std::vector<ComposeOperandAST*> operands;
-    
-    // ─── Parse first operand ──────────────────────────────────────────────
-    ComposeOperandAST* operand = parseComposeOperand(stream, ctx);
-    if (!operand) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected composition operand");
-        return nullptr;
-    }
-    operands.push_back(operand);
     
     // ─── Parse additional operands ────────────────────────────────────────
     while (!stream.isAtEnd() && stream.check(TokenType::COMPOSE)) {
         int count = stream.consumeTrailing(TokenType::COMPOSE);
-        if (count == 0) {
-             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected '+>' to separate operand");
-        } else if (count == 2) {
+        if (count == 2) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
                                     "expected operand after '+>'");
         } else if (count > 3) {
@@ -1286,7 +1260,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
                                     "unexpected consecutive '+>'");
         }
         
-        operand = parseComposeOperand(stream, ctx);
+        ComposeOperandAST* operand = parseComposeOperand(stream, ctx);
         if (!operand) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected composition operand");
