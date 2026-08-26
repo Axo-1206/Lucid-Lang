@@ -136,16 +136,12 @@ static void lowerRangeForLoop(
         llvm::Type* elemType = getType(ctx, range->lo->resolvedType);
         if (elemType) {
             startVal = loadIfNeeded(startVal, elemType, ctx);
-        } else {
-            startVal = loadIfNeeded(startVal, true, ctx);
         }
     }
     if (range->hi->isLValue) {
         llvm::Type* elemType = getType(ctx, range->hi->resolvedType);
         if (elemType) {
             endVal = loadIfNeeded(endVal, elemType, ctx);
-        } else {
-            endVal = loadIfNeeded(endVal, true, ctx);
         }
     }
 
@@ -180,8 +176,6 @@ static void lowerRangeForLoop(
             llvm::Type* elemType = getType(ctx, stmt->step->resolvedType);
             if (elemType) {
                 stepVal = loadIfNeeded(stepVal, elemType, ctx);
-            } else {
-                stepVal = loadIfNeeded(stepVal, true, ctx);
             }
         }
         if (!stepVal) {
@@ -286,8 +280,6 @@ static void lowerCollectionForLoop(
         llvm::Type* elemType = getType(ctx, stmt->iterable->resolvedType);
         if (elemType) {
             collection = loadIfNeeded(collection, elemType, ctx);
-        } else {
-            collection = loadIfNeeded(collection, true, ctx);
         }
         if (!collection) {
             return;

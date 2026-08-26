@@ -398,8 +398,6 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
             llvm::Type* elemType = getType(ctx, init->value->resolvedType);
             if (elemType) {
                 fieldValue = loadIfNeeded(fieldValue, elemType, ctx);
-            } else {
-                fieldValue = loadIfNeeded(fieldValue, true, ctx);
             }
             if (!fieldValue) return nullptr;
         }
@@ -515,16 +513,12 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->left->resolvedType);
         if (elemType) {
             left = loadIfNeeded(left, elemType, ctx);
-        } else {
-            left = loadIfNeeded(left, true, ctx);
         }
     }
     if (expr->right->isLValue) {
         llvm::Type* elemType = getType(ctx, expr->right->resolvedType);
         if (elemType) {
             right = loadIfNeeded(right, elemType, ctx);
-        } else {
-            right = loadIfNeeded(right, true, ctx);
         }
     }
     if (!left || !right) {
@@ -714,8 +708,6 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->operand->resolvedType);
         if (elemType) {
             operand = loadIfNeeded(operand, elemType, ctx);
-        } else {
-            operand = loadIfNeeded(operand, true, ctx);
         }
         if (!operand) return nullptr;
     }
@@ -776,8 +768,6 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
             if (elemType) {
                 argVal = loadIfNeeded(argVal, elemType, ctx);
-            } else {
-                argVal = loadIfNeeded(argVal, true, ctx);
             }
             if (!argVal) return nullptr;
         }
@@ -843,8 +833,6 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->index->resolvedType);
         if (elemType) {
             index = loadIfNeeded(index, elemType, ctx);
-        } else {
-            index = loadIfNeeded(index, true, ctx);
         }
         if (!index) return nullptr;
     }
@@ -930,8 +918,6 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
             llvm::Type* elemType = getType(ctx, expr->start->resolvedType);
             if (elemType) {
                 start = loadIfNeeded(start, elemType, ctx);
-            } else {
-                start = loadIfNeeded(start, true, ctx);
             }
             if (!start) return nullptr;
         }
@@ -949,8 +935,6 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
             llvm::Type* elemType = getType(ctx, expr->end->resolvedType);
             if (elemType) {
                 end = loadIfNeeded(end, elemType, ctx);
-            } else {
-                end = loadIfNeeded(end, true, ctx);
             }
             if (!end) return nullptr;
         }
@@ -1402,8 +1386,6 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         llvm::Type* elemType = getType(ctx, expr->fallback->resolvedType);
         if (elemType) {
             rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
-        } else {
-            rhsValue = loadIfNeeded(rhsValue, true, ctx);
         }
     }
     ctx.builder.CreateBr(mergeBlock);
@@ -1449,8 +1431,6 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
         if (elemType) {
             rhs = loadIfNeeded(rhs, elemType, ctx);
-        } else {
-            rhs = loadIfNeeded(rhs, true, ctx);
         }
         if (!rhs) return nullptr;
     }
@@ -1524,8 +1504,6 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->seed->resolvedType);
         if (elemType) {
             currentValue = loadIfNeeded(currentValue, elemType, ctx);
-        } else {
-            currentValue = loadIfNeeded(currentValue, true, ctx);
         }
     }
 
@@ -1587,8 +1565,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
             if (elemType) {
                 argVal = loadIfNeeded(argVal, elemType, ctx);
-            } else {
-                argVal = loadIfNeeded(argVal, true, ctx);
             }
             if (!argVal) return nullptr;
         }
@@ -1753,8 +1729,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         llvm::Type* elemType = getType(ctx, step->callable->resolvedType);
         if (elemType) {
             calleeVal = loadIfNeeded(calleeVal, elemType, ctx);
-        } else {
-            calleeVal = loadIfNeeded(calleeVal, true, ctx);
         }
         if (!calleeVal) return nullptr;
     }
@@ -1798,8 +1772,6 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
         llvm::Type* elemType = getType(ctx, operand->callable->resolvedType);
         if (elemType) {
             callable = loadIfNeeded(callable, elemType, ctx);
-        } else {
-            callable = loadIfNeeded(callable, true, ctx);
         }
         if (!callable) return nullptr;
     }
@@ -2109,8 +2081,6 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->thenBranch->resolvedType);
         if (elemType) {
             thenVal = loadIfNeeded(thenVal, elemType, ctx);
-        } else {
-            thenVal = loadIfNeeded(thenVal, true, ctx);
         }
     }
     ctx.builder.CreateBr(mergeBlock);
@@ -2125,8 +2095,6 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
         llvm::Type* elemType = getType(ctx, expr->elseBranch->resolvedType);
         if (elemType) {
             elseVal = loadIfNeeded(elseVal, elemType, ctx);
-        } else {
-            elseVal = loadIfNeeded(elseVal, true, ctx);
         }
     }
     ctx.builder.CreateBr(mergeBlock);

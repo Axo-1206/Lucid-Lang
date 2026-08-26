@@ -190,11 +190,7 @@ llvm::IntegerType* getEnumType(CodeGenContext& ctx, const EnumDeclAST* decl) {
     return llvm::Type::getInt32Ty(ctx.llvmCtx);
 }
 
-llvm::FunctionType* getFunctionType(
-    CodeGenContext& ctx,
-    FuncTypeAST* funcType,
-    bool isClosure
-) {
+llvm::FunctionType* getFunctionType(CodeGenContext& ctx, FuncTypeAST* funcType, bool isClosure) {
     if (!funcType) return nullptr;
 
     std::vector<llvm::Type*> paramTypes;
@@ -304,6 +300,54 @@ llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type) {
     }
 }
 
+/// @brief Get the LLVM type for an unresolved named type.
+///
+/// This is the fallback path for `NamedTypeAST` nodes that are NOT handled
+/// earlier in the `getType()` dispatch. In a correct AST, named types that
+/// resolve to a concrete declaration (`resolvedDecl` set) are routed directly
+/// to `getStructType()` or `getEnumType()` *before* this function is called.
+/// Similarly, named types that are generic parameters are intercepted and
+/// substituted in the `ASTKind::NamedType` case of `getType()`.
+///
+/// Consequently, `getNamedType()` is only invoked for:
+///   - Types that are genuinely unresolved (e.g., missing declarations).
+///   - Types that are forward‑referenced from another module.
+///   - Malformed or incomplete ASTs produced by parser error recovery.
+///
+/// ─── Behavior ──────────────────────────────────────────────────────────────
+/// 1.  **Primitive fallback** (defensive):
+///     If the name matches a primitive keyword (e.g., "int", "string"),
+///     the function maps it to the corresponding LLVM primitive type.
+///     This is a safety net; in a well‑formed AST, primitive keywords are
+///     always parsed as `PrimitiveTypeAST` and therefore never reach this
+///     function. Because primitive names are reserved, this fallback does
+///     not conflict with user‑defined types.
+///
+/// 2.  **User‑defined type lookup**:
+///     Attempts to retrieve an existing LLVM struct type by the given name
+///     from the LLVM context. If found, that type is returned.
+///
+/// 3.  **Forward declaration**:
+///     If no matching LLVM type exists, an opaque forward‑declared struct
+///     type is created. This typically occurs for types defined in another
+///     module or for recursive references that are still being built.
+///     A warning is emitted to indicate that the type was not yet defined
+///     at the point of use.
+///
+/// ─── Important Notes ──────────────────────────────────────────────────────
+/// - The primitive lookup is **redundant for correct ASTs** but improves
+///   robustness against parser bugs or accidental misuse.
+/// - Generic parameter resolution is handled by the caller (`getType`)
+///   through the `GenericSubstitution` parameter; this function assumes
+///   that any generic parameters have already been substituted.
+/// - Enum types are never resolved by this function because `EnumDeclAST`
+///   nodes are intercepted earlier via `resolvedDecl`.
+///
+/// @param ctx   The code generation context (provides LLVM context,
+///              diagnostics, and string pool).
+/// @param type  The named type AST node to resolve.
+/// @return      The corresponding LLVM type, or an opaque forward‑declared
+///              struct if the type cannot be found.
 llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* type) {
     if (!type) return nullptr;
 

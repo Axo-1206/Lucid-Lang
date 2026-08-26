@@ -32,21 +32,21 @@
 /// ─── Detailed Explanation ──────────────────────────────────────────────────
 ///
 /// 1. Stack Allocation (alloca) - AUTO-FREED
-///    ┌─────────────────────────────────────────────────────────────┐
+///    ┌───────────────────────────────────────────────────────────┐
 ///    │  createAlloca() → LLVM `alloca` instruction               │
 ///    │  Memory lives on the stack frame                          │
 ///    │  Automatically freed when the function returns            │
 ///    │  No manual free required                                  │
-///    │  Very fast (just moves stack pointer)                    │
-///    └─────────────────────────────────────────────────────────────┘
+///    │  Very fast (just moves stack pointer)                     │
+///    └───────────────────────────────────────────────────────────┘
 ///
 /// 2. Heap Allocation (malloc/__lucid_alloc) - MUST FREE
-///    ┌─────────────────────────────────────────────────────────────┐
+///    ┌───────────────────────────────────────────────────────────┐
 ///    │  __lucid_alloc() → Runtime heap allocation                │
 ///    │  Memory lives on the heap                                 │
 ///    │  Must be explicitly freed with __lucid_free()             │
 ///    │  Managed by runtime (GC or reference counting)            │
-///    └─────────────────────────────────────────────────────────────┘
+///    └───────────────────────────────────────────────────────────┘
 ///
 /// ─── Why Alloca Doesn't Need Free ─────────────────────────────────────────
 ///
@@ -65,10 +65,10 @@
 ///
 /// ─── Summary ──────────────────────────────────────────────────────────────
 ///
-/// | Allocation Method | Memory Type | Who Frees? | When? | File |
-/// |-------------------|-------------|------------|-------|------|
-/// | createAlloca()    | Stack       | Automatic  | Return | CodeGenAlloca.hpp |
-/// | __lucid_alloc()   | Heap        | Runtime    | Explicit | IntrinsicEmitter.cpp |
+/// | Allocation Method | Memory Type | Who Frees? | When?      | File                 |
+/// | ----------------- | ----------- | ---------- | ---------- | -------------------- |
+/// | createAlloca()    | Stack       | Automatic  | Return     | CodeGenAlloca.hpp    |
+/// | __lucid_alloc()   | Heap        | Runtime    | Explicit   | IntrinsicEmitter.cpp |
 /// | arena_alloc()     | Arena       | Runtime    | reset/free | IntrinsicEmitter.cpp |
 ///
 /// ─── Key Helpers ────────────────────────────────────────────────────────────
@@ -167,26 +167,6 @@ llvm::BasicBlock* createBlock(
 llvm::Value* loadIfNeeded(
     llvm::Value* value,
     llvm::Type* elemType,
-    CodeGenContext& ctx
-);
-
-/// @brief DEPRECATED: Use the overload with explicit elemType.
-/// @param value The value to potentially load.
-/// @param isLValue Unused for loading purposes (see note) - kept only to
-///        preserve the old call signature for source compatibility.
-/// @param ctx The code generation context.
-/// @return `value`, unchanged, regardless of `isLValue`.
-/// @deprecated With opaque pointers (LLVM 17+), the element type cannot be
-///             inferred from `value` alone, so this overload CANNOT load
-///             correctly - unlike what its old signature implies, it does
-///             NOT conditionally load when `isLValue` is true. It always
-///             returns `value` unchanged and emits a warning diagnostic.
-///             Any remaining call site relying on this to perform a load
-///             is silently broken and must switch to the
-///             `loadIfNeeded(value, elemType, ctx)` overload.
-llvm::Value* loadIfNeeded(
-    llvm::Value* value,
-    bool isLValue,
     CodeGenContext& ctx
 );
 

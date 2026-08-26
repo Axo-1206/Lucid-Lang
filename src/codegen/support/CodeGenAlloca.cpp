@@ -13,11 +13,7 @@ namespace codegen {
 
 // ─── Alloca Creation ──────────────────────────────────────────────────────
 
-llvm::AllocaInst* createAlloca(
-    const std::string& name,
-    llvm::Type* type,
-    CodeGenContext& ctx
-) {
+llvm::AllocaInst* createAlloca(const std::string& name, llvm::Type* type, CodeGenContext& ctx) {
     llvm::Function* func = ctx.getCurrentFunction();
     if (!func) {
         return nullptr;
@@ -30,10 +26,7 @@ llvm::AllocaInst* createAlloca(
     return builder.CreateAlloca(type, nullptr, name);
 }
 
-llvm::BasicBlock* createBlock(
-    const std::string& name,
-    CodeGenContext& ctx
-) {
+llvm::BasicBlock* createBlock(const std::string& name, CodeGenContext& ctx) {
     llvm::Function* func = ctx.getCurrentFunction();
     if (!func) {
         return nullptr;
@@ -44,29 +37,13 @@ llvm::BasicBlock* createBlock(
 
 // ─── Load Helpers ─────────────────────────────────────────────────────────
 
-llvm::Value* loadIfNeeded(
-    llvm::Value* value,
-    llvm::Type* elemType,
-    CodeGenContext& ctx
-) {
+llvm::Value* loadIfNeeded(llvm::Value* value, llvm::Type* elemType, CodeGenContext& ctx) {
     if (!value || !elemType) return value;
 
     if (value->getType()->isPointerTy()) {
         return ctx.builder.CreateLoad(elemType, value);
     }
 
-    return value;
-}
-
-llvm::Value* loadIfNeeded(
-    llvm::Value* value,
-    bool isLValue,
-    CodeGenContext& ctx
-) {
-    if (!value || !isLValue) return value;
-
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, SourceLocation(),
-                              "loadIfNeeded(bool) is deprecated - use loadIfNeeded(value, elemType, ctx)");
     return value;
 }
 
