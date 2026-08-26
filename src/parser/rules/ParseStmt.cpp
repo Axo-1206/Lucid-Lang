@@ -13,6 +13,7 @@
  *   handles type checking, control flow analysis, and narrowing.
  */
 
+#include "core/SourceLocation.hpp"
 #include "core/Tokens.hpp"
 #include "../Parser.hpp"
 #include "../context/ParserContext.hpp"
@@ -180,7 +181,6 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' to open block body");
-        synchronizeToContext(stream, ctx);
         return nullptr;
     }
 
@@ -245,8 +245,13 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
         if (stmt) {
             builder.push_back(stmt);
         } else {
-            // parseStmt reported the error. If no progress was made, consume
-            // one token to avoid infinite loop.
+            // parseStmt returned nullptr. Insert placeholder node to preserve statement sequence.
+            auto* unknownStmt = ctx.arena.make<UnknownStmtAST>();
+            unknownStmt->loc = stream.currentLoc();
+            unknownStmt->hasError = true;
+            builder.push_back(unknownStmt);
+
+            // If no progress was made, consume one token to avoid infinite loop.
             if (stream.getPos() == savedPos && !stream.isAtEnd()) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                         "skipping unexpected token '", stream.peekValue(), "'");
@@ -290,15 +295,15 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected if condition");
         synchronizeTo(stream, ctx, TokenType::LBRACE);
+        condition = ctx.arena.make<UnknownExprAST>();
         ifStmt->hasError = true;
     }
     ifStmt->condition = condition;
 
     StmtAST* thenBranch = parseBlock(stream, ctx);
     if (!thenBranch) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected then branch block");
-        return nullptr;
+        thenBranch = ctx.arena.make<UnknownStmtAST>();
+        ifStmt->hasError = true;
     }
     ifStmt->thenBranch = thenBranch;
     
@@ -308,7 +313,8 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
             if (elseBranch) {
                 ifStmt->elseBranch = elseBranch;
             } else {
-                return nullptr;
+                ifStmt->elseBranch = ctx.arena.make<UnknownStmtAST>();
+                ifStmt->hasError = true;
             }
         } else {
             StmtAST* elseBranch = parseBlock(stream, ctx);
@@ -317,7 +323,8 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                         "expected else branch block");
-                return nullptr;
+                ifStmt->elseBranch = ctx.arena.make<UnknownStmtAST>();
+                ifStmt->hasError = true;
             }
         }
     }
@@ -363,9 +370,6 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
         synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
         return switchStmt;
     }
-    
-    // ─── Push SwitchBody context ───────────────────────────────────────────
-    ScopedContext switchContext(ctx, SyntacticContext::SwitchBody, stream.currentLoc());
     
     auto bodyBuilder = ctx.arena.makeBuilder<SwitchCaseAST*>();
     bool hasDefault = false;
@@ -741,23 +745,17 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (!iterable) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected iterable expression");
-                
-            // Attempt to recover if the next token is '{', if it is not '{' then stop here
-            if (!stream.check(TokenType::LBRACE)) {
-                return nullptr;
-            }
-        }
-        forStmt->iterable = iterable;
-        if (!iterable) {
+            synchronizeTo(stream, ctx, TokenType::LBRACE);
+            iterable = ctx.arena.make<UnknownExprAST>();
             forStmt->hasError = true;
         }
+        forStmt->iterable = iterable;
         
         // ─── 6. Parse loop body ──────────────────────────────────────────────
         StmtAST* body = parseBlock(stream, ctx);
         if (!body) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                    "expected loop body block");
-            return nullptr;
+            body = ctx.arena.make<UnknownStmtAST>();
+            forStmt->hasError = true;
         }
         forStmt->body = body;
         forStmt->step = nullptr;  // Step not allowed in collection loops
@@ -782,9 +780,8 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     if (!rangeValid) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected range expression (start..end)");
-        if (!stream.check(TokenType::LBRACE)) {
-            return nullptr;
-        }
+        synchronizeTo(stream, ctx, TokenType::LBRACE, TokenType::RANGE);
+        if (!iterable) iterable = ctx.arena.make<UnknownExprAST>();
     }
     
     // ─── 5. Parse optional step ─────────────────────────────────────────────
@@ -794,18 +791,15 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (!step) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected step expression after '..'");
-            if (!stream.check(TokenType::LBRACE)) {
-                return nullptr;
-            }
+            synchronizeTo(stream, ctx, TokenType::LBRACE);
+            step = ctx.arena.make<UnknownExprAST>();
         }
     }
     
     // ─── 6. Parse loop body ────────────────────────────────────────────────
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected loop body block");
-        return nullptr;
+        body = ctx.arena.make<UnknownStmtAST>();
     }
     
     // ─── 7. Create ForStmtAST with all fields ──────────────────────────────
@@ -815,7 +809,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     forStmt->iterable = iterable;
     forStmt->step = step;
     forStmt->body = body;
-    if (!rangeValid || (stream.match(TokenType::RANGE) && !step)) {
+    if (!rangeValid || (stream.match(TokenType::RANGE) && !step) || (body && body->hasError)) {
         forStmt->hasError = true;
     }
     
@@ -839,21 +833,16 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected while condition");
-        // Stop if we can't continue parseBlock
-        if (!stream.check(TokenType::LBRACE)) {
-            return nullptr;
-        }
-    }
-    whileStmt->condition = condition;
-    if (!condition) {
+        synchronizeTo(stream, ctx, TokenType::LBRACE);
+        condition = ctx.arena.make<UnknownExprAST>();
         whileStmt->hasError = true;
     }
+    whileStmt->condition = condition;
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected loop body block");
-        return nullptr;
+        body = ctx.arena.make<UnknownStmtAST>();
+        whileStmt->hasError = true;
     }
     whileStmt->body = body;
     
@@ -875,9 +864,8 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected loop body block");
-        return nullptr;
+        body = ctx.arena.make<UnknownStmtAST>();
+        doWhileStmt->hasError = true;
     }
     doWhileStmt->body = body;
     
@@ -892,7 +880,7 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected do-while condition");
-        doWhileStmt->condition = nullptr;
+        doWhileStmt->condition = ctx.arena.make<UnknownExprAST>();
         doWhileStmt->hasError = true;
         return doWhileStmt;
     }
@@ -914,12 +902,20 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
     
     ReturnStmtAST* returnStmt = ctx.arena.make<ReturnStmtAST>();
     
-    ExprAST* value = parseExpr(stream, ctx);
-    if (!value) {
+    if (stream.check(TokenType::SEMICOLON) || stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
         // Bare return (no value) - valid for void functions
         returnStmt->value = nullptr;
     } else {
-        returnStmt->value = value;
+        ExprAST* value = parseExpr(stream, ctx);
+        if (!value) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected return value expression");
+            returnStmt->value = ctx.arena.make<UnknownExprAST>();
+            returnStmt->hasError = true;
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+        } else {
+            returnStmt->value = value;
+        }
     }
     
     return returnStmt;
@@ -962,15 +958,22 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
     ExprAST* expr = parseExpr(stream, ctx);
     if (!expr) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "expected expression statement");
-        return nullptr;
+        auto* placeholder = ctx.arena.make<UnknownExprAST>();
+        placeholder->loc = loc;
+        placeholder->hasError = true;
+        auto* exprStmt = ctx.arena.make<ExprStmtAST>(placeholder);
+        exprStmt->loc = loc;
+        exprStmt->hasError = true;
+        return exprStmt;
     }
     
     ExprStmtAST* exprStmt = ctx.arena.make<ExprStmtAST>(expr);
-
+    exprStmt->loc = loc;
     return exprStmt;
 }
 
@@ -999,6 +1002,7 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
 
 AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     SourceLocation bindingLoc = stream.currentLoc();
+    bool hasError = false;
 
     // 1. Parse 'async' keyword
     if (!stream.match(TokenType::ASYNC)) {
@@ -1012,53 +1016,115 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     if (!isConst && !stream.match(TokenType::LET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'let' or 'const' after 'async', got '", stream.peekValue(), "'");
-        return nullptr;
+        // Default to 'let' and attempt to recover the rest of the binding
+        isConst = false;
+        hasError = true;
     }
     DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
     // 3. Parse the variable name
+    InternedString name;
+    TypeAST* innerType = nullptr;
     if (!stream.check(TokenType::IDENTIFIER)) {
+        // The name may just be missing — speculatively try to parse a type at
+        // this position. If it parses cleanly we know exactly what happened
+        // (e.g. `async let MyType = ...`) and can recover without discarding tokens.
+        innerType = parseType(stream, ctx);
+        if (!innerType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected variable name for async binding, got '", stream.peekValue(), "'");
+            auto* asyncStmt = ctx.arena.make<AsyncStmtAST>();
+            asyncStmt->hasError = true;
+            return asyncStmt;
+        }
+
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected variable name for async binding, got '", stream.peekValue(), "'");
-        return nullptr;
+                                "expected variable name before type in async binding");
+        name = ctx.pool.intern("");
+        hasError = true;
+
+        // A stray token between the recovered type and '=' means the type and
+        // name were likely written in the wrong order. Resync past it.
+        if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), "'");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+        }
+    } else {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+
+        // 4. Parse the type annotation (required)
+        innerType = parseType(stream, ctx);
+        if (!innerType) {
+            auto* placeholder = ctx.arena.make<UnknownTypeAST>();
+            placeholder->hasError = true;
+            innerType = placeholder;
+            hasError = true;
+
+            if (stream.check(TokenType::ASSIGN)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "expected type for async binding '", ctx.pool.lookup(name), "'");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "expected type for async binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
+                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+
+                if (!stream.check(TokenType::ASSIGN)) {
+                    // Cannot reach the '=' — return a partial node
+                    TypeAST* wrappedType = ctx.arena.make<FutureTypeAST>(innerType);
+                    VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
+                    binding->loc = bindingLoc;
+                    binding->hasError = true;
+                    auto* asyncStmt = ctx.arena.make<AsyncStmtAST>();
+                    asyncStmt->binding = binding;
+                    asyncStmt->hasError = true;
+                    return asyncStmt;
+                }
+            }
+        }
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    // 4. Parse the type annotation (required)
-    TypeAST* innerType = parseType(stream, ctx);
-    if (!innerType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected type for async binding, got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    
+
     // 5. Wrap the type in FutureTypeAST
     TypeAST* wrappedType = ctx.arena.make<FutureTypeAST>(innerType);
     
     // 6. Create the VarDeclAST for the binding
     VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = bindingLoc;
+    if (hasError) binding->hasError = true;
     
     // 7. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '=', got '", stream.peekValue(), "'");
-        return nullptr;
+                                "expected '=' for async binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        auto* asyncStmt = ctx.arena.make<AsyncStmtAST>();
+        asyncStmt->binding = binding;
+        asyncStmt->hasError = true;
+        return asyncStmt;
     }
     
     // 8. Parse the async call expression
     ExprAST* call = parseExpr(stream, ctx);
-    if (!call || !call->isa<CallExprAST>()) {
+    if (!call) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected async call expression");
-        return nullptr;
+                                "expected async call expression, got '", stream.peekValue(), "'");
+        auto* placeholder = ctx.arena.make<UnknownExprAST>();
+        placeholder->hasError = true;
+        call = placeholder;
+        hasError = true;
+    } else if (!call->isa<CallExprAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, call->loc,
+                                "expected a call expression for async binding '", ctx.pool.lookup(name), "'");
+        call->hasError = true;
+        hasError = true;
     }
     
     // 9. Create AsyncStmtAST
     AsyncStmtAST* asyncStmt = ctx.arena.make<AsyncStmtAST>();
     asyncStmt->binding = binding;
     asyncStmt->call = call;
+    asyncStmt->hasError = hasError;
     
     return asyncStmt;
 }
@@ -1076,12 +1142,26 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
     
     do {
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON);
+            if (stream.match(TokenType::COMMA)) {
+                auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(""));
+                idExpr->loc = stream.currentLoc();
+                idExpr->hasError = true;
+                targetBuilder.push_back(idExpr);
+                continue;
+            } else if (stream.check(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected variable name");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected variable name, got '", stream.peekValue(), "'");
+            } 
             break;
         }
+        SourceLocation loc = stream.currentLoc();
         Token targetTok = stream.consume();
         auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(targetTok.value));
+        idExpr->loc = loc;
         targetBuilder.push_back(idExpr);
     } while (stream.match(TokenType::COMMA));
     
@@ -1092,6 +1172,7 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     SourceLocation bindingLoc = stream.currentLoc();
+    bool hasError = false;
     
     // 1. Parse 'spawn' keyword
     if (!stream.match(TokenType::SPAWN)) {
@@ -1105,24 +1186,35 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     // 2. Check for discard pattern ('_') first
     if (stream.check(TokenType::UNDERSCORE)) {
         stream.consume(); // Consume '_'
-        binding = nullptr;
         
         if (!stream.match(TokenType::ASSIGN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected '=', got '", stream.peekValue(), "'");
-            return nullptr;
+                                    "expected '=' after '_' in spawn discard, got '", stream.peekValue(), "'");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+            auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
+            spawnStmt->hasError = true;
+            return spawnStmt;
         }
         
         ExprAST* call = parseExpr(stream, ctx);
-        if (!call || !call->isa<CallExprAST>()) {
+        if (!call) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected spawn call expression");
-            return nullptr;
+                                    "expected spawn call expression, got '", stream.peekValue(), "'");
+            auto* placeholder = ctx.arena.make<UnknownExprAST>();
+            placeholder->hasError = true;
+            call = placeholder;
+            hasError = true;
+        } else if (!call->isa<CallExprAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, call->loc,
+                                    "expected a call expression for spawn discard");
+            call->hasError = true;
+            hasError = true;
         }
         
         SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
         spawnStmt->binding = nullptr;
         spawnStmt->call = call;
+        spawnStmt->hasError = hasError;
         
         return spawnStmt;
     }
@@ -1132,53 +1224,115 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     if (!isConst && !stream.match(TokenType::LET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'let' or 'const' after 'spawn' (or '_' for discard), got '", stream.peekValue(), "'");
-        return nullptr;
+        // Default to 'let' and attempt to recover the rest of the binding
+        isConst = false;
+        hasError = true;
     }
     DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
     // 4. Parse the variable name
+    InternedString name;
+    TypeAST* innerType = nullptr;
     if (!stream.check(TokenType::IDENTIFIER)) {
+        // The name may just be missing — speculatively try to parse a type at
+        // this position. If it parses cleanly we know exactly what happened
+        // (e.g. `spawn let MyType = ...`) and can recover without discarding tokens.
+        innerType = parseType(stream, ctx);
+        if (!innerType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected variable name for spawn binding, got '", stream.peekValue(), "'");
+            auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
+            spawnStmt->hasError = true;
+            return spawnStmt;
+        }
+
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected variable name for spawn binding, got '", stream.peekValue(), "'");
-        return nullptr;
+                                "expected variable name before type in spawn binding");
+        name = ctx.pool.intern("");
+        hasError = true;
+
+        // A stray token between the recovered type and '=' means the type and
+        // name were likely written in the wrong order. Resync past it.
+        if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "unexpected token '", stream.peekValue(), "'");
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+        }
+    } else {
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+
+        // 5. Parse the type annotation (required for named bindings)
+        innerType = parseType(stream, ctx);
+        if (!innerType) {
+            auto* placeholder = ctx.arena.make<UnknownTypeAST>();
+            placeholder->hasError = true;
+            innerType = placeholder;
+            hasError = true;
+
+            if (stream.check(TokenType::ASSIGN)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "expected type for spawn binding '", ctx.pool.lookup(name), "'");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "expected type for spawn binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
+                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+
+                if (!stream.check(TokenType::ASSIGN)) {
+                    // Cannot reach the '=' — return a partial node
+                    TypeAST* wrappedType = ctx.arena.make<ThreadTypeAST>(innerType);
+                    binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
+                    binding->loc = bindingLoc;
+                    binding->hasError = true;
+                    auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
+                    spawnStmt->binding = binding;
+                    spawnStmt->hasError = true;
+                    return spawnStmt;
+                }
+            }
+        }
     }
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    // 5. Parse the type annotation (required for named bindings)
-    TypeAST* innerType = parseType(stream, ctx);
-    if (!innerType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected type for spawn binding, got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    
+
     // 6. Wrap the type in ThreadTypeAST
     TypeAST* wrappedType = ctx.arena.make<ThreadTypeAST>(innerType);
     
     // 7. Create the VarDeclAST for the binding
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = bindingLoc;
+    if (hasError) binding->hasError = true;
     
     // 8. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '=', got '", stream.peekValue(), "'");
-        return nullptr;
+                                "expected '=' for spawn binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
+        spawnStmt->binding = binding;
+        spawnStmt->hasError = true;
+        return spawnStmt;
     }
     
     // 9. Parse the spawn call expression
     ExprAST* call = parseExpr(stream, ctx);
-    if (!call || !call->isa<CallExprAST>()) {
+    if (!call) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected spawn call expression");
-        return nullptr;
+                                "expected spawn call expression, got '", stream.peekValue(), "'");
+        auto* placeholder = ctx.arena.make<UnknownExprAST>();
+        placeholder->hasError = true;
+        call = placeholder;
+        hasError = true;
+    } else if (!call->isa<CallExprAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, call->loc,
+                                "expected a call expression for spawn binding '", ctx.pool.lookup(name), "'");
+        call->hasError = true;
+        hasError = true;
     }
     
     // 10. Create SpawnStmtAST
     SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
     spawnStmt->binding = binding;
     spawnStmt->call = call;
+    spawnStmt->hasError = hasError;
     
     return spawnStmt;
 }
@@ -1196,12 +1350,26 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
     
     do {
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON);
+            if (stream.match(TokenType::COMMA)) {
+                auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(""));
+                idExpr->loc = stream.currentLoc();
+                idExpr->hasError = true;
+                targetBuilder.push_back(idExpr);
+                continue;
+            } else if (stream.check(TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected variable name");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected variable name, got '", stream.peekValue(), "'");
+            } 
             break;
         }
+        SourceLocation loc = stream.currentLoc();
         Token targetTok = stream.consume();
         auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(targetTok.value));
+        idExpr->loc = loc;
         targetBuilder.push_back(idExpr);
     } while (stream.match(TokenType::COMMA));
     

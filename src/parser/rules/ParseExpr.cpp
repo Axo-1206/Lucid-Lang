@@ -42,6 +42,19 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
     return parsePrattExpr(stream, ctx, -1);
 }
 
+ExprAST* parseRequiredExpr(TokenStream& stream, ParserContext& ctx, const char* expectedWhat) {
+    ExprAST* expr = parseExpr(stream, ctx);
+    if (!expr) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                "expected ", expectedWhat);
+        auto* placeholder = ctx.arena.make<UnknownExprAST>();
+        placeholder->hasError = true;
+        placeholder->loc = stream.currentLoc();
+        return placeholder;
+    }
+    return expr;
+}
+
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
     
     ExprAST* lhs = parsePrefixExpr(stream, ctx);
@@ -508,9 +521,16 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected '=', got '", stream.peekValue(), "'");
             
+            auto* placeholder = ctx.arena.make<UnknownExprAST>();
+            placeholder->hasError = true;
+            auto* init = ctx.arena.make<FieldInitAST>(fieldName, placeholder);
+            init->loc = stream.currentLoc();
+            init->hasError = true;
+            inits.push_back(init);
+
             // Try to recover by skipping to the next field or closing brace
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
-            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
                 stream.consume();
                 continue;
             }
@@ -518,23 +538,14 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         }
         
         // ─── Parse field value ─────────────────────────────────────────────
-        ExprAST* value = parseExpr(stream, ctx);
-        if (!value) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected field value");
-            
-            // Try to recover to the next field or closing brace
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
-            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE)) {
-                stream.consume();
-                continue;
-            }
-            break;
-        }
+        ExprAST* value = parseRequiredExpr(stream, ctx, "field value");
         
         // ─── Build and store field initializer ───────────────────────────
         auto* init = ctx.arena.make<FieldInitAST>(fieldName, value);
         init->loc = stream.currentLoc();
+        if (value && value->hasError) {
+            init->hasError = true;
+        }
         inits.push_back(init);
         
         // ─── Handle trailing comma ──────────────────────────────────────
@@ -631,8 +642,6 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
                                 "expected '{', got '", stream.peekValue(), "'");
         return nullptr;
     }
-
-    ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {

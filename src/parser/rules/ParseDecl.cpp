@@ -204,6 +204,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     
     InternedString name;
     TypeAST* type = nullptr;
+    bool hasDeclError = false;
 
     // ─── Parse name ────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -223,6 +224,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         // No symbol to record - parse has diagnostics, so semantic analysis
         // never runs on this AST. Still a defined, lookup-safe value.
         name = ctx.pool.intern("");
+        hasDeclError = true;
 
         // A stray token between the recovered type and '=' / ';' means the
         // type and name were most likely written in the wrong order
@@ -240,28 +242,26 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         // ─── Parse type (required) ─────────────────────────────────────
         type = parseType(stream, ctx);
         if (!type) {
+            type = ctx.arena.make<UnknownTypeAST>();
+            type->hasError = true;
+            hasDeclError = true;
+
             if (stream.check(TokenType::ASSIGN)) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected type for variable declaration '", ctx.pool.lookup(name), "'");
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected type for variable declaration '", ctx.pool.lookup(name), "', but got '", stream.peekValue(), "'");
-                // Only stop at '=' / ';' for this construct, plus - always -
-                // the start of the next declaration/statement. A fixed
-                // token set here would happily swallow an entire following
-                // `struct { ... }` looking for one of its targets.
                 synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
 
                 if (!stream.check(TokenType::ASSIGN)) {
                     if (!stream.check(TokenType::SEMICOLON)) {
-                        // Stopped at a new declaration/statement keyword,
-                        // not at '=' or ';' - this declaration was
-                        // abandoned mid-way, which is more specific and
-                        // more useful than repeating "expected type".
                         ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
                                                 "incomplete variable declaration '", ctx.pool.lookup(name), "'");
                     }
-                    return nullptr;
+                    auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, nullptr);
+                    varDecl->hasError = true;
+                    return varDecl;
                 }
             }
         }
@@ -270,21 +270,25 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── Parse initializer ─────────────────────────────────────────────
     ExprAST* init = nullptr;
     if (stream.match(TokenType::ASSIGN)) {
-        init = parseExpr(stream, ctx);
-        if (!init) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected initializer expression");
-            return nullptr;
+        init = parseRequiredExpr(stream, ctx, "initializer expression");
+        if (init && init->hasError) {
+            hasDeclError = true;
+            synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
         }
     } 
     if (isConst && !init) {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingInitializer, stream.currentLoc(),
                                 "const variable '", ctx.pool.lookup(name), "' requires an initializer");
-        return nullptr;
+        init = ctx.arena.make<UnknownExprAST>();
+        init->hasError = true;
+        hasDeclError = true;
     }
     
     // Create VarDeclAST using constructor (all parser fields immutable)
     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
+    if (hasDeclError || (type && type->hasError) || (init && init->hasError) || name.isEmpty()) {
+        varDecl->hasError = true;
+    }
     
     return varDecl;
 }
@@ -358,6 +362,9 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             synchronizeToDeclBoundary(stream, ctx,
                 {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
 
+            restType = ctx.arena.make<UnknownTypeAST>();
+            restType->hasError = true;
+
             if (!stream.check(TokenType::LBRACE) &&
                 !stream.check(TokenType::ASSIGN) &&
                 !stream.check(TokenType::SEMICOLON)) {
@@ -365,10 +372,21 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 // statement - the declaration was abandoned mid-way.
                 ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
                                         "incomplete function declaration '", ctx.pool.lookup(name), "'");
-                return nullptr;
+                
+                auto* funcType = ctx.arena.make<FuncTypeAST>();
+                auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+                for (auto* p : leadingParams) {
+                    paramBuilder.push_back(p);
+                }
+                funcType->params = paramBuilder.build();
+                funcType->returnType = restType;
+                funcType->hasArrow = sawArrow;
+                funcType->loc = funcTypeLoc;
+
+                auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, nullptr);
+                funcDecl->hasError = true;
+                return funcDecl;
             }
-            // restType stays nullptr (error type) - fall through and still
-            // parse/diagnose the body below instead of losing it.
         }
     }
     
@@ -387,6 +405,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 6. Parse body ──────────────────────────────────────────────────────
     StmtAST* body = nullptr;
     bool hasExplicitAssign = false;
+    bool hasBodyError = false;
     
     // ─── 6a. Check for '=' ──────────────────────────────────────────────────
     if (stream.match(TokenType::ASSIGN)) {
@@ -403,14 +422,13 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             // We'll still report the error, but we'll have a partial AST
         }
         
-        // ─── Parse block body ──────────────────────────────────────────────
-        // parseBlock handles consuming '{' and matching '}'
-        ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
         body = parseBlock(stream, ctx);
         if (!body) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                     "expected block body");
-            return nullptr;
+            body = ctx.arena.make<UnknownStmtAST>();
+            body->hasError = true;
+            hasBodyError = true;
         }
         
     } else if (hasExplicitAssign) {
@@ -425,39 +443,42 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                                    "The block body borrows its signature from the function declaration");
             
             synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-            return nullptr;
-        }
-        
-        ExprAST* exprBody = parseExpr(stream, ctx);
-        if (!exprBody) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected function body expression");
-            return nullptr;
-        }
-        
-        // ─── Determine if this is a pure function reference ──────────────
-        bool isPureFunctionRef = false;
-        
-        if (exprBody->isa<IdentifierExprAST>() ||
-            exprBody->isa<ModuleAccessExprAST>() ||
-            exprBody->isa<FieldAccessExprAST>() ||
-            exprBody->isa<ComposeExprAST>() ||
-            exprBody->isa<CallExprAST>()) {
-            isPureFunctionRef = true;
-        }
-        
-        if (isPureFunctionRef) {
-            auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
-            refStmt->loc = exprBody->loc;
-            refStmt->target = exprBody;
-            body = refStmt;
-        } else {
+            auto* unknownExpr = ctx.arena.make<UnknownExprAST>();
+            unknownExpr->hasError = true;
             auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-            returnStmt->loc = exprBody->loc;
-            returnStmt->value = exprBody;
+            returnStmt->value = unknownExpr;
+            returnStmt->hasError = true;
             body = returnStmt;
+            hasBodyError = true;
+        } else {
+            ExprAST* exprBody = parseRequiredExpr(stream, ctx, "function body expression");
+            if (exprBody && exprBody->hasError) {
+                hasBodyError = true;
+            }
+            
+            // ─── Determine if this is a pure function reference ──────────────
+            bool isPureFunctionRef = false;
+            
+            if (exprBody && (exprBody->isa<IdentifierExprAST>() ||
+                exprBody->isa<ModuleAccessExprAST>() ||
+                exprBody->isa<FieldAccessExprAST>() ||
+                exprBody->isa<ComposeExprAST>() ||
+                exprBody->isa<CallExprAST>())) {
+                isPureFunctionRef = true;
+            }
+            
+            if (isPureFunctionRef) {
+                auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
+                refStmt->loc = exprBody->loc;
+                refStmt->target = exprBody;
+                body = refStmt;
+            } else {
+                auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+                returnStmt->loc = exprBody ? exprBody->loc : stream.currentLoc();
+                returnStmt->value = exprBody;
+                body = returnStmt;
+            }
         }
-        
     } else {
         // ─── No '=' and no '{' - foreign function ──────────────────────────
         // This is a valid foreign function declaration.
@@ -467,6 +488,9 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 7. Build FuncDeclAST ────────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
+    if (hasBodyError || (restType && restType->hasError) || name.isEmpty()) {
+        funcDecl->hasError = true;
+    }
     
     return funcDecl;
 }
@@ -485,6 +509,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     stream.consume();
     
     // 2. Parse struct name
+    bool hasError = false;
     InternedString name;
     if (stream.check(TokenType::IDENTIFIER)) {
         Token nameTok = stream.consume();
@@ -494,10 +519,12 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name");
         name = ctx.pool.intern("");
+        hasError = true;
     } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name, got '", stream.peekValue(), "'");
-        return nullptr;
+        name = ctx.pool.intern("");
+        hasError = true;
     }
     
     // 3. Parse generic parameters
@@ -509,34 +536,46 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     // 4. Parse trait implementations
     std::vector<NamedTypeAST*> traitRefs;
     if (stream.match(TokenType::COLON)) {
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                    "unexpected trailing comma in trait list");
-        }
-        
         while (!stream.isAtEnd() && !stream.check(TokenType::LBRACE)) {
-            NamedTypeAST* traitRef = parseNamedType(stream, ctx)->as<NamedTypeAST>();
+            TypeAST* parsed = parseNamedType(stream, ctx);
+            NamedTypeAST* traitRef = parsed ? parsed->as<NamedTypeAST>() : nullptr;
             if (traitRef) {
                 traitRefs.push_back(traitRef);
-            } else {
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
-            }
-            
-            int count = stream.consumeTrailing(TokenType::COMMA);
-            if (count == 0) {
-                if (!stream.check(TokenType::LBRACE)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                        "expected a type after ',' in trait list");
-                } else {
+
+                if (!stream.match(TokenType::COMMA)) {
+                    if (stream.check(TokenType::LBRACE)) {
+                        break;
+                    }
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate traits");
+                                            "expected ',' to separate traits");
+                    hasError = true;
+
+                    synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
+                    if (stream.match(TokenType::COMMA)) {
+                        continue;
+                    }
+                    break;
                 }
-            } else if (count == 2) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.previousLoc(),
-                                        "expected a type after ',' in trait list");
-            } else if (count > 3) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_TrailingComma, stream.currentLoc(),
-                                        "unexpected trailing comma in trait list");
+            } else {
+                auto* placeholder = ctx.arena.make<NamedTypeAST>(ctx.pool.intern(""));
+                placeholder->hasError = true;
+                traitRefs.push_back(placeholder);
+                hasError = true;
+
+                if (stream.match(TokenType::COMMA)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.previousLoc(),
+                                            "expected a type after ',' in trait list");
+                    continue;
+                }
+
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "failed to parse trait, got '", stream.peekValue(), "'");
+
+                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
+                if (stream.match(TokenType::COMMA)) {
+                    continue;
+                }
+                break;
             }
         }
     }
@@ -545,11 +584,21 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for struct body");
-        return nullptr;
+        synchronizeToDeclBoundary(stream, ctx);
+        auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
+        for (auto* tr : traitRefs) {
+            traitBuilder.push_back(tr);
+        }
+        auto* structDecl = ctx.arena.make<StructDeclAST>(
+            name,
+            genericParams,
+            ctx.arena.makeBuilder<FieldDeclAST*>().build(),
+            traitBuilder.build()
+        );
+        structDecl->hasError = true;
+        return structDecl;
     }
     stream.consume();
-
-    ScopedContext bodyGuard(ctx, SyntacticContext::StructBody, stream.currentLoc());
 
     std::vector<FieldDeclAST*> fields;
     
@@ -568,8 +617,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         }
 
         // consume stray ';'
-        if (stream.check(TokenType::SEMICOLON)) {
-            stream.consume();
+        if (stream.match(TokenType::SEMICOLON)) {
             continue;
         }
 
@@ -608,7 +656,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         fieldBuilder.build(),
         traitBuilder.build()
     );
-    
+    structDecl->hasError = hasError;
     return structDecl;
 }
 
@@ -657,10 +705,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::ASSIGN)) {
         // ─── 5a. Check for block body ──────────────────────────────────────
         if (stream.check(TokenType::LBRACE)) {
-            
-            // Push struct field context for the body
-            ScopedContext bodyGuard(ctx, SyntacticContext::FieldBody, stream.currentLoc());
-            
             defaultBody = parseBlock(stream, ctx);
 
             /// Check if parseBlock actually got a valid block
@@ -755,11 +799,12 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for enum body");
-        return nullptr;
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, ctx.arena.makeBuilder<EnumVariantAST*>().build(), backingType);
+        enumDecl->hasError = true;
+        return enumDecl;
     }
     stream.consume();
-
-    ScopedContext bodyGuard(ctx, SyntacticContext::EnumBody, stream.currentLoc());
 
     std::vector<EnumVariantAST*> variants;
 
@@ -908,11 +953,12 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for trait body");
-        return nullptr;
+        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, ctx.arena.makeBuilder<TraitFieldDeclAST*>().build());
+        traitDecl->hasError = true;
+        return traitDecl;
     }
     stream.consume();
-
-    ScopedContext bodyGuard(ctx, SyntacticContext::TraitBody, stream.currentLoc());
 
     std::vector<TraitFieldDeclAST*> fields;
     

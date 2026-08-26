@@ -122,22 +122,6 @@ template<typename... StopTokens>
 void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
 
 /**
- * @brief What kind of token synchronizeToContext() actually stopped at.
- *
- * See synchronizeToContext()'s own doc comment (in Parser.cpp) for the
- * full explanation. Short version: Continuable means it landed on the
- * current construct's own comma/closer (safe to keep parsing more list
- * items); Abandoned means it hit the semantic escape valve (';' or a
- * declaration keyword) or EOF (this construct cannot continue at all).
- */
-enum class SyncOutcome {
-    Continuable,
-    Abandoned,
-};
-
-SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
-
-/**
  * @brief Skip to the nearest declaration/statement boundary, honoring extra
  *        construct-specific stop tokens.
  *
@@ -214,6 +198,7 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx);
 // ─── Expressions ───────────────────────────────────────────────────────────
 
 ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx);
+ExprAST* parseRequiredExpr(TokenStream& stream, ParserContext& ctx, const char* expectedWhat);
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec);
 ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx);

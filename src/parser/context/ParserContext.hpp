@@ -161,40 +161,6 @@ struct ParserContext {
 // RAII Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief RAII guard for syntactic context tracking.
-/// 
-/// Pushes a SyntacticContext frame on construction and pops it on destruction.
-/// 
-/// ## Usage
-/// 
-/// ```cpp
-/// ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx) {
-///     if (!stream.check(TokenType::AT_SIGN)) return {};
-///     stream.consume(); // consume '@'
-///     stream.consume(); // consume '['
-///     ScopedContext guard(ctx, SyntacticContext::Attribute, stream.currentLoc());
-///     // ... parse ...
-/// }
-/// ```
-struct ScopedContext {
-    ScopedContext(ParserContext& ctx, SyntacticContext kind, const SourceLocation& loc)
-        : ctx_(ctx) {
-        ctx_.pushContext(kind, loc);
-    }
-
-    ~ScopedContext() {
-        ctx_.popContext();
-    }
-
-    ScopedContext(const ScopedContext&) = delete;
-    ScopedContext& operator=(const ScopedContext&) = delete;
-    ScopedContext(ScopedContext&&) = delete;
-    ScopedContext& operator=(ScopedContext&&) = delete;
-
-private:
-    ParserContext& ctx_;
-};
-
 /// @brief RAII guard for entering a fresh file's parsing state.
 /// 
 /// Saves and restores the context stack for recursive parsing of imported files.

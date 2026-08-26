@@ -91,8 +91,7 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
     // 2. Parse at least one parameter group
     bool hasValidParamGroup = false;
     
-    while (stream.check(TokenType::LPAREN)) {
-        stream.consume(); // Skip '('
+    while (stream.match(TokenType::LPAREN)) {
         
         // Find matching ')'
         int parenDepth = 1;
@@ -127,8 +126,7 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
     }
     
     // 3. Skip optional `->` and return type
-    if (stream.check(TokenType::ARROW)) {
-        stream.consume(); // Skip '->'
+    if (stream.match(TokenType::ARROW)) {
         
         if (stream.isAtEnd()) {
             stream.setPos(savedPos);
@@ -204,15 +202,13 @@ bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx) {
     bool result = false;
     
     // 1. Check for identifier (type name)
-    if (!stream.check(TokenType::IDENTIFIER)) {
+    if (!stream.match(TokenType::IDENTIFIER)) {
         stream.setPos(savedPos);
         return false;
     }
-    stream.consume(); // Skip identifier
     
     // 2. Check for optional generic arguments
-    if (stream.check(TokenType::LESS)) {
-        stream.consume(); // Skip '<'
+    if (stream.match(TokenType::LESS)) {
         int angleDepth = 1;
         
         while (!stream.isAtEnd() && angleDepth > 0) {

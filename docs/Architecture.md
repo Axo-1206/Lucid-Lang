@@ -682,6 +682,7 @@ lucid/
     │   ├── DependencyGraph.hpp         # Bi‑directional dependency graph for hot‑reload.
     │   ├── FileWatcher.hpp             # File watcher for hot‑reload.
     │   ├── RunOptions.hpp/cpp
+    │   ├── Trace.hpp/cpp
     │   ├── run.hpp/cpp                 # lucid run
     │   └── build.hpp                   # lucid build (not implemented)
     │

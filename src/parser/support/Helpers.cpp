@@ -29,6 +29,7 @@
 #include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/trace/Trace.hpp"
 #include "debug/DebugUtils.hpp"
 
 namespace parser {
@@ -134,38 +135,15 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
         // ─── Parse single attribute ──────────────────────────────────────
         AttributeAST* attr = parseAttribute(stream, ctx);
-        if (attr) {
-            attrs.push_back(attr);
-            if (!stream.match(TokenType::COMMA)) {
-                if (stream.check(TokenType::RBRACKET)) {
-                    break;
-                }
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate attributes");
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
-                if (stream.match(TokenType::COMMA)) {
-                    continue;
-                }
+        attrs.push_back(attr);
+        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RBRACKET)) {
                 break;
             }
-
-        } else {
-            auto* placeholder = ctx.arena.make<AttributeAST>();
-            placeholder->hasError = true;
-            attrs.push_back(placeholder);
-
-            if (stream.match(TokenType::COMMA)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                        "expected attribute name before ','");
-                continue;
-            }
-
-            // Skip this broken attribute and move to the next one if possible
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
-            if (stream.match(TokenType::COMMA)) {
-                continue;
-            }
-            break;
+            // Hit EOF
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate attributes");
         }
     }
     
@@ -190,9 +168,18 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
 
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        if (stream.check(TokenType::COMMA)) { // We do not use match here, the parseAttributes will handle this comma
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected attribute name before ','");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected attribute name, got '", stream.peekValue(), "'");
-        return nullptr;
+        }
+
+        auto* placeholder = ctx.arena.make<AttributeAST>();
+        placeholder->loc = loc;
+        placeholder->name = ctx.pool.intern("");
+        placeholder->hasError = true;
     }
     
     Token nameTok = stream.consume();
@@ -206,40 +193,30 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::LPAREN)) {
         std::vector<LiteralExprAST*> args;
         
-        while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-            // ─── Parse argument literal ──────────────────────────────────────
+        while (
+            !stream.isAtEnd() && 
+            !stream.check(TokenType::RPAREN) && 
+            !stream.check(TokenType::RBRACKET)
+        ) {
             LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
-            if (arg) {
-                args.push_back(arg);
-                if (!stream.match(TokenType::COMMA)) {
-                    if (stream.check(TokenType::RPAREN)) {
-                        break;
-                    }
+            args.push_back(arg);
+            if (arg->hasError) {
+                attr->hasError = true;
+            }
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET);
+            if (!stream.match(TokenType::COMMA)) {
+                if (stream.check(TokenType::RPAREN)) {
+                    break;
+                } else if (stream.check(TokenType::RBRACKET)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected ',' to separate attribute literal arguments");
-                    
-                    synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                    if (stream.match(TokenType::COMMA)) {
-                        continue;
-                    }
+                                        "expected ')' to close attribute literal arguments list");
+                    attr->hasError = true;
                     break;
                 }
-            } else {
-                auto* placeholder = ctx.arena.make<LiteralExprAST>(LiteralKind::Unknown, ctx.pool.intern(""));
-                placeholder->hasError = true;
-                args.push_back(placeholder);
-
-                if (stream.match(TokenType::COMMA)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                            "expected attribute literal argument before ','");
-                    continue;
-                }
-
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (stream.match(TokenType::COMMA)) {
-                    continue;
-                }
-                break;
+                // Hit EOF
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ',' to separate attribute literal arguments");
+                attr->hasError = true;
             }
         }
         
@@ -303,9 +280,17 @@ LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
             break;
             
         default:
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, stream.currentLoc(),
+            if (stream.check(TokenType::COMMA)) { // we do not use match here, parseAttribute will handle the comma
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
+                                        "expected attribute literal argument before ','");
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
                                     "expected literal, got '", stream.peekValue(), "'");
-            return nullptr;
+            }
+            auto* placeholder = ctx.arena.make<LiteralExprAST>(LiteralKind::Unknown, ctx.pool.intern(""));
+                    placeholder->hasError = true;
+                    placeholder->loc = loc;
+            return placeholder;
     }
     
     auto* literal = ctx.arena.make<LiteralExprAST>(kind, value);
@@ -337,38 +322,19 @@ ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, Pars
     
     while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
         GenericParamDeclAST* param = parseGenericParamDecl(stream, ctx);
-        if (param) {
-            params.push_back(param);
-            if (!stream.match(TokenType::COMMA)) {
-                if (stream.check(TokenType::GREATER)) {
-                    break;
-                }
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate generic parameters");
-
-                
-                if (stream.match(TokenType::COMMA)) {
-                    continue;
-                } else if (stream.checkAny(TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
-                                            "incomplete generic parameter list");
-                    break;
-                }
+        params.push_back(param);
+        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::GREATER)) {
+                break;
+            } else if (stream.checkAny(TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
+                                        "incomplete generic parameter list");
                 break;
             }
-        } else {            
-            auto* placeholder = ctx.arena.make<GenericParamDeclAST>(ctx.pool.intern(""));
-            placeholder->hasError = true;
-            params.push_back(placeholder);
-
-            // handle case 'param,, param' missing param between ','
-            /// ex: <param, , param> // got ',' instead of IDENTIFIER
-            if (stream.match(TokenType::COMMA)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                        "expected generic parameter name before ','");
-                continue;
-            }
-            break;
+            // Hit EOF
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate generic parameters");
         }
     }
     
@@ -394,9 +360,18 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
     /// NOTE: this case should only happen when the next token is ',' instead of a name
     /// ex: <param, , param> // got ',' instead of IDENTIFIER
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        if (stream.check(TokenType::COMMA)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected generic parameter name before ','");
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected generic parameter name, got '", stream.peekValue(), "'");
-        return nullptr;
+        }
+
+        auto* placeholder = ctx.arena.make<GenericParamDeclAST>(ctx.pool.intern(""));
+        placeholder->hasError = true;
+        
+        return placeholder;
     }
     
     Token nameTok = stream.consume();
@@ -428,25 +403,19 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
                     }
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                             "expected '+' to separate trait constraints");
-                    
+                    param->hasError = true;
+
                     synchronizeTo(stream, ctx, TokenType::PLUS, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
                     if (stream.match(TokenType::PLUS)) {
                         continue;
                     }
-
-                    // Returning what we currently have, 
-                    // the parseGenericParamDecls will automatically synchronize for us 
-                    auto builder = ctx.arena.makeBuilder<TypeAST*>();
-                    for (auto* tr : constraints) {
-                        builder.push_back(tr);
-                    }
-                    param->constraints = builder.build();
-                    return param;
+                    break;
                 }
             } else {
                 auto* placeholder = ctx.arena.make<UnknownTypeAST>();
                 placeholder->hasError = true;
                 constraints.push_back(placeholder);
+                param->hasError = true;
 
                 if (stream.match(TokenType::PLUS)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
@@ -458,7 +427,6 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
                 if (stream.match(TokenType::PLUS)) {
                     continue;
                 }
-                param->hasError = true;
                 break;
             }
         }
@@ -553,139 +521,6 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-
-std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    std::vector<ParamAST*> params;
-    
-    if (!stream.match(TokenType::LPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(' for parameter list, got '", stream.peekValue(), "'");
-        return params;
-    }
-    
-    if (stream.match(TokenType::RPAREN)) {
-        return params;
-    }
-
-    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        ParamAST* param = parseSingleParameter(stream, ctx, allowNames);
-        params.push_back(param);
-    }
-    
-    // ─── Handle missing closing ')' ──────────────────────────────────────────
-    if (stream.isAtEnd()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ')' to close parameter list");
-    } else {
-        stream.consume(); // Consume ')'
-    }
-    
-    return params;
-}
-
-ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    SourceLocation loc = stream.currentLoc();
-
-    if (stream.match(TokenType::COMMA)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected parameter before ','");
-        // Create a dummy ParamAST with empty name and unknown type
-        auto* placeholder = ctx.arena.make<ParamAST>(
-            ctx.pool.intern(""), 
-            ctx.arena.make<UnknownTypeAST>(), 
-            false, 
-            false
-        );
-        placeholder->hasError = true;
-        placeholder->loc = loc;
-    }
-    
-    // ─── Parse const modifier (only allowed when names are allowed) ────────
-    bool isConstParam = false;
-    if (allowNames) {
-        isConstParam = stream.match(TokenType::CONST);
-    }
-    
-    // ─── Parse parameter name (if allowed) ────────────────────────────────
-    InternedString name;
-    bool hasName = false;
-    
-    if (allowNames) {
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected parameter name, got '", stream.peekValue(), "'");
-            // Create a dummy ParamAST with empty name and unknown type
-            auto* placeholder = ctx.arena.make<ParamAST>(
-                ctx.pool.intern(""), 
-                ctx.arena.make<UnknownTypeAST>(), 
-                false, 
-                isConstParam
-            );
-            placeholder->hasError = true;
-            placeholder->loc = loc;
-
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            return placeholder;
-        }
-        
-        Token nameTok = stream.consume();
-        name = ctx.pool.intern(nameTok.value);
-        hasName = true;
-    }
-    
-    // ─── Parse variadic modifier ───────────────────────────────────────────
-    bool isVariadic = stream.match(TokenType::VARIADIC);
-    
-    // ─── Parse parameter type ──────────────────────────────────────────────
-    TypeAST* type = parseType(stream, ctx);
-    if (!type) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected parameter type, got '", stream.peekValue(), "'");
-        
-        // Create a dummy ParamAST with whatever name we have and unknown type
-        auto* placeholder = ctx.arena.make<ParamAST>(
-            name, 
-            ctx.arena.make<UnknownTypeAST>(), 
-            isVariadic, 
-            isConstParam
-        );
-        placeholder->hasError = true;
-        placeholder->loc = loc;
-
-        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-        return placeholder;
-    }
-    
-    // ─── If variadic, wrap the type in [*]T ──────────────────────────────
-    TypeAST* finalType = type;
-    if (isVariadic) {
-        finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
-    }
-    
-    // ─── Create ParamAST ──────────────────────────────────────────────────
-    auto* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
-    param->loc = loc;
-    
-    // ─── Validation ──────────────────────────────────────────────────────
-    if (allowNames && !hasName) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
-                                "expected parameter name before type");
-    }
-    
-    if (!allowNames && hasName) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                                "parameter name '", ctx.pool.lookup(name), 
-                                "' is not allowed after first '->'");
-    }
-    
-    if (isVariadic && stream.check(TokenType::COMMA)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                "variadic parameter must be the last parameter");
-    }
-    
-    return param;
-}
-
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     std::vector<ExprAST*> args;
     
@@ -753,6 +588,143 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     }
     
     return builder.build();
+}
+
+std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
+    std::vector<ParamAST*> params;
+    
+    if (!stream.match(TokenType::LPAREN)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '(' for parameter list, got '", stream.peekValue(), "'");
+        return params;
+    }
+    
+    if (stream.match(TokenType::RPAREN)) {
+        return params;
+    }
+
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
+        ParamAST* param = parseSingleParameter(stream, ctx, allowNames);
+        params.push_back(param);
+        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.match(TokenType::RPAREN)) {
+                break;
+            }
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                        "expected ',' to separate parameters");
+        }
+    }
+    
+    // ─── Handle missing closing ')' ──────────────────────────────────────────
+    if (stream.isAtEnd()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected ')' to close parameter list");
+    } else {
+        stream.consume(); // Consume ')'
+    }
+    
+    return params;
+}
+
+ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool allowNames) {
+    SourceLocation loc = stream.currentLoc();
+
+    if (stream.check(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected parameter before ','");
+        // Create a dummy ParamAST with empty name and unknown type
+        auto* placeholder = ctx.arena.make<ParamAST>(
+            ctx.pool.intern(""), 
+            ctx.arena.make<UnknownTypeAST>(), 
+            false, 
+            false
+        );
+        placeholder->hasError = true;
+        placeholder->loc = loc;
+        return placeholder;
+    }
+    
+    // ─── Parse const modifier (only allowed when names are allowed) ────────
+    bool isConstParam = false;
+    if (allowNames) {
+        isConstParam = stream.match(TokenType::CONST);
+    }
+    
+    // ─── Parse parameter name (if allowed) ────────────────────────────────
+    InternedString name;
+    bool hasName = false;
+    
+    if (allowNames) {
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected parameter name, got '", stream.peekValue(), "'");
+            // Create a dummy ParamAST with empty name and unknown type
+            auto* placeholder = ctx.arena.make<ParamAST>(
+                ctx.pool.intern(""), 
+                ctx.arena.make<UnknownTypeAST>(), 
+                false, 
+                isConstParam
+            );
+            placeholder->hasError = true;
+            placeholder->loc = loc;
+            return placeholder;
+        }
+        
+        Token nameTok = stream.consume();
+        name = ctx.pool.intern(nameTok.value);
+        hasName = true;
+    }
+    
+    // ─── Parse variadic modifier ───────────────────────────────────────────
+    bool isVariadic = stream.match(TokenType::VARIADIC);
+    
+    // ─── Parse parameter type ──────────────────────────────────────────────
+    TypeAST* type = parseType(stream, ctx);
+    if (!type) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected parameter type, got '", stream.peekValue(), "'");
+        
+        // Create a dummy ParamAST with whatever name we have and unknown type
+        auto* placeholder = ctx.arena.make<ParamAST>(
+            name, 
+            ctx.arena.make<UnknownTypeAST>(), 
+            isVariadic, 
+            isConstParam
+        );
+        placeholder->hasError = true;
+        placeholder->loc = loc;
+        return placeholder;
+    }
+    
+    // ─── If variadic, wrap the type in [*]T ──────────────────────────────
+    TypeAST* finalType = type;
+    if (isVariadic) {
+        finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
+    }
+    
+    // ─── Create ParamAST ──────────────────────────────────────────────────
+    auto* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
+    param->loc = loc;
+    
+    // ─── Validation ──────────────────────────────────────────────────────
+    if (allowNames && !hasName) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
+                                "expected parameter name before type");
+    }
+    
+    if (!allowNames && hasName) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+                                "parameter name '", ctx.pool.lookup(name), 
+                                "' is not allowed after first '->'");
+    }
+    
+    if (isVariadic && stream.check(TokenType::COMMA)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                "variadic parameter must be the last parameter");
+    }
+    
+    return param;
 }
 
 // =============================================================================
