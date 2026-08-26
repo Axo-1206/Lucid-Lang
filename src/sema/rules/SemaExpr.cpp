@@ -551,6 +551,13 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
+    if (typeDecl->hasSyntaxError) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
     // ─── Step 7: Handle enum type ──────────────────────────────────────
     if (typeDecl->isa<EnumDeclAST>()) {
         EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
@@ -559,6 +566,14 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
             EnumVariantAST* variant = enumDecl->variants[i];
             if (variant->name == expr->fieldName) {
+                if (variant->hasSyntaxError) {
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
+                    expr->isLValue = false;
+                    expr->isConst = false;
+                    return ctx.getUnknownType();
+                }
+
                 // ─── Cache the result ─────────────────────────────────────
                 expr->resolvedDecl = variant;
                 expr->ownerType = enumDecl;
@@ -588,6 +603,14 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         for (size_t i = 0; i < structDecl->fields.size(); ++i) {
             FieldDeclAST* field = structDecl->fields[i];
             if (field->name == expr->fieldName) {
+                if (field->hasSyntaxError) {
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
+                    expr->isLValue = false;
+                    expr->isConst = false;
+                    return ctx.getUnknownType();
+                }
+
                 // ─── Cache the result ─────────────────────────────────────
                 expr->resolvedDecl = field;
                 expr->ownerType = structDecl;
@@ -659,6 +682,15 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->isLValue = false;
         expr->resolvedDecl = nullptr;
         expr->resolvedModule = module;
+        return ctx.getUnknownType();
+    }
+
+    if (decl->hasSyntaxError) {
+        expr->resolvedDecl = decl;
+        expr->resolvedModule = module;
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
         return ctx.getUnknownType();
     }
 
@@ -942,6 +974,12 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
+    if (structDecl->hasSyntaxError) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
     // ─── Step 2: Check and validate generic arguments ────────────────────
     if (!expr->genericArgs.empty()) {
         // ─── 2a. Check arity ─────────────────────────────────────────────
@@ -1010,6 +1048,9 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         }
 
         FieldDeclAST* field = it->second;
+        if (field->hasSyntaxError) {
+            continue;
+        }
 
         // ─── 4a. Const field validation ─────────────────────────────────
         if (field->isConst()) {
@@ -1081,6 +1122,10 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
 
     // ─── Step 5: Check for missing required fields ──────────────────────
     for (FieldDeclAST* field : structDecl->fields) {
+        if (field->hasSyntaxError) {
+            continue;
+        }
+
         if (initializedFields.find(field->name) != initializedFields.end()) {
             continue;
         }

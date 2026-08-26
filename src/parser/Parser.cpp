@@ -210,12 +210,8 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             declCount++;
         } else {
             // parseDecl reported the error. If no progress was made, consume
-            // one token to avoid infinite loop.
-            if (stream.getPos() == savedPos && !stream.isAtEnd()) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "skipping unexpected token '", stream.peekValue(), "'");
-                stream.consume();
-            }
+            // Synchronize to nearest valid declaration to recover
+            synchronizeToDeclBoundary(stream, ctx, {});
         }
     }
     

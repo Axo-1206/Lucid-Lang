@@ -90,6 +90,7 @@ static bool validateSingleTraitImplementationInternal(
     // Build a map of struct fields for quick lookup
     std::unordered_map<InternedString, FieldDeclAST*> structFields;
     for (FieldDeclAST* field : structDecl->fields) {
+        if (field->hasSyntaxError) continue;
         structFields[field->name] = field;
     }
 
@@ -97,6 +98,17 @@ static bool validateSingleTraitImplementationInternal(
 
     // Check each trait field
     for (TraitFieldDeclAST* traitField : traitDecl->fields) {
+        if (traitField->hasSyntaxError) continue;
+
+        bool hasBrokenStructField = false;
+        for (FieldDeclAST* field : structDecl->fields) {
+            if (field->name == traitField->name && field->hasSyntaxError) {
+                hasBrokenStructField = true;
+                break;
+            }
+        }
+        if (hasBrokenStructField) continue;
+
         // ─── 1. Check: Field exists in struct ──────────────────────────
         auto it = structFields.find(traitField->name);
         if (it == structFields.end()) {
@@ -205,6 +217,7 @@ static bool checkTraitFieldConflictsInternal(
         if (!trait) continue;
 
         for (TraitFieldDeclAST* field : trait->fields) {
+            if (field->hasSyntaxError) continue;
             requirements[field->name].push_back({
                 trait,
                 field->isConst(),
@@ -310,7 +323,8 @@ bool validateAllTraitImplementations(StructDeclAST* structDecl,
     for (NamedTypeAST* traitRef : structDecl->traitRefs) {
         TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
         if (!trait) {
-            allValid = false;
+            // Broken trait declarations should already have produced the parser's
+            // diagnostic; semantic validation should stay silent and continue.
             continue;
         }
 

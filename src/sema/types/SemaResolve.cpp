@@ -57,13 +57,17 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
 
     // ─── 1. Resolve the declaration if not already set ─────────────────────
     if (!type->resolvedDecl) {
-        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
+        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name); // Type with no name are never registered
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
                                   "undefined type '", ctx.pool.lookup(type->name), "'");
             return nullptr;
         }
         type->resolvedDecl = decl;
+    }
+
+    if (type->resolvedDecl && type->resolvedDecl->hasSyntaxError) {
+        return ctx.getUnknownType();
     }
 
     // ─── 2. Generic parameters can't have generic arguments ───────────────
@@ -441,6 +445,10 @@ TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
     // ─── Step 2: Check if it's a trait ─────────────────────────────────────
     TypeDeclAST* decl = ref->resolvedDecl;
     if (!decl) return nullptr;
+
+    if (decl->name.isEmpty()) {
+        return nullptr;
+    }
 
     if (!decl->isa<TraitDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotATrait, ref,

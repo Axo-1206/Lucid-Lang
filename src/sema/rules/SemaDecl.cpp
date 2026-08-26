@@ -73,7 +73,9 @@ void registerFuncName(FuncDeclAST* decl, SemaContext& ctx) {
 void registerEnumName(EnumDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
     for (EnumVariantAST* variant : decl->variants) {
-        ctx.insertValue(variant);
+        if (!variant->name.isEmpty()) {
+            ctx.insertValue(variant);
+        }
     }
 }
 
@@ -86,7 +88,9 @@ void registerStructName(StructDeclAST* decl, SemaContext& ctx) {
 
     /// Register all field names in a struct (no type resolution).
     for (FieldDeclAST* field : decl->fields) {
-        ctx.insertValue(field);
+        if (!field->name.isEmpty()) {
+            ctx.insertValue(field);
+        }
     }
 }
 
@@ -231,6 +235,13 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 // ─── resolveFuncDecl ──────────────────────────────────────────────────────────
 
 void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
+    if (decl->hasSyntaxError) {
+        if (decl->type) {
+            decl->type = ctx.getUnknownType();
+        }
+        return;
+    }
+
     // ─── 1. Validate all attributes ────────────────────────────────────────
     validateAllAttributes(decl, ctx);
 
@@ -383,6 +394,10 @@ void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx) {
 // ─── resolveEnumDecl ──────────────────────────────────────────────────────────
 
 void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
+    if (decl->hasSyntaxError) {
+        return;
+    }
+
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerEnumName() ──────────────
@@ -423,6 +438,10 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
 // ─── resolveTraitDecl ─────────────────────────────────────────────────────────
 
 void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
+    if (decl->hasSyntaxError) {
+        return;
+    }
+
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerTraitName() ─────────────
@@ -462,6 +481,10 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
 // ─── resolveStructDecl ────────────────────────────────────────────────────────
 
 void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
+    if (decl->hasSyntaxError) {
+        return;
+    }
+
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerStructName() ────────────
@@ -495,6 +518,10 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
     // ─── Phase 1: Resolve field types and validate ──────────────────────────
     for (FieldDeclAST* field : decl->fields) {
+        if (field->hasSyntaxError) {
+            continue;
+        }
+
         validateAllAttributes(field, ctx);
 
         // ─── 1. Resolve the field's type ──────────────────────────────────
