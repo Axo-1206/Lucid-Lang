@@ -683,7 +683,7 @@ struct ModuleAST : BaseAST {
 struct GenericParamDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
-    ArenaSpan<TypeAST*> constraints;   // empty = unconstrained
+    ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
         : TypeDeclAST(ASTKind::GenericParamDecl, n) {}

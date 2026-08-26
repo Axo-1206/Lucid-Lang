@@ -382,7 +382,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
     
     // ─── Parse constraints ──────────────────────────────────────────────────
     if (stream.match(TokenType::COLON)) {
-        std::vector<TypeAST*> constraints;
+        std::vector<NamedTypeAST*> constraints;
         bool hasConstraint = false;
         
         while (!stream.isAtEnd() && !stream.check(TokenType::COMMA) &&
@@ -393,8 +393,8 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
             
             // ─── Parse the constraint type ────────────────────────────────
             TypeAST* traitRef = parseNamedType(stream, ctx);
-            if (traitRef) {
-                constraints.push_back(traitRef);
+            if (traitRef && traitRef->isa<NamedTypeAST>()) {
+                constraints.push_back(traitRef->as<NamedTypeAST>());
                 hasConstraint = true;
 
                 if (!stream.match(TokenType::PLUS)) {
@@ -412,7 +412,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
                     break;
                 }
             } else {
-                auto* placeholder = ctx.arena.make<UnknownTypeAST>();
+                auto* placeholder = ctx.arena.make<NamedTypeAST>(ctx.pool.intern(""));
                 placeholder->hasError = true;
                 constraints.push_back(placeholder);
                 param->hasError = true;
@@ -438,7 +438,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
             return param;
         }
         
-        auto builder = ctx.arena.makeBuilder<TypeAST*>();
+        auto builder = ctx.arena.makeBuilder<NamedTypeAST*>();
         for (auto* tr : constraints) {
             builder.push_back(tr);
         }
