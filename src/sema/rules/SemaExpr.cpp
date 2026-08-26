@@ -12,6 +12,7 @@
 #include "../Sema.hpp"
 #include "../registry/IntrinsicValidator.hpp"
 #include "../support/CaptureAnalysis.hpp"
+#include "core/ASTStrings.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -116,9 +117,9 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType, SemaContext& 
         if (!isAssignable(targetType, result, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
+                                  typeToString(targetType, ctx.pool),
                                   ", got ",
-                                  debug::typeToString(result, ctx.pool));
+                                  typeToString(result, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -309,7 +310,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
                 ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, expr,
                                       "closure cannot capture borrowed type '",
                                       ctx.pool.lookup(expr->name),
-                                      "' (", debug::typeToString(declType, ctx.pool),
+                                      "' (", typeToString(declType, ctx.pool),
                                       ") — closures cannot capture &T or [_]T");
                 ctx.diagnostics.note(expr,
                                      "Only owned values can be captured by closures. "
@@ -451,7 +452,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
     if (isNullableType(objectType) || isFallibleType(objectType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
                               "cannot access field on nullable or fallible type '",
-                              debug::typeToString(objectType, ctx.pool),
+                              typeToString(objectType, ctx.pool),
                               "'. Narrow the value first using 'if' or '?\?'");
         ctx.diagnostics.note(expr->object,
                              "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
@@ -501,7 +502,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
     if (!objectType->isa<NamedTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
                               "field access requires a struct or enum type, got ",
-                              debug::typeToString(objectType, ctx.pool));
+                              typeToString(objectType, ctx.pool));
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -826,9 +827,9 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         if (!isAssignable(targetType, declType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
+                                  typeToString(targetType, ctx.pool),
                                   ", got ",
-                                  debug::typeToString(declType, ctx.pool));
+                                  typeToString(declType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             expr->isLValue = false;
@@ -839,7 +840,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
     Trace::info("resolveModuleAccessExpr: ", 
              ctx.pool.lookup(expr->moduleName), ":",
              ctx.pool.lookup(expr->memberName),
-             " resolved to ", debug::typeToString(declType, ctx.pool));
+             " resolved to ", typeToString(declType, ctx.pool));
 
     return declType;
 }
@@ -1315,8 +1316,8 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, TypeAST* targetType, SemaContext
                       isNullableType(rightType) || isFallibleType(rightType))) {
                     ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                           "comparison of incompatible types: ",
-                                          debug::typeToString(leftType, ctx.pool), " and ",
-                                          debug::typeToString(rightType, ctx.pool));
+                                          typeToString(leftType, ctx.pool), " and ",
+                                          typeToString(rightType, ctx.pool));
                     expr->resolvedType = ctx.getUnknownType();
                     expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
@@ -1406,9 +1407,9 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, TypeAST* targetType, SemaContext
         if (!isAssignable(targetType, resultType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
+                                  typeToString(targetType, ctx.pool),
                                   ", got ",
-                                  debug::typeToString(resultType, ctx.pool));
+                                  typeToString(resultType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -1793,9 +1794,9 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetTyp
         if (!isAssignable(targetType, resultType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
+                                  typeToString(targetType, ctx.pool),
                                   ", got ",
-                                  debug::typeToString(resultType, ctx.pool));
+                                  typeToString(resultType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -1840,7 +1841,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, TypeAST* targetType, SemaContext& 
     if (isNullableType(targetTypeAst) || isFallibleType(targetTypeAst)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->target,
                               "cannot index nullable or fallible value '",
-                              debug::typeToString(targetTypeAst, ctx.pool),
+                              typeToString(targetTypeAst, ctx.pool),
                               "'. Narrow the value first using 'if' or '?\?'");
         ctx.diagnostics.note(expr->target,
                              "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
@@ -1852,7 +1853,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, TypeAST* targetType, SemaContext& 
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
                               "indexing requires an array target type, got ",
-                              debug::typeToString(targetTypeAst, ctx.pool));
+                              typeToString(targetTypeAst, ctx.pool));
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -1909,7 +1910,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& 
     if (isNullableType(targetTypeAst) || isFallibleType(targetTypeAst)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->target,
                               "cannot slice nullable or fallible value '",
-                              debug::typeToString(targetTypeAst, ctx.pool),
+                              typeToString(targetTypeAst, ctx.pool),
                               "'. Narrow the value first using 'if' or '?\?'");
         ctx.diagnostics.note(expr->target,
                              "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
@@ -1921,7 +1922,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& 
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
                               "slicing requires an array target type, got ",
-                              debug::typeToString(targetTypeAst, ctx.pool));
+                              typeToString(targetTypeAst, ctx.pool));
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -2116,7 +2117,7 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
                 if (!isNumericType(lhsType)) {
                     ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr,
                                           "arithmetic compound assignment requires numeric type, got ",
-                                          debug::typeToString(lhsType, ctx.pool));
+                                          typeToString(lhsType, ctx.pool));
                     expr->resolvedType = ctx.getUnknownType();
                     expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
@@ -2131,7 +2132,7 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
                 if (!isIntegerType(lhsType)) {
                     ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr,
                                           "bitwise compound assignment requires integer type, got ",
-                                          debug::typeToString(lhsType, ctx.pool));
+                                          typeToString(lhsType, ctx.pool));
                     expr->resolvedType = ctx.getUnknownType();
                     expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
@@ -2277,7 +2278,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                         "' is not a function - cannot use in pipeline");
                     ctx.diagnostics.note(field,
                                         "Only functions can be used in pipelines. The field type is ",
-                                        debug::typeToString(callableType, ctx.pool));
+                                        typeToString(callableType, ctx.pool));
                     return ctx.getUnknownType();
                 }
             } else {
@@ -2299,7 +2300,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                         "' is not a function - cannot use in pipeline");
                     ctx.diagnostics.note(field,
                                         "Only functions can be used in pipelines. The field type is ",
-                                        debug::typeToString(callableType, ctx.pool));
+                                        typeToString(callableType, ctx.pool));
                     return ctx.getUnknownType();
                 }
             }
@@ -2307,7 +2308,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
         
         ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                               "pipeline step is not a function type, got ",
-                              debug::typeToString(callableType, ctx.pool));
+                              typeToString(callableType, ctx.pool));
         return ctx.getUnknownType();
     }
 
@@ -2361,7 +2362,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
             std::string discardedTypes;
             for (size_t i = 0; i < argTypes.size(); ++i) {
                 if (i > 0) discardedTypes += ", ";
-                discardedTypes += debug::typeToString(argTypes[i], ctx.pool);
+                discardedTypes += typeToString(argTypes[i], ctx.pool);
             }
             
             ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, step->callable,
@@ -2369,7 +2370,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                     argTypes.size(), " value(s) are being discarded",
                                     " (", discardedTypes, ")");
             ctx.diagnostics.note(step->callable,
-                                 "The function '", debug::typeToString(callableType, ctx.pool),
+                                 "The function '", typeToString(callableType, ctx.pool),
                                  "' ignores all upstream values. Consider removing this step.");
         }
         
@@ -2421,7 +2422,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
             std::string discardedTypes;
             for (size_t i = paramCount; i < argCount; ++i) {
                 if (i > paramCount) discardedTypes += ", ";
-                discardedTypes += debug::typeToString(argTypes[i], ctx.pool);
+                discardedTypes += typeToString(argTypes[i], ctx.pool);
             }
             
             ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, step->callable,
@@ -2429,7 +2430,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                                     " extra argument(s)", 
                                     discardedCount > 0 ? " (" + discardedTypes + ")" : "");
             ctx.diagnostics.note(step->callable,
-                                 "The function '", debug::typeToString(callableType, ctx.pool),
+                                 "The function '", typeToString(callableType, ctx.pool),
                                  "' expects only ", paramCount, " parameter(s), but ",
                                  argCount, " value(s) are available. Extra values are discarded.");
         }
@@ -2463,8 +2464,8 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                     ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                                           "variadic argument at position ", j + 1,
                                           " type mismatch: expected ",
-                                          debug::typeToString(elementType, ctx.pool),
-                                          ", got ", debug::typeToString(argType, ctx.pool));
+                                          typeToString(elementType, ctx.pool),
+                                          ", got ", typeToString(argType, ctx.pool));
                     return ctx.getUnknownType();
                 }
             }
@@ -2495,8 +2496,8 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
                 ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                                       "pipeline step type mismatch at argument ", i + 1,
                                       argSource, ": expected ",
-                                      debug::typeToString(paramType, ctx.pool),
-                                      ", got ", debug::typeToString(argType, ctx.pool));
+                                      typeToString(paramType, ctx.pool),
+                                      ", got ", typeToString(argType, ctx.pool));
                 return ctx.getUnknownType();
             }
         }
@@ -2557,8 +2558,8 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
         if (!isAssignable(targetType, currentType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "pipeline result type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
-                                  ", got ", debug::typeToString(currentType, ctx.pool));
+                                  typeToString(targetType, ctx.pool),
+                                  ", got ", typeToString(currentType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -2718,7 +2719,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
                                   "' is not a function - cannot use in composition");
             ctx.diagnostics.note(field,
                                  "Only functions can be composed. The field type is ",
-                                 debug::typeToString(callableType, ctx.pool));
+                                 typeToString(callableType, ctx.pool));
             return ctx.getUnknownType();
         }
         
@@ -2743,7 +2744,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, 
         // ─── If we still don't have a function type, error ──────────────
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                               "composition operand is not a function type, got ",
-                              debug::typeToString(callableType, ctx.pool));
+                              typeToString(callableType, ctx.pool));
         return ctx.getUnknownType();
     }
 
@@ -2908,9 +2909,9 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
             if (!isAssignable(rightInput, currentOutput, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                                       "composition type mismatch: previous output ",
-                                      debug::typeToString(currentOutput, ctx.pool),
+                                      typeToString(currentOutput, ctx.pool),
                                       " is not assignable to next input ",
-                                      debug::typeToString(rightInput, ctx.pool));
+                                      typeToString(rightInput, ctx.pool));
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
@@ -2920,11 +2921,11 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
                 ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                                       "composition type mismatch: previous output is void, "
                                       "but next operand expects ",
-                                      debug::typeToString(rightInput, ctx.pool));
+                                      typeToString(rightInput, ctx.pool));
             } else {
                 ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
                                       "composition type mismatch: previous output ",
-                                      debug::typeToString(currentOutput, ctx.pool),
+                                      typeToString(currentOutput, ctx.pool),
                                       " is not void, but next operand expects void");
             }
             expr->resolvedType = ctx.getUnknownType();
@@ -2957,8 +2958,8 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
         if (!isAssignable(targetType, composedType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "composed function type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
-                                  ", got ", debug::typeToString(composedType, ctx.pool));
+                                  typeToString(targetType, ctx.pool),
+                                  ", got ", typeToString(composedType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -3086,9 +3087,9 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         if (!isAssignable(targetType, funcType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "anonymous function type mismatch: expected ",
-                                  debug::typeToString(targetType, ctx.pool),
+                                  typeToString(targetType, ctx.pool),
                                   ", got ",
-                                  debug::typeToString(funcType, ctx.pool));
+                                  typeToString(funcType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -3134,8 +3135,8 @@ TypeAST* resolveIfExpr(IfExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (!isAssignable(thenType, elseType, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                               "if expression branches have incompatible types: then ",
-                              debug::typeToString(thenType, ctx.pool),
-                              ", else ", debug::typeToString(elseType, ctx.pool));
+                              typeToString(thenType, ctx.pool),
+                              ", else ", typeToString(elseType, ctx.pool));
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -3187,8 +3188,8 @@ TypeAST* resolveRangeExpr(RangeExprAST* expr, TypeAST* targetType, SemaContext& 
     if (!typesEqual(loType, hiType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                               "range bounds must be the same type, got ",
-                              debug::typeToString(loType, ctx.pool), " and ",
-                              debug::typeToString(hiType, ctx.pool));
+                              typeToString(loType, ctx.pool), " and ",
+                              typeToString(hiType, ctx.pool));
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();

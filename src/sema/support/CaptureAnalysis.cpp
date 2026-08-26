@@ -4,9 +4,9 @@
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaResolve.hpp"
 #include "../types/SemaCompare.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
 
 #include <unordered_map>
 #include <functional>
@@ -210,7 +210,7 @@ struct CaptureAnalyzer {
             ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
                                   "closure cannot capture borrowed type '",
                                   ctx.pool.lookup(name),
-                                  "' (", debug::typeToString(varType, ctx.pool),
+                                  "' (", typeToString(varType, ctx.pool),
                                   ") — closures cannot capture &T or [_]T");
             return;
         }

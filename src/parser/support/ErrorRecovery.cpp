@@ -9,8 +9,8 @@
 
 #include "../Parser.hpp"
 #include "core/ast/BaseAST.hpp"
-#include "debug/DebugUtils.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "core/ASTStrings.hpp"
 
 namespace parser {
 
@@ -65,19 +65,19 @@ SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate s
                 continue;
             }
             if (expectedClosers.empty() && stopAt(current)) {
-                Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
+                Trace::detail("Synchronized at: ", tokenTypeToString(current));
                 return SyncResult::Matched;
             }
             // Foreign closer - belongs to enclosing construct (or a genuine
             // bracket-kind mismatch in the source, e.g. `[1, 2}` - either way,
             // not ours to consume).
             Trace::detail("Stopped before enclosing closer: ",
-                               debug::tokenTypeToString(current));
+                               tokenTypeToString(current));
             return SyncResult::ForeignCloser;
         }
 
         if (expectedClosers.empty() && stopAt(current)) {
-            Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
+            Trace::detail("Synchronized at: ", tokenTypeToString(current));
             return SyncResult::Matched;
         }
 

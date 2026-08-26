@@ -5,7 +5,7 @@
 #include "SemaCompare.hpp"
 #include "SemaValidate.hpp"
 #include "../context/SemaContext.hpp"
-#include "debug/DebugUtils.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
 namespace sema {
@@ -411,7 +411,7 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
         if (isBorrowedType(returnType)) {
             ctx.diagnostics.error(DiagCode::Sem_ReturnRef, type,
                                   "function cannot return borrowed type (",
-                                  debug::typeToString(returnType, ctx.pool),
+                                  typeToString(returnType, ctx.pool),
                                   ") — &T and [_]T cannot escape upward");
             return nullptr;
         }

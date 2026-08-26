@@ -2,7 +2,7 @@
 /// @brief Implementation of mangled name generation.
 
 #include "MangledName.hpp"
-#include "debug/DebugUtils.hpp"
+#include "core/ASTStrings.hpp"
 
 #include <sstream>
 #include <algorithm>
@@ -233,7 +233,7 @@ std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
         }
         
         default:
-            return "?" + debug::kindToString(type->kind);
+            return "?" + astKindToString(type->kind);
     }
 }
 

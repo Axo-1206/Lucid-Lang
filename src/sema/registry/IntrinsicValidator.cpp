@@ -3,8 +3,8 @@
 
 #include "IntrinsicValidator.hpp"
 #include "core/registry/IntrinsicRegistry.hpp"
+#include "core/ASTStrings.hpp"
 #include "../types/ArgTypeValidators.hpp"
-#include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"
 
 namespace sema {
@@ -557,7 +557,7 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!funcType->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit expects a function as the first argument, got ",
-                              debug::typeToString(funcType, ctx.pool));
+                              typeToString(funcType, ctx.pool));
         return false;
     }
 

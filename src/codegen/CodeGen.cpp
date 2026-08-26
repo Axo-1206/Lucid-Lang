@@ -2,7 +2,6 @@
 /// @brief Implementation of the main code generation orchestrator.
 
 #include "CodeGen.hpp"
-#include "debug/DebugUtils.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/trace/Trace.hpp"
 

@@ -2,7 +2,7 @@
 /// @brief Implementation of generic instantiation mangling.
 
 #include "GenericMangledName.hpp"
-#include "debug/DebugUtils.hpp"
+#include "core/ASTStrings.hpp"
 
 #include <sstream>
 #include <algorithm>
@@ -213,7 +213,7 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSub
         }
         
         default:
-            return "?" + debug::kindToString(type->kind);
+            return "?" + astKindToString(type->kind);
     }
 }
 

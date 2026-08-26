@@ -15,7 +15,6 @@
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/LLVMHelpers.hpp"
-#include "debug/DebugUtils.hpp"
 #include "intrinsic/LucidIntrinsicEmitter.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"

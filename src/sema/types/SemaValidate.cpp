@@ -6,7 +6,7 @@
 #include "SemaResolve.hpp"
 #include "../context/SemaContext.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
 #include <unordered_map>
@@ -149,7 +149,7 @@ static bool validateSingleTraitImplementationInternal(
                                   "trait '", ctx.pool.lookup(traitDecl->name),
                                   "' has field '", ctx.pool.lookup(traitField->name),
                                   "' of borrowed type (", 
-                                  debug::typeToString(traitField->type, ctx.pool),
+                                  typeToString(traitField->type, ctx.pool),
                                   ") — traits cannot require borrowed types");
             isValid = false;
             continue;
@@ -161,9 +161,9 @@ static bool validateSingleTraitImplementationInternal(
                 ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
                                       "const field '", ctx.pool.lookup(traitField->name),
                                       "' type mismatch: trait expects ",
-                                      debug::typeToString(traitField->type, ctx.pool),
+                                      typeToString(traitField->type, ctx.pool),
                                       ", struct has ",
-                                      debug::typeToString(structField->type, ctx.pool));
+                                      typeToString(structField->type, ctx.pool));
                 isValid = false;
                 continue;
             }
@@ -173,9 +173,9 @@ static bool validateSingleTraitImplementationInternal(
                 ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
                                       "field '", ctx.pool.lookup(traitField->name),
                                       "' type mismatch: trait expects ",
-                                      debug::typeToString(traitField->type, ctx.pool),
+                                      typeToString(traitField->type, ctx.pool),
                                       ", struct has ",
-                                      debug::typeToString(structField->type, ctx.pool));
+                                      typeToString(structField->type, ctx.pool));
                 isValid = false;
                 continue;
             }
@@ -254,10 +254,10 @@ static bool checkTraitFieldConflictsInternal(
                                           "' has conflicting types: ",
                                           "trait '", ctx.pool.lookup(first->trait->name),
                                           "' expects ",
-                                          debug::typeToString(first->type, ctx.pool),
+                                          typeToString(first->type, ctx.pool),
                                           ", but trait '", ctx.pool.lookup(other->trait->name),
                                           "' expects ",
-                                          debug::typeToString(other->type, ctx.pool));
+                                          typeToString(other->type, ctx.pool));
                     hasConflict = true;
                 }
             }
@@ -296,7 +296,7 @@ bool validateConstType(TypeAST* type,
         ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
                               "const ", kind, " '", ctx.pool.lookup(name),
                               "' cannot be a borrowed type (",
-                              debug::typeToString(type, ctx.pool),
+                              typeToString(type, ctx.pool),
                               ") — const values must be owned");
         return false;
     }
@@ -374,7 +374,7 @@ bool validateGenericArguments(ArenaSpan<TypeAST*> args,
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
                                   "generic argument at position ", i + 1,
                                   " cannot be a borrowed type (",
-                                  debug::typeToString(resolvedArg, ctx.pool),
+                                  typeToString(resolvedArg, ctx.pool),
                                   ") — generic parameters must be owned types");
             allValid = false;
             continue;

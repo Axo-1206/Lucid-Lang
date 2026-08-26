@@ -8,7 +8,6 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
 
 namespace sema {
 

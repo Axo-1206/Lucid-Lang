@@ -12,7 +12,6 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/trace/Trace.hpp"
-#include "debug/DebugUtils.hpp"
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SwitchHelpers.hpp"

@@ -3,6 +3,7 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
+#include "core/ASTStrings.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
@@ -10,7 +11,6 @@
 #include "support/RuntimeError.hpp"
 #include "intrinsic/IntrinsicEmitter.hpp"
 #include "../sema/types/SemaCompare.hpp"
-#include "debug/DebugUtils.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -102,7 +102,7 @@ llvm::Value* lowerExpression(ExprAST* expr, CodeGenContext& ctx) {
         default:
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, expr->loc,
                                     "unsupported expression kind: ",
-                                    debug::kindToString(expr->kind));
+                                    astKindToString(expr->kind));
             return nullptr;
     }
 }

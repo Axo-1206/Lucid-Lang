@@ -14,7 +14,6 @@
 #include "core/Tokens.hpp"
 #include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
-#include "debug/DebugUtils.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <filesystem>

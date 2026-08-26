@@ -2,9 +2,9 @@
 /// @brief Implementation of type mapping from Lucid AST types to LLVM types.
 
 #include "CodeGenType.hpp"
+#include "core/ASTStrings.hpp"
 #include "generic/CodeGenGeneric.hpp"  // For GenericSubstitution
 #include "generic/GenericMangledName.hpp"
-#include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -401,11 +401,7 @@ llvm::Type* getRefType(CodeGenContext& ctx, RefTypeAST* type) {
     return llvm::PointerType::get(ctx.llvmCtx, 0);
 }
 
-llvm::Type* getArrayType(
-    CodeGenContext& ctx,
-    ArrayTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::Type* getArrayType(CodeGenContext& ctx, ArrayTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* elemType = getType(ctx, type->element, subst);
@@ -430,7 +426,7 @@ llvm::Type* getArrayType(
                 // With opaque pointers, ptr is just a pointer
                 llvm::Type* ptrType = llvm::PointerType::get(ctx.llvmCtx, 0);
                 llvm::Type* lenType = llvm::Type::getInt64Ty(ctx.llvmCtx);
-                std::string typeName = "slice_" + debug::typeToString(type->element, ctx.pool);
+                std::string typeName = "slice_" + typeToString(type->element, ctx.pool);
                 return llvm::StructType::create(
                     ctx.llvmCtx,
                     llvm::ArrayRef<llvm::Type*>{ptrType, lenType, lenType},
@@ -443,11 +439,7 @@ llvm::Type* getArrayType(
     }
 }
 
-llvm::StructType* getNullableType(
-    CodeGenContext& ctx,
-    NullableTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::StructType* getNullableType(CodeGenContext& ctx, NullableTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner, subst);
@@ -457,7 +449,7 @@ llvm::StructType* getNullableType(
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    std::string typeName = "nullable_" + debug::typeToString(type->inner, ctx.pool);
+    std::string typeName = "nullable_" + typeToString(type->inner, ctx.pool);
     llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
     return llvm::StructType::create(
@@ -467,11 +459,7 @@ llvm::StructType* getNullableType(
     );
 }
 
-llvm::StructType* getFallibleType(
-    CodeGenContext& ctx,
-    FallibleTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::StructType* getFallibleType(CodeGenContext& ctx, FallibleTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner, subst);
@@ -481,7 +469,7 @@ llvm::StructType* getFallibleType(
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    std::string typeName = "fallible_" + debug::typeToString(type->inner, ctx.pool);
+    std::string typeName = "fallible_" + typeToString(type->inner, ctx.pool);
     llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
     return llvm::StructType::create(
@@ -491,11 +479,7 @@ llvm::StructType* getFallibleType(
     );
 }
 
-llvm::StructType* getCombinedType(
-    CodeGenContext& ctx,
-    CombinedTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::StructType* getCombinedType(CodeGenContext& ctx, CombinedTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner, subst);
@@ -505,7 +489,7 @@ llvm::StructType* getCombinedType(
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    std::string typeName = "combined_" + debug::typeToString(type->inner, ctx.pool);
+    std::string typeName = "combined_" + typeToString(type->inner, ctx.pool);
     llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
     return llvm::StructType::create(
@@ -515,11 +499,7 @@ llvm::StructType* getCombinedType(
     );
 }
 
-llvm::StructType* getFutureType(
-    CodeGenContext& ctx,
-    FutureTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::StructType* getFutureType(CodeGenContext& ctx, FutureTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner, subst);
@@ -531,7 +511,7 @@ llvm::StructType* getFutureType(
 
     // Future<T> = { T value, i8 state }
     // state: 0 = pending, 1 = ready, 2 = consumed
-    std::string typeName = "future_" + debug::typeToString(type->inner, ctx.pool);
+    std::string typeName = "future_" + typeToString(type->inner, ctx.pool);
     llvm::Type* stateType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
     return llvm::StructType::create(
@@ -541,11 +521,7 @@ llvm::StructType* getFutureType(
     );
 }
 
-llvm::StructType* getThreadType(
-    CodeGenContext& ctx,
-    const ThreadTypeAST* type,
-    const GenericSubstitution* subst
-) {
+llvm::StructType* getThreadType(CodeGenContext& ctx, const ThreadTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner, subst);
@@ -557,7 +533,7 @@ llvm::StructType* getThreadType(
 
     // Thread<T> = { T value, i8 state }
     // state: 0 = running, 1 = done, 2 = joined
-    std::string typeName = "thread_" + debug::typeToString(type->inner, ctx.pool);
+    std::string typeName = "thread_" + typeToString(type->inner, ctx.pool);
     llvm::Type* stateType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
     return llvm::StructType::create(
@@ -633,7 +609,7 @@ llvm::Type* getFloatType(CodeGenContext& ctx, PrimitiveKind kind) {
 std::string getTypeName(CodeGenContext& ctx, TypeAST* type) {
     if (!type) return "void";
     
-    // For primitive types, use debug::typeToString or a simplified mapping
+    // For primitive types, use typeToString or a simplified mapping
     if (type->isa<PrimitiveTypeAST>()) {
         PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
         return std::string(1, encodePrimitiveKind(prim->primitiveKind));
@@ -644,8 +620,8 @@ std::string getTypeName(CodeGenContext& ctx, TypeAST* type) {
         return ctx.pool.lookup(named->name);
     }
     
-    // Fallback: use debug::typeToString
-    return debug::typeToString(type, ctx.pool);
+    // Fallback: use typeToString
+    return typeToString(type, ctx.pool);
 }
 
 uint64_t getTypeSize(CodeGenContext& ctx, TypeAST* type) {

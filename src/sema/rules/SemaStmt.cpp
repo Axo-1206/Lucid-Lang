@@ -26,9 +26,9 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/ASTStrings.hpp"
 #include "../support/CaptureAnalysis.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "debug/DebugUtils.hpp"
 
 namespace sema {
 
@@ -464,7 +464,7 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
             if (indexType && !isNumericType(indexType)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
                                       "index variable in range loop must be numeric, got ",
-                                      debug::typeToString(indexType, ctx.pool));
+                                      typeToString(indexType, ctx.pool));
             }
         }
         
@@ -537,7 +537,7 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
             if (indexType && !isIntegerType(indexType)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
                                       "index variable in collection loop must be integer, got ",
-                                      debug::typeToString(indexType, ctx.pool));
+                                      typeToString(indexType, ctx.pool));
             }
         }
         
@@ -564,15 +564,15 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
                 TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
                 if (valueType && !typesEqual(valueType, elementType)) {
                     ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->valueVar,
-                                          "value type '", debug::typeToString(valueType, ctx.pool),
+                                          "value type '", typeToString(valueType, ctx.pool),
                                           "' does not match iterable element type '",
-                                          debug::typeToString(elementType, ctx.pool), "'");
+                                          typeToString(elementType, ctx.pool), "'");
                 }
             }
         } else if (stmt->valueVar && !iterableType->isa<ArrayTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
                                   "collection loop requires an array type, got ",
-                                  debug::typeToString(iterableType, ctx.pool));
+                                  typeToString(iterableType, ctx.pool));
             return false;
         }
     }
@@ -732,7 +732,7 @@ bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
         if (expectedType) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
                                   "void return statement but function expects a return value (", 
-                                  debug::typeToString(expectedType, ctx.pool), ")");
+                                  typeToString(expectedType, ctx.pool), ")");
             return true;
         }
     }
@@ -966,7 +966,7 @@ bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!resolvedType->isa<FutureTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
                               "async binding type must be Future<T>, got ",
-                              debug::typeToString(resolvedType, ctx.pool));
+                              typeToString(resolvedType, ctx.pool));
         return false;
     }
 
@@ -997,9 +997,9 @@ bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!typesEqual(callType, innerType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
                               "async call return type '", 
-                              debug::typeToString(callType, ctx.pool),
+                              typeToString(callType, ctx.pool),
                               "' does not match binding type '",
-                              debug::typeToString(innerType, ctx.pool), "'");
+                              typeToString(innerType, ctx.pool), "'");
         return false;
     }
 
@@ -1057,7 +1057,7 @@ bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx) {
                 ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                       "'", ctx.pool.lookup(targetName), 
                                       "' is not a Future<T> (type: ", 
-                                      debug::typeToString(varType, ctx.pool), ")");
+                                      typeToString(varType, ctx.pool), ")");
                 return false;
             }
 
@@ -1079,8 +1079,8 @@ bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx) {
             ctx.resolveAsync(targetName);
             
             Trace::detail("resolveAwaitStmt: narrowed '", ctx.pool.lookup(targetName),
-                     "' from Future<", debug::typeToString(innerType, ctx.pool),
-                     "> to ", debug::typeToString(innerType, ctx.pool));
+                     "' from Future<", typeToString(innerType, ctx.pool),
+                     "> to ", typeToString(innerType, ctx.pool));
         } else if (ctx.hasPendingSpawn(targetName)) {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                   "'", ctx.pool.lookup(targetName), 
@@ -1151,7 +1151,7 @@ bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!resolvedType->isa<ThreadTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
                               "spawn binding type must be Thread<T>, got ",
-                              debug::typeToString(resolvedType, ctx.pool));
+                              typeToString(resolvedType, ctx.pool));
         return false;
     }
 
@@ -1181,9 +1181,9 @@ bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!typesEqual(callType, innerType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
                               "spawn call return type '", 
-                              debug::typeToString(callType, ctx.pool),
+                              typeToString(callType, ctx.pool),
                               "' does not match binding type '",
-                              debug::typeToString(innerType, ctx.pool), "'");
+                              typeToString(innerType, ctx.pool), "'");
         return false;
     }
 
@@ -1241,7 +1241,7 @@ bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
                 ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                       "'", ctx.pool.lookup(targetName), 
                                       "' is not a Thread<T> (type: ", 
-                                      debug::typeToString(varType, ctx.pool), ")");
+                                      typeToString(varType, ctx.pool), ")");
                 return false;
             }
 
@@ -1263,8 +1263,8 @@ bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
             ctx.resolveSpawn(targetName);
             
             Trace::detail("resolveJoinStmt: narrowed '", ctx.pool.lookup(targetName),
-                     "' from Thread<", debug::typeToString(innerType, ctx.pool),
-                     "> to ", debug::typeToString(innerType, ctx.pool));
+                     "' from Thread<", typeToString(innerType, ctx.pool),
+                     "> to ", typeToString(innerType, ctx.pool));
         } else if (ctx.hasPendingAsync(targetName)) {
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                   "'", ctx.pool.lookup(targetName), 

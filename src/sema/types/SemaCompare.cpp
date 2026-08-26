@@ -4,7 +4,6 @@
 #include "SemaCompare.hpp"
 #include "../context/SemaContext.hpp"
 #include "SemaResolve.hpp"
-#include "debug/DebugUtils.hpp"
 
 namespace sema {
 

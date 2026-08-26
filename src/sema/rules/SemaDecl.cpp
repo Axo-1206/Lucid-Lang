@@ -18,7 +18,7 @@
 
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
+#include "core/ASTStrings.hpp"
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
@@ -200,7 +200,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         // These cannot be default-initialized
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                               "variable '", ctx.pool.lookup(decl->name),
-                              "' of type '", debug::typeToString(declaredType, ctx.pool),
+                              "' of type '", typeToString(declaredType, ctx.pool),
                               "' must be initialized (type is not nullable or fallible)");
         ctx.diagnostics.note(decl, 
                              "Consider using a nullable type (T?) or fallible type (T!) ",
@@ -536,7 +536,7 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
                                   "field '", ctx.pool.lookup(field->name),
                                   "' has borrowed type (",
-                                  debug::typeToString(fieldType, ctx.pool),
+                                  typeToString(fieldType, ctx.pool),
                                   ") — struct fields cannot contain &T or [_]T");
             continue;
         }
@@ -562,7 +562,7 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
                                       "block body can only be used with function fields, but '",
                                       ctx.pool.lookup(field->name), "' has type ",
-                                      debug::typeToString(fieldType, ctx.pool));
+                                      typeToString(fieldType, ctx.pool));
                 continue;
             }
 

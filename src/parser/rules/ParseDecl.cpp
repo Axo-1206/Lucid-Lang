@@ -15,7 +15,6 @@
 #include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
 #include "parser/Parser.hpp"
 
 #include <vector>

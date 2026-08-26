@@ -2,9 +2,9 @@
 /// @brief Implementation of pure attribute validation functions.
 
 #include "AttributeValidator.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/registry/AttributeRegistry.hpp"
 #include "../types/ArgTypeValidators.hpp"
-#include "debug/DebugUtils.hpp"
 #include "sema/Sema.hpp"
 
 #include <unordered_set>
@@ -57,7 +57,7 @@ bool validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
                               "attribute '@", ctx.pool.lookup(attr->name),
                               "' cannot be applied to '", 
-                              debug::kindToString(owner->kind), "'");
+                              astKindToString(owner->kind), "'");
         return false;
     }
 
@@ -220,7 +220,7 @@ bool validateLink(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
             ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
                                   "@[link] argument ", i + 1,
                                   " must be a string literal, got ",
-                                  debug::literalKindToString(lit->kind));
+                                  literalKindToString(lit->kind));
             allValid = false;
             continue;
         }

@@ -4,7 +4,6 @@
 #include "CodeGenPanic.hpp"
 #include "RuntimeError.hpp"
 #include "../CodeGenType.hpp"
-#include "debug/DebugUtils.hpp"
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Function.h>
