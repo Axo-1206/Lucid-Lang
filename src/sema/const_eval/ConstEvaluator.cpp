@@ -22,7 +22,10 @@ size_t ConstEvaluator::m_recursionDepth = 0;
 // ─── Main Entry Points ───────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
-    if (!decl || !decl->init) {
+    if (!decl) return ConstantValue::error();
+    if (decl->hasSyntaxError) return ConstantValue::error();
+
+    if (!decl->init) {
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                               "const variable '", ctx.pool.lookup(decl->name),
                               "' has no initializer");
@@ -56,6 +59,7 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
 ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
                                         TypeAST* targetType) {
     if (!expr) return ConstantValue::error();
+    if (expr->hasSyntaxError) return ConstantValue::error();
 
     if (m_recursionDepth >= MAX_RECURSION) {
         return ConstantValue::unknown();
@@ -133,6 +137,7 @@ bool ConstEvaluator::isConstExpr(SemaContext& ctx, ExprAST* expr,
 ConstantValue ConstEvaluator::getConstValue(SemaContext& ctx, ExprAST* expr,
                                              TypeAST* targetType) {
     if (!expr) return ConstantValue::unknown();
+    if (expr->hasSyntaxError) return ConstantValue::error();
     
     // Check cache first
     auto it = m_evalCache.find(expr);

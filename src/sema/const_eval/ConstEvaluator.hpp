@@ -95,6 +95,8 @@ private:
 
 /// @brief Evaluates const expressions at compile-time.
 /// All methods are static - no instance state needed.
+/// @note Callers should provide an AST free of syntax errors. Public entry
+///       points defensively reject nodes marked with `hasSyntaxError`.
 /// 
 /// ─── Phase Responsibilities ──────────────────────────────────────────────
 /// | Field            | Set By      | Read By               | Notes                     |
@@ -110,6 +112,7 @@ public:
     // ─── Main Entry Points ───────────────────────────────────────────────
 
     /// @brief Evaluate a const variable declaration.
+    /// @note Syntax-broken declarations are rejected without new diagnostics.
     static ConstantValue evaluateDecl(SemaContext& ctx, VarDeclAST* decl);
 
     /// @brief Evaluate an expression with optional target type.
@@ -122,6 +125,7 @@ public:
     /// @param expr The expression to evaluate.
     /// @param targetType Optional expected type (for type checking).
     /// @return The evaluated constant value, or error/unknown on failure.
+    /// @note Syntax-broken expressions are rejected without new diagnostics.
     static ConstantValue evaluate(SemaContext& ctx, ExprAST* expr,
                                   TypeAST* targetType = nullptr);
 

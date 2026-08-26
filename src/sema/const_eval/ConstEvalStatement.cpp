@@ -13,6 +13,7 @@ namespace sema {
 
 ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, StmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
+        if (stmt->hasSyntaxError) return ConstantValue::error();
 
     switch (stmt->kind) {
         case ASTKind::BlockStmt:     return executeBlock(ctx, stmt->as<BlockStmtAST>());
@@ -290,6 +291,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* fun
                               "null function");
         return ConstantValue::error();
     }
+    if (func->hasSyntaxError) return ConstantValue::error();
 
     // ─── 0. Recursion depth guard ────────────────────────────────────────
     // evaluate()'s own MAX_RECURSION check only fires if m_recursionDepth
@@ -334,6 +336,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* fun
     // ─── 3. Execute the body ─────────────────────────────────────────────
     ConstantValue result = ConstantValue::voidValue();
     if (func->body) {
+        if (func->body->hasSyntaxError) return ConstantValue::error();
         result = executeStmt(ctx, func->body);
     } else {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
