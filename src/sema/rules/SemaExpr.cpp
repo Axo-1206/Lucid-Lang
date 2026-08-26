@@ -27,6 +27,13 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType, SemaContext& 
         return ctx.getUnknownType();
     }
 
+    if (expr->hasSyntaxError) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
     TypeAST* result = nullptr;
 
     switch (expr->kind) {

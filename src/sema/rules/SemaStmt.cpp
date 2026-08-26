@@ -37,7 +37,7 @@ namespace sema {
 // =============================================================================
 
 bool resolveStmt(StmtAST* stmt, SemaContext& ctx) {
-    if (!stmt) return false;
+    if (!stmt || stmt->hasSyntaxError) return false;
 
     switch (stmt->kind) {
         case ASTKind::BlockStmt:        return resolveBlock(stmt->as<BlockStmtAST>(), ctx);
@@ -896,6 +896,8 @@ static bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
 
 bool resolveExprStmt(ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
+
+    if (stmt->expr->hasSyntaxError) return false;
 
     // ─── Resolve the expression ────────────────────────────────────────────
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);

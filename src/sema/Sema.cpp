@@ -98,7 +98,7 @@ void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
 /// @param decl The declaration to register.
 /// @param ctx The semantic context.
 void registerDeclName(DeclAST* decl, SemaContext& ctx) {
-    if (!decl) return;
+    if (!decl || decl->name.isEmpty()) return;
 
     switch (decl->kind) {
         case ASTKind::ImportDecl:
@@ -172,7 +172,8 @@ void resolveDecl(DeclAST* decl, SemaContext& ctx) {
     // Nested declarations (inside functions, blocks, etc.) are registered
     // when the resolver encounters them during Phase 2.
     if (!ctx.isAtModuleLevel()) {
-        switch (decl->kind) {
+        if (!decl->name.isEmpty()) {
+            switch (decl->kind) {
             case ASTKind::VarDecl:
             case ASTKind::FuncDecl:
                 ctx.insertValue(decl->as<ValueDeclAST>());
@@ -185,7 +186,15 @@ void resolveDecl(DeclAST* decl, SemaContext& ctx) {
             default:
                 // Other declaration kinds don't need registration
                 break;
+            }
         }
+    }
+
+    if (decl->hasSyntaxError) {
+        if (decl->kind == ASTKind::VarDecl) {
+            decl->as<VarDeclAST>()->type = ctx.getUnknownType();
+        }
+        return;
     }
 
     // ─── DISPATCH TO RESOLVER ─────────────────────────────────────────────

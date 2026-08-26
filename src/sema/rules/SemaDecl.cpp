@@ -344,9 +344,20 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
 ///
 /// @note This is called from resolveFuncDecl, NOT from registerFuncName.
 void resolveParam(ParamAST* param, SemaContext& ctx) {
+    if (!param) return;
+
+    if (!param->name.isEmpty()) {
+        ctx.insertValue(param);
+    }
+    if (param->hasSyntaxError) {
+        param->type = ctx.getUnknownType();
+        return;
+    }
+
     // ─── 1. Resolve the parameter type ──────────────────────────────────────
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
+        param->type = ctx.getUnknownType();
         return;
     }
     
@@ -357,9 +368,6 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
         }
     }
     
-    // ─── 4. Register the parameter in the current scope ────────────────────
-    // The current scope is the function's parameter scope (pushed in resolveFuncDecl)
-    ctx.insertValue(param);
 }
 
 // ─── resolveGenericParam ──────────────────────────────────────────────────────
