@@ -48,7 +48,7 @@ ExprAST* parseRequiredExpr(TokenStream& stream, ParserContext& ctx, const char* 
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected ", expectedWhat);
         auto* placeholder = ctx.arena.make<UnknownExprAST>();
-        placeholder->hasError = true;
+        placeholder->hasSyntaxError = true;
         placeholder->loc = stream.currentLoc();
         return placeholder;
     }
@@ -522,10 +522,10 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
                                     "expected '=', got '", stream.peekValue(), "'");
             
             auto* placeholder = ctx.arena.make<UnknownExprAST>();
-            placeholder->hasError = true;
+            placeholder->hasSyntaxError = true;
             auto* init = ctx.arena.make<FieldInitAST>(fieldName, placeholder);
             init->loc = stream.currentLoc();
-            init->hasError = true;
+            init->hasSyntaxError = true;
             inits.push_back(init);
 
             // Try to recover by skipping to the next field or closing brace
@@ -543,8 +543,8 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         // ─── Build and store field initializer ───────────────────────────
         auto* init = ctx.arena.make<FieldInitAST>(fieldName, value);
         init->loc = stream.currentLoc();
-        if (value && value->hasError) {
-            init->hasError = true;
+        if (value && value->hasSyntaxError) {
+            init->hasSyntaxError = true;
         }
         inits.push_back(init);
         

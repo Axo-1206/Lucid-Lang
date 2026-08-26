@@ -179,7 +179,7 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
         auto* placeholder = ctx.arena.make<AttributeAST>();
         placeholder->loc = loc;
         placeholder->name = ctx.pool.intern("");
-        placeholder->hasError = true;
+        placeholder->hasSyntaxError = true;
     }
     
     Token nameTok = stream.consume();
@@ -200,8 +200,8 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
         ) {
             LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
             args.push_back(arg);
-            if (arg->hasError) {
-                attr->hasError = true;
+            if (arg->hasSyntaxError) {
+                attr->hasSyntaxError = true;
             }
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET);
             if (!stream.match(TokenType::COMMA)) {
@@ -210,13 +210,13 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
                 } else if (stream.check(TokenType::RBRACKET)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                         "expected ')' to close attribute literal arguments list");
-                    attr->hasError = true;
+                    attr->hasSyntaxError = true;
                     break;
                 }
                 // Hit EOF
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                         "expected ',' to separate attribute literal arguments");
-                attr->hasError = true;
+                attr->hasSyntaxError = true;
             }
         }
         
@@ -288,7 +288,7 @@ LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
                                     "expected literal, got '", stream.peekValue(), "'");
             }
             auto* placeholder = ctx.arena.make<LiteralExprAST>(LiteralKind::Unknown, ctx.pool.intern(""));
-                    placeholder->hasError = true;
+                    placeholder->hasSyntaxError = true;
                     placeholder->loc = loc;
             return placeholder;
     }
@@ -369,7 +369,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
         }
 
         auto* placeholder = ctx.arena.make<GenericParamDeclAST>(ctx.pool.intern(""));
-        placeholder->hasError = true;
+        placeholder->hasSyntaxError = true;
         
         return placeholder;
     }
@@ -403,7 +403,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
                     }
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                             "expected '+' to separate trait constraints");
-                    param->hasError = true;
+                    param->hasSyntaxError = true;
 
                     synchronizeTo(stream, ctx, TokenType::PLUS, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
                     if (stream.match(TokenType::PLUS)) {
@@ -413,9 +413,9 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
                 }
             } else {
                 auto* placeholder = ctx.arena.make<NamedTypeAST>(ctx.pool.intern(""));
-                placeholder->hasError = true;
+                placeholder->hasSyntaxError = true;
                 constraints.push_back(placeholder);
-                param->hasError = true;
+                param->hasSyntaxError = true;
 
                 if (stream.match(TokenType::PLUS)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
@@ -434,7 +434,7 @@ GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& c
         if (!hasConstraint) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected trait constraint after ':'");
-            param->hasError = true;
+            param->hasSyntaxError = true;
             return param;
         }
         
@@ -484,7 +484,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
             }
         } else {
             auto* placeholder = ctx.arena.make<UnknownTypeAST>();
-            placeholder->hasError = true;
+            placeholder->hasSyntaxError = true;
             args.push_back(placeholder);
 
             // handle case 'arg,, arg' missing arg between ','
@@ -557,7 +557,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
                                     "failed to parse argument, got '", stream.peekValue(), "'");
             
             auto* placeholder = ctx.arena.make<UnknownExprAST>();
-            placeholder->hasError = true;
+            placeholder->hasSyntaxError = true;
             args.push_back(placeholder);
 
             if (stream.match(TokenType::COMMA)) {
@@ -640,7 +640,7 @@ ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool all
             false, 
             false
         );
-        placeholder->hasError = true;
+        placeholder->hasSyntaxError = true;
         placeholder->loc = loc;
         return placeholder;
     }
@@ -666,7 +666,7 @@ ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool all
                 false, 
                 isConstParam
             );
-            placeholder->hasError = true;
+            placeholder->hasSyntaxError = true;
             placeholder->loc = loc;
             return placeholder;
         }
@@ -692,7 +692,7 @@ ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool all
             isVariadic, 
             isConstParam
         );
-        placeholder->hasError = true;
+        placeholder->hasSyntaxError = true;
         placeholder->loc = loc;
         return placeholder;
     }

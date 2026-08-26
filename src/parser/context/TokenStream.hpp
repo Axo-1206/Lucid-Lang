@@ -98,7 +98,13 @@ private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
     static const Token EOF_TOKEN_SENTINEL;
-    
+
+    // Location of the last token actually returned by consume(). previousLoc()
+    // reads this instead of tokens_[pos_ - 1], because pos_ walks forward past
+    // any comments trailing the consumed token - tokens_[pos_ - 1] would be
+    // the last such comment, not the token that was actually consumed.
+    SourceLocation lastConsumedLoc_{1, 1};
+
     size_t skipCommentsFrom(size_t start) const;
 };
 

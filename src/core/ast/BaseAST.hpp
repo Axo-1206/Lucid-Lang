@@ -288,7 +288,7 @@ struct DocComment {
 struct BaseAST {
     ASTKind kind;
     SourceLocation loc;
-    bool hasError = false;
+    bool hasSyntaxError = false;
 
     explicit BaseAST(ASTKind k) : kind(k) {}
     virtual ~BaseAST() = default;
@@ -701,7 +701,7 @@ using ParamGroup        = std::vector<ParamAST*>;
 /// specific unknown node types when possible.
 struct UnknownAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownAST() : BaseAST(ASTKind::Unknown) { hasError = true; }
+    UnknownAST() : BaseAST(ASTKind::Unknown) { hasSyntaxError = true; }
 };
 
 inline bool isUnknown(BaseAST* node) {
@@ -720,20 +720,20 @@ inline bool isUnknown(BaseAST* node) {
 
 struct UnknownDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownDecl;
-    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl, InternedString()) { hasError = true; }
+    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl, InternedString()) { hasSyntaxError = true; }
 };
 
 struct UnknownExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownExpr;
-    UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) { hasError = true; }
+    UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) { hasSyntaxError = true; }
 };
 
 struct UnknownStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownStmt;
-    UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) { hasError = true; }
+    UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) { hasSyntaxError = true; }
 };
 
 struct UnknownTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownType;
-    UnknownTypeAST() : TypeAST(ASTKind::UnknownType) { hasError = true; }
+    UnknownTypeAST() : TypeAST(ASTKind::UnknownType) { hasSyntaxError = true; }
 };

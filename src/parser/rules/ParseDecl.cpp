@@ -243,7 +243,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         type = parseType(stream, ctx);
         if (!type) {
             type = ctx.arena.make<UnknownTypeAST>();
-            type->hasError = true;
+            type->hasSyntaxError = true;
             hasDeclError = true;
 
             if (stream.check(TokenType::ASSIGN)) {
@@ -260,7 +260,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
                                                 "incomplete variable declaration '", ctx.pool.lookup(name), "'");
                     }
                     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, nullptr);
-                    varDecl->hasError = true;
+                    varDecl->hasSyntaxError = true;
                     return varDecl;
                 }
             }
@@ -271,7 +271,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     ExprAST* init = nullptr;
     if (stream.match(TokenType::ASSIGN)) {
         init = parseRequiredExpr(stream, ctx, "initializer expression");
-        if (init && init->hasError) {
+        if (init && init->hasSyntaxError) {
             hasDeclError = true;
             synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
         }
@@ -280,14 +280,14 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingInitializer, stream.currentLoc(),
                                 "const variable '", ctx.pool.lookup(name), "' requires an initializer");
         init = ctx.arena.make<UnknownExprAST>();
-        init->hasError = true;
+        init->hasSyntaxError = true;
         hasDeclError = true;
     }
     
     // Create VarDeclAST using constructor (all parser fields immutable)
     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
-    if (hasDeclError || (type && type->hasError) || (init && init->hasError) || name.isEmpty()) {
-        varDecl->hasError = true;
+    if (hasDeclError || (type && type->hasSyntaxError) || (init && init->hasSyntaxError) || name.isEmpty()) {
+        varDecl->hasSyntaxError = true;
     }
     
     return varDecl;
@@ -363,7 +363,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
 
             restType = ctx.arena.make<UnknownTypeAST>();
-            restType->hasError = true;
+            restType->hasSyntaxError = true;
 
             if (!stream.check(TokenType::LBRACE) &&
                 !stream.check(TokenType::ASSIGN) &&
@@ -384,7 +384,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 funcType->loc = funcTypeLoc;
 
                 auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, nullptr);
-                funcDecl->hasError = true;
+                funcDecl->hasSyntaxError = true;
                 return funcDecl;
             }
         }
@@ -427,7 +427,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                     "expected block body");
             body = ctx.arena.make<UnknownStmtAST>();
-            body->hasError = true;
+            body->hasSyntaxError = true;
             hasBodyError = true;
         }
         
@@ -444,15 +444,15 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             
             synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
             auto* unknownExpr = ctx.arena.make<UnknownExprAST>();
-            unknownExpr->hasError = true;
+            unknownExpr->hasSyntaxError = true;
             auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
             returnStmt->value = unknownExpr;
-            returnStmt->hasError = true;
+            returnStmt->hasSyntaxError = true;
             body = returnStmt;
             hasBodyError = true;
         } else {
             ExprAST* exprBody = parseRequiredExpr(stream, ctx, "function body expression");
-            if (exprBody && exprBody->hasError) {
+            if (exprBody && exprBody->hasSyntaxError) {
                 hasBodyError = true;
             }
             
@@ -488,8 +488,8 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 7. Build FuncDeclAST ────────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
-    if (hasBodyError || (restType && restType->hasError) || name.isEmpty()) {
-        funcDecl->hasError = true;
+    if (hasBodyError || (restType && restType->hasSyntaxError) || name.isEmpty()) {
+        funcDecl->hasSyntaxError = true;
     }
     
     return funcDecl;
@@ -509,7 +509,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     stream.consume();
     
     // 2. Parse struct name
-    bool hasError = false;
+    bool hasSyntaxError = false;
     InternedString name;
     if (stream.check(TokenType::IDENTIFIER)) {
         Token nameTok = stream.consume();
@@ -519,12 +519,12 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name");
         name = ctx.pool.intern("");
-        hasError = true;
+        hasSyntaxError = true;
     } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected struct name, got '", stream.peekValue(), "'");
         name = ctx.pool.intern("");
-        hasError = true;
+        hasSyntaxError = true;
     }
     
     // 3. Parse generic parameters
@@ -548,7 +548,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
                     }
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                             "expected ',' to separate traits");
-                    hasError = true;
+                    hasSyntaxError = true;
 
                     synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
                     if (stream.match(TokenType::COMMA)) {
@@ -558,9 +558,9 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
                 }
             } else {
                 auto* placeholder = ctx.arena.make<NamedTypeAST>(ctx.pool.intern(""));
-                placeholder->hasError = true;
+                placeholder->hasSyntaxError = true;
                 traitRefs.push_back(placeholder);
-                hasError = true;
+                hasSyntaxError = true;
 
                 if (stream.match(TokenType::COMMA)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.previousLoc(),
@@ -595,7 +595,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             ctx.arena.makeBuilder<FieldDeclAST*>().build(),
             traitBuilder.build()
         );
-        structDecl->hasError = true;
+        structDecl->hasSyntaxError = true;
         return structDecl;
     }
     stream.consume();
@@ -656,7 +656,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         fieldBuilder.build(),
         traitBuilder.build()
     );
-    structDecl->hasError = hasError;
+    structDecl->hasSyntaxError = hasSyntaxError;
     return structDecl;
 }
 
@@ -801,7 +801,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
                                 "expected '{' for enum body");
         synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, ctx.arena.makeBuilder<EnumVariantAST*>().build(), backingType);
-        enumDecl->hasError = true;
+        enumDecl->hasSyntaxError = true;
         return enumDecl;
     }
     stream.consume();
@@ -955,7 +955,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
                                 "expected '{' for trait body");
         synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, ctx.arena.makeBuilder<TraitFieldDeclAST*>().build());
-        traitDecl->hasError = true;
+        traitDecl->hasSyntaxError = true;
         return traitDecl;
     }
     stream.consume();

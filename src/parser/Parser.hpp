@@ -115,11 +115,36 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
 // Error Recovery
 // =============================================================================
 
+/**
+ * @brief Why a synchronizeUntil()/synchronizeTo()/synchronizeToDeclBoundary()
+ *        call stopped where it did.
+ *
+ * The two EOF outcomes look identical if a caller only checks
+ * stream.peekType() afterward - both leave the stream at EOF - but they mean
+ * very different things. ReachedEnd means the remainder of the file was
+ * well-bracketed and simply never contained a stopAt() token. UnclosedBracket
+ * means the scan got stuck waiting for a bracket opened during the scan that
+ * never closed - a common state for a buffer mid-edit (e.g. `let x = foo(a, b`
+ * at the end of the file as-typed-so-far), not a rare corruption case, and
+ * worth distinguishing so a caller doesn't treat "nothing to synchronize to"
+ * and "actively obstructed by an unclosed bracket" as the same situation.
+ */
+enum class SyncResult {
+    Matched,          // stopAt() fired with no brackets open - clean, expected stop
+    ForeignCloser,    // stopped right before a closer belonging to an enclosing,
+                      // already-open construct (e.g. recovering inside a function
+                      // body and hitting that body's own '}')
+    ReachedEnd,       // hit EOF with no brackets open - stopAt() never matched
+                      // anywhere in the remainder of the file
+    UnclosedBracket,  // hit EOF while still waiting on a bracket opened during
+                      // this scan that never closed
+};
+
 template<typename Predicate>
-void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt);
+SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt);
 
 template<typename... StopTokens>
-void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
+SyncResult synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
 
 /**
  * @brief Skip to the nearest declaration/statement boundary, honoring extra
@@ -138,15 +163,16 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
  * that gap.
  *
  * After calling, the caller should inspect stream.peekType() (or
- * stream.check(...)) to see which token it actually landed on - this
- * function does not consume it and does not report a diagnostic itself,
- * matching the existing synchronizeTo()/synchronizeToContext() convention.
+ * stream.check(...)) to see which token it actually landed on, and/or the
+ * returned SyncResult to distinguish a clean stop from having been stuck
+ * behind an unclosed bracket - this function does not consume the landed-on
+ * token and does not report a diagnostic itself.
  *
  * @param extraStops Construct-specific tokens to also stop at (e.g. '=' and
  *        ';' for a variable declaration, or additionally '{' for a function
  *        declaration's body).
  */
-void synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
+SyncResult synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
                                 std::initializer_list<TokenType> extraStops = {});
 
 // =============================================================================

@@ -19,18 +19,24 @@ TokenStream::TokenStream(std::vector<Token> tokens)
 // ─── Token Consumption ──────────────────────────────────────────────────
 
 const Token& TokenStream::peek() {
-    size_t next = skipCommentsFrom(pos_);
-    if (next >= tokens_.size()) {
+    // Normalize pos_ as a side effect of reading, not just consume() - otherwise
+    // pos_ can rest on a comment (at file start, or after a lookahead setPos()
+    // restore) and the *next* raw consume() call eats that comment instead of
+    // the token peek()/check() just reported.
+    pos_ = skipCommentsFrom(pos_);
+    if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
-    return tokens_[next];
+    return tokens_[pos_];
 }
 
 Token TokenStream::consume() {
+    pos_ = skipCommentsFrom(pos_);
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
     Token result = tokens_[pos_];
+    lastConsumedLoc_ = SourceLocation(result.line, result.column);
     pos_++;
     pos_ = skipCommentsFrom(pos_);
     return result;
@@ -49,22 +55,20 @@ bool TokenStream::match(TokenType type) {
 }
 
 bool TokenStream::isAtEnd() {
-    size_t next = skipCommentsFrom(pos_);
-    return next >= tokens_.size() || tokens_[next].type == TokenType::EOF_TOKEN;
+    pos_ = skipCommentsFrom(pos_);
+    return pos_ >= tokens_.size() || tokens_[pos_].type == TokenType::EOF_TOKEN;
 }
 
 SourceLocation TokenStream::currentLoc() const {
-    if (pos_ < tokens_.size()) {
-        return SourceLocation(tokens_[pos_].line, tokens_[pos_].column);
+    size_t p = skipCommentsFrom(pos_);
+    if (p < tokens_.size()) {
+        return SourceLocation(tokens_[p].line, tokens_[p].column);
     }
     return SourceLocation(1, 1);
 }
 
 SourceLocation TokenStream::previousLoc() const {
-    if (pos_ < tokens_.size()) {
-        return SourceLocation(tokens_[pos_ - 1].line, tokens_[pos_ - 1].column);
-    }
-    return SourceLocation(1, 1);
+    return lastConsumedLoc_;
 }
 
 // ─── Trailing Token Consumption ────────────────────────────────────────
