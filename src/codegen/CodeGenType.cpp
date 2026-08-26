@@ -202,7 +202,9 @@ llvm::FunctionType* getFunctionType(CodeGenContext& ctx, FuncTypeAST* funcType, 
 
     // ─── Add regular parameters ────────────────────────────────────────────
     for (ParamAST* param : funcType->params) {
-        llvm::Type* paramType = getType(ctx, param->type);
+        llvm::Type* paramType = param->isVariadic
+            ? ctx.getSliceType()
+            : getType(ctx, param->type);
         if (!paramType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, param->loc,
                                     "parameter '", ctx.pool.lookup(param->name),
@@ -232,16 +234,8 @@ llvm::FunctionType* getFunctionType(CodeGenContext& ctx, FuncTypeAST* funcType, 
         returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
     }
 
-    // ─── Check for variadic parameters ──────────────────────────────────────
-    bool isVarArg = false;
-    for (ParamAST* param : funcType->params) {
-        if (param->isVariadic) {
-            isVarArg = true;
-            break;
-        }
-    }
-
-    return llvm::FunctionType::get(returnType, paramTypes, isVarArg);
+    // Source-level variadic parameters are lowered as one explicit slice.
+    return llvm::FunctionType::get(returnType, paramTypes, false);
 }
 
 llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type) {

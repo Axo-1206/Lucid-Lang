@@ -6,11 +6,7 @@
 
 namespace codegen {
 
-llvm::Value* getArrayLength(
-    llvm::Value* target,
-    ArrayTypeAST* arrayType,
-    CodeGenContext& ctx
-) {
+llvm::Value* getArrayLength(llvm::Value* target, ArrayTypeAST* arrayType, CodeGenContext& ctx) {
     if (!target || !arrayType) return nullptr;
 
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx.llvmCtx);
@@ -26,7 +22,7 @@ llvm::Value* getArrayLength(
             // With opaque pointers, we cannot use getPointerElementType().
             // We need to know the layout from the AST/type system.
             //
-            // Option 1: The target is a pointer to the array data.
+            // The target is a pointer to the array data.
             // The length is stored before the data: [length: i64][data: T*]
             // We need to offset back by 8 bytes to get the length.
             

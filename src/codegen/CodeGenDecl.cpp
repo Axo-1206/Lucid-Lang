@@ -442,7 +442,7 @@ void lowerSpecializedFunctionBody(
     if (funcDecl->body) {
         lowerStatement(funcDecl->body, ctx);
     } else {
-        ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, funcDecl->loc,
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, funcDecl->loc,
                                 "specialized function '", 
                                 specializedFunc->getName().str(),
                                 "' has no body");
@@ -483,7 +483,9 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     if (!param) return;
 
     // ─── Get LLVM type ────────────────────────────────────────────────────
-    llvm::Type* paramType = getType(ctx, param->type);
+    llvm::Type* paramType = param->isVariadic
+        ? ctx.getSliceType()
+        : getType(ctx, param->type);
     if (!paramType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
                                 "parameter '", ctx.pool.lookup(param->name),

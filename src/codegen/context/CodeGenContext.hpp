@@ -275,16 +275,36 @@ struct CodeGenContext {
         return it != structCache.end() ? it->second : nullptr;
     }
 
-    // ─── String Type Helpers ──────────────────────────────────────────────
-    
-    /// @brief Get the string type (struct { ptr, len, cap }).
-    /// @return The string struct type.
-    llvm::StructType* getStringType() const {
-        llvm::Type* i8Ptr = llvm::PointerType::get(llvmCtx, 0);
-        llvm::Type* i64 = llvm::Type::getInt64Ty(llvmCtx);
-        return llvm::StructType::get(llvmCtx, {i8Ptr, i64, i64});
+    // ─── Fat Pointer Type Helpers ────────────────────────────────────────
+
+    /// @brief Get the canonical slice type (struct { ptr, len, cap }).
+    llvm::StructType* getSliceType() const {
+        llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.Slice");
+        if (!type) {
+            type = llvm::StructType::create(llvmCtx, "lucid.Slice");
+            type->setBody({
+                llvm::PointerType::get(llvmCtx, 0),
+                llvm::Type::getInt64Ty(llvmCtx),
+                llvm::Type::getInt64Ty(llvmCtx)
+            });
+        }
+        return type;
     }
-    
+
+    /// @brief Get the canonical string type (struct { ptr, len, cap }).
+    llvm::StructType* getStringType() const {
+        llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.String");
+        if (!type) {
+            type = llvm::StructType::create(llvmCtx, "lucid.String");
+            type->setBody({
+                llvm::PointerType::get(llvmCtx, 0),
+                llvm::Type::getInt64Ty(llvmCtx),
+                llvm::Type::getInt64Ty(llvmCtx)
+            });
+        }
+        return type;
+    }
+
     /// @brief Create a string literal as an LLVM value.
     /// @param str The string content.
     /// @return An LLVM value representing the string literal.

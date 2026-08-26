@@ -240,18 +240,92 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── TODO: Implement proper identifier lookup ──────────────────────────
-    // This should look up the variable/function from the context's symbol table.
-    // For now, return a placeholder.
-    llvm::Type* llvmType = getType(ctx, expr->resolvedType);
-    if (!llvmType) {
+    ValueDeclAST* decl = expr->resolvedDecl;
+    if (!decl) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                                "identifier '", ctx.pool.lookup(expr->name), "' has no type");
+                                "undefined identifier '", ctx.pool.lookup(expr->name), "'");
         return nullptr;
     }
 
-    expr->llvmValue = llvm::Constant::getNullValue(llvmType);
-    return expr->llvmValue;
+    if (decl->isa<VarDeclAST>() || decl->isa<ParamAST>()) {
+        llvm::Value* binding = ctx.lookupValue(decl);
+        if (!binding) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "identifier '", ctx.pool.lookup(expr->name),
+                                    "' has no LLVM binding");
+            return nullptr;
+        }
+
+        if (expr->isLValue) {
+            expr->llvmValue = binding;
+            return binding;
+        }
+
+        llvm::Type* type = getType(ctx, expr->resolvedType);
+        if (!type) return nullptr;
+        expr->llvmValue = ctx.builder.CreateLoad(
+            type,
+            binding,
+            "load_" + ctx.pool.lookup(expr->name)
+        );
+        return expr->llvmValue;
+    }
+
+    if (decl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        llvm::Function* func = ctx.lookupFunction(funcDecl);
+        if (!func) {
+            llvm::FunctionType* funcType = getFunctionType(
+                ctx,
+                funcDecl->funcType,
+                funcDecl->hasClosure
+            );
+            if (!funcType) return nullptr;
+
+            std::string funcName = funcDecl->isForeignFunction
+                ? ctx.pool.lookup(funcDecl->name)
+                : ctx.pool.lookup(funcDecl->mangledName);
+            func = llvm::Function::Create(
+                funcType,
+                llvm::GlobalValue::ExternalLinkage,
+                funcName,
+                ctx.module
+            );
+            ctx.storeFunction(funcDecl, func);
+        }
+
+        expr->llvmValue = func;
+        return func;
+    }
+
+    if (decl->isa<EnumVariantAST>()) {
+        EnumVariantAST* variant = decl->as<EnumVariantAST>();
+        if (variant->llvmValue) {
+            expr->llvmValue = variant->llvmValue;
+            return variant->llvmValue;
+        }
+
+        llvm::Type* enumType = getType(ctx, expr->resolvedType);
+        if (!enumType || !enumType->isIntegerTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "enum variant '", ctx.pool.lookup(expr->name),
+                                    "' has invalid type");
+            return nullptr;
+        }
+
+        variant->llvmValue = llvm::cast<llvm::ConstantInt>(llvm::ConstantInt::get(
+            enumType,
+            static_cast<uint64_t>(variant->value),
+            true
+        ));
+        expr->llvmValue = variant->llvmValue;
+        return variant->llvmValue;
+    }
+
+    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                            "identifier '", ctx.pool.lookup(expr->name),
+                            "' has unsupported declaration type");
+    return nullptr;
 }
 
 // =============================================================================
@@ -1580,141 +1654,87 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         args.resize(paramCount);
     }
 
-    // =========================================================================
-    // Variadic parameter handling - collect tail into slice
-    // =========================================================================
-    // If the function has a variadic parameter, we need to collect all
-    // remaining arguments (after the fixed parameters) into a slice value.
-    // 
-    // The variadic parameter's type is [*]T (dynamic array) - we need to:
-    //   1. Allocate memory for the slice
-    //   2. Store each remaining argument into the slice
-    //   3. Pass the slice as the variadic parameter
-    //
-    // For simplicity in this fix, we assume the runtime provides a helper
-    // function to create a slice from a list of values.
-    // 
-    // TODO: Implement proper slice construction for variadic parameters.
-    // This requires:
-    //   - Determining the element type from the variadic parameter
-    //   - Allocating a dynamic array
-    //   - Storing each argument into the array
-    //   - Returning a {ptr, len, cap} slice struct
-
     if (hasVariadic) {
-        // ─── Get the variadic parameter ─────────────────────────────────────
         ParamAST* variadicParam = funcType->params.back();
-        llvm::Type* variadicLLVMType = getType(ctx, variadicParam->type);
-        if (!variadicLLVMType) {
+        ArrayTypeAST* variadicArray = variadicParam->type->as<ArrayTypeAST>();
+        if (!variadicArray) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, step->callable->loc,
-                                    "variadic parameter has no LLVM type");
+                                    "variadic parameter must be an array type");
             return nullptr;
         }
 
-        // ─── The variadic parameter is [*]T - we need to build a slice ────
-        // For now, we need to handle this properly. The simple approach:
-        //   1. Determine how many variadic arguments there are
-        //   2. Allocate a dynamic array of the element type
-        //   3. Store each argument into the array
-        //   4. Pass the slice as the variadic parameter
+        llvm::Type* elemType = getType(ctx, variadicArray->element);
+        if (!elemType) return nullptr;
 
-        // ─── Get element type from the variadic parameter type ────────────
-        llvm::Type* elemType = nullptr;
-        if (variadicLLVMType->isPointerTy()) {
-            // For [*]T, we need the element type T
-            // With opaque pointers, we need to get it from the AST
-            if (variadicParam->type->isa<ArrayTypeAST>()) {
-                TypeAST* elementTypeAST = variadicParam->type->as<ArrayTypeAST>()->element;
-                elemType = getType(ctx, elementTypeAST);
-            }
-        }
-
-        if (!elemType) {
-            // Fallback: use i8
-            elemType = llvm::Type::getInt8Ty(ctx.llvmCtx);
-        }
-
-        // ─── Determine which arguments go to the variadic parameter ──────
-        // Fixed parameters are the first (paramCount - 1) arguments
         size_t fixedParamCount = paramCount - 1;
+        if (args.size() < fixedParamCount) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, step->callable->loc,
+                                    "pipeline step is missing fixed arguments");
+            return nullptr;
+        }
         size_t variadicArgCount = args.size() - fixedParamCount;
 
-        // ─── Build a slice from the variadic arguments ────────────────────
-        // For now, we use a runtime helper. In a full implementation, this
-        // would be inlined.
-        //
-        // We need to:
-        //   1. Allocate memory for the slice
-        //   2. Store each variadic argument into the slice
-        //   3. Return a {ptr, len, cap} struct
-        //
-        // The runtime helper: __lucid_slice_from_values(ptr, len, cap)
-        // 
-        // TODO: Proper slice construction
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx.llvmCtx);
+        llvm::StructType* sliceType = ctx.getSliceType();
+        llvm::Value* count = llvm::ConstantInt::get(i64Ty, variadicArgCount);
 
-        // ─── For now, create an empty slice (placeholder) ─────────────────
-        // This is a placeholder - real implementation would build the slice.
-        // We emit a warning that variadic pipeline support is limited.
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, step->callable->loc,
-                                  "variadic parameters in pipeline steps have limited support");
-
-        // ─── Build a slice from the variadic arguments ─────────────────────
-        // We need to collect the variadic arguments into an array and create
-        // a slice from them. For now, we use the runtime helper.
         if (variadicArgCount > 0) {
-            // Allocate an array to store the variadic arguments
-            llvm::Type* arrayType = llvm::ArrayType::get(elemType, variadicArgCount);
-            llvm::Value* array = llvm::UndefValue::get(arrayType);
+            uint64_t elementSize = ctx.module->getDataLayout().getTypeAllocSize(elemType);
+            llvm::Value* allocationSize = ctx.builder.CreateMul(
+                count,
+                llvm::ConstantInt::get(i64Ty, elementSize),
+                "variadic_bytes"
+            );
+            llvm::Value* arrayPtr = ctx.builder.CreateCall(
+                ctx.getRuntimeFn(RuntimeFn::Alloc),
+                {allocationSize},
+                "variadic_data"
+            );
 
-            // Store each variadic argument into the array
             for (size_t i = 0; i < variadicArgCount; ++i) {
                 llvm::Value* val = args[fixedParamCount + i];
-                // FIXME: Need to cast val to elemType if needed
-                array = ctx.builder.CreateInsertValue(array, val, i, "variadic_elem");
-            }
-
-            // Allocate the array on the heap
-            llvm::Value* arraySize = llvm::ConstantInt::get(
-                llvm::Type::getInt64Ty(ctx.llvmCtx),
-                variadicArgCount
-            );
-            llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
-            llvm::Function* allocFn = ctx.getRuntimeFn(RuntimeFn::Alloc);
-            llvm::Value* arrayPtr = ctx.builder.CreateCall(allocFn, {arraySize});
-
-            // Store the array elements into the allocated memory
-            // For each element, store it into the allocated array
-            for (size_t i = 0; i < variadicArgCount; ++i) {
-                llvm::Value* idx = llvm::ConstantInt::get(
-                    llvm::Type::getInt64Ty(ctx.llvmCtx),
-                    i
-                );
+                if (val->getType() != elemType) {
+                    if (val->getType()->isIntegerTy() && elemType->isIntegerTy()) {
+                        bool isSigned = true;
+                        if (variadicArray->element->isa<PrimitiveTypeAST>()) {
+                            isSigned = isSignedIntegerKind(
+                                variadicArray->element->as<PrimitiveTypeAST>()->primitiveKind
+                            );
+                        }
+                        val = ctx.builder.CreateIntCast(
+                            val,
+                            elemType,
+                            isSigned,
+                            "variadic_int_cast"
+                        );
+                    } else if (val->getType()->isFloatingPointTy() && elemType->isFloatingPointTy()) {
+                        val = ctx.builder.CreateFPCast(val, elemType, "variadic_float_cast");
+                    } else if (val->getType()->isPointerTy() && elemType->isPointerTy()) {
+                        val = ctx.builder.CreatePointerCast(val, elemType, "variadic_ptr_cast");
+                    } else {
+                        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, step->callable->loc,
+                                                "variadic argument type is incompatible with element type");
+                        return nullptr;
+                    }
+                }
                 llvm::Value* gep = ctx.builder.CreateGEP(
                     elemType,
                     arrayPtr,
-                    idx,
+                    llvm::ConstantInt::get(i64Ty, i),
                     "variadic_ptr"
                 );
-                llvm::Value* val = args[fixedParamCount + i];
-                if (val->getType() != elemType) {
-                    val = ctx.builder.CreateBitCast(val, elemType);
-                }
                 ctx.builder.CreateStore(val, gep);
             }
 
-            // Build the slice struct { ptr, len, cap }
-            llvm::StructType* sliceType = ctx.getStringType();  // Reuse string type {ptr, len, cap}
             llvm::Value* slice = llvm::UndefValue::get(sliceType);
             slice = ctx.builder.CreateInsertValue(slice, arrayPtr, 0);
-            slice = ctx.builder.CreateInsertValue(slice, arraySize, 1);
-            slice = ctx.builder.CreateInsertValue(slice, arraySize, 2);
+            slice = ctx.builder.CreateInsertValue(slice, count, 1);
+            slice = ctx.builder.CreateInsertValue(slice, count, 2);
 
             // Replace the variadic arguments with the slice in the args list
             args.resize(fixedParamCount + 1);
             args[fixedParamCount] = slice;
         } else {
-            // No variadic arguments - pass null slice
-            llvm::StructType* sliceType = ctx.getStringType();
             args.resize(fixedParamCount + 1);
             args[fixedParamCount] = llvm::Constant::getNullValue(sliceType);
         }
@@ -1776,26 +1796,7 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
         if (!callable) return nullptr;
     }
 
-    // ─── 3. Validate the shape ──────────────────────────────────────────────
-    // A composition operand is either a plain callable (a bare
-    // llvm::Function* or an indirect function pointer) or a closure value
-    // (the { funcPtr, envPtr } fat-pointer struct from lowerClosure) -
-    // both are legal per resolveComposeOperand (single parameter, no
-    // variadics; nothing there requires a bare function). Leave the value
-    // exactly as lowered - emitCallableCall (used by
-    // createCompositionWrapper) discriminates the shapes itself, the same
-    // way lowerCallExpr/lowerPipelineStep already do. The old
-    // isFunctionTy() special-case is gone: nothing in this codebase
-    // actually represents a callable as a bare LLVM function *value*
-    // needing a cast - named functions are llvm::Function* globals,
-    // closures are structs, and neither takes that path.
-    if (!callable->getType()->isPointerTy() && !callable->getType()->isStructTy()) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, operand->loc,
-                                "composition operand is not callable");
-        return nullptr;
-    }
-
-    return callable;  // Return the value, don't store on operand
+    return callable;
 }
 
 // =============================================================================
@@ -1813,22 +1814,17 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
 /// @return A function pointer to the composed function (T -> U)
 static llvm::Function* createCompositionWrapper(
     llvm::Value* f,
-    FuncTypeAST* fType,
+    llvm::FunctionType* fLLVMType,
+    FuncTypeAST* fParamSource,
     llvm::Value* g,
     FuncTypeAST* gType,
     CodeGenContext& ctx
 ) {
-    if (!f || !fType || !g || !gType) return nullptr;
+    if (!f || !fLLVMType || !fParamSource || !g || !gType) return nullptr;
 
-    // ─── 1. Build f's and g's real LLVM function types ─────────────────────
-    // Reuses CodeGenType.cpp's canonical FuncTypeAST -> llvm::FunctionType
-    // mapping (getFunctionType) instead of hand-rebuilding param/return
-    // types here - same fact, one source, and it's also what
-    // emitCallableCall needs to call each of f/g correctly regardless of
-    // whether they're closures or plain functions.
-    llvm::FunctionType* fLLVMType = getFunctionType(ctx, fType);
+    // ─── 1. Build g's canonical LLVM function type ─────────────────────────
     if (!fLLVMType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, fType->loc,
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, fParamSource->loc,
                                 "invalid function type in composition (left operand)");
         return nullptr;
     }
@@ -1863,7 +1859,7 @@ static llvm::Function* createCompositionWrapper(
 
     // ─── 5. Set parameter names ─────────────────────────────────────────────
     size_t paramIndex = 0;
-    for (ParamAST* param : fType->params) {
+    for (ParamAST* param : fParamSource->params) {
         if (paramIndex < wrapper->arg_size()) {
             wrapper->getArg(paramIndex)->setName(ctx.pool.lookup(param->name));
             paramIndex++;
@@ -1958,7 +1954,10 @@ llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
     // create wrapper functions for each composition step.
     
     llvm::Value* currentFunc = leftFunc;
-    FuncTypeAST* currentFuncType = leftFuncType;
+    llvm::FunctionType* currentLLVMType = getFunctionType(ctx, leftFuncType);
+    if (!currentLLVMType) {
+        return nullptr;
+    }
 
     for (ComposeOperandAST* operand : expr->operands) {
         // ─── 3a. Lower the operand ──────────────────────────────────────
@@ -1986,7 +1985,8 @@ llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
         // ─── 3c. Create a wrapper function that composes current +> next ──
         currentFunc = createCompositionWrapper(
             currentFunc,
-            currentFuncType,
+            currentLLVMType,
+            leftFuncType,
             nextFunc,
             nextFuncType,
             ctx
@@ -1996,33 +1996,15 @@ llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
             return nullptr;
         }
 
-        // ─── 3d. Update current function type for the next iteration ────
-        // The result type of the composition is the next function's return type
-        // The parameter type is the current function's parameter type
-        // We build this from the AST types for the next iteration.
-        // Since we can't allocate a new FuncTypeAST in CodeGen (no arena),
-        // we create a temporary one on the stack and use it only for the
-        // next iteration's type information. This is safe because we only
-        // need the type info during lowering, and we don't store it anywhere.
-        FuncTypeAST composedType;
-        composedType.params = currentFuncType->params;
-        composedType.hasArrow = true;
-        composedType.returnType = nextFuncType->returnType;
-
-        // Update for next iteration - we need to keep the type info alive
-        // since we reference it in the next iteration. We use a small vector
-        // to store the composed types we create.
-        // Alternatively, we could just use the nextFuncType's return type
-        // directly and keep currentFuncType->params.
-        // 
-        // Actually, for the next iteration we need:
-        //   params = currentFuncType->params (f's original params)
-        //   returnType = nextFuncType->returnType (the latest return type)
-        // 
-        // We don't need to allocate a new FuncTypeAST because we can just
-        // keep track of the parameter list separately.
-        currentFuncType->returnType = nextFuncType->returnType;
-        // currentFuncType->params stays the same
+        llvm::Type* nextReturnType = getType(ctx, nextFuncType->returnType);
+        if (!nextReturnType) {
+            return nullptr;
+        }
+        currentLLVMType = llvm::FunctionType::get(
+            nextReturnType,
+            currentLLVMType->params(),
+            false
+        );
     }
 
     // ─── Step 4: Store the result on the expression ──────────────────────
