@@ -621,12 +621,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         }
 
         FieldDeclAST* field = parseFieldDecl(stream, ctx);
-        if (field) {
-            fields.push_back(field);
-        } else {
-            // Synchronize to nearest valid field to recover
-            synchronizeTo(stream, ctx, TokenType::IDENTIFIER, TokenType::CONST, TokenType::AT_SIGN, TokenType::RBRACE);
-        }
+        fields.push_back(field);
     }
     
     if (stream.isAtEnd()) {
