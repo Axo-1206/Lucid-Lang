@@ -15,6 +15,7 @@
 
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
+#include "core/ASTStrings.hpp"
 #include "parser/context/TokenStream.hpp"
 #include "parser/context/ParserContext.hpp"
 
@@ -113,5 +114,69 @@ SyncResult synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... 
  */
 SyncResult synchronizeToBoundary(TokenStream& stream, ParserContext& ctx,
                                 std::initializer_list<TokenType> extraStops = {});
+
+} // namespace parser
+
+// =============================================================================
+// Template Implementations (must be in header)
+// =============================================================================
+
+namespace parser {
+
+template<typename Predicate>
+SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt) {
+    std::vector<TokenType> expectedClosers;
+    
+    auto isOpener = [](TokenType t) {
+        return t == TokenType::LPAREN || t == TokenType::LBRACKET || t == TokenType::LBRACE;
+    };
+    auto isCloser = [](TokenType t) {
+        return t == TokenType::RPAREN || t == TokenType::RBRACKET || t == TokenType::RBRACE;
+    };
+    auto matchingCloser = [](TokenType opener) {
+        switch (opener) {
+            case TokenType::LPAREN:   return TokenType::RPAREN;
+            case TokenType::LBRACKET: return TokenType::RBRACKET;
+            default:                  return TokenType::RBRACE;
+        }
+    };
+
+    while (!stream.isAtEnd()) {
+        TokenType current = stream.peekType();
+
+        if (isCloser(current)) {
+            if (!expectedClosers.empty() && expectedClosers.back() == current) {
+                expectedClosers.pop_back();
+                stream.consume();
+                continue;
+            }
+            if (expectedClosers.empty() && stopAt(current)) {
+                return SyncResult::Matched;
+            }
+            // Foreign closer - belongs to enclosing construct (or a genuine
+            // bracket-kind mismatch in the source, e.g. `[1, 2}` - either way,
+            // not ours to consume).
+            return SyncResult::ForeignCloser;
+        }
+
+        if (expectedClosers.empty() && stopAt(current)) {
+            return SyncResult::Matched;
+        }
+
+        if (isOpener(current)) {
+            expectedClosers.push_back(matchingCloser(current));
+        }
+        stream.consume();
+    }
+
+    return SyncResult::ReachedEnd;
+}
+
+template<typename... StopTokens>
+SyncResult synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens) {
+    return synchronizeUntil(stream, ctx, [&](TokenType t) {
+        return ((t == stopTokens) || ...);
+    });
+}
 
 } // namespace parser
