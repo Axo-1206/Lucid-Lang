@@ -212,17 +212,14 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         func->getArg(paramIndex++)->setName("env");
     }
 
-    // For each parameter group in the function type
-    FuncTypeAST* currentType = decl->funcType;
-    while (currentType) {
-        for (ParamAST* param : currentType->params) {
-            if (paramIndex < func->arg_size()) {
-                std::string paramName = ctx.pool.lookup(param->name);
-                func->getArg(paramIndex)->setName(paramName);
-            }
-            paramIndex++;
+    // The parser desugars adjacent groups into nested function expressions.
+    // This LLVM function represents only the outermost parameter group.
+    for (ParamAST* param : decl->funcType->params) {
+        if (paramIndex < func->arg_size()) {
+            std::string paramName = ctx.pool.lookup(param->name);
+            func->getArg(paramIndex)->setName(paramName);
         }
-        currentType = currentType->getNext();
+        paramIndex++;
     }
 
     // ─── Store in context ─────────────────────────────────────────────────
@@ -327,13 +324,11 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
     }
 
     // ─── Lower parameters (create allocas and store arguments) ──────────
-    FuncTypeAST* currentType = decl->funcType;
-    while (currentType) {
-        for (ParamAST* param : currentType->params) {
-            lowerParam(param, ctx);
-            argIndex++;
-        }
-        currentType = currentType->getNext();
+    // Adjacent parameter groups are represented by nested functions, so this
+    // function owns only the parameters in its outermost group.
+    for (ParamAST* param : decl->funcType->params) {
+        lowerParam(param, ctx);
+        argIndex++;
     }
 
     // ─── Lower the body ───────────────────────────────────────────────────
@@ -408,34 +403,31 @@ void lowerSpecializedFunctionBody(
         ctx.currentEnvPtr = envPtr;
     }
 
-    // Lower each parameter with the substituted type
-    FuncTypeAST* currentType = funcDecl->funcType;
-    while (currentType) {
-        for (ParamAST* param : currentType->params) {
-            GenericSubstitution subst{funcDecl->genericParams, typeArgs};
-            llvm::Type* llvmType = getType(ctx, param->type, &subst);
-            if (!llvmType) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-                                        "parameter '", ctx.pool.lookup(param->name),
-                                        "' has invalid type in specialization");
-                return;
-            }
-
-            std::string paramName = ctx.pool.lookup(param->name);
-            llvm::AllocaInst* alloca = createAlloca(paramName, llvmType, ctx);
-            
-            // Store the argument into the alloca
-            llvm::Value* argValue = specializedFunc->getArg(argIndex);
-            ctx.builder.CreateStore(argValue, alloca);
-            
-            // Store in symbol table (now isolated per instantiation)
-            ctx.storeValue(param, alloca);
-            param->llvmAlloca = alloca;
-            param->llvmValue = argValue;
-            
-            argIndex++;
+    // Lower the outermost parameter group with substituted types. Any inner
+    // group is lowered when its nested function expression is emitted.
+    for (ParamAST* param : funcDecl->funcType->params) {
+        GenericSubstitution subst{funcDecl->genericParams, typeArgs};
+        llvm::Type* llvmType = getType(ctx, param->type, &subst);
+        if (!llvmType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
+                                    "parameter '", ctx.pool.lookup(param->name),
+                                    "' has invalid type in specialization");
+            return;
         }
-        currentType = currentType->getNext();
+
+        std::string paramName = ctx.pool.lookup(param->name);
+        llvm::AllocaInst* alloca = createAlloca(paramName, llvmType, ctx);
+
+        // Store the argument into the alloca
+        llvm::Value* argValue = specializedFunc->getArg(argIndex);
+        ctx.builder.CreateStore(argValue, alloca);
+
+        // Store in symbol table (now isolated per instantiation)
+        ctx.storeValue(param, alloca);
+        param->llvmAlloca = alloca;
+        param->llvmValue = argValue;
+
+        argIndex++;
     }
 
     // ─── Lower the body ───────────────────────────────────────────────────
