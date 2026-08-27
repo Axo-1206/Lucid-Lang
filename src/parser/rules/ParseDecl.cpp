@@ -472,10 +472,10 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     StmtAST* finalBody = body;
     bool hasError = false;
     
-    if (groups.empty() || (groups.size() == 1 && groups[0].empty())) {
-        // ─── No valid parameter groups ──────────────────────────────────────
-        // This should only happen if parsing failed earlier.
-        // Create a default FuncTypeAST with empty params.
+    if (groups.empty()) {
+        // ─── No parameter groups at all ──────────────────────────────────────────
+        // This should only happen if the initial '(' was missing.
+        // Create a default FuncTypeAST with empty params and mark as error.
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
                                 "function must have at least one parameter group '()'");
         
@@ -485,8 +485,8 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         funcType->loc = funcTypeLoc;
         hasError = true;
     } else {
-        // ─── 7a. Build nested function types from the bottom up ─────────────
-        // Store each group's FuncTypeAST in a vector where index 0 = outermost
+        // ─── Build nested function types from the bottom up ─────────────────────
+        // This handles both valid '()' and groups with parameters.
         std::vector<FuncTypeAST*> groupTypes;
         groupTypes.resize(groups.size());
         
@@ -497,7 +497,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             for (ParamAST* param : groups[i]) {
                 paramBuilder.push_back(param);
             }
-            ft->params = paramBuilder.build();
+            ft->params = paramBuilder.build();  // Can be empty (valid '()')
             ft->returnType = currentReturnType;
             ft->loc = funcTypeLoc;
             groupTypes[i] = ft;
@@ -505,13 +505,12 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         }
         funcType = groupTypes[0];
         
-        // ─── 7b. Build wrapper bodies from the bottom up ────────────────────
+        // ─── Build wrapper bodies from the bottom up ────────────────────
         // The innermost group uses the user's original body
         StmtAST* innerBody = body;
         
         // Only wrap if there are at least 2 groups AND we have a body
         if (groups.size() >= 2 && body) {
-            // Wrap from the second-last group down to the first group.
             for (int i = static_cast<int>(groups.size()) - 2; i >= 0; --i) {
                 // The inner function type is the one for groups[i+1]
                 FuncTypeAST* innerType = groupTypes[i + 1];

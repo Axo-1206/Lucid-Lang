@@ -707,7 +707,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     StmtAST* finalBody = body;
     bool hasError = false;
     
-    if (groups.empty() || (groups.size() == 1 && groups[0].empty())) {
+    if (groups.empty()) {
         // ─── No valid parameter groups ──────────────────────────────────────
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
                                 "anonymous function must have at least one parameter group '()'");
