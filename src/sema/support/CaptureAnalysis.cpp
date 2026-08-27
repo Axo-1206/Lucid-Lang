@@ -702,6 +702,9 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     CaptureAnalyzer analyzer(ctx, expr);
     
     // ─── Step 1: Collect the closure's own parameters ──────────────────────
+    // The parser has already desugared adjacent function groups into nested
+    // function nodes, so this walks the final parameter-group chain without
+    // needing any additional handling for adjacent groups here.
     if (expr->funcType) {
         for (FuncTypeAST* group = expr->funcType; group; group = group->getNext()) {
             for (ParamAST* param : group->params) {

@@ -9,6 +9,11 @@
 /// Escape analysis detects when a closure is returned from a function or stored
 /// in a way that outlives the function call, which affects allocation strategy.
 ///
+/// The parser desugars adjacent function groups, such as `(a int)(b int)`, into
+/// nested `AnonFuncExprAST` nodes before capture analysis runs. Capture analysis
+/// therefore operates on the final nested AST and does not need special handling
+/// for adjacent function groups.
+///
 /// ## How Capture Analysis Works
 ///
 /// 1. Walk the AST of the function/closure body
