@@ -18,6 +18,7 @@
 #include "context/ParserContext.hpp"
 #include "context/TokenStream.hpp"
 #include "core/trace/Trace.hpp"
+#include "support/ErrorRecovery.hpp"
 
 #include <vector>
 #include <string>
@@ -110,69 +111,6 @@ ModuleAST* parse(const std::string& path,
 std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
                                       const std::string& rootSource,
                                       ParserContext& ctx);
-
-// =============================================================================
-// Error Recovery
-// =============================================================================
-
-/**
- * @brief Why a synchronizeUntil()/synchronizeTo()/synchronizeToDeclBoundary()
- *        call stopped where it did.
- *
- * Only Matched vs. ForeignCloser is actually actionable for callers today:
- * Matched means the current token is one of the caller's own targets, safe
- * to act on directly; ForeignCloser means the scan backed off before a
- * closing bracket it doesn't own (an enclosing construct's, or a genuine
- * bracket-kind mismatch in the source) and the caller should treat that as
- * "nothing found, give up" rather than inspecting the current token further.
- * ReachedEnd exists only because the function needs some return value when
- * it runs off the end of the file - if a caller needs to know that
- * specifically, `stream.isAtEnd()` already tells them so directly; no need
- * to further distinguish *why* it ran off the end (e.g. a bracket opened
- * during the scan that never closed) unless a concrete caller ends up
- * needing that.
- */
-enum class SyncResult {
-    Matched,        // stopAt() fired with no brackets open - clean, expected stop
-    ForeignCloser,  // stopped before a closer belonging to an enclosing/mismatched
-                    // scope - not ours to consume
-    ReachedEnd,     // hit EOF without matching stopAt or hitting a foreign closer
-};
-
-template<typename Predicate>
-SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt);
-
-template<typename... StopTokens>
-SyncResult synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
-
-/**
- * @brief Skip to the nearest declaration/statement boundary, honoring extra
- *        construct-specific stop tokens.
- *
- * Used when a declaration parser fails mid-production (e.g. a variable's
- * type, or a function's return type) and needs to resynchronize without
- * swallowing whatever comes next. Unlike a fixed-token synchronizeTo() call,
- * this ALWAYS also stops at any declaration keyword (is_declaration_keyword)
- * or statement keyword (is_statement_keyword) in addition to `extraStops`,
- * so it can never skip past the start of the next declaration/statement -
- * a bracket-aware skip that only watches a narrow fixed set (e.g. just
- * ASSIGN/SEMICOLON/CONST/LET) will happily consume an entire unrelated
- * `struct { ... }` or `if { ... }` looking for one of its targets, since
- * neither the keyword nor '{' belongs to that set. This function closes
- * that gap.
- *
- * After calling, the caller should inspect stream.peekType() (or
- * stream.check(...)) to see which token it actually landed on, and/or the
- * returned SyncResult to distinguish a clean stop from having been stuck
- * behind an unclosed bracket - this function does not consume the landed-on
- * token and does not report a diagnostic itself.
- *
- * @param extraStops Construct-specific tokens to also stop at (e.g. '=' and
- *        ';' for a variable declaration, or additionally '{' for a function
- *        declaration's body).
- */
-SyncResult synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
-                                std::initializer_list<TokenType> extraStops = {});
 
 // =============================================================================
 // Internal Parser Functions

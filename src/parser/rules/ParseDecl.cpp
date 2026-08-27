@@ -232,7 +232,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected token '", stream.peekValue(), "'");
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
         }
     } else {
         Token nameTok = stream.consume();
@@ -251,7 +251,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected type for variable declaration '", ctx.pool.lookup(name), "', but got '", stream.peekValue(), "'");
-                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+                synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
 
                 if (!stream.check(TokenType::ASSIGN)) {
                     if (!stream.check(TokenType::SEMICOLON)) {
@@ -272,7 +272,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         init = parseRequiredExpr(stream, ctx, "initializer expression");
         if (init && init->hasSyntaxError) {
             hasDeclError = true;
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
         }
     } 
     if (isConst && !init) {
@@ -355,7 +355,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             // Error recovery: create UnknownTypeAST and synchronize
             restType = ctx.arena.make<UnknownTypeAST>();
             restType->hasSyntaxError = true;
-            synchronizeToDeclBoundary(stream, ctx,
+            synchronizeToBoundary(stream, ctx,
                 {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
         }
     }
@@ -372,7 +372,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // If we're not at '=', '{', or ';', something is wrong - synchronize
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', '{', or ';', got '", stream.peekValue(), "'");
-        synchronizeToDeclBoundary(stream, ctx,
+        synchronizeToBoundary(stream, ctx,
             {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
         
         // After synchronization, check again
@@ -635,7 +635,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for struct body");
-        synchronizeToDeclBoundary(stream, ctx);
+        synchronizeToBoundary(stream, ctx);
         auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
         for (auto* tr : traitRefs) {
             traitBuilder.push_back(tr);
@@ -875,7 +875,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected integer backing type, got '", stream.peekValue(), "'");
             
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::LBRACE, TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::LBRACE, TokenType::SEMICOLON});
             if (!stream.check(TokenType::LBRACE)) {
                 auto builder = ctx.arena.makeBuilder<EnumVariantAST*>();
                 auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, builder.build(), backingType);
@@ -889,7 +889,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for enum body");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, ctx.arena.makeBuilder<EnumVariantAST*>().build(), backingType);
         enumDecl->hasSyntaxError = true;
         return enumDecl;
@@ -1059,7 +1059,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '{' for trait body");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, ctx.arena.makeBuilder<TraitFieldDeclAST*>().build());
         traitDecl->hasSyntaxError = true;
         return traitDecl;

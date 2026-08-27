@@ -14,6 +14,7 @@
 #include "core/Tokens.hpp"
 #include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
+#include "debug/DebugUtils.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <filesystem>
@@ -186,7 +187,10 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             }
             
             // Synchronize to nearest valid declaration to recover
-            synchronizeToDeclBoundary(stream, ctx, {});
+            synchronizeToBoundary(stream, ctx, {
+                TokenType::AT_SIGN, 
+                TokenType::SEMICOLON
+            });
             
             if (stream.isAtEnd()) {
                 break;
@@ -208,9 +212,12 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*
             outDecls.push_back(decl);
             declCount++;
         } else {
-            // parseDecl reported the error. If no progress was made, consume
+            // parseDecl reported the error. If no progress was made
             // Synchronize to nearest valid declaration to recover
-            synchronizeToDeclBoundary(stream, ctx, {});
+            synchronizeToBoundary(stream, ctx, {
+                TokenType::AT_SIGN, 
+                TokenType::SEMICOLON
+            });
         }
     }
     

@@ -99,14 +99,14 @@ SyncResult synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... 
 }
 
 // =============================================================================
-// synchronizeToDeclBoundary - Decl/Stmt-Keyword-Aware Recovery
+// synchronizeToBoundary - Decl/Stmt-Keyword-Aware Recovery
 // =============================================================================
 
 // See doc comment in Parser.hpp. Unlike synchronizeTo(), this always includes
 // is_declaration_keyword()/is_statement_keyword() in the stop set, so it can
 // never skip past the start of the next declaration or statement - only past
 // tokens that belong to the current, already-broken production.
-SyncResult synchronizeToDeclBoundary(TokenStream& stream, ParserContext& ctx,
+SyncResult synchronizeToBoundary(TokenStream& stream, ParserContext& ctx,
                                 std::initializer_list<TokenType> extraStops) {
     return synchronizeUntil(stream, ctx, [&](TokenType t) {
         if (is_declaration_keyword(t) || is_statement_keyword(t)) {

@@ -353,13 +353,26 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
         ExprAST* elem = parseExpr(stream, ctx);
-        if (elem) {
-            elements.push_back(elem);
-        } else {
+        if (!elem) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected array element expression");
-            return nullptr;
+                                    "expected array element expression, got '", stream.peekValue(), "'");
+            auto* placeholder = ctx.arena.make<UnknownExprAST>();
+            placeholder->hasSyntaxError = true;
+            placeholder->loc = stream.currentLoc();
+            elements.push_back(placeholder);
+
+            // parseExpr() didn't consume anything on failure - resync to the
+            // next element or the closing ']'. If that doesn't land cleanly
+            // (foreign closer, e.g. an enclosing call's ')', or EOF), stop
+            // instead of re-attempting parseExpr() on the same token forever.
+            SyncResult sync = synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
+            if (sync != SyncResult::Matched) {
+                break;
+            }
+            stream.consumeTrailing(TokenType::COMMA);
+            continue;
         }
+        elements.push_back(elem);
         
         int count = stream.consumeTrailing(TokenType::COMMA);
         if (count == 0 && !stream.check(TokenType::RBRACKET)) {
@@ -374,7 +387,7 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         }
     }
     
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ']' to close array literal");
     } else {
@@ -382,11 +395,18 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     }
     
     auto builder = ctx.arena.makeBuilder<ExprAST*>();
+    bool hasElementError = false;
     for (auto* e : elements) {
         builder.push_back(e);
+        if (e && e->hasSyntaxError) {
+            hasElementError = true;
+        }
     }
 
     auto* array = ctx.arena.make<ArrayLiteralExprAST>(builder.build());
+    if (hasElementError) {
+        array->hasSyntaxError = true;
+    }
     array->loc = loc;
     
     return array;
@@ -570,7 +590,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     }
     
     // ─── Parse closing brace ──────────────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::RBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '}' to close struct literal");
     } else {
@@ -1231,35 +1251,49 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* see
     
     std::vector<PipelineStepAST*> steps;
     
+    // ─── Parse pipeline steps ──────────────────────────────────────────────
     while (!stream.isAtEnd() && stream.check(TokenType::PIPELINE)) {
-        int count = stream.consumeTrailing(TokenType::PIPELINE);
-        // We already consume atleast 1 '|>' so there's no need for 'count == 0' case
-        if (count == 2) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
-                                    "expected step in pipeline");
-        } else if (count > 3) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "unexpected consecutive '|>' operators");
-        }
+        // ─── Consume '|>' ──────────────────────────────────────────────────
+        stream.consume(); // Consume '|>'
         
+        // ─── Parse step ──────────────────────────────────────────────────────
         PipelineStepAST* step = parsePipelineStep(stream, ctx);
-        if (!step) {
-            return nullptr;
+        if (step) {
+            steps.push_back(step);
+        } else {
+            // ─── Error recovery: step parsing failed ──────────────────────
+            // We need to synchronize to the next '|>' or ';' or statement boundary.
+            // This prevents cascading errors when a step is malformed.
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected pipeline step after '|>'");
+            
+            // Synchronize to the next pipeline operator, semicolon, or statement boundary
+            synchronizeToBoundary(stream, ctx, 
+                {TokenType::PIPELINE, TokenType::SEMICOLON});
+            
+            // If we found another '|>', continue parsing the next step
+            if (stream.check(TokenType::PIPELINE)) {
+                continue;
+            }
+            
+            // If we found ';' or a statement/declaration boundary, stop parsing the pipeline
+            break;
         }
-        steps.push_back(step);
     }
     
+    // ─── Validate: pipeline must have at least one step ────────────────────
     if (steps.empty()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "pipeline requires at least one step");
         return nullptr;
     }
-
+    
+    // ─── Build the pipeline expression ──────────────────────────────────────
     auto builder = ctx.arena.makeBuilder<PipelineStepAST*>();
     for (auto* s : steps) {
         builder.push_back(s);
     }
-
+    
     auto* pipeline = ctx.arena.make<PipelineExprAST>(seed, builder.build());
     pipeline->loc = loc;
     

@@ -127,7 +127,7 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx
     if (!stream.match(TokenType::LBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '[' for attribute list, got '", stream.peekValue(), "'");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::IDENTIFIER});
+        synchronizeToBoundary(stream, ctx, {TokenType::IDENTIFIER});
         return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
     
@@ -206,10 +206,10 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
             if (arg->hasSyntaxError) {
                 attr->hasSyntaxError = true;
             }
-            /// NOTE: add extra stop for ';'
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET);
+
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET, TokenType::SEMICOLON);
             if (!stream.match(TokenType::COMMA)) {
-                if (stream.check(TokenType::RPAREN)) {
+                if (stream.checkAny(TokenType::RPAREN, TokenType::SEMICOLON)) {
                     break;
                 } else if (stream.check(TokenType::RBRACKET)) {
                     ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -495,7 +495,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
                 // code. LPAREN/LBRACE/SEMICOLON/decl-stmt-keywords are all
                 // unambiguous, so they're included as safer fallback targets;
                 // GREATER is only the best case, not the only one relied on.
-                synchronizeToDeclBoundary(stream, ctx,
+                synchronizeToBoundary(stream, ctx,
                     {TokenType::GREATER,   // best case: it really is the close
                      TokenType::COMMA,     // second best recovery: we can continue with another argument
                      TokenType::LPAREN,    // generic call: foo<T>(...)
@@ -521,7 +521,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "failed to parse generic argument, got '", stream.peekValue(), "'");
             
-            synchronizeToDeclBoundary(stream, ctx,
+            synchronizeToBoundary(stream, ctx,
                 {TokenType::GREATER, TokenType::COMMA, TokenType::LPAREN, TokenType::LBRACE, TokenType::SEMICOLON});
             if (stream.match(TokenType::COMMA)) {
                 continue;
@@ -600,7 +600,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── Handle missing closing ')' ──────────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::RPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close argument list");
     } else {
@@ -633,7 +633,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         params.push_back(param);
         synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
         if (!stream.match(TokenType::COMMA)) {
-            if (stream.match(TokenType::RPAREN)) {
+            if (stream.check(TokenType::RPAREN)) {
                 break;
             }
             // Ran off the end, or stopped before a closer that isn't ours
@@ -769,7 +769,7 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                     "expected identifier in import path, got '", stream.peekValue(), "'");
-            synchronizeToDeclBoundary(stream, ctx);
+            synchronizeToBoundary(stream, ctx);
             break;
         }
         

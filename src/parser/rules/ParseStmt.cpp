@@ -202,29 +202,12 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
                                     "unexpected token '", stream.peekValue(), "' inside block body");
             
             // Synchronize to nearest valid statement to recover
-            synchronizeTo(stream, ctx, 
-                TokenType::SEMICOLON,      // Skip stray semicolons
-                TokenType::RBRACE,         // Block closing
-                TokenType::IDENTIFIER,     // Expression statement start
-                TokenType::IF,             // Control flow
-                TokenType::SWITCH,
-                TokenType::FOR,
-                TokenType::WHILE,
-                TokenType::DO,
-                TokenType::RETURN,
-                TokenType::BREAK,
-                TokenType::CONTINUE,
-                TokenType::ASYNC,          // Concurrency
-                TokenType::AWAIT,
-                TokenType::SPAWN,
-                TokenType::JOIN,
-                TokenType::AT_SIGN,        // Attributes
-                TokenType::LET,            // Declarations
-                TokenType::CONST,
-                TokenType::STRUCT,
-                TokenType::ENUM,
-                TokenType::TRAIT
-            );
+            synchronizeToBoundary(stream, ctx, {
+                TokenType::SEMICOLON,   // Skip stray semicolons
+                TokenType::RBRACE,      // Block closing
+                TokenType::IDENTIFIER,  // Expression statement
+                TokenType::AT_SIGN      // Attributes
+            });
             
             if (stream.check(TokenType::RBRACE) || stream.isAtEnd()) {
                 break;
@@ -251,12 +234,14 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
             unknownStmt->hasSyntaxError = true;
             builder.push_back(unknownStmt);
 
-            // If no progress was made, consume one token to avoid infinite loop.
-            if (stream.getPos() == savedPos && !stream.isAtEnd()) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "skipping unexpected token '", stream.peekValue(), "'");
-                stream.consume();
-            }
+            // parseStmt reported the error. If no progress was made
+            // Synchronize to nearest valid statement to recover
+            synchronizeToBoundary(stream, ctx, {
+                TokenType::SEMICOLON,   // Skip stray semicolons
+                TokenType::RBRACE,      // Block closing
+                TokenType::IDENTIFIER,  // Expression statement
+                TokenType::AT_SIGN      // Attributes
+            });
         }
     }
 
@@ -264,6 +249,7 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::RBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected '}' to close block body");
+        block->hasSyntaxError = true;
         synchronizeTo(stream, ctx, TokenType::RBRACE);
         if (stream.check(TokenType::RBRACE)) {
             stream.consume();
@@ -669,6 +655,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse index binding ────────────────────────────────────────────
     ParamAST* indexParam = nullptr;
     bool isRangeLoop = true;  // Assume range loop unless we see a comma
+    bool forStmtHasSyntaxError = false;
     
     if (stream.check(TokenType::UNDERSCORE)) {
         stream.consume(); // Consume '_'
@@ -681,7 +668,10 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected index variable type");
-            return nullptr;
+            auto* placeholder = ctx.arena.make<UnknownTypeAST>();
+            placeholder->hasSyntaxError = true;
+            type = placeholder;
+            forStmtHasSyntaxError = true;
         }
         
         // Create ParamAST using constructor (keyword is always Let for loop variables)
@@ -716,7 +706,10 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
             if (!type) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                         "expected value variable type");
-                return nullptr;
+                auto* placeholder = ctx.arena.make<UnknownTypeAST>();
+                placeholder->hasSyntaxError = true;
+                type = placeholder;
+                forStmtHasSyntaxError = true;
             }
             
             // Create ParamAST using constructor
@@ -732,6 +725,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
         forStmt->indexVar = indexParam;
         forStmt->valueVar = valueParam;
+        if (forStmtHasSyntaxError) forStmt->hasSyntaxError = true;
         
         // ─── 4. Parse 'in' ─────────────────────────────────────────────────
         if (!stream.match(TokenType::IN)) {
@@ -809,7 +803,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     forStmt->iterable = iterable;
     forStmt->step = step;
     forStmt->body = body;
-    if (!rangeValid || (stream.match(TokenType::RANGE) && !step) || (body && body->hasSyntaxError)) {
+    if (!rangeValid || (stream.match(TokenType::RANGE) && !step) || (body && body->hasSyntaxError) || forStmtHasSyntaxError) {
         forStmt->hasSyntaxError = true;
     }
     
@@ -1048,7 +1042,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected token '", stream.peekValue(), "'");
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
         }
     } else {
         Token nameTok = stream.consume();
@@ -1068,7 +1062,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                         "expected type for async binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
-                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+                synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
 
                 if (!stream.check(TokenType::ASSIGN)) {
                     // Cannot reach the '=' — return a partial node
@@ -1097,7 +1091,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=' for async binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* asyncStmt = ctx.arena.make<AsyncStmtAST>();
         asyncStmt->binding = binding;
         asyncStmt->hasSyntaxError = true;
@@ -1190,7 +1184,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         if (!stream.match(TokenType::ASSIGN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected '=' after '_' in spawn discard, got '", stream.peekValue(), "'");
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
             auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
             spawnStmt->hasSyntaxError = true;
             return spawnStmt;
@@ -1256,7 +1250,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         if (!stream.check(TokenType::ASSIGN) && !stream.check(TokenType::SEMICOLON)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "unexpected token '", stream.peekValue(), "'");
-            synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+            synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
         }
     } else {
         Token nameTok = stream.consume();
@@ -1276,7 +1270,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
             } else {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                         "expected type for spawn binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
-                synchronizeToDeclBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
+                synchronizeToBoundary(stream, ctx, {TokenType::ASSIGN, TokenType::SEMICOLON});
 
                 if (!stream.check(TokenType::ASSIGN)) {
                     // Cannot reach the '=' — return a partial node
@@ -1305,7 +1299,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=' for spawn binding '", ctx.pool.lookup(name), "', got '", stream.peekValue(), "'");
-        synchronizeToDeclBoundary(stream, ctx, {TokenType::SEMICOLON});
+        synchronizeToBoundary(stream, ctx, {TokenType::SEMICOLON});
         auto* spawnStmt = ctx.arena.make<SpawnStmtAST>();
         spawnStmt->binding = binding;
         spawnStmt->hasSyntaxError = true;
