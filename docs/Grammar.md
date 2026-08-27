@@ -1433,28 +1433,36 @@ func_decl       = { attribute_list } ('let' | 'const') IDENTIFIER [ generic_para
                   chain
                   '=' func_body
 
-(* A chain is one or more clusters joined by '->', ending in a bare type.
-   The '->' is mandatory at every stage — there is no arrow-omission
-   shorthand for void/unit; a function returning nothing is written
-   '-> ()' explicitly, same as any other return type.
+(* A chain is a leading cluster followed by zero or more '->' stages.
+   The leading cluster may contain one or more groups written back-to-back
+   with no arrow between them (adjacent groups). This is the ONLY place
+   where adjacency is allowed — after the first '->', every subsequent
+   stage must be separated by an explicit '->'.
 
-   A cluster is one or more groups written back-to-back with no
-   arrow between them. Two groups glued with no '->' between them are the
-   Form 2 shorthand for that boundary; a '->' between two groups is the
-   Form 1 explicit stage for that boundary. Both spellings are legal at
-   any boundary in the same chain, and may be freely mixed — see
-   **Currying and Partial Application**, later in this document. *)
+   This means:
+     - Before the first '->': groups may be adjacent (e.g., `(a int)(b int)`)
+       → The compiler desugars them into nested functions automatically.
+     - After the first '->': adjacent groups are FORBIDDEN.
+       Every boundary must be written as '->' explicitly.
 
-chain           = bound_cluster { '->' unnamed_cluster } '->' type
+   The first '->' marks the boundary where the function's body begins.
+   Everything before it is the leading cluster (the function's parameters).
+   Everything after it describes the return type chain. *)
+
+chain           = bound_cluster { '->' unnamed_cluster } [ '->' type ]
 
 bound_cluster   = bound_group { bound_group }
-                  (* the leading cluster only — the one immediately bound
-                     to func_body. Parameter names introduced here are the
-                     only real bindings a func_decl's header can produce. *)
+                  (* the leading cluster only — the part immediately before
+                     the first '->'. Parameter names introduced here are the
+                     only real bindings a func_decl's header can produce.
+                     Adjacent groups are allowed and automatically desugared
+                     into nested function wrappers by the compiler. *)
 
-unnamed_cluster = unnamed_group { unnamed_group }
-                  (* every cluster after the first '->'. No identifiers
-                     appear here — see the func_type production, below. *)
+unnamed_cluster = unnamed_group { '->' unnamed_group }
+                  (* every cluster AFTER the first '->'. No identifiers
+                     appear here — see the func_type production, below.
+                     Each group must be separated by an explicit '->'.
+                     Adjacent groups are NOT allowed after the first '->'. *)
 
 bound_group     = '(' [ bound_param_list ] ')'
 bound_param_list = bound_param { ',' bound_param } [ ',' variadic_bound ]
@@ -1477,19 +1485,79 @@ func_body       = '{' { statement } '}'         (* declaration only — see WARN
                                                      func_literal; see Function Body as an
                                                      Expression *)
 
-generic_args    = '<' type_arg { ',' type_arg } '>'
-                  (* instantiates a generic function as a VALUE — no call parens.
-                     Distinct from generic_expr, which calls the function:
-                     'Foo<int>' is a reference (an IDENTIFIER-headed expr);
-                     'Foo<int>(42)' is a call_expr. Both are 'expr'. *)
-
-func_type       = unnamed_cluster { '->' unnamed_cluster } '->' type
+func_type       = unnamed_cluster [ '->' type ]
                   (* a bare function type — e.g. a struct field, a *func_type,
                      a variable's declared type, a generic argument — is
                      unnamed throughout, including its leading cluster.
-                     Only a chain directly attached to a func_body or a
-                     func_literal may name parameters in its leading cluster. *)
+                     After the first '->', every group must be separated by
+                     an explicit '->' — adjacency is NOT allowed in func_type
+                     at all, since there is no body to borrow from. *)
 ```
+
+### Grammar Rules
+
+| Position                                | Syntax                  | Allowed?  | Meaning                                                                                                                |
+| --------------------------------------- | ----------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Leading cluster** (before first `->`) | `(a int)(b int)`        | ✅ **YES** | Adjacent groups are allowed and automatically desugared into nested wrappers. The body belongs to the innermost group. |
+| **After the first `->`**                | `(int)(string)`         | ❌ **NO**  | Adjacent groups are **forbidden**. Each stage must be separated by `->`.                                               |
+| **After the first `->`**                | `-> (int) -> (string)`  | ✅ **YES** | Explicit arrows are required for every stage after the first.                                                          |
+| **`func_type` anywhere**                | `(int)(string) -> bool` | ❌ **NO**  | Adjacent groups are **never allowed** in a bare function type — only explicit arrows.                                  |
+
+### Examples
+
+```lucid
+-- VALID: Adjacent groups in the leading cluster (before the first '->')
+-- The compiler desugars this into nested wrappers automatically.
+const add (a int)(b int) -> int = {
+    return a + b;
+};
+
+-- VALID: Explicit arrows after the first '->'
+const makeAdder (base int) -> (int) -> int = {
+    const adjusted int = base * 2;
+    return (n int) -> int { return adjusted + n };
+};
+
+-- VALID: Mixed — leading cluster uses adjacency, return type uses explicit arrows
+const process (a int)(b int) -> (int) -> bool = {
+    const sum int = a + b;
+    return (c int) -> bool { return c > sum };
+};
+
+-- INVALID: Adjacent groups after the first '->' — parser error
+const bad (a int) -> (int)(string) -> bool = {
+    return (b int)(c string) -> bool { return true };
+};
+-- ERROR: expected '->' between '(int)' and '(string)'
+
+-- INVALID: Adjacent groups in func_type — parser error
+let arr [](int)(string) -> bool = ...;
+-- ERROR: expected '->' between '(int)' and '(string)'
+```
+
+### Desugaring of Adjacent Groups
+
+When the parser encounters adjacent groups in the leading cluster, it automatically desugars them into nested function wrappers. The user's body belongs to the **innermost** group (the one immediately before the first `->`).
+
+**What the user writes:**
+```lucid
+const add (a int)(b int) -> int = {
+    return a + b;
+};
+```
+
+**What the compiler generates internally:**
+```lucid
+const add (a int) -> (int) -> int = {
+    return (b int) -> int {
+        return a + b;
+    };
+};
+```
+
+This desugaring happens entirely in the parser — Sema and CodeGen see the desugared form and never need to handle adjacent groups directly.
+
+### Array of functions
 
 An array element type is one more position where `func_type` applies, and the
 same "unnamed throughout" rule holds with no special case — the leading
@@ -1773,12 +1841,12 @@ summarize(1, 2, 3)("a", "b");    -- nums = [1, 2, 3], words = ["a", "b"]
 ```
 
 Generic chains follow the same rule — `T` is bound once, at the outermost
-declaration, and stays in scope through every later cluster and every nested
+declaration, and stays in scope through every later group and every nested
 `return`, whether that stage was merged or explicit:
 
 ```lucid
-const g<T> (a int)(b T) -> (T)(char) -> bool = {
-    return (c T)(d char) -> bool {
+const g<T> (a int)(b T) -> (T) -> bool = {
+    return (c T) -> bool {
         return true;
     }
 };
@@ -1816,6 +1884,9 @@ clamp0to100(200);    -- 100
 ```
 
 ---
+
+<!-- 
+This is a potential feature that we may added latter
 
 ## Function Overloading
 
@@ -1866,7 +1937,7 @@ const bad (v int) -> int    = { ... };
 ```
 
 
----
+--- -->
 
 ## Variable Declaration
 
