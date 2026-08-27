@@ -541,14 +541,12 @@ struct FuncTypeAST : TypeAST {
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
     TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
-    bool hasArrow = false;            // semantic enforce return statement inside the body
-                                      // and codegen will automatically wrap function
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
     
     // Returns true if the return type is a function type (currying)
     bool isCurried() const { 
-        return returnType->isa<FuncTypeAST>();
+        return returnType && returnType->isa<FuncTypeAST>();
     }
 
     // Returns the inner function type if curried, otherwise nullptr

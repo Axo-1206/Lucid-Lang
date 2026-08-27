@@ -1437,7 +1437,6 @@ void JSONDumper::serializeFuncType(JSONWriter& json, FuncTypeAST* type) {
         if (param) serializeParam(json, param);
     }
     json.endArray();
-    json.kv("hasArrow", type->hasArrow);
     json.key("returnType");
     if (type->returnType) {
         serializeType(json, type->returnType);

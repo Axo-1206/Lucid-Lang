@@ -596,61 +596,166 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation funcTypeLoc = stream.currentLoc();
     
-    // ─── Parse the leading cluster - this one has names ──────────────────
-    std::vector<ParamAST*> leadingParams;
+    // ─── 1. Parse parameter groups ──────────────────────────────────────────
+    std::vector<std::vector<ParamAST*>> groups;
+    
+    // Anonymous function MUST have at least one parameter group
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '(' for anonymous function parameters, got '", 
+                                stream.peekValue(), "'");
+        // Create an empty group as a placeholder for recovery
+        std::vector<ParamAST*> emptyGroup;
+        groups.push_back(emptyGroup);
+    }
     
     while (stream.check(TokenType::LPAREN)) {
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);  // allowNames = true
-        for (auto* p : groupParams) {
-            leadingParams.push_back(p);
-        }
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);
+        groups.push_back(groupParams);
+        // Stop if we see '->' - this group has an explicit arrow
         if (stream.check(TokenType::ARROW)) {
             break;
         }
-        // No '->' means more adjacent groups
     }
     
-    // ─── Parse the rest of the function type ──────────────────────────────
+    // ─── 2. Parse return type ──────────────────────────────────────────────
     TypeAST* restType = nullptr;
-    
-    if (stream.check(TokenType::ARROW)) {
-        stream.consume(); // Consume '->'
-        restType = parseType(stream, ctx);  // This could be another FuncTypeAST
+    if (stream.match(TokenType::ARROW)) {
+        restType = parseType(stream, ctx);
         if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected return type");
-            return nullptr;
+                                    "expected return type after '->'");
+            restType = ctx.arena.make<UnknownTypeAST>();
+            restType->hasSyntaxError = true;
+            // Don't synchronize here - we still need to parse the body
         }
     }
     
-    // ─── Build the FuncTypeAST ─────────────────────────────────────────────
-    auto* funcType = ctx.arena.make<FuncTypeAST>();
-    funcType->loc = funcTypeLoc;
-    
-    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-    for (auto* p : leadingParams) {
-        paramBuilder.push_back(p);
-    }
-    funcType->params = paramBuilder.build();
-    funcType->returnType = restType;
-    funcType->hasArrow = (restType != nullptr);
-    
-    // ─── Parse the body ────────────────────────────────────────────────────
+    // ─── 3. Parse the body ──────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '{', got '", stream.peekValue(), "'");
-        return nullptr;
+        // Create a placeholder body to allow recovery
+        auto* placeholder = ctx.arena.make<UnknownStmtAST>();
+        placeholder->hasSyntaxError = true;
+        placeholder->loc = stream.currentLoc();
+        
+        // ─── Build AST with error state ──────────────────────────────────
+        FuncTypeAST* funcType = nullptr;
+        if (groups.empty() || (groups.size() == 1 && groups[0].empty())) {
+            funcType = ctx.arena.make<FuncTypeAST>();
+            funcType->params = ctx.arena.makeBuilder<ParamAST*>().build();
+            funcType->returnType = restType;
+            funcType->loc = funcTypeLoc;
+        } else {
+            // Build nested types
+            std::vector<FuncTypeAST*> groupTypes;
+            groupTypes.resize(groups.size());
+            
+            TypeAST* currentReturnType = restType;
+            for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+                auto* ft = ctx.arena.make<FuncTypeAST>();
+                auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+                for (ParamAST* param : groups[i]) {
+                    paramBuilder.push_back(param);
+                }
+                ft->params = paramBuilder.build();
+                ft->returnType = currentReturnType;
+                ft->loc = funcTypeLoc;
+                groupTypes[i] = ft;
+                currentReturnType = ft;
+            }
+            funcType = groupTypes[0];
+        }
+        
+        auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, placeholder);
+        anonFunc->loc = funcTypeLoc;
+        anonFunc->hasSyntaxError = true;
+        return anonFunc;
     }
     
     StmtAST* body = parseBlock(stream, ctx);
     if (!body) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                 "expected block body");
-        return nullptr;
+        body = ctx.arena.make<UnknownStmtAST>();
+        body->hasSyntaxError = true;
     }
     
-    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
+    // ─── 4. Build nested function types and wrapper bodies ──────────────────
+    FuncTypeAST* funcType = nullptr;
+    StmtAST* finalBody = body;
+    bool hasError = false;
+    
+    if (groups.empty() || (groups.size() == 1 && groups[0].empty())) {
+        // ─── No valid parameter groups ──────────────────────────────────────
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
+                                "anonymous function must have at least one parameter group '()'");
+        
+        funcType = ctx.arena.make<FuncTypeAST>();
+        funcType->params = ctx.arena.makeBuilder<ParamAST*>().build();
+        funcType->returnType = restType;
+        funcType->loc = funcTypeLoc;
+        hasError = true;
+    } else {
+        // ─── 4a. Build nested function types from the bottom up ─────────────
+        std::vector<FuncTypeAST*> groupTypes;
+        groupTypes.resize(groups.size());
+        
+        TypeAST* currentReturnType = restType;  // nullptr for void
+        for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+            auto* ft = ctx.arena.make<FuncTypeAST>();
+            auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+            for (ParamAST* param : groups[i]) {
+                paramBuilder.push_back(param);
+            }
+            ft->params = paramBuilder.build();
+            ft->returnType = currentReturnType;
+            ft->loc = funcTypeLoc;
+            groupTypes[i] = ft;
+            currentReturnType = ft;
+        }
+        funcType = groupTypes[0];
+        
+        // ─── 4b. Build wrapper bodies from the bottom up ────────────────────
+        StmtAST* innerBody = body;
+        
+        // Only wrap if there are at least 2 groups
+        if (groups.size() >= 2) {
+            // Wrap from the second-last group down to the first group.
+            for (int i = static_cast<int>(groups.size()) - 2; i >= 0; --i) {
+                // The inner function type is the one for groups[i+1]
+                FuncTypeAST* innerType = groupTypes[i + 1];
+                
+                // Create anonymous function
+                auto* anon = ctx.arena.make<AnonFuncExprAST>(innerType, innerBody);
+                // Set location to the first parameter of the inner group, or the group's location
+                if (!groups[i + 1].empty() && groups[i + 1][0]) {
+                    anon->loc = groups[i + 1][0]->loc;
+                } else {
+                    anon->loc = funcTypeLoc;
+                }
+                
+                // Wrap in return statement
+                auto* ret = ctx.arena.make<ReturnStmtAST>();
+                ret->loc = anon->loc;
+                ret->value = anon;
+                
+                // This becomes the body for the next outer group
+                innerBody = ret;
+            }
+        }
+        
+        finalBody = innerBody;
+    }
+    
+    // ─── 5. Build AnonFuncExprAST ──────────────────────────────────────────
+    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, finalBody);
     anonFunc->loc = funcTypeLoc;
+    if (hasError || (restType && restType->hasSyntaxError) || 
+        (body && body->hasSyntaxError)) {
+        anonFunc->hasSyntaxError = true;
+    }
     
     return anonFunc;
 }

@@ -347,13 +347,9 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     funcType->params = paramBuilder.build();
 
     // ─── 3. Check for arrow ─────────────────────────────────────────────────
-    if (!stream.check(TokenType::ARROW)) {
+    if (!stream.match(TokenType::ARROW)) {
         return funcType;
     }
-    
-    stream.consume(); // Consume '->'
-    funcType->hasArrow = true;
-
     /// NOTE: after '->' we expect a returned type, if no '->' then the function
     ///       is returned before this run
     

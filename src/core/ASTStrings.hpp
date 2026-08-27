@@ -514,13 +514,8 @@ inline std::string typeToString(TypeAST* type, const StringPool& pool) {
         }
         result += ")";
         
-        // Only add "->" if hasArrow is true
-        // This correctly handles both forms:
-        //   - Form 1: (a int) -> int           → hasArrow = true  → "(a int) -> int"
-        //   - Form 2: (a int)(b int) -> int     → first group hasArrow = false, second hasArrow = true
-        //     → "(a int)(b int) -> int"  (the first group shows no arrow)
-        //   - Void: (a int)                    → hasArrow = false → "(a int)"
-        if (func->hasArrow) {
+        // Add "->" when a return type is present
+        if (func->returnType) {
             result += " -> ";
             result += typeToString(func->returnType, pool);
         }

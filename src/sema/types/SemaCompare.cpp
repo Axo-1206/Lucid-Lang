@@ -69,8 +69,6 @@ bool typesEqual(TypeAST* a, TypeAST* b) {
             FuncTypeAST* fa = a->as<FuncTypeAST>();
             FuncTypeAST* fb = b->as<FuncTypeAST>();
 
-            if (fa->hasArrow != fb->hasArrow) return false;
-
             if (fa->params.size() != fb->params.size()) return false;
             for (size_t i = 0; i < fa->params.size(); ++i) {
                 ParamAST* pa = fa->params[i];

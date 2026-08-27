@@ -9,8 +9,8 @@
 
 #include "../Parser.hpp"
 #include "core/ast/BaseAST.hpp"
+#include "debug/DebugUtils.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "core/ASTStrings.hpp"
 
 namespace parser {
 
@@ -35,11 +35,7 @@ template<typename Predicate>
 SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt) {
     Trace::detail("Synchronizing");
 
-    struct OpenBracket {
-        TokenType closer;
-        SourceLocation openedAt;
-    };
-    std::vector<OpenBracket> expectedClosers;
+    std::vector<TokenType> expectedClosers;
     
     auto isOpener = [](TokenType t) {
         return t == TokenType::LPAREN || t == TokenType::LBRACKET || t == TokenType::LBRACE;
@@ -59,39 +55,32 @@ SyncResult synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate s
         TokenType current = stream.peekType();
 
         if (isCloser(current)) {
-            if (!expectedClosers.empty() && expectedClosers.back().closer == current) {
+            if (!expectedClosers.empty() && expectedClosers.back() == current) {
                 expectedClosers.pop_back();
                 stream.consume();
                 continue;
             }
             if (expectedClosers.empty() && stopAt(current)) {
-                Trace::detail("Synchronized at: ", tokenTypeToString(current));
+                Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
                 return SyncResult::Matched;
             }
             // Foreign closer - belongs to enclosing construct (or a genuine
             // bracket-kind mismatch in the source, e.g. `[1, 2}` - either way,
             // not ours to consume).
             Trace::detail("Stopped before enclosing closer: ",
-                               tokenTypeToString(current));
+                               debug::tokenTypeToString(current));
             return SyncResult::ForeignCloser;
         }
 
         if (expectedClosers.empty() && stopAt(current)) {
-            Trace::detail("Synchronized at: ", tokenTypeToString(current));
+            Trace::detail("Synchronized at: ", debug::tokenTypeToString(current));
             return SyncResult::Matched;
         }
 
         if (isOpener(current)) {
-            expectedClosers.push_back({matchingCloser(current), stream.currentLoc()});
+            expectedClosers.push_back(matchingCloser(current));
         }
         stream.consume();
-    }
-
-    if (!expectedClosers.empty()) {
-        Trace::detail("Synchronization reached EOF with ", expectedClosers.size(),
-                      " unclosed bracket(s), innermost opened at line ",
-                      expectedClosers.back().openedAt.line());
-        return SyncResult::UnclosedBracket;
     }
 
     Trace::detail("Synchronization reached EOF");

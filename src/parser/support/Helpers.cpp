@@ -140,14 +140,18 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx
             if (stream.check(TokenType::RBRACKET)) {
                 break;
             }
-            // Hit EOF
+            // Ran off the end, or stopped before a closer that isn't ours
+            // (e.g. an enclosing '}') - can't continue this list from here.
+            // Without this break, the loop would re-attempt parseAttribute()
+            // on the same un-consumed foreign token forever.
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ',' to separate attributes");
+            break;
         }
     }
     
     // ─── Handle missing closing ']' ──────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::RBRACKET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ']' to close attribute list");
     } else {
@@ -202,6 +206,7 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
             if (arg->hasSyntaxError) {
                 attr->hasSyntaxError = true;
             }
+            /// NOTE: add extra stop for ';'
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET);
             if (!stream.match(TokenType::COMMA)) {
                 if (stream.check(TokenType::RPAREN)) {
@@ -212,15 +217,19 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
                     attr->hasSyntaxError = true;
                     break;
                 }
-                // Hit EOF
+                // Ran off the end, or stopped before some other closer that
+                // isn't ours (e.g. an enclosing '}') - can't continue this
+                // argument list from here. Without this break, the loop
+                // would re-attempt parsing the same un-consumed token forever.
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                         "expected ',' to separate attribute literal arguments");
                 attr->hasSyntaxError = true;
+                break;
             }
         }
         
         // ─── Handle missing closing ')' ──────────────────────────────────────
-        if (stream.isAtEnd()) {
+        if (!stream.check(TokenType::RPAREN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ')' to close attribute arguments");
         } else {
@@ -331,14 +340,19 @@ ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, Pars
                                         "incomplete generic parameter list");
                 break;
             }
-            // Hit EOF
+            // Ran off the end, or stopped before some other closer that
+            // isn't ours (e.g. an enclosing ')' or '}') - can't continue
+            // this list from here. Without this break, the loop would
+            // re-attempt parseGenericParamDecl() on the same un-consumed
+            // foreign token forever.
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ',' to separate generic parameters");
+            break;
         }
     }
     
     // ─── Handle missing closing '>' ──────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::GREATER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '>' to close generic parameter list");
     } else {
@@ -475,7 +489,18 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                         "expected ',' to separate generic arguments");
 
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
+                // '>' alone isn't a safe recovery target here - it's also the
+                // greater-than operator, so hunting forward for "the next '>'"
+                // risks stopping at an unrelated comparison in otherwise-valid
+                // code. LPAREN/LBRACE/SEMICOLON/decl-stmt-keywords are all
+                // unambiguous, so they're included as safer fallback targets;
+                // GREATER is only the best case, not the only one relied on.
+                synchronizeToDeclBoundary(stream, ctx,
+                    {TokenType::GREATER,   // best case: it really is the close
+                     TokenType::COMMA,     // second best recovery: we can continue with another argument
+                     TokenType::LPAREN,    // generic call: foo<T>(...)
+                     TokenType::LBRACE,    // generic struct literal: Point<int>{...}
+                     TokenType::SEMICOLON});
                 if (stream.match(TokenType::COMMA)) {
                     continue;
                 }
@@ -496,7 +521,8 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "failed to parse generic argument, got '", stream.peekValue(), "'");
             
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
+            synchronizeToDeclBoundary(stream, ctx,
+                {TokenType::GREATER, TokenType::COMMA, TokenType::LPAREN, TokenType::LBRACE, TokenType::SEMICOLON});
             if (stream.match(TokenType::COMMA)) {
                 continue;
             }
@@ -505,7 +531,7 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     }
 
     // ─── Handle missing closing '>' ──────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::GREATER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '>' to close generic argument list");
     } else {
@@ -610,13 +636,19 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
             if (stream.match(TokenType::RPAREN)) {
                 break;
             }
+            // Ran off the end, or stopped before a closer that isn't ours
+            // (e.g. an enclosing '}') - can't continue this list from here.
+            // Without this break, the loop would re-attempt
+            // parseSingleParameter() on the same un-consumed foreign token
+            // forever.
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                         "expected ',' to separate parameters");
+            break;
         }
     }
     
     // ─── Handle missing closing ')' ──────────────────────────────────────────
-    if (stream.isAtEnd()) {
+    if (!stream.check(TokenType::RPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close parameter list");
     } else {

@@ -119,25 +119,24 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
  * @brief Why a synchronizeUntil()/synchronizeTo()/synchronizeToDeclBoundary()
  *        call stopped where it did.
  *
- * The two EOF outcomes look identical if a caller only checks
- * stream.peekType() afterward - both leave the stream at EOF - but they mean
- * very different things. ReachedEnd means the remainder of the file was
- * well-bracketed and simply never contained a stopAt() token. UnclosedBracket
- * means the scan got stuck waiting for a bracket opened during the scan that
- * never closed - a common state for a buffer mid-edit (e.g. `let x = foo(a, b`
- * at the end of the file as-typed-so-far), not a rare corruption case, and
- * worth distinguishing so a caller doesn't treat "nothing to synchronize to"
- * and "actively obstructed by an unclosed bracket" as the same situation.
+ * Only Matched vs. ForeignCloser is actually actionable for callers today:
+ * Matched means the current token is one of the caller's own targets, safe
+ * to act on directly; ForeignCloser means the scan backed off before a
+ * closing bracket it doesn't own (an enclosing construct's, or a genuine
+ * bracket-kind mismatch in the source) and the caller should treat that as
+ * "nothing found, give up" rather than inspecting the current token further.
+ * ReachedEnd exists only because the function needs some return value when
+ * it runs off the end of the file - if a caller needs to know that
+ * specifically, `stream.isAtEnd()` already tells them so directly; no need
+ * to further distinguish *why* it ran off the end (e.g. a bracket opened
+ * during the scan that never closed) unless a concrete caller ends up
+ * needing that.
  */
 enum class SyncResult {
-    Matched,          // stopAt() fired with no brackets open - clean, expected stop
-    ForeignCloser,    // stopped right before a closer belonging to an enclosing,
-                      // already-open construct (e.g. recovering inside a function
-                      // body and hitting that body's own '}')
-    ReachedEnd,       // hit EOF with no brackets open - stopAt() never matched
-                      // anywhere in the remainder of the file
-    UnclosedBracket,  // hit EOF while still waiting on a bracket opened during
-                      // this scan that never closed
+    Matched,        // stopAt() fired with no brackets open - clean, expected stop
+    ForeignCloser,  // stopped before a closer belonging to an enclosing/mismatched
+                    // scope - not ours to consume
+    ReachedEnd,     // hit EOF without matching stopAt or hitting a foreign closer
 };
 
 template<typename Predicate>

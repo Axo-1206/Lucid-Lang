@@ -308,10 +308,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         Token nameTok = stream.consume();
         name = ctx.pool.intern(nameTok.value);
     } else if (stream.check(TokenType::LESS) || stream.check(TokenType::LPAREN)) {
-        // The name is missing, but generics/a parameter list still follow -
-        // exactly like parseVarDecl continuing when a type parses even
-        // though the name didn't, this is decisive enough to keep going
-        // instead of throwing away the rest of the signature.
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected function name");
         name = ctx.pool.intern("");
@@ -327,79 +323,42 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
     
-    // ─── 4. Parse function type ─────────────────────────────────────────────
+    // ─── 4. Parse parameter groups ─────────────────────────────────────────
     SourceLocation funcTypeLoc = stream.currentLoc();
-    std::vector<ParamAST*> leadingParams;
+    std::vector<std::vector<ParamAST*>> groups;
     
-    // Parse the leading cluster - this one has names
+    // Function MUST have at least one parameter group
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '(' for function parameters, got '", stream.peekValue(), "'");
+        // Create an empty group as a placeholder for recovery
+        std::vector<ParamAST*> emptyGroup;
+        groups.push_back(emptyGroup);
+    }
+    
     while (stream.check(TokenType::LPAREN)) {
         std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);
-        for (auto* p : groupParams) {
-            leadingParams.push_back(p);
-        }
+        groups.push_back(groupParams);
+        // Stop if we see '->' - this group has an explicit arrow
         if (stream.check(TokenType::ARROW)) {
             break;
         }
     }
     
-    // ─── Parse the rest of the function type ──────────────────────────────
+    // ─── 5. Parse return type ──────────────────────────────────────────────
     TypeAST* restType = nullptr;
-    bool sawArrow = false;
-    
-    if (stream.check(TokenType::ARROW)) {
-        stream.consume(); // Consume '->'
-        sawArrow = true;
+    if (stream.match(TokenType::ARROW)) {
         restType = parseType(stream, ctx);
         if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected return type");
-
-            // A broken return type shouldn't cost us the rest of the
-            // declaration. Look for '{' (block body), '=' (expression
-            // body), or ';' (foreign fn) - and never wander past the start
-            // of the next declaration/statement while looking for them.
-            synchronizeToDeclBoundary(stream, ctx,
-                {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
-
+                                    "expected return type after '->'");
+            // Error recovery: create UnknownTypeAST and synchronize
             restType = ctx.arena.make<UnknownTypeAST>();
             restType->hasSyntaxError = true;
-
-            if (!stream.check(TokenType::LBRACE) &&
-                !stream.check(TokenType::ASSIGN) &&
-                !stream.check(TokenType::SEMICOLON)) {
-                // Nothing recoverable found before the next declaration or
-                // statement - the declaration was abandoned mid-way.
-                ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
-                                        "incomplete function declaration '", ctx.pool.lookup(name), "'");
-                
-                auto* funcType = ctx.arena.make<FuncTypeAST>();
-                auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-                for (auto* p : leadingParams) {
-                    paramBuilder.push_back(p);
-                }
-                funcType->params = paramBuilder.build();
-                funcType->returnType = restType;
-                funcType->hasArrow = sawArrow;
-                funcType->loc = funcTypeLoc;
-
-                auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, nullptr);
-                funcDecl->hasSyntaxError = true;
-                return funcDecl;
-            }
+            synchronizeToDeclBoundary(stream, ctx,
+                {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
         }
     }
-    
-    // ─── 5. Build the FuncTypeAST ──────────────────────────────────────────
-    auto* funcType = ctx.arena.make<FuncTypeAST>();
-    
-    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-    for (auto* p : leadingParams) {
-        paramBuilder.push_back(p);
-    }
-    funcType->params = paramBuilder.build();
-    funcType->returnType = restType;
-    funcType->hasArrow = sawArrow;
-    funcType->loc = funcTypeLoc;
     
     // ─── 6. Parse body ──────────────────────────────────────────────────────
     StmtAST* body = nullptr;
@@ -409,16 +368,35 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 6a. Check for '=' ──────────────────────────────────────────────────
     if (stream.match(TokenType::ASSIGN)) {
         hasExplicitAssign = true;
+    } else if (!stream.check(TokenType::LBRACE) && !stream.check(TokenType::SEMICOLON)) {
+        // If we're not at '=', '{', or ';', something is wrong - synchronize
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '=', '{', or ';', got '", stream.peekValue(), "'");
+        synchronizeToDeclBoundary(stream, ctx,
+            {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
+        
+        // After synchronization, check again
+        if (stream.match(TokenType::ASSIGN)) {
+            hasExplicitAssign = true;
+        } else if (stream.check(TokenType::LBRACE)) {
+            // Continue to body parsing
+        } else if (stream.check(TokenType::SEMICOLON)) {
+            // Foreign function - body remains nullptr
+            body = nullptr;
+        } else {
+            // Failed to recover - create error body
+            body = ctx.arena.make<UnknownStmtAST>();
+            body->hasSyntaxError = true;
+            hasBodyError = true;
+        }
     }
     
-    // ─── 6b. Parse body if we see '{' ─────────────────────────────────────
-    if (stream.check(TokenType::LBRACE)) {
-        // If there was no '=', report the error but still parse the body
+    // ─── 6b. Parse body if we have an explicit '=' or just a block ──────
+    if (!body && stream.check(TokenType::LBRACE)) {
         if (!hasExplicitAssign) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.previousLoc(),
                                     "expected '=' before function body");
-            // Continue parsing the body anyway to provide better error recovery
-            // We'll still report the error, but we'll have a partial AST
+            // Continue parsing anyway for better recovery
         }
         
         body = parseBlock(stream, ctx);
@@ -429,19 +407,16 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             body->hasSyntaxError = true;
             hasBodyError = true;
         }
-        
-    } else if (hasExplicitAssign) {
-        // ─── Has '=' but no '{' - expression body ─────────────────────────
+    } else if (!body && hasExplicitAssign) {
+        // ─── Expression body ──────────────────────────────────────────────
         if (looksLikeAnonFunc(stream, ctx)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
                                     stream.currentLoc(),
                                     "anonymous function not allowed at declaration site");
             ctx.diagnostics.noteAt(stream.currentLoc(),
                                    "Use a block body instead: '{ ... }'");
-            ctx.diagnostics.noteAt(stream.currentLoc(),
-                                   "The block body borrows its signature from the function declaration");
             
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            // Error recovery
             auto* unknownExpr = ctx.arena.make<UnknownExprAST>();
             unknownExpr->hasSyntaxError = true;
             auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
@@ -449,22 +424,21 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             returnStmt->hasSyntaxError = true;
             body = returnStmt;
             hasBodyError = true;
+            
+            // Synchronize to semicolon
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON);
         } else {
             ExprAST* exprBody = parseRequiredExpr(stream, ctx, "function body expression");
             if (exprBody && exprBody->hasSyntaxError) {
                 hasBodyError = true;
             }
             
-            // ─── Determine if this is a pure function reference ──────────────
-            bool isPureFunctionRef = false;
-            
-            if (exprBody && (exprBody->isa<IdentifierExprAST>() ||
+            // ─── Determine if this is a pure function reference ──────────
+            bool isPureFunctionRef = exprBody && (exprBody->isa<IdentifierExprAST>() ||
                 exprBody->isa<ModuleAccessExprAST>() ||
                 exprBody->isa<FieldAccessExprAST>() ||
                 exprBody->isa<ComposeExprAST>() ||
-                exprBody->isa<CallExprAST>())) {
-                isPureFunctionRef = true;
-            }
+                exprBody->isa<CallExprAST>());
             
             if (isPureFunctionRef) {
                 auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
@@ -478,16 +452,95 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 body = returnStmt;
             }
         }
-    } else {
-        // ─── No '=' and no '{' - foreign function ──────────────────────────
-        // This is a valid foreign function declaration.
-        // The body remains nullptr, and the caller will handle the ';'
-        body = nullptr;
+    } else if (!body && !stream.check(TokenType::SEMICOLON)) {
+        // ─── No body found - foreign function or error ──────────────────
+        // If we're at ';', it's a foreign function
+        // Otherwise, something is wrong
+        if (!stream.check(TokenType::SEMICOLON)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected '{', '=', or ';' for function body, got '", 
+                                    stream.peekValue(), "'");
+            body = ctx.arena.make<UnknownStmtAST>();
+            body->hasSyntaxError = true;
+            hasBodyError = true;
+        }
+        // body remains nullptr for foreign functions
     }
     
-    // ─── 7. Build FuncDeclAST ────────────────────────────────────────────────
-    auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
-    if (hasBodyError || (restType && restType->hasSyntaxError) || name.isEmpty()) {
+    // ─── 7. Build nested function types and wrapper bodies ──────────────────
+    FuncTypeAST* funcType = nullptr;
+    StmtAST* finalBody = body;
+    bool hasError = false;
+    
+    if (groups.empty() || (groups.size() == 1 && groups[0].empty())) {
+        // ─── No valid parameter groups ──────────────────────────────────────
+        // This should only happen if parsing failed earlier.
+        // Create a default FuncTypeAST with empty params.
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
+                                "function must have at least one parameter group '()'");
+        
+        funcType = ctx.arena.make<FuncTypeAST>();
+        funcType->params = ctx.arena.makeBuilder<ParamAST*>().build();
+        funcType->returnType = restType;
+        funcType->loc = funcTypeLoc;
+        hasError = true;
+    } else {
+        // ─── 7a. Build nested function types from the bottom up ─────────────
+        // Store each group's FuncTypeAST in a vector where index 0 = outermost
+        std::vector<FuncTypeAST*> groupTypes;
+        groupTypes.resize(groups.size());
+        
+        TypeAST* currentReturnType = restType;  // nullptr for void
+        for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+            auto* ft = ctx.arena.make<FuncTypeAST>();
+            auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+            for (ParamAST* param : groups[i]) {
+                paramBuilder.push_back(param);
+            }
+            ft->params = paramBuilder.build();
+            ft->returnType = currentReturnType;
+            ft->loc = funcTypeLoc;
+            groupTypes[i] = ft;
+            currentReturnType = ft;
+        }
+        funcType = groupTypes[0];
+        
+        // ─── 7b. Build wrapper bodies from the bottom up ────────────────────
+        // The innermost group uses the user's original body
+        StmtAST* innerBody = body;
+        
+        // Only wrap if there are at least 2 groups AND we have a body
+        if (groups.size() >= 2 && body) {
+            // Wrap from the second-last group down to the first group.
+            for (int i = static_cast<int>(groups.size()) - 2; i >= 0; --i) {
+                // The inner function type is the one for groups[i+1]
+                FuncTypeAST* innerType = groupTypes[i + 1];
+                
+                // Create anonymous function
+                auto* anon = ctx.arena.make<AnonFuncExprAST>(innerType, innerBody);
+                // Set location to the first parameter of the inner group, or the group's location
+                if (!groups[i + 1].empty() && groups[i + 1][0]) {
+                    anon->loc = groups[i + 1][0]->loc;
+                } else {
+                    anon->loc = funcTypeLoc;
+                }
+                
+                // Wrap in return statement
+                auto* ret = ctx.arena.make<ReturnStmtAST>();
+                ret->loc = anon->loc;
+                ret->value = anon;
+                
+                // This becomes the body for the next outer group
+                innerBody = ret;
+            }
+        }
+        
+        finalBody = innerBody;
+    }
+    
+    // ─── 8. Build FuncDeclAST ────────────────────────────────────────────────
+    auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, finalBody);
+    if (hasBodyError || hasError || (restType && restType->hasSyntaxError) || name.isEmpty()) {
         funcDecl->hasSyntaxError = true;
     }
     

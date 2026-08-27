@@ -2944,14 +2944,6 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaConte
     paramBuilder.push_back(leftFunc->params[0]);
     composedType->params = paramBuilder.build();
     composedType->returnType = currentOutput;
-    
-    // ─── 5c: Set hasArrow based on context ──────────────────────────────────
-    if (targetType && targetType->isa<FuncTypeAST>()) {
-        FuncTypeAST* targetFunc = targetType->as<FuncTypeAST>();
-        composedType->hasArrow = targetFunc->hasArrow;
-    } else {
-        composedType->hasArrow = (currentOutput != nullptr);
-    }
 
     // ─── Step 6: Validate against target type ──────────────────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {

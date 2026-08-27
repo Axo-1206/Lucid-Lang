@@ -57,19 +57,11 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 // 2. Specialized Instantiation Creation
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* createSpecializedFunction(
-    FuncDeclAST* funcDecl,
-    const std::vector<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
+llvm::Function* createSpecializedFunction(FuncDeclAST* funcDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
     if (!funcDecl) return nullptr;
 
     // ─── Generate mangled name for this instantiation ──────────────────────
-    InternedString mangledName = generateMangledNameForGeneric(
-        funcDecl,
-        typeArgs,
-        ctx
-    );
+    InternedString mangledName = generateMangledNameForGeneric(funcDecl, typeArgs, ctx);
     
     if (!mangledName.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
@@ -114,11 +106,7 @@ llvm::Function* createSpecializedFunction(
         }
     }
 
-    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(
-        returnType,
-        paramTypes,
-        false
-    );
+    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(returnType, paramTypes, false);
 
     // ─── Check if already exists ──────────────────────────────────────────
     llvm::Function* existingFunc = ctx.module->getFunction(funcName);
@@ -157,19 +145,11 @@ llvm::Function* createSpecializedFunction(
     return func;
 }
 
-llvm::Type* createSpecializedStruct(
-    StructDeclAST* structDecl,
-    const std::vector<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
+llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
     if (!structDecl) return nullptr;
 
     // ─── Generate mangled name for this instantiation ──────────────────────
-    InternedString mangledName = generateMangledNameForGeneric(
-        structDecl,
-        typeArgs,
-        ctx
-    );
+    InternedString mangledName = generateMangledNameForGeneric(structDecl, typeArgs, ctx);
     
     if (!mangledName.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
@@ -196,10 +176,7 @@ llvm::Type* createSpecializedStruct(
     }
 
     // ─── Check if already exists ────────────────────────────────────────────
-    llvm::StructType* existingType = llvm::StructType::getTypeByName(
-        ctx.llvmCtx,
-        structName
-    );
+    llvm::StructType* existingType = llvm::StructType::getTypeByName(ctx.llvmCtx, structName);
     if (existingType) {
         if (!existingType->isOpaque()) {
             return existingType;
@@ -221,11 +198,7 @@ llvm::Type* createSpecializedStruct(
     }
 
     // ─── Create the struct type with the mangled name ──────────────────────
-    llvm::StructType* structType = llvm::StructType::create(
-        ctx.llvmCtx,
-        fieldTypes,
-        structName
-    );
+    llvm::StructType* structType = llvm::StructType::create(ctx.llvmCtx, fieldTypes, structName);
 
     Trace::detail("Created specialized struct: ", structName,
                 " (", fieldTypes.size(), " fields)");
@@ -237,10 +210,7 @@ llvm::Type* createSpecializedStruct(
 // 3. Type-Erased Generic Generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* generateErasedGenericFunction(
-    FuncDeclAST* funcDecl,
-    CodeGenContext& ctx
-) {
+llvm::Function* generateErasedGenericFunction(FuncDeclAST* funcDecl, CodeGenContext& ctx) {
     if (!funcDecl) return nullptr;
 
     std::string funcName = ctx.pool.lookup(funcDecl->name);
@@ -266,15 +236,10 @@ llvm::Function* generateErasedGenericFunction(
         funcType = funcType->getNext();
     }
 
-    llvm::Type* returnType = llvm::PointerType::get(ctx.llvmCtx, 0);
+    llvm::Type*         returnType   = llvm::PointerType::get(ctx.llvmCtx, 0);
+    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(returnType, paramTypes, false);
+    llvm::Function*     existingFunc = ctx.module->getFunction(mangledName);
 
-    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(
-        returnType,
-        paramTypes,
-        false
-    );
-
-    llvm::Function* existingFunc = ctx.module->getFunction(mangledName);
     if (existingFunc) {
         return existingFunc;
     }
@@ -365,11 +330,7 @@ llvm::Type* generateErasedGenericStruct(
 // 4. Public Registry API
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* getOrCreateSpecializedFunction(
-    FuncDeclAST* funcDecl,
-    const std::vector<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
+llvm::Function* getOrCreateSpecializedFunction(FuncDeclAST* funcDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
     if (!funcDecl || !isGenericFunction(funcDecl)) return nullptr;
 
     if (!shouldSpecialize(funcDecl)) {
@@ -394,11 +355,7 @@ llvm::Function* getOrCreateSpecializedFunction(
     return specialized;
 }
 
-llvm::Type* getOrCreateSpecializedStruct(
-    StructDeclAST* structDecl,
-    const std::vector<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
+llvm::Type* getOrCreateSpecializedStruct(StructDeclAST* structDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
     if (!structDecl || !isGenericStruct(structDecl)) return nullptr;
 
     if (!shouldSpecialize(structDecl)) {
