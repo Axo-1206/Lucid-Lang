@@ -2979,7 +2979,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 1: Resolve the function type ──────────────────────────────────
+    // 1. Resolve the function type (nested)
     FuncTypeAST* funcType = expr->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         expr->resolvedType = ctx.getUnknownType();
@@ -2987,20 +2987,16 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Store the resolved function type ──────────────────────────
+    // 2. Store the resolved type
     expr->resolvedType = funcType;
 
-    // ─── Step 3: Push scope for parameters and analyze body ────────────────
+    // 3. Push scope for the parameters of THIS group
     ctx.pushScope();
-
-    // ─── Step 4: Register parameters in the new scope ──────────────────────
-    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
-        for (ParamAST* param : group->params) {
-            resolveParam(param, ctx);
-        }
+    for (ParamAST* param : funcType->params) {
+        resolveParam(param, ctx);
     }
 
-    // ─── Step 5: Analyze the body ──────────────────────────────────────────
+    // 4. Validate body exists
     if (!expr->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function has no body");
@@ -3010,13 +3006,12 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 6: Push function context for return validation ──────────────
+    // 5. Push function context with expected return type
     TypeAST* expectedReturn = funcType->returnType;
     ctx.stack.pushAnonFunction(expr, expectedReturn);
 
+    // 6. Resolve the body (which may be a ReturnStmtAST returning another AnonFuncExprAST)
     bool bodyReturns = false;
-
-    // ─── Step 7: Resolve the body based on its kind ────────────────────────
     if (expr->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(expr->body->as<BlockStmtAST>(), ctx);
     } else if (expr->body->isa<ReturnStmtAST>()) {
@@ -3031,57 +3026,43 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 8: Verify return paths ───────────────────────────────────────
+    // 7. Verify return paths
     if (expectedReturn && !bodyReturns) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function does not return a value on all paths");
     }
 
-    // ─── Step 9: Pop the function context ──────────────────────────────────
+    // 8. Pop function context
     ctx.stack.pop();
 
-    // ─── Step 10: Detect captures and store them ────────────────────────────
-    // The context stack still has the function frame (for the anonymous
-    // function), so getClosureDepth() returns the correct depth.
-    // We pass the expression to analyzeCaptures which will detect if the
-    // anonymous function captures any variables from outer scopes.
-    analyzeCaptures(expr, ctx);
+    // 9. Capture analysis
+    if (ctx.getClosureDepth() > 0) {
+        analyzeCaptures(expr, ctx);
+    }
 
-    // ─── Step 11: Pop the parameter scope ──────────────────────────────────
+    // 10. Pop parameter scope
     ctx.popScope();
 
-    // ─── Step 12: Set value state ──────────────────────────────────────────
+    // 11. Determine value state
     ValueState state = ValueState::Definite;
     if (expectedReturn) {
-        if (isNullableType(expectedReturn)) {
-            state = ValueState::Unknown;
-        } else if (isFallibleType(expectedReturn)) {
-            state = ValueState::Err;
-        } else {
-            state = ValueState::Definite;
-        }
+        if (isNullableType(expectedReturn)) state = ValueState::Unknown;
+        else if (isFallibleType(expectedReturn)) state = ValueState::Err;
+        else state = ValueState::Definite;
     } else {
         state = ValueState::None;
     }
-
     expr->valueState = state;
-    
-    // ─── Step 13: Set isLValue and isConst ──────────────────────────────────
     expr->isLValue = false;
-    
-    // A closure is const only if it captures no mutable state and all its
-    // operations are const. This requires further analysis.
-    // For now, we conservatively mark it as not const.
     expr->isConst = false;
 
-    // ─── Step 14: Validate against target type if provided ─────────────────
+    // 12. Validate against target type if provided
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, funcType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "anonymous function type mismatch: expected ",
                                   typeToString(targetType, ctx.pool),
-                                  ", got ",
-                                  typeToString(funcType, ctx.pool));
+                                  ", got ", typeToString(funcType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();

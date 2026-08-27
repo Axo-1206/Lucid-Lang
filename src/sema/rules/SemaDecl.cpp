@@ -242,10 +242,10 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 1. Validate all attributes ────────────────────────────────────────
+    // 1. Validate attributes
     validateAllAttributes(decl, ctx);
 
-    // ─── 2. Check if @[foreign] is present ────────────────────────────────
+    // 2. Check @[foreign]
     InternedString foreignName = ctx.pool.intern("foreign");
     for (AttributeAST* attr : decl->attributes) {
         if (attr->name == foreignName) {
@@ -253,42 +253,38 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Resolve function type ─────────────────────────────────────────────
+    // 3. Resolve the function type (nested FuncTypeAST)
     FuncTypeAST* funcType = decl->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // ─── 4. Handle @[foreign] functions ────────────────────────────────────
+    // 4. Foreign functions – use original name as symbol
     if (decl->isForeignFunction) {
-        // Foreign functions use their original name as the symbol
         decl->mangledName = decl->name;
         Trace::info("Foreign function '", ctx.pool.lookup(decl->name),
                  "' uses symbol name: ", ctx.pool.lookup(decl->mangledName));
         return;
     }
 
-    // ─── 5. Resolve generic parameters ───────────────────────────────────────
+    // 5. Resolve generic parameters (if any)
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 6. Resolve parameters ──────────────────────────────────────────────
+    // 6. Resolve parameters of the OUTERMOST group only
     ctx.pushScope();
-    
-    for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
-        for (ParamAST* param : group->params) {
-            resolveParam(param, ctx);
-        }
+    for (ParamAST* param : funcType->params) {
+        resolveParam(param, ctx);
     }
 
-    // ─── 7. Generate mangled name BEFORE body resolution ──────────────────
+    // 7. Generate mangled name
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
 
-    // ─── 8. Analyze body ──────────────────────────────────────────────────────
+    // 8. Foreign functions have no body – skip body resolution
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingFuncBody, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -296,19 +292,20 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 9. Push function context with expected return type ──────────────────
-    // The function resolveReturnStmt will resolve this requirement
-    TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
+    // 9. Push function context with the expected return type
+    //    (this may be a FuncTypeAST for curried returns)
+    TypeAST* expectedReturn = funcType->returnType;
     ctx.stack.pushFunction(decl, expectedReturn);
 
+    // 10. Resolve the body – the parser has already desugared it into
+    //     nested ReturnStmtAST → AnonFuncExprAST chains.
     bool bodyReturns = false;
-    
-    // ─── 10. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
+        // Direct function reference body
         FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
         TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
@@ -319,29 +316,27 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         bodyReturns = true;
     } else {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, decl,
-                              "function '", ctx.pool.lookup(decl->name), 
+                              "function '", ctx.pool.lookup(decl->name),
                               "' has invalid body type");
         ctx.stack.pop();
         ctx.popScope();
         return;
     }
 
-    // ─── 11. Verify return paths ──────────────────────────────────────────────
+    // 11. Check return paths
     if (!bodyReturns && expectedReturn) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' does not return a value on all paths");
     }
 
-    // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
+    // 12. Capture analysis (nested functions)
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(decl, ctx);
     }
 
-    // ─── 13. Pop function context ────────────────────────────────────────────
+    // 13. Pop contexts
     ctx.stack.pop();
-
-    // ─── 14. Pop scope ──────────────────────────────────────────────────────────
     ctx.popScope();
 }
 
