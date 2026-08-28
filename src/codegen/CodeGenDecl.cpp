@@ -475,9 +475,18 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     if (!param) return;
 
     // ─── Get LLVM type ────────────────────────────────────────────────────
-    llvm::Type* paramType = param->isVariadic
-        ? ctx.getSliceType()
-        : getType(ctx, param->type);
+    llvm::Type* paramType = nullptr;
+    if (param->isVariadic) {
+        paramType = ctx.getSliceType();
+    } else if (param->type && param->type->isa<FuncTypeAST>()) {
+        paramType = getFunctionRuntimeType(
+            ctx,
+            param->type->as<FuncTypeAST>(),
+            true
+        );
+    } else {
+        paramType = getType(ctx, param->type);
+    }
     if (!paramType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
                                 "parameter '", ctx.pool.lookup(param->name),
@@ -713,7 +722,16 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     std::vector<llvm::Type*> fieldTypes;
 
     for (FieldDeclAST* field : decl->fields) {
-        llvm::Type* fieldType = getType(ctx, field->type);
+        llvm::Type* fieldType = nullptr;
+        if (field->type && field->type->isa<FuncTypeAST>()) {
+            fieldType = getFunctionRuntimeType(
+                ctx,
+                field->type->as<FuncTypeAST>(),
+                true
+            );
+        } else {
+            fieldType = getType(ctx, field->type);
+        }
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
                                     "field '", ctx.pool.lookup(field->name),

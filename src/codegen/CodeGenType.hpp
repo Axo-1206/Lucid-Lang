@@ -68,6 +68,17 @@ llvm::FunctionType* getFunctionType(
     bool isClosure = false
 );
 
+/// @brief Get the LLVM type for a function value at runtime.
+/// @param ctx The code generation context.
+/// @param funcType The Lucid function type.
+/// @param isClosure Whether the value uses the closure fat-pointer layout.
+/// @return A closure value type or a pointer to the function signature.
+llvm::Type* getFunctionRuntimeType(
+    CodeGenContext& ctx,
+    FuncTypeAST* funcType,
+    bool isClosure
+);
+
 // ─── Specific Type Mappers ──────────────────────────────────────────────────
 
 /// @brief Get the LLVM type for a Lucid primitive type.

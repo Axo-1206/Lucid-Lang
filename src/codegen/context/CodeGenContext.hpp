@@ -291,6 +291,19 @@ struct CodeGenContext {
         return type;
     }
 
+    /// @brief Get the canonical closure value type (struct { ptr, ptr }).
+    llvm::StructType* getClosureType() const {
+        llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.Closure");
+        if (!type) {
+            type = llvm::StructType::create(llvmCtx, "lucid.Closure");
+            type->setBody({
+                llvm::PointerType::get(llvmCtx, 0),
+                llvm::PointerType::get(llvmCtx, 0)
+            });
+        }
+        return type;
+    }
+
     /// @brief Get the canonical string type (struct { ptr, len, cap }).
     llvm::StructType* getStringType() const {
         llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.String");

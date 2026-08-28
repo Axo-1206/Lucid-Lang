@@ -13,9 +13,7 @@
 ///      module.
 ///   2. There is no single place to see what the runtime surface actually
 ///      is, so it's easy to add a call site that depends on a symbol that
-///      doesn't exist in the runtime library at all (this happened this
-///      session - #tostr/#ptrstr reference six functions with no runtime
-///      implementation yet).
+///      doesn't exist in the runtime library at all.
 ///
 /// This mirrors registry/IntrinsicRegistry.hpp's own justification almost
 /// exactly, just for the runtime ABI surface instead of the intrinsic
@@ -52,30 +50,33 @@ struct CodeGenContext;
 enum class RuntimeFn {
     // ─── Closures ───────────────────────────────────────────────────────
     AllocEnv,           // void* __lucid_alloc_env(uint64_t size)
+    IsClosure,          // bool __lucid_is_closure(void* value)
+    RetainEnv,          // void __lucid_retain_env(void* env)
+    ReleaseEnv,         // void __lucid_release_env(void* env)
 
     // ─── Memory Management ──────────────────────────────────────────────
     Alloc,              // void* __lucid_alloc(uint64_t size)
     Free,               // void __lucid_free(void* ptr)
-    ArenaCreate,         // { void*, uint64_t } __lucid_arena_create(uint64_t size)
-    ArenaAlloc,          // void* __lucid_arena_alloc(void* arena, uint64_t size)
-    ArenaReset,          // void __lucid_arena_reset(void* arena)
-    ArenaFree,           // void __lucid_arena_free(void* arena)
+    ArenaCreate,        // { void*, uint64_t } __lucid_arena_create(uint64_t size)
+    ArenaAlloc,         // void* __lucid_arena_alloc(void* arena, uint64_t size)
+    ArenaReset,         // void __lucid_arena_reset(void* arena)
+    ArenaFree,          // void __lucid_arena_free(void* arena)
 
     // ─── Strings ────────────────────────────────────────────────────────
-    StrConcat,           // string __lucid_str_concat(string a, string b)
-    StrSlice,            // string __lucid_str_slice(string s, int64 from, int64 to)
-    StrEq,               // bool __lucid_str_eq(string a, string b)
+    StrConcat,          // string __lucid_str_concat(string a, string b)
+    StrSlice,           // string __lucid_str_slice(string s, int64 from, int64 to)
+    StrEq,              // bool __lucid_str_eq(string a, string b)
 
     // ─── #tostr / #ptrstr formatters ────────────────────────────────────
-    PtrToHexString,       // string __lucid_ptr_to_hex_string(void* ptr)
-    BoolToStr,            // string __lucid_bool_to_str(bool b)
-    CharToStr,            // string __lucid_char_to_str(int32 codepoint)
-    IntToStr,             // string __lucid_int_to_str(int64 v)
-    UintToStr,            // string __lucid_uint_to_str(int64 v)  (bit pattern, formatted unsigned)
-    FloatToStr,           // string __lucid_float_to_str(double v)
+    PtrToHexString,     // string __lucid_ptr_to_hex_string(void* ptr)
+    BoolToStr,          // string __lucid_bool_to_str(bool b)
+    CharToStr,          // string __lucid_char_to_str(int32 codepoint)
+    IntToStr,           // string __lucid_int_to_str(int64 v)
+    UintToStr,          // string __lucid_uint_to_str(int64 v) (bit pattern, formatted unsigned)
+    FloatToStr,         // string __lucid_float_to_str(double v)
 
     // ─── Panics ─────────────────────────────────────────────────────────
-    Panic,                // void __lucid_panic(char* message)
+    Panic,              // void __lucid_panic(char* message)
 };
 
 /// @brief One registry entry: the linker symbol name, plus a builder that

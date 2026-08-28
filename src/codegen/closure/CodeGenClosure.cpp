@@ -28,11 +28,15 @@
 /// By-reference captures require the captured variable to be heap-allocated
 /// if the closure may escape. This is handled by Sema (promotion analysis).
 ///
-/// ─── Control Flow ──────────────────────────────────────────────────────────
-/// The closure function is verified after generation to ensure:
-///   - All basic blocks are properly terminated
-///   - Return types match the function signature
-///   - No invalid instructions
+/// ─── Function-Typed Captures ───────────────────────────────────────────────
+/// When a captured value has function type (FuncTypeAST), it could be either:
+///   - A plain function pointer (1 word)
+///   - A closure { func, env } (2 words)
+///
+/// If isClosureValue is true, we know it's a closure at compile time.
+/// If isClosureValue is false, it's a plain function.
+/// For parameters/fields where we don't know, Sema sets isClosureValue = true
+/// conservatively, and CodeGen emits runtime checks.
 
 #include "CodeGenClosure.hpp"
 #include "../CodeGen.hpp"
@@ -40,6 +44,7 @@
 #include "../generic/CodeGenGeneric.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
+#include "core/SourceLocation.hpp"
 #include "core/trace/Trace.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -50,9 +55,10 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Verifier.h>
+
 #include <cassert>
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/Verifier.h>
 
 #include <atomic>
 #include <unordered_map>
@@ -60,21 +66,117 @@
 namespace codegen {
 
 // ─── Static Counter for Unique Closure Names ──────────────────────────────
-// Using a static counter ensures unique names across all closures in the
-// compilation session, even across different modules.
 static std::atomic<size_t> g_closureCounter{0};
 
 // ─── Forward Declarations ───────────────────────────────────────────────────
 
-/// @brief Helper to determine if a capture should be stored by value or reference.
-static bool shouldCaptureByValue(const CapturedVariable& capture);
-
-/// @brief Helper to get the actual LLVM type for a captured variable.
-static llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& capture);
-
 /// @brief Helper to emit the closure function body after environment setup.
 static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
                            llvm::Value* envPtr, CodeGenContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runtime Closure Check Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+llvm::Value* emitIsClosureCheck(llvm::Value* value, CodeGenContext& ctx) {
+    if (!value) return nullptr;
+
+    // ─── If the value is already a struct, it's a closure ─────────────────
+    // The closure type is { ptr, ptr }. If we see this, return true.
+    if (value->getType()->isStructTy()) {
+        return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 1);
+    }
+
+    // ─── If it's a function pointer, it's not a closure ──────────────────
+    if (llvm::isa<llvm::Function>(value)) {
+        return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
+    }
+
+    // ─── For pointer values, use runtime check ────────────────────────────
+    if (value->getType()->isPointerTy()) {
+        // Use __lucid_is_closure(ptr) -> i1
+        llvm::Function* isClosureFn = ctx.getRuntimeFn(RuntimeFn::IsClosure);
+        if (!isClosureFn) {
+            // Fallback: assume it's not a closure
+            return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
+        }
+        return ctx.builder.CreateCall(isClosureFn, {value}, "is_closure");
+    }
+
+    // ─── Unknown value type ──────────────────────────────────────────────
+    return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
+}
+
+llvm::Value* normalizeToClosureType(llvm::Value* value, CodeGenContext& ctx) {
+    if (!value) return nullptr;
+
+    // ─── If it's already a closure type, return as-is ─────────────────────
+    if (value->getType()->isStructTy()) {
+        return value;
+    }
+
+    // ─── If it's a function pointer, wrap it as { func, null } ────────────
+    llvm::Type* closureType = ctx.getClosureType();
+    llvm::Value* result = llvm::UndefValue::get(closureType);
+
+    // Cast function pointer to i8*
+    llvm::Value* funcPtr = value;
+    if (funcPtr->getType() != llvm::PointerType::get(ctx.llvmCtx, 0)) {
+        funcPtr = ctx.builder.CreatePointerCast(
+            funcPtr,
+            llvm::PointerType::get(ctx.llvmCtx, 0),
+            "closure_func_cast"
+        );
+    }
+
+    result = ctx.builder.CreateInsertValue(result, funcPtr, 0);
+    result = ctx.builder.CreateInsertValue(
+        result,
+        llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx.llvmCtx, 0)),
+        1
+    );
+
+    return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Capture Field Type
+// ─────────────────────────────────────────────────────────────────────────────
+
+llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& capture) {
+    if (!capture.decl) return nullptr;
+
+    TypeAST* declType = capture.decl->type;
+    if (!declType) return nullptr;
+
+    // ─── Function-typed captures need special handling ────────────────────
+    if (declType->isa<FuncTypeAST>()) {
+        // Use the isClosureValue flag from Sema
+        // If true: the captured value is a closure → { ptr, ptr }
+        // If false: the captured value is a plain function → function pointer
+        // 
+        // Note: For parameters and fields, Sema sets isClosureValue = true
+        // conservatively. CodeGen will emit runtime checks when using the
+        // value (e.g., in emitCallableCall).
+        return getFunctionRuntimeType(
+            ctx,
+            declType->as<FuncTypeAST>(),
+            capture.isClosureValue
+        );
+    }
+
+    // ─── Regular type: use getType ────────────────────────────────────────
+    llvm::Type* baseType = getType(ctx, declType);
+    if (!baseType) return nullptr;
+
+    // If by reference, we store a pointer to the variable
+    if (capture.byReference) {
+        return llvm::PointerType::get(baseType, 0);
+    }
+
+    // By value: store the value directly
+    return baseType;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Entry Point
@@ -87,13 +189,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
 
     // ─── 1. Build the closure environment struct ──────────────────────────
     // buildClosureEnvironment already returns a valid (empty) struct type
-    // when there are no captures, so this is safe to call unconditionally -
-    // every closure value gets the same { funcPtr, envPtr } shape, whether
-    // or not it captures anything. A uniform shape matters because
-    // lowerCallExpr (CodeGenExpr.cpp) distinguishes "closure value" from
-    // "plain named function" purely by checking whether the lowered value
-    // is a struct - a non-capturing closure that fell back to a bare
-    // pointer would silently be uncallable through that path.
+    // when there are no captures, so this is safe to call unconditionally.
     llvm::StructType* envType = buildClosureEnvironment(expr, ctx);
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -117,7 +213,6 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
 
     if (hasCaptures) {
         // ─── 4. Allocate the environment ───────────────────────────────────
-        // The environment is heap-allocated (refcounted).
         llvm::Function* allocEnv = ctx.getRuntimeFn(RuntimeFn::AllocEnv);
 
         // ─── 5. Get the size of the environment ────────────────────────────
@@ -152,13 +247,23 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
                 continue;
             }
 
+            // ─── Handle function-typed captures ─────────────────────────────
+            // If the captured value is function-typed, we need to normalize it
+            // to the closure type { ptr, ptr } before storing.
+            TypeAST* declType = capture.decl->type;
+            if (declType && declType->isa<FuncTypeAST>()) {
+                // If isClosureValue is true, the value is a closure or we're
+                // conservative. If it's a plain function pointer, normalize it.
+                capturedValue = normalizeToClosureType(capturedValue, ctx);
+                if (!capturedValue) continue;
+            }
+
             // ─── Handle by-value vs by-reference captures ───────────────────
             if (!capture.byReference) {
                 // By value: load the value and store it in the environment
-                llvm::Type* declType = getType(ctx, capture.decl->type);
-                if (declType) {
-                    // Use the proper loadIfNeeded with explicit element type
-                    capturedValue = loadIfNeeded(capturedValue, declType, ctx);
+                llvm::Type* fieldType = getCaptureFieldType(ctx, capture);
+                if (fieldType) {
+                    capturedValue = loadIfNeeded(capturedValue, fieldType, ctx);
                 } else {
                     ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
                                             "captured variable '", 
@@ -168,11 +273,6 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
                 }
             } else {
                 // By reference: store the address (pointer) in the environment
-                // The capturedValue should already be a pointer to the variable
-                // (either stack or heap allocated). We store this pointer directly.
-                // Note: If the variable is on the stack and the closure escapes,
-                // this would be unsafe. Sema should have promoted such variables
-                // to heap allocation before we get here.
                 if (!capturedValue->getType()->isPointerTy()) {
                     ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
                                             "by-reference capture of '",
@@ -194,43 +294,13 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
             ctx.builder.CreateStore(capturedValue, fieldPtr);
         }
     } else {
-        // ─── No captures: skip heap allocation entirely ────────────────────
-        // There's nothing to store, so there's no reason to round-trip
-        // through __lucid_alloc_env for an empty struct. The closure
-        // function still takes an env-pointer first argument (uniform ABI,
-        // see createClosureFunction/emitClosureCall), it just never
-        // dereferences it, since expr->captures is empty and the
-        // capture-loading loop in emitClosureBody does zero iterations.
+        // ─── No captures: skip heap allocation ────────────────────────────
         envPtr = llvm::ConstantPointerNull::get(
             llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
     // ─── 9. Create the closure value (fat pointer) ─────────────────────────
-    // A closure is { function pointer, environment pointer }
-    // We use a struct { i8*, i8* } for the fat pointer. This is built the
-    // same way whether or not there are captures, so every closure value -
-    // capturing or not - has the same LLVM shape and can be called through
-    // the same path in lowerCallExpr (CodeGenExpr.cpp).
-    //
-    // IMPORTANT: this must be StructType::get (an anonymous/literal struct
-    // type), not StructType::create (a named/identified struct type).
-    // StructType::create mints a brand new, distinct type identity on
-    // every call - two structurally identical closures built at two
-    // different call sites would get different LLVM types (%closure,
-    // %closure.1, ...), which LLVM does not unify. StructType::get with
-    // no name instead produces a single structurally-uniqued type shared
-    // by every closure literal with this shape, which matters as soon as
-    // anything needs to treat "a closure value" as one consistent type
-    // regardless of where it was created - e.g. a trait field-offset
-    // table describing a callable field, or storing different closures
-    // into the same variable across branches.
-    llvm::StructType* closureType = llvm::StructType::get(
-        ctx.llvmCtx,
-        {
-            llvm::PointerType::get(ctx.llvmCtx, 0),  // function pointer
-            llvm::PointerType::get(ctx.llvmCtx, 0)   // environment pointer
-        }
-    );
+    llvm::StructType* closureType = ctx.getClosureType();
 
     // Build the closure value
     llvm::Value* closure = llvm::UndefValue::get(closureType);
@@ -287,7 +357,6 @@ llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr, CodeGenContext&
     }
 
     // ─── Create the environment struct ────────────────────────────────────
-    // Use a unique name with a counter to avoid collisions
     static std::atomic<size_t> envCounter{0};
     std::string envName = "closure_env_" + std::to_string(++envCounter);
     llvm::StructType* envType = llvm::StructType::create(
@@ -327,42 +396,13 @@ llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx
 
     // ─── 3. Build the function type ──────────────────────────────────────
     // The closure function takes: env pointer + regular parameters
-    std::vector<llvm::Type*> paramTypes;
-    
-    // Environment pointer (typed, not opaque)
-    paramTypes.push_back(llvm::PointerType::get(envType, 0));
-
-    // Regular parameters - use GenericSubstitution if needed
-    // For closures, we need to handle generic parameters properly
-    const GenericSubstitution* subst = nullptr;
-    // If the closure is inside a generic context, we need substitution
-    // For now, we assume no substitution for anonymous functions
-    
-    for (ParamAST* param : funcType->params) {
-        llvm::Type* paramType = getType(ctx, param->type, subst);
-        if (!paramType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-                                    "parameter '", ctx.pool.lookup(param->name),
-                                    "' has invalid type");
-            return nullptr;
-        }
-        paramTypes.push_back(paramType);
+    // We use getFunctionType with isClosure = true to add the env parameter
+    llvm::FunctionType* fnType = getFunctionType(ctx, funcType, true);
+    if (!fnType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
+                                "failed to build function type for closure");
+        return nullptr;
     }
-
-    // Return type
-    llvm::Type* returnType = nullptr;
-    if (funcType->returnType) {
-        returnType = getType(ctx, funcType->returnType, subst);
-    }
-    if (!returnType) {
-        returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
-    }
-
-    llvm::FunctionType* fnType = llvm::FunctionType::get(
-        returnType,
-        paramTypes,
-        false
-    );
 
     // ─── 4. Create the closure function with a unique name ──────────────
     std::string funcName = "closure_" + std::to_string(++g_closureCounter);
@@ -444,6 +484,23 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
             "load_captured_" + ctx.pool.lookup(capture.decl->name)
         );
 
+        // ─── For function-typed captures, we may need to normalize ──────
+        // If the captured value is stored as { ptr, ptr } but we need a
+        // plain function pointer, extract it. This happens when the closure
+        // body calls the captured function directly.
+        TypeAST* declType = capture.decl->type;
+        if (declType && declType->isa<FuncTypeAST>()) {
+            // If the field type is a struct (closure type), the value is
+            // stored as { func, env }. Extract the function pointer.
+            if (fieldType->isStructTy()) {
+                capturedValue = ctx.builder.CreateExtractValue(
+                    capturedValue,
+                    0,
+                    "captured_func_ptr"
+                );
+            }
+        }
+
         // Store in the context's value map for use in the closure body
         ctx.storeValue(capture.decl, capturedValue);
     }
@@ -474,7 +531,7 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
 
     // ─── 5. Lower the body ──────────────────────────────────────────────
     if (expr->body) {
-        lowerStatement(const_cast<StmtAST*>(expr->body), ctx);
+        lowerStatement(expr->body, ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, expr->loc,
                                 "anonymous function has no body");
@@ -511,19 +568,13 @@ llvm::Value* emitClosureCall(
     if (!funcPtr || !envPtr) return nullptr;
 
     // ─── 1. Build the function type from the arguments ────────────────────
-    // The closure function signature is: env pointer + user arguments
     std::vector<llvm::Type*> paramTypes;
     paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0)); // env pointer
     
-    // Store argument types
     for (llvm::Value* arg : args) {
         paramTypes.push_back(arg->getType());
     }
 
-    // ─── 2. Return type ─────────────────────────────────────────────────────
-    // Supplied by the caller, derived from the call expression's own
-    // resolved type (sema already computes this in resolveCallExpr as
-    // funcType->returnType) - callers should not have to guess it here.
     if (!returnType) {
         returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
     }
@@ -534,25 +585,25 @@ llvm::Value* emitClosureCall(
         false
     );
 
-    // ─── 3. Cast the function pointer to the correct type ──────────────
+    // ─── 2. Cast the function pointer to the correct type ──────────────
     llvm::Value* typedFunc = ctx.builder.CreatePointerCast(
         funcPtr,
         llvm::PointerType::get(fnType, 0),
         "closure_func_cast"
     );
 
-    // ─── 4. Build argument list ──────────────────────────────────────────
+    // ─── 3. Build argument list ──────────────────────────────────────────
     std::vector<llvm::Value*> callArgs;
     callArgs.reserve(1 + args.size());
-    callArgs.push_back(envPtr);  // Environment pointer is first
+    callArgs.push_back(envPtr);
     for (llvm::Value* arg : args) {
         callArgs.push_back(arg);
     }
 
-    // ─── 5. Create the call ──────────────────────────────────────────────
+    // ─── 4. Create the call ──────────────────────────────────────────────
     llvm::Value* result = ctx.builder.CreateCall(
-        fnType,        // FunctionType* - the signature
-        typedFunc,     // Value* - the function pointer
+        fnType,
+        typedFunc,
         callArgs,
         "closure_call"
     );
@@ -578,30 +629,63 @@ llvm::Value* emitCallableCall(
         return emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
     }
 
-    // ─── 2. Plain named function reference - the common, fast path ─────────
+    // ─── 2. Plain named function reference ─────────────────────────────────
     if (llvm::Function* fn = llvm::dyn_cast<llvm::Function>(callee)) {
         return ctx.builder.CreateCall(fn, args, name);
     }
 
-    // ─── 3. Indirect function pointer (e.g. loaded from a variable) ────────
-    // A function value stored in and loaded from a variable is just a bare
-    // `ptr`-typed SSA value at this point - dyn_cast<llvm::Function> above
-    // reflects the IR node's static C++ class, not what address it
-    // dynamically holds, so it always fails here even though the pointer
-    // genuinely does refer to a real function. It needs an explicit cast
-    // to the expected signature before it can be called.
+    // ─── 3. Indirect function pointer ──────────────────────────────────────
+    // For values that might be closures, we need to check at runtime.
     if (callee->getType()->isPointerTy()) {
+        // ─── Check if this might be a closure ──────────────────────────────
+        // If the value is a pointer, it could be either:
+        //   a) A plain function pointer (1 word)
+        //   b) A pointer to a closure struct (which would be a closure value)
+        //      Note: A closure value is { ptr, ptr } - a struct, not a pointer.
+        //      If we have a pointer to a closure struct, that means we have
+        //      a pointer to { ptr, ptr }, which is different from the closure
+        //      value itself.
+        //
+        // The closure value itself is { ptr, ptr } (a struct), not a pointer.
+        // So if we have a pointer, it's either:
+        //   a) A function pointer (plain function) - can call directly
+        //   b) A pointer to a closure struct - need to load first
+        //
+        // For case (b), the callee would be a pointer to { ptr, ptr }.
+        // In that case, we need to load the closure struct, then extract
+        // the function pointer and environment pointer.
+        
+        // Check if the pointee type is a closure type
+        llvm::Type* pointeeType = ctx.getPointeeType(callee);
+        if (pointeeType && pointeeType->isStructTy() && pointeeType->isStructTy()) {
+            // Check if it's a closure type { ptr, ptr }
+            llvm::StructType* st = llvm::cast<llvm::StructType>(pointeeType);
+            if (st->getNumElements() == 2 &&
+                st->getElementType(0)->isPointerTy() &&
+                st->getElementType(1)->isPointerTy()) {
+                // Load the closure struct
+                llvm::Value* closureVal = ctx.builder.CreateLoad(
+                    pointeeType,
+                    callee,
+                    name + "_closure_load"
+                );
+                
+                // Extract and call
+                llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
+                    closureVal, 0, name + "_closure_func"
+                );
+                llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                    closureVal, 1, name + "_closure_env"
+                );
+                return emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
+            }
+        }
+
+        // ─── Fallback: plain function pointer ──────────────────────────────
         llvm::Value* casted = ctx.builder.CreatePointerCast(
             callee, llvm::PointerType::get(fnType, 0), name + "_cast");
         return ctx.builder.CreateCall(fnType, casted, args, name);
     }
-
-    // ─── 4. Neither shape ───────────────────────────────────────────────────
-    // Sema already guarantees the source expression resolves to a
-    // FuncTypeAST, so reaching here means CodeGen and Sema have gone out
-    // of sync, not that the user wrote something uncallable.
-    assert(false && "callee is neither a closure value, a plain llvm::Function, "
-                     "nor an indirect function pointer - Sema should have caught this");
     return nullptr;
 }
 
@@ -609,30 +693,8 @@ llvm::Value* emitCallableCall(
 // Helper Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-static bool shouldCaptureByValue(const CapturedVariable& capture) {
-    // By value if not by reference
-    return !capture.byReference;
-}
-
-static llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& capture) {
-    if (!capture.decl) return nullptr;
-
-    // Get the base type from the declaration
-    llvm::Type* baseType = getType(ctx, capture.decl->type);
-    if (!baseType) return nullptr;
-
-    // If by reference, we store a pointer to the variable
-    if (capture.byReference) {
-        return llvm::PointerType::get(baseType, 0);
-    }
-
-    // By value: store the value directly
-    return baseType;
-}
-
 bool isClosureNeeded(const AnonFuncExprAST* expr) {
     if (!expr) return false;
-    // A closure is needed if there are captures or explicitly marked
     return expr->hasClosure || !expr->captures.empty();
 }
 

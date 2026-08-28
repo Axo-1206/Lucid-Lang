@@ -158,7 +158,9 @@ llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
     std::string structName = ctx.pool.lookup(decl->name);
 
     for (FieldDeclAST* field : decl->fields) {
-        llvm::Type* fieldType = getType(ctx, field->type);
+        llvm::Type* fieldType = field->type && field->type->isa<FuncTypeAST>()
+            ? getFunctionRuntimeType(ctx, field->type->as<FuncTypeAST>(), true)
+            : getType(ctx, field->type);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, field->loc,
                                     "field '", ctx.pool.lookup(field->name),
@@ -202,9 +204,18 @@ llvm::FunctionType* getFunctionType(CodeGenContext& ctx, FuncTypeAST* funcType, 
 
     // ─── Add regular parameters ────────────────────────────────────────────
     for (ParamAST* param : funcType->params) {
-        llvm::Type* paramType = param->isVariadic
-            ? ctx.getSliceType()
-            : getType(ctx, param->type);
+        llvm::Type* paramType = nullptr;
+        if (param->isVariadic) {
+            paramType = ctx.getSliceType();
+        } else if (param->type && param->type->isa<FuncTypeAST>()) {
+            paramType = getFunctionRuntimeType(
+                ctx,
+                param->type->as<FuncTypeAST>(),
+                true
+            );
+        } else {
+            paramType = getType(ctx, param->type);
+        }
         if (!paramType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, param->loc,
                                     "parameter '", ctx.pool.lookup(param->name),
@@ -236,6 +247,23 @@ llvm::FunctionType* getFunctionType(CodeGenContext& ctx, FuncTypeAST* funcType, 
 
     // Source-level variadic parameters are lowered as one explicit slice.
     return llvm::FunctionType::get(returnType, paramTypes, false);
+}
+
+llvm::Type* getFunctionRuntimeType(
+    CodeGenContext& ctx,
+    FuncTypeAST* funcType,
+    bool isClosure
+) {
+    if (!funcType) return nullptr;
+
+    if (isClosure) {
+        return ctx.getClosureType();
+    }
+
+    llvm::FunctionType* functionType = getFunctionType(ctx, funcType, false);
+    return functionType
+        ? llvm::PointerType::get(ctx.llvmCtx, 0)
+        : nullptr;
 }
 
 llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type) {
