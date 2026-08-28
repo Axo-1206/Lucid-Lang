@@ -5,4 +5,5 @@ build/
 archive/
 .cache/
 tests/
+/other
 language_support/
