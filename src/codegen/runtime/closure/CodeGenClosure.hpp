@@ -1,4 +1,4 @@
-/// @file closure/CodeGenClosure.hpp
+/// @file CodeGenClosure.hpp
 /// @brief Closure lowering declarations - separate from main CodeGen interface.
 ///
 /// ─── Purpose ──────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@
 
 #pragma once
 
-#include "../context/CodeGenContext.hpp"
+#include "codegen/context/CodeGenContext.hpp"
 #include "core/ast/ExprAST.hpp"
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>

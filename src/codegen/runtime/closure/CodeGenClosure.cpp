@@ -39,11 +39,11 @@
 /// conservatively, and CodeGen emits runtime checks.
 
 #include "CodeGenClosure.hpp"
-#include "../CodeGen.hpp"
-#include "../CodeGenType.hpp"
-#include "../generic/CodeGenGeneric.hpp"
-#include "../support/CodeGenAlloca.hpp"
-#include "../support/CodeGenPanic.hpp"
+#include "codegen/CodeGen.hpp"
+#include "codegen/CodeGenType.hpp"
+#include "codegen/generic/CodeGenGeneric.hpp"
+#include "codegen/support/CodeGenAlloca.hpp"
+#include "codegen/support/CodeGenPanic.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/trace/Trace.hpp"
 #include "core/ast/ExprAST.hpp"
