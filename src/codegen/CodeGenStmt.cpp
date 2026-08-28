@@ -15,6 +15,7 @@
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/LLVMHelpers.hpp"
+#include "support/Truthiness.hpp"
 #include "intrinsic/LucidIntrinsicEmitter.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
@@ -132,14 +133,16 @@ void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
 void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // Sema guarantees condition resolves to bool
     llvm::Value* cond = lowerExpression(stmt->condition, ctx);
     if (!cond) return;
 
-    if (!isBoolValue(cond)) {
-        cond = ctx.builder.CreateICmpNE(cond,
-            llvm::Constant::getNullValue(cond->getType()));
+    if (stmt->condition->isLValue) {
+        llvm::Type* conditionType = getType(ctx, stmt->condition->resolvedType);
+        if (conditionType) {
+            cond = loadIfNeeded(cond, conditionType, ctx);
+        }
     }
+    cond = emitTruthiness(cond, stmt->condition->resolvedType, ctx);
 
     llvm::Function* func = ctx.getCurrentFunction();
     assert(func && "No current function");
@@ -561,10 +564,13 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
         return;
     }
 
-    if (!isBoolValue(cond)) {
-        cond = ctx.builder.CreateICmpNE(cond,
-            llvm::Constant::getNullValue(cond->getType()));
+    if (stmt->condition->isLValue) {
+        llvm::Type* conditionType = getType(ctx, stmt->condition->resolvedType);
+        if (conditionType) {
+            cond = loadIfNeeded(cond, conditionType, ctx);
+        }
     }
+    cond = emitTruthiness(cond, stmt->condition->resolvedType, ctx);
 
     ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
 
@@ -620,10 +626,13 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
         return;
     }
 
-    if (!isBoolValue(cond)) {
-        cond = ctx.builder.CreateICmpNE(cond,
-            llvm::Constant::getNullValue(cond->getType()));
+    if (stmt->condition->isLValue) {
+        llvm::Type* conditionType = getType(ctx, stmt->condition->resolvedType);
+        if (conditionType) {
+            cond = loadIfNeeded(cond, conditionType, ctx);
+        }
     }
+    cond = emitTruthiness(cond, stmt->condition->resolvedType, ctx);
 
     ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
 

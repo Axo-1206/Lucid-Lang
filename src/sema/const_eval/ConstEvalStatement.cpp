@@ -6,6 +6,7 @@
 #include "sema/context/SemaContext.hpp"
 #include "sema/types/SemaCompare.hpp"
 #include "sema/Sema.hpp"
+#include "sema/support/Truthiness.hpp"
 
 namespace sema {
 
@@ -65,18 +66,14 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, IfStmtAST* stmt) {
     if (cond.isError()) return cond;
     if (cond.isUnknown()) return ConstantValue::unknown();
 
-    if (!cond.isBool()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->condition,
-                              "if condition must be bool");
-        return ConstantValue::error();
-    }
+    bool condition = constantTruthiness(cond, ctx);
 
     // ─── 3. Get narrowing info detected during condition evaluation ────
     NarrowingInfo info = ctx.stack.getPendingNarrowing();
     ctx.stack.clearPendingNarrowing();
 
     // ─── 4. Execute the appropriate branch ──────────────────────────────
-    if (cond.asBool()) {
+    if (condition) {
         // ─── Then branch ──────────────────────────────────────────────────
         if (stmt->thenBranch) {
             // Apply normal narrowing for inequality conditions (x != nil)
@@ -118,13 +115,7 @@ ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, WhileStmtAST* stmt)
         if (cond.isError()) return cond;
         if (cond.isUnknown()) return ConstantValue::unknown();
 
-        if (!cond.isBool()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->condition,
-                                  "while condition must be bool");
-            return ConstantValue::error();
-        }
-
-        if (!cond.asBool()) break;
+        if (!constantTruthiness(cond, ctx)) break;
 
         ConstantValue result = executeStmt(ctx, stmt->body);
         if (result.isError()) return result;

@@ -28,6 +28,7 @@
 #include "core/ast/TypeAST.hpp"
 #include "core/ASTStrings.hpp"
 #include "../support/CaptureAnalysis.hpp"
+#include "../support/Truthiness.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
 namespace sema {
@@ -134,18 +135,16 @@ bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx) {
     // ─── RAII: ScopedIfCondition for narrowing detection ──────────────────
     ScopedIfCondition ifContext(ctx, stmt->elseBranch != nullptr);
 
-    // ─── Resolve condition with target type = bool ─────────────────────────
-    PrimitiveTypeAST* boolType = ctx.getBoolType();
-    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
+    // ─── Resolve condition without forcing it to bool ────────────────────
+    TypeAST* condType = resolveExpr(stmt->condition, ctx);
 
     if (!condType || condType->isa<UnknownTypeAST>()) {
         return false;
     }
 
     // ─── CONST EVALUATION: Try to evaluate the condition at compile time ──
-    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
-    bool condIsConst = condVal.isBool();
-    bool condValue = condIsConst ? condVal.asBool() : false;
+    bool condIsConst = false;
+    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
 
     // ─── Extract narrowing info from the condition ─────────────────────────
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
@@ -595,18 +594,16 @@ bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx) {
     // ─── RAII: Push loop context ───────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::LoopBody, stmt->body);
 
-    // ─── Resolve the condition against bool type ──────────────────────────
-    PrimitiveTypeAST* boolType = ctx.getBoolType();
-    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
+    // ─── Resolve the condition without forcing it to bool ────────────────
+    TypeAST* condType = resolveExpr(stmt->condition, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
         return false;
     }
 
     // ─── CONST EVALUATION: Check if condition is compile-time constant ────
-    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
-    bool condIsConst = condVal.isBool();
-    bool condValue = condIsConst ? condVal.asBool() : false;
+    bool condIsConst = false;
+    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
 
     // ─── If condition is compile-time false, body is unreachable ──────────
     if (condIsConst && !condValue) {
@@ -645,18 +642,16 @@ bool resolveDoWhileStmt(DoWhileStmtAST* stmt, SemaContext& ctx) {
         resolveStmt(stmt->body, ctx);
     }
 
-    // ─── Resolve the condition against bool type ──────────────────────────
-    PrimitiveTypeAST* boolType = ctx.getBoolType();
-    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
+    // ─── Resolve the condition without forcing it to bool ────────────────
+    TypeAST* condType = resolveExpr(stmt->condition, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
         return false;
     }
 
     // ─── CONST EVALUATION: Check if condition is compile-time constant ────
-    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
-    bool condIsConst = condVal.isBool();
-    bool condValue = condIsConst ? condVal.asBool() : false;
+    bool condIsConst = false;
+    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
 
     // ─── If condition is compile-time false, loop executes once ────────────
     if (condIsConst && !condValue) {

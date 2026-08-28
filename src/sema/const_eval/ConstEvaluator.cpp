@@ -6,6 +6,7 @@
 #include "sema/context/SemaContext.hpp"
 #include "sema/types/SemaCompare.hpp"
 #include "sema/Sema.hpp"
+#include "sema/support/Truthiness.hpp"
 
 #include <cmath>
 
@@ -511,13 +512,7 @@ ConstantValue ConstEvaluator::evalIfExpr(SemaContext& ctx, IfExprAST* expr) {
     if (cond.isError()) return cond;
     if (cond.isUnknown()) return ConstantValue::unknown();
 
-    if (!cond.isBool()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->condition,
-                              "if condition must be bool");
-        return ConstantValue::error();
-    }
-
-    if (cond.asBool()) {
+    if (constantTruthiness(cond, ctx)) {
         return evaluate(ctx, expr->thenBranch);
     } else {
         return evaluate(ctx, expr->elseBranch);
