@@ -24,7 +24,8 @@
 /// ════════════════════════════════════════════════════════════════════════════
 /// IMPORTANT: This file DECLARES runtime functions to LLVM. It does NOT
 ///            IMPLEMENT them. The actual C++ implementations live in:
-///            `src/runtime/closure/ClosureRuntime.cpp`
+///            `src/codegen/runtime/closure/ClosureRuntime.cpp`
+///            `src/codegen/runtime/concurrency/ConcurrencyRuntime.cpp`
 /// ════════════════════════════════════════════════════════════════════════════
 ///
 /// ─── The Two Steps: Declaration vs Implementation ──────────────────────────
@@ -33,132 +34,14 @@
 ///      ┌─────────────────────────────────────────────────────────────────────┐
 ///      │  Purpose: Tell LLVM "there exists a function with this name and     │
 ///      │           signature" so CodeGen can generate call instructions.     │
-///      │                                                                     │
-///      │  Example:                                                           │
-///      │    enum class RuntimeFn { RetainEnv };                              │
-///      │    { RuntimeFn::RetainEnv, { "__lucid_retain_env",                  │
-///      │        [](CodeGenContext& ctx) {                                    │
-///      │            return FunctionType::get(void, {ptr});                   │
-///      │        } } }                                                        │
 ///      └─────────────────────────────────────────────────────────────────────┘
 ///
-///   2. IMPLEMENTATION (src/runtime/closure/ClosureRuntime.cpp)
+///   2. IMPLEMENTATION (src/runtime/closure/ClosureRuntime.cpp and
+///      src/runtime/concurrency/ConcurrencyRuntime.cpp)
 ///      ┌─────────────────────────────────────────────────────────────────────┐
 ///      │  Purpose: The actual C++ code that runs when the function is        │
 ///      │           called at runtime.                                        │
-///      │                                                                     │
-///      │  Example:                                                           │
-///      │    extern "C" {                                                     │
-///      │        void __lucid_retain_env(void* env) {                         │
-///      │            auto* header = (ClosureEnvHeader*)env;                   │
-///      │            header->refcount.fetch_add(1);                           │
-///      │        }                                                            │
-///      │    }                                                                │
 ///      └─────────────────────────────────────────────────────────────────────┘
-///
-/// ─── Why Both Are Needed ──────────────────────────────────────────────────
-///
-///    Without declaration: LLVM doesn't know what type of function to call
-///    Without implementation: Linker can't resolve the symbol
-///
-///    Both must exist for the function to work correctly.
-///
-/// ─── The Full Pipeline ─────────────────────────────────────────────────────
-///
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │  1. ENUMERATE (RuntimeFunctionRegistry.hpp)                             │
-///    │     ┌───────────────────────────────────────────────────────────────┐   │
-///    │     │  enum class RuntimeFn { RetainEnv, ReleaseEnv, ... };         │   │
-///    │     └───────────────────────────────────────────────────────────────┘   │
-///    │     Purpose: Give the function a unique ID in the compiler              │
-///    └─────────────────────────────────────────────────────────────────────────┘
-///                                      │
-///                                      ▼
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │  2. DECLARE SIGNATURE (RuntimeFunctionRegistry.cpp)                     │
-///    │     ┌───────────────────────────────────────────────────────────────┐   │
-///    │     │  { RuntimeFn::RetainEnv, { "__lucid_retain_env",              │   │
-///    │     │      [](CodeGenContext& ctx) {                                │   │
-///    │     │          return FunctionType::get(void, {ptr});               │   │
-///    │     │      } } }                                                    │   │
-///    │     └───────────────────────────────────────────────────────────────┘   │
-///    │     Purpose: Tell LLVM what the function signature is                   │
-///    └─────────────────────────────────────────────────────────────────────────┘
-///                                      │
-///                                      ▼
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │  3. GENERATE CALL (CodeGen/*.cpp)                                       │
-///    │     ┌───────────────────────────────────────────────────────────────┐   │
-///    │     │  llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::RetainEnv); │   │
-///    │     │  ctx.builder.CreateCall(fn, {envPtr});                        │   │
-///    │     └───────────────────────────────────────────────────────────────┘   │
-///    │     Purpose: Emits "call void @__lucid_retain_env(i8* %env)"            │
-///    └─────────────────────────────────────────────────────────────────────────┘
-///                                      │
-///                                      ▼
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │  4. IMPLEMENT (src/runtime/closure/ClosureRuntime.cpp)                  │
-///    │     ┌───────────────────────────────────────────────────────────────┐   │
-///    │     │  extern "C" {                                                 │   │
-///    │     │      void __lucid_retain_env(void* env) {                     │   │
-///    │     │          auto* header = (ClosureEnvHeader*)env;               │   │
-///    │     │          header->refcount.fetch_add(1);                       │   │
-///    │     │      }                                                        │   │
-///    │     │  }                                                            │   │
-///    │     └───────────────────────────────────────────────────────────────┘   │
-///    │     Purpose: The actual code that runs when the function is called      │
-///    └─────────────────────────────────────────────────────────────────────────┘
-///                                      │
-///                                      ▼
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │  5. LINK (Build System)                                                 │
-///    │     ┌───────────────────────────────────────────────────────────────┐   │
-///    │     │  lucid.exe: CodeGen calls __lucid_retain_env                  │   │
-///    │     │           + runtime.a (contains __lucid_retain_env)           │   │
-///    │     │           = The call resolves to the implementation!          │   │
-///    │     └───────────────────────────────────────────────────────────────┘   │
-///    └─────────────────────────────────────────────────────────────────────────┘
-///
-/// ─── Runtime Functions vs Foreign Functions ─────────────────────────────────
-///
-///    ┌────────────────────────────────────────────────────────────────────────┐
-///    │                    COMPARISON TABLE                                    │
-///    ├──────────────────────┬──────────────────────────┬──────────────────────┤
-///    │                      │ RUNTIME FUNCTIONS        │ FOREIGN FUNCTIONS    │
-///    │                      │ (__lucid_*)              │ (@[foreign("C")])    │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ Where declared       │ RuntimeFunctionRegistry  │ User .luc files      │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ Where implemented    │ src/runtime/ (C++)       │ System libraries     │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ How linked           │ Statically into binary   │ Dynamically loaded   │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ User writes them?    │ No (compiler-generated)  │ Yes (@[foreign])     │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ Symbol prefix        │ __lucid_*                │ Any name             │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ Distribution         │ Inside the binary        │ System/game DLLs     │
-///    ├──────────────────────┼──────────────────────────┼──────────────────────┤
-///    │ Example              │ __lucid_retain_env       │ printf, SDL_Init     │
-///    └──────────────────────┴──────────────────────────┴──────────────────────┘
-///
-/// ─── Runtime Function Distribution ──────────────────────────────────────────
-///
-///    ┌─────────────────────────────────────────────────────────────────────────┐
-///    │                    HOW RUNTIME FUNCTIONS ARE DISTRIBUTED                │
-///    ├─────────────────────────────────────────────────────────────────────────┤
-///    │                                                                         │
-///    │  JIT Mode (lucid run):                                                  │
-///    │    Runtime functions are INSIDE lucid.exe                               │
-///    │    JIT-compiled code calls them directly (same process)                 │
-///    │                                                                         │
-///    │  AOT Mode (lucid build):                                                │
-///    │    Runtime functions are linked INTO the final binary                   │
-///    │    User's game.exe contains all runtime functions                       │
-///    │                                                                         │
-///    │  Key point: User NEVER needs to install a separate runtime library.     │
-///    │  Everything is statically linked into the binary.                       │
-///    └─────────────────────────────────────────────────────────────────────────┘
 ///
 /// ─── Usage ──────────────────────────────────────────────────────────────
 /// @code
@@ -225,6 +108,13 @@ enum class RuntimeFn {
 
     // ─── Panics ─────────────────────────────────────────────────────────
     Panic,              // void __lucid_panic(char* message)
+
+    // ─── Concurrency (Async/Spawn) ──────────────────────────────────────
+    Async,              // void* __lucid_async(void* callable, void* args, void* future_handle)
+    Await,              // void __lucid_await(void* future_handle)
+    Spawn,              // void* __lucid_spawn(void* callable, void* args, void* thread_handle)
+    Join,               // void __lucid_join(void* thread_handle)
+    Shutdown,           // void __lucid_shutdown()
 };
 
 /// @brief One registry entry: the linker symbol name, plus a builder that
@@ -232,7 +122,7 @@ enum class RuntimeFn {
 /// building a FunctionType needs a live CodeGenContext for ctx.llvmCtx /
 /// ctx.getStringType() / etc., which isn't available at static-init time).
 ///
-/// ─── IMPORTANT: ──────────────────────────────────────────────────────────────
+/// ─── Important ──────────────────────────────────────────────────────────────
 /// This struct only DECLARES the function to LLVM. The actual implementation
 /// must be provided separately in src/runtime/.
 struct RuntimeFunctionInfo {

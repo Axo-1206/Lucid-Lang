@@ -40,25 +40,18 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
 
         { RuntimeFn::IsClosure, { "__lucid_is_closure",
             [](CodeGenContext& ctx) {
-                // bool __lucid_is_closure(void* value)
-                // Returns true if the value is a closure (has an environment).
                 return llvm::FunctionType::get(
                     getI1Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
 
         { RuntimeFn::RetainEnv, { "__lucid_retain_env",
             [](CodeGenContext& ctx) {
-                // void __lucid_retain_env(void* env)
-                // Increments the reference count of a closure environment.
                 return llvm::FunctionType::get(
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
 
         { RuntimeFn::ReleaseEnv, { "__lucid_release_env",
             [](CodeGenContext& ctx) {
-                // void __lucid_release_env(void* env)
-                // Decrements the reference count of a closure environment.
-                // Frees the environment when the count reaches zero.
                 return llvm::FunctionType::get(
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
@@ -162,6 +155,58 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
             [](CodeGenContext& ctx) {
                 return llvm::FunctionType::get(
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+            } } },
+
+        // ─── Concurrency (Async/Spawn) ──────────────────────────────────────
+        { RuntimeFn::Async, { "__lucid_async",
+            [](CodeGenContext& ctx) {
+                // void* __lucid_async(void* callable, void* args, void* future_handle)
+                // Returns a FutureHandle* (opaque pointer)
+                return llvm::FunctionType::get(
+                    getPtrType(ctx.llvmCtx),
+                    {getPtrType(ctx.llvmCtx), getPtrType(ctx.llvmCtx), getPtrType(ctx.llvmCtx)},
+                    false);
+            } } },
+
+        { RuntimeFn::Await, { "__lucid_await",
+            [](CodeGenContext& ctx) {
+                // void __lucid_await(void* future_handle)
+                // Blocks the current thread until the future is ready.
+                return llvm::FunctionType::get(
+                    getVoidType(ctx.llvmCtx),
+                    {getPtrType(ctx.llvmCtx)},
+                    false);
+            } } },
+
+        { RuntimeFn::Spawn, { "__lucid_spawn",
+            [](CodeGenContext& ctx) {
+                // void* __lucid_spawn(void* callable, void* args, void* thread_handle)
+                // Returns a ThreadHandle* (opaque pointer)
+                return llvm::FunctionType::get(
+                    getPtrType(ctx.llvmCtx),
+                    {getPtrType(ctx.llvmCtx), getPtrType(ctx.llvmCtx), getPtrType(ctx.llvmCtx)},
+                    false);
+            } } },
+
+        { RuntimeFn::Join, { "__lucid_join",
+            [](CodeGenContext& ctx) {
+                // void __lucid_join(void* thread_handle)
+                // Blocks the current thread until the thread completes.
+                return llvm::FunctionType::get(
+                    getVoidType(ctx.llvmCtx),
+                    {getPtrType(ctx.llvmCtx)},
+                    false);
+            } } },
+
+        { RuntimeFn::Shutdown, { "__lucid_shutdown",
+            [](CodeGenContext& ctx) {
+                // void __lucid_shutdown()
+                // Signals all threads to stop, waits for them to finish,
+                // and cleans up all pending futures/threads.
+                return llvm::FunctionType::get(
+                    getVoidType(ctx.llvmCtx),
+                    {},
+                    false);
             } } },
     };
     return table;

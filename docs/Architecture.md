@@ -588,8 +588,9 @@ lucid/
     │   │
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
-    │       ├── CaptureAnalysis.hpp/cpp
+    │       ├── CaptureAnalysis.hpp/cpp     # Analyze capture for closure
     │       ├── MangledName.hpp/cpp         # Mangled name generation
+    │       ├── Truthiness.hpp              # Collection of rules for conditions
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
@@ -615,16 +616,21 @@ lucid/
     │   │   ├── LLVMHelpers.hpp             # Work with llvm types, values
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
+    │   │   ├── Truthiness.hpp              # Collection of rules for conditions
     │   │   └── CodeGenPanic.hpp/cpp        # Panic, null checks
     │   │
     │   ├── runtime/
-    │   │   └── RuntimeFunctionRegistry.hpp/cpp # Single source of truth for every `__lucid_*` runtime library
-    │   │                                         function CodeGen declares and calls
-    │   │
-    │   ├── closure/
-    │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
-    │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
-    │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
+    │   │   ├── RuntimeFunctionRegistry.hpp/cpp # Single source of truth for every `__lucid_*` runtime library
+    │   │   │                                   function CodeGen declares and calls
+    │   │   │
+    │   │   ├── closure/
+    │   │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
+    │   │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
+    │   │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
+    │   │   └── concurrency/
+    │   │       ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
+    │   │       ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
+    │   │       └── ConcurrencyEntry.cpp     # extern "C" entry points
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API
