@@ -279,35 +279,6 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
 // For Statement
 // =============================================================================
 
-void lowerForStmt(ForStmtAST* stmt, CodeGenContext& ctx) {
-    if (!stmt) return;
-
-    // Sema guarantees these are set
-    assert(stmt->iterable && "ForStmt must have an iterable");
-    assert(stmt->indexVar && "ForStmt must have an index variable");
-    assert(stmt->body && "ForStmt must have a body");
-
-    bool isRangeLoop = (stmt->valueVar == nullptr);
-
-    llvm::Function* func = ctx.getCurrentFunction();
-    assert(func && "No current function");
-
-    llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_header", func);
-    llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_body", func);
-    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_continue", func);
-    llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_exit", func);
-
-    ctx.pushLoop(headerBlock, exitBlock, continueBlock);
-
-    if (isRangeLoop) {
-        lowerRangeForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
-    } else {
-        lowerCollectionForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
-    }
-
-    ctx.popLoop();
-}
-
 // ─── Helper: Lower a range-based for loop ────────────────────────────────
 
 static void lowerRangeForLoop(
@@ -533,6 +504,35 @@ static void lowerCollectionForLoop(
     ctx.builder.CreateBr(headerBlock);
 
     ctx.builder.SetInsertPoint(exitBlock);
+}
+
+void lowerForStmt(ForStmtAST* stmt, CodeGenContext& ctx) {
+    if (!stmt) return;
+
+    // Sema guarantees these are set
+    assert(stmt->iterable && "ForStmt must have an iterable");
+    assert(stmt->indexVar && "ForStmt must have an index variable");
+    assert(stmt->body && "ForStmt must have a body");
+
+    bool isRangeLoop = (stmt->valueVar == nullptr);
+
+    llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "No current function");
+
+    llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_header", func);
+    llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_body", func);
+    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_continue", func);
+    llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_exit", func);
+
+    ctx.pushLoop(headerBlock, exitBlock, continueBlock);
+
+    if (isRangeLoop) {
+        lowerRangeForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
+    } else {
+        lowerCollectionForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
+    }
+
+    ctx.popLoop();
 }
 
 // =============================================================================
