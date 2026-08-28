@@ -167,18 +167,26 @@ struct CodeGenContext {
     /// @param fn The runtime function to get or declare.
     /// @return The LLVM function.
     llvm::Function* getRuntimeFn(RuntimeFn fn) {
+        // 1. Look up the function info from the registry
         const RuntimeFunctionInfo& info = getRuntimeFunctionInfo(fn);
-        std::string name(info.name);
+        std::string name(info.name);  // "__lucid_shutdown"
+        
+        // 2. Check if we already declared this function in the module
         llvm::Function* func = getRuntimeFunction(name);
         if (func) return func;
-
+        
+        // 3. Build the LLVM function type from the registry
         llvm::FunctionType* type = info.buildType(*this);
+        
+        // 4. Create an LLVM function declaration in the module
         func = llvm::Function::Create(
             type,
-            llvm::Function::ExternalLinkage,
+            llvm::Function::ExternalLinkage,  // External = defined elsewhere
             name,
             module
         );
+        
+        // 5. Cache it for future use
         setRuntimeFunction(name, func);
         return func;
     }

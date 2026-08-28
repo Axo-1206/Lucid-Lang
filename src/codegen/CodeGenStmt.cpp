@@ -21,6 +21,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/BasicBlock.h>
@@ -653,13 +654,25 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
 
     llvm::Type* returnType = func->getReturnType();
 
+    // ─── Check if this is the main function ──────────────────────────────
+    bool isMain = false;
+    std::string funcName = func->getName().str();
+    if (funcName == "main" || funcName == "__lucid_main") {
+        isMain = true;
+    }
+
     // ─── Emit cleanup for ALL scopes before returning ──────────────────
-    // Clean up from innermost to outermost
     while (!ctx.liveTrackers.empty()) {
         ctx.emitScopeExitCleanup();
         ctx.liveTrackers.pop_back();
     }
-    
+
+    // ─── If this is main, call __lucid_shutdown() before returning ──────
+    if (isMain) {
+        llvm::Function* shutdownFn = ctx.getRuntimeFn(RuntimeFn::Shutdown);
+        ctx.builder.CreateCall(shutdownFn, {});
+    }
+
     if (stmt->value) {
         llvm::Value* returnVal = lowerExpression(stmt->value, ctx);
         if (!returnVal) return;
@@ -767,51 +780,126 @@ void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx) {
 void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    llvm::Function* asyncFunc = ctx.getRuntimeFunction("__lucid_async");
-    if (!asyncFunc) {
-        llvm::FunctionType* asyncType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0),
-             llvm::PointerType::get(ctx.llvmCtx, 0),
-             llvm::PointerType::get(ctx.llvmCtx, 0)},
-            false
-        );
-        asyncFunc = llvm::Function::Create(
-            asyncType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_async",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_async", asyncFunc);
+    assert(ctx.getCurrentFunction() && "Async statement outside of function");
+
+    // ─── Step 1: Get the call expression ────────────────────────────────────
+    if (!stmt->call || !stmt->call->isa<CallExprAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, stmt->loc,
+                                "async statement requires a call expression");
+        return;
     }
 
-    llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-    if (!callResult) return;
+    CallExprAST* call = stmt->call->as<CallExprAST>();
 
-    if (stmt->binding) {
-        llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
-        if (!bindingValue) {
-            llvm::Type* bindingType = getType(ctx, stmt->binding->type);
-            assert(bindingType && "Async binding has no type");
-            bindingValue = createAlloca(
-                ctx.pool.lookup(stmt->binding->name),
-                bindingType,
+    // ─── 2. Get the runtime function ────────────────────────────────────────
+    llvm::Function* asyncFn = ctx.getRuntimeFn(RuntimeFn::Async);
+
+    // ─── 3. Get the callable ──────────────────────────────────────────────────
+    llvm::PointerType* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+
+    llvm::Value* callable = lowerExpression(call->callee, ctx);
+    if (!callable) return;
+
+    if (call->callee->isLValue) {
+        llvm::Type* callableType = getType(ctx, call->callee->resolvedType);
+        if (callableType) {
+            callable = loadIfNeeded(callable, callableType, ctx);
+        }
+    }
+
+    // ─── 4. Build the argument list ────────────────────────────────────────
+    llvm::Value* argsPtr = llvm::ConstantPointerNull::get(i8Ptr);
+
+    if (!call->args.empty()) {
+        llvm::ArrayType* argsArrayType = llvm::ArrayType::get(i8Ptr, call->args.size());
+        llvm::AllocaInst* argsArray = createAlloca("async_args", argsArrayType, ctx);
+
+        for (size_t i = 0; i < call->args.size(); ++i) {
+            ExprAST* arg = call->args[i];
+            llvm::Value* argVal = lowerExpression(arg, ctx);
+            if (!argVal) return;
+
+            if (arg->isLValue) {
+                llvm::Type* elemType = getType(ctx, arg->resolvedType);
+                if (elemType) {
+                    argVal = loadIfNeeded(argVal, elemType, ctx);
+                }
+            }
+
+            llvm::Value* idx = llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(ctx.llvmCtx),
+                i
+            );
+            llvm::Value* elemPtr = ctx.builder.CreateInBoundsGEP(
+                i8Ptr,
+                argsArray,
+                idx,
+                "async_arg_ptr"
+            );
+
+            // Store the argument in an alloca to get a stable pointer
+            llvm::AllocaInst* argAlloca = createAlloca(
+                "async_arg_" + std::to_string(i),
+                argVal->getType(),
                 ctx
             );
-            ctx.storeValue(stmt->binding, bindingValue);
+            ctx.builder.CreateStore(argVal, argAlloca);
+            llvm::Value* castedArg = ctx.builder.CreatePointerCast(
+                argAlloca,
+                i8Ptr,
+                "async_arg_cast"
+            );
+            ctx.builder.CreateStore(castedArg, elemPtr);
         }
 
-        ctx.builder.CreateStore(callResult, bindingValue);
-        stmt->binding->llvmAlloca = llvm::dyn_cast<llvm::AllocaInst>(bindingValue);
+        argsPtr = ctx.builder.CreatePointerCast(argsArray, i8Ptr, "args_cast");
     }
 
-    std::vector<llvm::Value*> args = {
-        callResult,
-        llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0)),
-        llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0))
-    };
+    // ─── 5. Allocate the future handle storage ──────────────────────────────
+    llvm::AllocaInst* futureHandle = createAlloca(
+        ctx.pool.lookup(stmt->binding->name) + "_future",
+        i8Ptr,
+        ctx
+    );
 
-    ctx.builder.CreateCall(asyncFunc, args);
+    // ─── 6. Call __lucid_async ──────────────────────────────────────────────
+    llvm::Value* callablePtr = ctx.builder.CreatePointerCast(
+        callable,
+        i8Ptr,
+        "callable_cast"
+    );
+
+    llvm::Value* result = ctx.builder.CreateCall(
+        asyncFn,
+        {callablePtr, argsPtr, futureHandle},
+        "async_result"
+    );
+
+    // ─── 7. Store the future handle in the binding ──────────────────────────
+    if (stmt->binding) {
+        llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
+        if (bindingValue) {
+            ctx.builder.CreateStore(result, bindingValue);
+        } else {
+            llvm::Type* bindingType = getType(ctx, stmt->binding->type);
+            if (bindingType) {
+                bindingValue = createAlloca(
+                    ctx.pool.lookup(stmt->binding->name),
+                    bindingType,
+                    ctx
+                );
+                ctx.builder.CreateStore(result, bindingValue);
+                ctx.storeValue(stmt->binding, bindingValue);
+                ctx.markAlive(stmt->binding);
+            }
+        }
+    }
+
+    if (stmt->binding) {
+        ctx.markAlive(stmt->binding);
+    }
+
+    Trace::detail("Lowered async statement: ", ctx.pool.lookup(stmt->binding->name));
 }
 
 // ─── Await Statement ──────────────────────────────────────────────────────
@@ -819,23 +907,11 @@ void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
 void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    llvm::Function* awaitFunc = ctx.getRuntimeFunction("__lucid_await");
-    if (!awaitFunc) {
-        llvm::FunctionType* awaitType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0)},
-            false
-        );
-        awaitFunc = llvm::Function::Create(
-            awaitType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_await",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_await", awaitFunc);
-    }
+    // ─── 1. Get the runtime function ────────────────────────────────────────
+    // void __lucid_await(void* future_handle)
+    llvm::Function* awaitFn = ctx.getRuntimeFn(RuntimeFn::Await);
 
-    // ─── Await each target ─────────────────────────────────────────────────
+    // ─── 2. Await each target ──────────────────────────────────────────────
     for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             // Sema should have caught this
@@ -845,26 +921,35 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
         }
 
         IdentifierExprAST* id = target->as<IdentifierExprAST>();
-        
-        // ─── Get the resolved declaration from Sema ──────────────────────
         ValueDeclAST* decl = id->resolvedDecl;
         if (!decl) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, target->loc,
                                     "identifier '", ctx.pool.lookup(id->name), 
                                     "' was not resolved by Sema");
             continue;
         }
 
-        // ─── Look up the LLVM value ──────────────────────────────────────
+        // ─── 3. Look up the binding value ──────────────────────────────────
         llvm::Value* bindingValue = ctx.lookupValue(decl);
         if (!bindingValue) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, target->loc,
                                     "no LLVM value for '", ctx.pool.lookup(id->name), "'");
             continue;
         }
 
-        // Pass the binding to the runtime function
-        ctx.builder.CreateCall(awaitFunc, {bindingValue});
+        // ─── 4. Load the future handle from the binding ────────────────────
+        llvm::Type* handleType = llvm::PointerType::get(ctx.llvmCtx, 0);
+        llvm::Value* futureHandle = ctx.builder.CreateLoad(
+            handleType,
+            bindingValue,
+            "future_handle_load"
+        );
+
+        // ─── 5. Call __lucid_await ──────────────────────────────────────────
+        ctx.builder.CreateCall(awaitFn, {futureHandle});
+
+        // ─── 6. Mark the binding as consumed ────────────────────────────────
+        ctx.markConsumed(decl);
     }
 }
 
@@ -873,61 +958,143 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
 void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    llvm::Function* spawnFunc = ctx.getRuntimeFunction("__lucid_spawn");
-    if (!spawnFunc) {
-        llvm::FunctionType* spawnType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0),
-             llvm::PointerType::get(ctx.llvmCtx, 0)},
-            false
-        );
-        spawnFunc = llvm::Function::Create(
-            spawnType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_spawn",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_spawn", spawnFunc);
-    }
+    assert(ctx.getCurrentFunction() && "Spawn statement outside of function");
 
-    if (!stmt->binding) {
-        llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-        if (!callResult) return;
-
-        std::vector<llvm::Value*> args = {
-            callResult,
-            llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0))
-        };
-
-        ctx.builder.CreateCall(spawnFunc, args);
+    // ─── Step 1: Get the call expression ────────────────────────────────────
+    if (!stmt->call || !stmt->call->isa<CallExprAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, stmt->loc,
+                                "spawn statement requires a call expression");
         return;
     }
 
-    llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-    if (!callResult) return;
+    CallExprAST* call = stmt->call->as<CallExprAST>();
 
-    // ─── Store the result in the binding ──────────────────────────────────
-    llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
-    if (!bindingValue) {
-        llvm::Type* bindingType = getType(ctx, stmt->binding->type);
-        assert(bindingType && "Spawn binding has no type");
-        bindingValue = createAlloca(
-            ctx.pool.lookup(stmt->binding->name),
-            bindingType,
-            ctx
-        );
-        ctx.storeValue(stmt->binding, bindingValue);
+    // ─── 2. Get the runtime function ────────────────────────────────────────
+    llvm::Function* spawnFn = ctx.getRuntimeFn(RuntimeFn::Spawn);
+
+    llvm::PointerType* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+
+    // ─── 3. Get the callable ──────────────────────────────────────────────────
+    llvm::Value* callable = lowerExpression(call->callee, ctx);
+    if (!callable) return;
+
+    if (call->callee->isLValue) {
+        llvm::Type* callableType = getType(ctx, call->callee->resolvedType);
+        if (callableType) {
+            callable = loadIfNeeded(callable, callableType, ctx);
+        }
     }
 
-    ctx.builder.CreateStore(callResult, bindingValue);
-    stmt->binding->llvmAlloca = llvm::dyn_cast<llvm::AllocaInst>(bindingValue);
+    // ─── 4. Build the argument list ────────────────────────────────────────
+    llvm::Value* argsPtr = llvm::ConstantPointerNull::get(i8Ptr);
 
-    std::vector<llvm::Value*> args = {
-        callResult,
-        llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0))
-    };
+    if (!call->args.empty()) {
+        llvm::ArrayType* argsArrayType = llvm::ArrayType::get(i8Ptr, call->args.size());
+        llvm::AllocaInst* argsArray = createAlloca("spawn_args", argsArrayType, ctx);
 
-    ctx.builder.CreateCall(spawnFunc, args);
+        for (size_t i = 0; i < call->args.size(); ++i) {
+            ExprAST* arg = call->args[i];
+            llvm::Value* argVal = lowerExpression(arg, ctx);
+            if (!argVal) return;
+
+            if (arg->isLValue) {
+                llvm::Type* elemType = getType(ctx, arg->resolvedType);
+                if (elemType) {
+                    argVal = loadIfNeeded(argVal, elemType, ctx);
+                }
+            }
+
+            llvm::Value* idx = llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(ctx.llvmCtx),
+                i
+            );
+            llvm::Value* elemPtr = ctx.builder.CreateInBoundsGEP(
+                i8Ptr,
+                argsArray,
+                idx,
+                "spawn_arg_ptr"
+            );
+
+            llvm::AllocaInst* argAlloca = createAlloca(
+                "spawn_arg_" + std::to_string(i),
+                argVal->getType(),
+                ctx
+            );
+            ctx.builder.CreateStore(argVal, argAlloca);
+            llvm::Value* castedArg = ctx.builder.CreatePointerCast(
+                argAlloca,
+                i8Ptr,
+                "spawn_arg_cast"
+            );
+            ctx.builder.CreateStore(castedArg, elemPtr);
+        }
+
+        argsPtr = ctx.builder.CreatePointerCast(argsArray, i8Ptr, "args_cast");
+    }
+
+    // ─── 5. Handle discard pattern (_) ──────────────────────────────────────
+    if (!stmt->binding) {
+        llvm::Value* callablePtr = ctx.builder.CreatePointerCast(
+            callable,
+            i8Ptr,
+            "callable_cast"
+        );
+        llvm::Value* nullHandle = llvm::ConstantPointerNull::get(i8Ptr);
+
+        ctx.builder.CreateCall(
+            spawnFn,
+            {callablePtr, argsPtr, nullHandle},
+            "spawn_discard"
+        );
+
+        Trace::detail("Lowered spawn discard statement");
+        return;
+    }
+
+    // ─── 6. Named binding: fire and join later ─────────────────────────────
+    llvm::AllocaInst* threadHandle = createAlloca(
+        ctx.pool.lookup(stmt->binding->name) + "_thread",
+        i8Ptr,
+        ctx
+    );
+
+    llvm::Value* callablePtr = ctx.builder.CreatePointerCast(
+        callable,
+        i8Ptr,
+        "callable_cast"
+    );
+
+    llvm::Value* result = ctx.builder.CreateCall(
+        spawnFn,
+        {callablePtr, argsPtr, threadHandle},
+        "spawn_result"
+    );
+
+    // ─── 7. Store the thread handle in the binding ──────────────────────────
+    if (stmt->binding) {
+        llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
+        if (bindingValue) {
+            ctx.builder.CreateStore(result, bindingValue);
+        } else {
+            llvm::Type* bindingType = getType(ctx, stmt->binding->type);
+            if (bindingType) {
+                bindingValue = createAlloca(
+                    ctx.pool.lookup(stmt->binding->name),
+                    bindingType,
+                    ctx
+                );
+                ctx.builder.CreateStore(result, bindingValue);
+                ctx.storeValue(stmt->binding, bindingValue);
+                ctx.markAlive(stmt->binding);
+            }
+        }
+    }
+
+    if (stmt->binding) {
+        ctx.markAlive(stmt->binding);
+    }
+
+    Trace::detail("Lowered spawn statement: ", ctx.pool.lookup(stmt->binding->name));
 }
 
 // ─── Join Statement ──────────────────────────────────────────────────────
@@ -935,23 +1102,11 @@ void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
 void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    llvm::Function* joinFunc = ctx.getRuntimeFunction("__lucid_join");
-    if (!joinFunc) {
-        llvm::FunctionType* joinType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0)},
-            false
-        );
-        joinFunc = llvm::Function::Create(
-            joinType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_join",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_join", joinFunc);
-    }
+    // ─── 1. Get the runtime function ────────────────────────────────────────
+    // void __lucid_join(void* thread_handle)
+    llvm::Function* joinFn = ctx.getRuntimeFn(RuntimeFn::Join);
 
-    // ─── Join each target ──────────────────────────────────────────────────
+    // ─── 2. Join each target ──────────────────────────────────────────────
     for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_JoinNonSpawn, target->loc,
@@ -960,25 +1115,35 @@ void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
         }
 
         IdentifierExprAST* id = target->as<IdentifierExprAST>();
-        
-        // ─── Get the resolved declaration from Sema ──────────────────────
         ValueDeclAST* decl = id->resolvedDecl;
         if (!decl) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, target->loc,
                                     "identifier '", ctx.pool.lookup(id->name), 
                                     "' was not resolved by Sema");
             continue;
         }
 
-        // ─── Look up the LLVM value ──────────────────────────────────────
+        // ─── 3. Look up the binding value ──────────────────────────────────
         llvm::Value* bindingValue = ctx.lookupValue(decl);
         if (!bindingValue) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, target->loc,
                                     "no LLVM value for '", ctx.pool.lookup(id->name), "'");
             continue;
         }
 
-        ctx.builder.CreateCall(joinFunc, {bindingValue});
+        // ─── 4. Load the thread handle from the binding ────────────────────
+        llvm::Type* handleType = llvm::PointerType::get(ctx.llvmCtx, 0);
+        llvm::Value* threadHandle = ctx.builder.CreateLoad(
+            handleType,
+            bindingValue,
+            "thread_handle_load"
+        );
+
+        // ─── 5. Call __lucid_join ───────────────────────────────────────────
+        ctx.builder.CreateCall(joinFn, {threadHandle});
+
+        // ─── 6. Mark the binding as consumed ────────────────────────────────
+        ctx.markConsumed(decl);
     }
 }
 
