@@ -1,5 +1,19 @@
 /// @file CaptureAnalysis.cpp
 /// @brief Implementation of closure capture and escape analysis.
+///
+/// # Sema vs CodeGen Responsibilities
+///
+/// ## Sema (This File)
+/// - Detect captures and mark them with `byReference` and `isClosureValue`
+/// - `isClosureValue = true` is conservative for unknown function-typed values
+/// - CodeGen must handle runtime checking for these conservative cases
+///
+/// ## CodeGen
+/// - For `isClosureValue = true` where the actual value might be a plain function,
+///   emit a runtime check to determine the value's shape
+/// - Use a runtime API (e.g., `__lucid_is_closure(value)`) to check
+/// - Store 1 word for plain function, 2 words for closure
+/// - Handle refcounting for closure environments
 
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaResolve.hpp"
@@ -13,56 +27,211 @@
 
 namespace sema {
 
-// ─── Forward declarations for internal helpers ──────────────────────────────
+// ─── isClosureValue Implementation ──────────────────────────────────────────
+
+bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+
+    switch (expr->kind) {
+        case ASTKind::AnonFuncExpr: {
+            auto* anon = expr->as<AnonFuncExprAST>();
+            return anon->hasClosure;
+        }
+
+        case ASTKind::IdentifierExpr: {
+            auto* id = expr->as<IdentifierExprAST>();
+            if (!id->resolvedDecl) return false;
+
+            // ─── Case 1: Function declaration ──────────────────────────────
+            // We know at compile time if this function captures variables.
+            if (id->resolvedDecl->isa<FuncDeclAST>()) {
+                auto* funcDecl = id->resolvedDecl->as<FuncDeclAST>();
+                return funcDecl->hasClosure;
+            }
+
+            // ─── Case 2: Struct field ──────────────────────────────────────
+            // Fields can hold function values. Sema cannot know at compile time
+            // if the field will hold a plain function or a closure when the
+            // struct literal is created. Conservative: return `true` so CodeGen
+            // can emit a runtime check.
+            if (id->resolvedDecl->isa<FieldDeclAST>()) {
+                auto* fieldDecl = id->resolvedDecl->as<FieldDeclAST>();
+                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
+                    // If the field has a default value, check if we can determine
+                    // at compile time whether it's a closure.
+                    if (fieldDecl->defaultVal) {
+                        // Recursively check the default value.
+                        return isClosureValue(fieldDecl->defaultVal, ctx);
+                    }
+                    if (fieldDecl->defaultBody) {
+                        // Function field with block body - we could analyze
+                        // the body, but for simplicity we're conservative.
+                        // CodeGen will handle the runtime check.
+                        return true;
+                    }
+                    // No default value - will be initialized at struct literal site.
+                    // Sema cannot know the actual value. Conservative: `true`.
+                    return true;
+                }
+                // Non-function fields are not closures.
+                return false;
+            }
+
+            // ─── Case 3: Function parameter ───────────────────────────────
+            // Parameters are passed by the caller. Sema cannot know at compile
+            // time if the caller will pass a plain function or a closure.
+            // Conservative: `true` so CodeGen can emit a runtime check.
+            if (id->resolvedDecl->isa<ParamAST>()) {
+                auto* param = id->resolvedDecl->as<ParamAST>();
+                if (param->type && param->type->isa<FuncTypeAST>()) {
+                    return true;  // Conservative: CodeGen must do runtime check
+                }
+                return false;
+            }
+
+            // ─── Case 4: Variable declaration ──────────────────────────────
+            // VarDeclAST cannot hold function values in Lucid.
+            // (No type inference, no function-typed variables.)
+            return false;
+        }
+
+        case ASTKind::ModuleAccessExpr: {
+            auto* mod = expr->as<ModuleAccessExprAST>();
+            if (!mod->resolvedDecl) return false;
+
+            // ─── Module member function declaration ────────────────────────
+            if (mod->resolvedDecl->isa<FuncDeclAST>()) {
+                auto* funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
+                return funcDecl->hasClosure;
+            }
+
+            // ─── Module member field ────────────────────────────────────────
+            // Same conservative logic as FieldDeclAST above.
+            if (mod->resolvedDecl->isa<FieldDeclAST>()) {
+                auto* fieldDecl = mod->resolvedDecl->as<FieldDeclAST>();
+                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
+                    if (fieldDecl->defaultVal) {
+                        return isClosureValue(fieldDecl->defaultVal, ctx);
+                    }
+                    if (fieldDecl->defaultBody) {
+                        return true;  // Conservative: runtime check in CodeGen
+                    }
+                    return true;  // Conservative: runtime check in CodeGen
+                }
+                return false;
+            }
+
+            // ─── Module member variables cannot hold function values ──────
+            return false;
+        }
+
+        case ASTKind::FieldAccessExpr: {
+            auto* field = expr->as<FieldAccessExprAST>();
+
+            // ─── Field access to a struct field ────────────────────────────
+            // Same conservative logic as FieldDeclAST above.
+            if (field->resolvedDecl && field->resolvedDecl->isa<FieldDeclAST>()) {
+                auto* fieldDecl = field->resolvedDecl->as<FieldDeclAST>();
+                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
+                    if (fieldDecl->defaultVal) {
+                        return isClosureValue(fieldDecl->defaultVal, ctx);
+                    }
+                    if (fieldDecl->defaultBody) {
+                        return true;  // Conservative: runtime check in CodeGen
+                    }
+                    return true;  // Conservative: runtime check in CodeGen
+                }
+                return false;
+            }
+
+            // ─── Field access to a function field (resolved to FuncDeclAST) ──
+            if (field->resolvedDecl && field->resolvedDecl->isa<FuncDeclAST>()) {
+                return field->resolvedDecl->as<FuncDeclAST>()->hasClosure;
+            }
+
+            return false;
+        }
+
+        case ASTKind::CallExpr: {
+            // ─── Call expression returning a function value ──────────────
+            // A call expression returns a value. If the return type is a function
+            // type, we don't know at compile time if the callee returns a plain
+            // function or a closure. Conservative: `true` so CodeGen can emit a
+            // runtime check.
+            auto* call = expr->as<CallExprAST>();
+            if (call->resolvedType && call->resolvedType->isa<FuncTypeAST>()) {
+                // Conservative: CodeGen must do runtime check
+                return true;
+            }
+            return false;
+        }
+
+        default:
+            return false;
+    }
+}
+
+// ─── Internal CaptureAnalyzer ──────────────────────────────────────────────
 
 namespace {
 
 /// @brief Internal state for capture analysis.
-/// 
+///
 /// This analyzer walks the AST of a function/closure body and detects
 /// which variables from outer scopes are captured.
+///
+/// # Key Design Decisions
+///
+/// 1. **Two-pass approach**: First we walk the AST to detect mutations
+///    (`mutatedVariables`), then we add captures. This ensures mutation
+///    detection happens before capture decisions are made.
+///
+/// 2. **Conservative `isClosureValue`**: For function-typed parameters and
+///    fields, Sema sets `isClosureValue = true` conservatively. CodeGen
+///    must emit a runtime check to determine the actual value's shape.
+///
+/// 3. **By-reference vs by-value**: Uses mutation analysis to decide.
+///    Read-only captures are by-value (snapshot copy), mutated captures
+///    are by-reference.
 struct CaptureAnalyzer {
     SemaContext& ctx;
-    
+
     /// The closure being analyzed (if analyzing an anonymous function).
     AnonFuncExprAST* closure = nullptr;
-    
+
     /// The function being analyzed (if analyzing a named function).
     FuncDeclAST* function = nullptr;
-    
+
     /// The innermost function node (FuncDeclAST or AnonFuncExprAST).
     BaseAST* innermostFunction = nullptr;
-    
+
     /// Current closure depth (from ContextStack).
     size_t currentClosureDepth = 0;
-    
+
     /// Variables declared in the closure's own parameter list.
     /// These are NOT captures.
     std::unordered_set<InternedString> ownParams;
-    
+
     /// Variables declared *inside* the body currently being walked — via
     /// `let`/`const` or a `for` loop's index/value binders — tracked as a
-    /// stack of block-scoped frames, pushed/popped in step with `BlockStmt`
-    /// entry/exit, mirroring how the first pass's own `SymbolScope` guards
-    /// work. This exists because capture analysis is a *second*, separate
-    /// walk that runs after the body has already been fully resolved and
-    /// every scope the first pass pushed for it has already been popped —
-    /// `ctx.scopes` no longer reflects this body's own internal block
-    /// structure by the time this walk runs. Without this, a name declared
-    /// inside this body that happens to share a name with a genuinely outer
-    /// variable would incorrectly resolve to the outer one via
-    /// `ctx.lookupValue`, since nothing else records that the name was
-    /// ever local. See `isLocallyDeclared`.
+    /// stack of block-scoped frames.
     std::vector<std::unordered_set<InternedString>> localScopes;
-    
+
     /// Variables that have been marked as captures.
     std::vector<CapturedVariable> captures;
-    
+
     /// Variables that have been seen to avoid duplicates.
     std::unordered_set<InternedString> seenCaptures;
-    
+
+    /// Variables that are assigned to inside the closure body.
+    /// Used to decide by-reference vs by-value capture.
+    ///
+    /// @note This set is populated during the first pass (walkExpr) and
+    ///       then used during the second pass (validateAndAddCapture).
+    std::unordered_set<InternedString> mutatedVariables;
+
     // ─── Constructors ──────────────────────────────────────────────────────
-    
+
     /// Constructor for anonymous function analysis.
     CaptureAnalyzer(SemaContext& c, AnonFuncExprAST* e)
         : ctx(c)
@@ -72,7 +241,7 @@ struct CaptureAnalyzer {
         , currentClosureDepth(ctx.getClosureDepth()) {
         localScopes.emplace_back();   // top-level frame for the closure's own body
     }
-    
+
     /// Constructor for named function analysis.
     CaptureAnalyzer(SemaContext& c, FuncDeclAST* f)
         : ctx(c)
@@ -82,122 +251,91 @@ struct CaptureAnalyzer {
         , currentClosureDepth(ctx.getClosureDepth()) {
         localScopes.emplace_back();   // top-level frame for the function's own body
     }
-    
+
     // ─── Capture Detection ──────────────────────────────────────────────────
-    
+
     /// @brief Check if a name is a parameter of this function/closure.
     bool isOwnParam(InternedString name) const {
         return ownParams.find(name) != ownParams.end();
     }
-    
-    /// @brief Push a new local-scope frame — call on entry to any nested
-    /// block belonging to the body currently being walked (BlockStmt, a
-    /// for-loop's own index/value binder scope).
+
+    /// @brief Push a new local-scope frame.
     void pushLocalScope() {
         localScopes.emplace_back();
     }
-    
-    /// @brief Pop the innermost local-scope frame — call on exit from the
-    /// block `pushLocalScope` was entered for.
+
+    /// @brief Pop the innermost local-scope frame.
     void popLocalScope() {
         if (!localScopes.empty()) localScopes.pop_back();
     }
-    
-    /// @brief Register `name` as declared in the innermost currently-open
-    /// local scope. Call this the moment a `let`/`const`/for-loop binder is
-    /// walked, in the same textual order the first pass would have seen it,
-    /// so declare-before-use ordering is preserved: a read of `name` before
-    /// its own declaration is walked will not yet find it here, and falls
-    /// through to `ctx.lookupValue` as a genuine outer reference — same
-    /// as the first pass would have resolved it.
+
+    /// @brief Register `name` as declared in the innermost currently-open local scope.
     void declareLocal(InternedString name) {
         if (!localScopes.empty()) localScopes.back().insert(name);
     }
-    
-    /// @brief Check if `name` was declared anywhere within the body
-    /// currently being walked (any still-open local-scope frame, innermost
-    /// to outermost) — as opposed to a genuinely outer function/closure.
+
+    /// @brief Check if `name` was declared anywhere within the body being walked.
     bool isLocallyDeclared(InternedString name) const {
         for (auto it = localScopes.rbegin(); it != localScopes.rend(); ++it) {
             if (it->find(name) != it->end()) return true;
         }
         return false;
     }
-    
+
     /// @brief Check if a name is from an outer scope (i.e., a capture).
-    /// 
-    /// This is the core capture detection logic:
-    /// 1. If it's a module member → not a capture (global)
-    /// 2. If it's declared inside the body being walked (own params, or any
-    ///    still-tracked local-scope frame) → not a capture (local)
-    /// 3. If it's a generic parameter → not a capture
-    /// 4. If it exists in any outer scope → it's a capture
     bool isCapture(InternedString name) const {
         // Module members are global - not captures
         if (ctx.isModuleMember(name)) {
             return false;
         }
-        
-        // Declared inside this body (own params, or a let/const/for-binder
-        // tracked via localScopes) — not a capture. Deliberately NOT using
-        // ctx.isInCurrentScope here: that checks only the single innermost
-        // frame of ctx.scopes, which by the time this second pass runs no
-        // longer reflects this body's own internal block structure at all
-        // (the first pass already popped it) — see localScopes, above.
+
+        // Declared inside this body (own params, or localScopes) — not a capture
         if (isOwnParam(name) || isLocallyDeclared(name)) {
             return false;
         }
-        
+
         // Generic parameters are not captures
         if (ctx.isGenericParam(name)) {
             return false;
         }
-        
+
         // Check if the name exists in any outer scope
         ValueDeclAST* decl = ctx.lookupValue(name);
         if (!decl) {
             return false;
         }
-        
-        // Reaching here means: not a module member, not declared anywhere
-        // in this body (own params or localScopes), not a generic param,
-        // and found in some still-open outer scope — genuinely a capture.
+
         return true;
     }
-    
+
     ValueDeclAST* getDeclaration(InternedString name) const {
         return ctx.lookupValue(name);
     }
-    
-    bool shouldCaptureByReference(ValueDeclAST* decl, IdentifierExprAST* id) const {
-        if (!decl) return false;
-        // Conservative: capture all variables by reference
-        // TODO: Optimize to capture by value when possible (read-only, small types)
-        return true;
-    }
-    
+
     // ─── Validate + Add Capture ──────────────────────────────────────────────
-    
-    /// @brief Validate capture rules for `decl` and, if they pass, add it to
-    /// this closure's/function's capture list (skipping if already present).
+
+    /// @brief Validate capture rules for `decl` and add it to the capture list.
     ///
-    /// Shared by processIdentifier() (a direct identifier reference in this
-    /// body) and propagateCapture() (a capture pulled up from a nested
-    /// closure that needs it but doesn't get it from its own immediate
-    /// scope - see propagateCapture() below).
+    /// # Conservative `isClosureValue` Handling
     ///
-    /// @param decl The declaration being captured.
-    /// @param diagLoc AST node to anchor a diagnostic on if capture rules
-    ///        are violated - the identifier itself for a direct reference,
-    ///        or the nested closure this capture is being propagated
-    ///        through for a transitive one.
+    /// For `ParamAST` and `FieldDeclAST` where the actual value is unknown
+    /// at compile time, this function sets `isClosureValue = true`. CodeGen
+    /// must emit a runtime check to determine the actual value's shape.
+    ///
+    /// The runtime check should:
+    /// 1. Inspect the function value to determine if it's a closure
+    ///    (e.g., using `__lucid_is_closure(value)`)
+    /// 2. Store the appropriate representation:
+    ///    - Plain function: 1 word (function pointer)
+    ///    - Closure: 2 words (function pointer + environment pointer)
+    ///
+    /// This approach is safe but may result in a small memory overhead
+    /// (2 words allocated instead of 1) for plain functions.
     void validateAndAddCapture(ValueDeclAST* decl, BaseAST* diagLoc) {
         if (!decl) return;
         InternedString name = decl->name;
 
-        // Skip if already seen (direct reference already captured it, or
-        // this exact variable was already propagated from another nested
-        // closure).
+        // Skip if already seen
         if (seenCaptures.find(name) != seenCaptures.end()) {
             return;
         }
@@ -225,57 +363,104 @@ struct CaptureAnalyzer {
             return;
         }
 
+        // ─── Determine if this captured value itself is a closure ──────────
+        bool isClosureVal = false;
+
+        // Case 1: It's an AnonFuncExprAST (closure literal)
+        // We know at compile time if this anonymous function captures variables.
+        if (decl->isa<AnonFuncExprAST>()) {
+            isClosureVal = decl->as<AnonFuncExprAST>()->hasClosure;
+        }
+
+        // Case 2: It's a FuncDeclAST (named function)
+        // We know at compile time if this function captures variables.
+        else if (decl->isa<FuncDeclAST>()) {
+            isClosureVal = decl->as<FuncDeclAST>()->hasClosure;
+        }
+
+        // Case 3: It's a FieldDeclAST (struct field)
+        // Fields can hold function values. Sema cannot know at compile time
+        // if the field will hold a plain function or a closure when the
+        // struct literal is created. Conservative: `true` so CodeGen can
+        // emit a runtime check.
+        else if (decl->isa<FieldDeclAST>()) {
+            auto* fieldDecl = decl->as<FieldDeclAST>();
+            if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
+                // If the field has a default value, check if we can determine
+                // at compile time whether it's a closure.
+                if (fieldDecl->defaultVal) {
+                    isClosureVal = isClosureValue(fieldDecl->defaultVal, ctx);
+                } else if (fieldDecl->defaultBody) {
+                    // Function field with block body - conservative: `true`.
+                    // CodeGen will handle the runtime check.
+                    isClosureVal = true;
+                } else {
+                    // No default value - will be initialized at struct literal site.
+                    // Sema cannot know the actual value. Conservative: `true`.
+                    isClosureVal = true;
+                }
+            }
+            // Non-function fields are not closures.
+        }
+
+        // Case 4: It's a ParamAST (function parameter)
+        // Parameters are passed by the caller. Sema cannot know at compile time
+        // if the caller will pass a plain function or a closure.
+        // Conservative: `true` so CodeGen can emit a runtime check.
+        else if (decl->isa<ParamAST>()) {
+            auto* param = decl->as<ParamAST>();
+            if (param->type && param->type->isa<FuncTypeAST>()) {
+                // Conservative: CodeGen must do runtime check
+                isClosureVal = true;
+            }
+        }
+
+        // Case 5: VarDeclAST - cannot hold function values in Lucid.
+        // Case 6: EnumVariantAST - constants, not functions.
+        // All other declaration types are not function values.
+
+        // ─── Determine capture by reference vs by value ────────────────────
+        // Lucid grammar: read‑only captures may be snapshot‑copied (by‑value).
+        // If the variable is mutated anywhere in the closure body, it must
+        // be captured by reference to reflect those changes.
+        bool mutated = (mutatedVariables.find(name) != mutatedVariables.end());
+        bool byRef = mutated;
+
         // ─── Create the capture entry ──────────────────────────────────────
         CapturedVariable capture;
         capture.decl = decl;
-        capture.byReference = shouldCaptureByReference(decl, nullptr);
+        capture.byReference = byRef;
+        capture.isClosureValue = isClosureVal;
         capture.index = captures.size();
 
         captures.push_back(capture);
         seenCaptures.insert(name);
 
         Trace::info("CaptureAnalysis: captured '", ctx.pool.lookup(name),
-                 "' by ", capture.byReference ? "reference" : "value",
-                 " at depth ", currentClosureDepth);
+                 "' by ", byRef ? "reference" : "value",
+                 " (closure value: ", isClosureVal ? "yes (conservative)" : "no",
+                 ") at depth ", currentClosureDepth);
     }
 
-    /// @brief Pull a capture that a nested (grand)closure needs up into our
-    /// own capture list, if we don't already provide it locally ourselves.
+    // ─── Propagate Capture ────────────────────────────────────────────────────
+
+    /// @brief Pull a capture from a nested closure up into our own capture list.
     ///
-    /// Why this is needed: ctx.values (CodeGen's decl -> llvm::Value* map,
-    /// see CodeGenContext) is flat and unscoped, not a stack. A closure's
-    /// own capture-reload loop (CodeGenClosure.cpp's emitClosureBody) only
-    /// re-stores the entries IT captured. If a variable is referenced only
-    /// inside a nested closure's own nested closure, and the
-    /// immediately-enclosing closure never captures it itself, CodeGen ends
-    /// up reusing whatever stale value - typically an alloca belonging to a
-    /// completely different llvm::Function - is still sitting in ctx.values
-    /// when it later builds the innermost closure's environment while
-    /// emitting ours. That's invalid IR (a value from one function used in
-    /// another).
+    /// Why this is needed: If a variable is referenced only inside a nested
+    /// closure's own nested closure, and the immediately-enclosing closure
+    /// never captures it itself, CodeGen would end up reusing a stale value
+    /// from a different function. Propagating the capture upward closes this gap.
     ///
-    /// Propagating the capture upward one level at a time - this runs once
-    /// per enclosing closure, each time its own walkExpr encounters a
-    /// nested AnonFuncExpr - closes that gap for any nesting depth.
-    ///
-    /// NOTE: assumes `childCapture` comes from an already-fully-analyzed
-    /// nested closure. This holds under the current resolution order:
-    /// nested closures are resolved (and thus capture-analyzed, via
-    /// resolveAnonFuncExpr) inside-out, strictly before the enclosing
-    /// body's own analyzeCaptures() call runs - see the AnonFuncExpr case
-    /// in walkExpr(). If that ordering ever changes, this would need to
-    /// explicitly trigger analysis of `nested` first instead of assuming
-    /// its captures are already populated.
+    /// @param childCapture The capture from the nested closure.
+    /// @param diagLoc AST node to anchor diagnostics on.
     void propagateCapture(const CapturedVariable& childCapture, BaseAST* diagLoc) {
         if (!childCapture.decl) return;
         InternedString name = childCapture.decl->name;
 
-        // Already ours - own param, something declared in our own body
-        // (own params / localScopes) - nothing to propagate.
+        // Already ours - own param or locally declared
         if (isOwnParam(name) || isLocallyDeclared(name)) return;
 
-        // Module members and generic params are never captured/propagated -
-        // they're resolved the same way regardless of nesting depth.
+        // Module members and generic params are never captured/propagated
         if (ctx.isModuleMember(name)) return;
         if (ctx.isGenericParam(name)) return;
 
@@ -283,125 +468,217 @@ struct CaptureAnalyzer {
     }
 
     // ─── Process Identifier ──────────────────────────────────────────────────
-    
+
     void processIdentifier(IdentifierExprAST* id) {
         if (!id) return;
-        
+
         InternedString name = id->name;
-        
+
         // Skip '_' (discard placeholder)
         if (ctx.pool.lookupView(name) == "_") {
             return;
         }
-        
+
         // Skip if it's our own parameter
         if (isOwnParam(name)) {
             return;
         }
-        
+
         // Check if this is a capture from an outer scope
         if (!isCapture(name)) {
             return;
         }
-        
+
         // Skip if already seen
         if (seenCaptures.find(name) != seenCaptures.end()) {
             return;
         }
-        
+
         ValueDeclAST* decl = getDeclaration(name);
         if (!decl) {
             return;
         }
-        
+
         validateAndAddCapture(decl, id);
     }
-    
+
+    // ─── Mutation Detection ──────────────────────────────────────────────────
+
+    /// @brief Detect if an expression mutates a variable.
+    ///
+    /// A variable is considered mutated if it appears on the LHS of:
+    ///   - Plain assignment (x = ...)
+    ///   - Compound assignment (x += ...)
+    ///   - Field assignment (x.field = ...)
+    ///   - Index assignment (x[i] = ...)
+    ///
+    /// @note This is a **first pass** that runs before capture decisions are made.
+    ///       The `mutatedVariables` set is populated first, then used by
+    ///       `validateAndAddCapture` to decide by-reference vs by-value.
+    void detectMutation(ExprAST* expr) {
+        if (!expr) return;
+
+        // Check for assignments
+        if (expr->isa<AssignExprAST>()) {
+            auto* assign = expr->as<AssignExprAST>();
+            if (assign->lhs) {
+                // Check for plain identifier
+                if (assign->lhs->isa<IdentifierExprAST>()) {
+                    auto* id = assign->lhs->as<IdentifierExprAST>();
+                    if (id->resolvedDecl) {
+                        mutatedVariables.insert(id->name);
+                    }
+                }
+                // Check for field access (obj.field = ...)
+                else if (assign->lhs->isa<FieldAccessExprAST>()) {
+                    auto* field = assign->lhs->as<FieldAccessExprAST>();
+                    if (field->object && field->object->isa<IdentifierExprAST>()) {
+                        auto* objId = field->object->as<IdentifierExprAST>();
+                        if (objId->resolvedDecl) {
+                            mutatedVariables.insert(objId->name);
+                        }
+                    }
+                }
+                // Check for index access (arr[i] = ...)
+                else if (assign->lhs->isa<IndexExprAST>()) {
+                    auto* index = assign->lhs->as<IndexExprAST>();
+                    if (index->target && index->target->isa<IdentifierExprAST>()) {
+                        auto* objId = index->target->as<IdentifierExprAST>();
+                        if (objId->resolvedDecl) {
+                            mutatedVariables.insert(objId->name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recurse into sub-expressions based on kind
+        switch (expr->kind) {
+            case ASTKind::BinaryExpr: {
+                auto* bin = expr->as<BinaryExprAST>();
+                detectMutation(bin->left);
+                detectMutation(bin->right);
+                break;
+            }
+            case ASTKind::UnaryExpr: {
+                auto* unary = expr->as<UnaryExprAST>();
+                detectMutation(unary->operand);
+                break;
+            }
+            case ASTKind::CallExpr: {
+                auto* call = expr->as<CallExprAST>();
+                detectMutation(call->callee);
+                for (ExprAST* arg : call->args) {
+                    detectMutation(arg);
+                }
+                break;
+            }
+            case ASTKind::PipelineExpr: {
+                auto* pipeline = expr->as<PipelineExprAST>();
+                detectMutation(pipeline->seed);
+                for (const PipelineStepAST* step : pipeline->steps) {
+                    detectMutation(step->callable);
+                    for (ExprAST* arg : step->packArgs) {
+                        detectMutation(arg);
+                    }
+                }
+                break;
+            }
+            // ... other expression kinds that contain sub-expressions
+            default:
+                break;
+        }
+    }
+
     // ─── AST Walking ──────────────────────────────────────────────────────────
-    
+
     void walkExpr(ExprAST* expr) {
         if (!expr) return;
-        
+
+        // First, detect any mutations in this expression
+        detectMutation(expr);
+
         switch (expr->kind) {
             case ASTKind::IdentifierExpr:
                 processIdentifier(expr->as<IdentifierExprAST>());
                 break;
-                
+
             case ASTKind::BinaryExpr: {
                 BinaryExprAST* bin = expr->as<BinaryExprAST>();
                 walkExpr(bin->left);
                 walkExpr(bin->right);
                 break;
             }
-            
+
             case ASTKind::UnaryExpr: {
-                const UnaryExprAST* unary = expr->as<UnaryExprAST>();
+                UnaryExprAST* unary = expr->as<UnaryExprAST>();
                 walkExpr(unary->operand);
                 break;
             }
-            
+
             case ASTKind::CallExpr: {
-                const CallExprAST* call = expr->as<CallExprAST>();
+                CallExprAST* call = expr->as<CallExprAST>();
                 walkExpr(call->callee);
                 for (ExprAST* arg : call->args) {
                     walkExpr(arg);
                 }
                 break;
             }
-            
+
             case ASTKind::FieldAccessExpr: {
-                const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+                FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
                 walkExpr(field->object);
                 break;
             }
-            
+
             case ASTKind::IndexExpr: {
-                const IndexExprAST* index = expr->as<IndexExprAST>();
+                IndexExprAST* index = expr->as<IndexExprAST>();
                 walkExpr(index->target);
                 walkExpr(index->index);
                 break;
             }
-            
+
             case ASTKind::SliceExpr: {
-                const SliceExprAST* slice = expr->as<SliceExprAST>();
+                SliceExprAST* slice = expr->as<SliceExprAST>();
                 walkExpr(slice->target);
                 if (slice->start) walkExpr(slice->start);
                 if (slice->end) walkExpr(slice->end);
                 break;
             }
-            
+
             case ASTKind::ArrayLiteralExpr: {
-                const ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
+                ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
                 for (ExprAST* elem : arr->elements) {
                     walkExpr(elem);
                 }
                 break;
             }
-            
+
             case ASTKind::StructLiteralExpr: {
-                const StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
+                StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
                 for (FieldInitAST* init : st->inits) {
                     walkExpr(init->value);
                 }
                 break;
             }
-            
+
             case ASTKind::NullCoalesceExpr: {
-                const NullCoalesceExprAST* nc = expr->as<NullCoalesceExprAST>();
+                NullCoalesceExprAST* nc = expr->as<NullCoalesceExprAST>();
                 walkExpr(nc->value);
                 walkExpr(nc->fallback);
                 break;
             }
-            
+
             case ASTKind::AssignExpr: {
-                const AssignExprAST* assign = expr->as<AssignExprAST>();
+                AssignExprAST* assign = expr->as<AssignExprAST>();
+                // detectMutation already handled this
                 walkExpr(assign->lhs);
                 walkExpr(assign->rhs);
                 break;
             }
-            
+
             case ASTKind::PipelineExpr: {
-                const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
+                PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
                 walkExpr(pipeline->seed);
                 for (const PipelineStepAST* step : pipeline->steps) {
                     walkExpr(step->callable);
@@ -411,9 +688,9 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::ComposeExpr: {
-                const ComposeExprAST* compose = expr->as<ComposeExprAST>();
+                ComposeExprAST* compose = expr->as<ComposeExprAST>();
                 if (compose->left) {
                     walkExpr(compose->left);
                 }
@@ -424,23 +701,9 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::AnonFuncExpr: {
-                // Nested closure: we don't re-walk its body here - its own
-                // captures were already computed independently, by its own
-                // analyzeCaptures() call triggered when IT was resolved.
-                // Resolution is inside-out, so by the time OUR walk reaches
-                // this node, the nested closure has already been fully
-                // resolved AND capture-analyzed (see propagateCapture()'s
-                // doc comment for the ordering this relies on).
-                //
-                // What we DO need to do: propagate up anything the nested
-                // closure captured that we don't already provide it
-                // locally ourselves. Without this, a variable used only by
-                // a nested closure's OWN nested closure would never make
-                // it into this (intermediate) closure's capture list -
-                // see "transitive capture propagation" in
-                // CaptureAnalysis.hpp / propagateCapture() below.
+                // Nested closure: propagate its captures upward
                 AnonFuncExprAST* nested = expr->as<AnonFuncExprAST>();
                 if (nested) {
                     for (const CapturedVariable& childCapture : nested->captures) {
@@ -449,55 +712,45 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
-            case ASTKind::FuncRefStmt:
-                // Function references are not captures - they're just names
-                break;
-            
+
             case ASTKind::IfExpr: {
-                const IfExprAST* ifExpr = expr->as<IfExprAST>();
+                IfExprAST* ifExpr = expr->as<IfExprAST>();
                 walkExpr(ifExpr->condition);
                 walkExpr(ifExpr->thenBranch);
                 walkExpr(ifExpr->elseBranch);
                 break;
             }
-            
+
             case ASTKind::RangeExpr: {
                 RangeExprAST* range = expr->as<RangeExprAST>();
                 walkExpr(range->lo);
                 walkExpr(range->hi);
                 break;
             }
-            
+
             case ASTKind::ModuleAccessExpr:
                 // Module members are global - not captures
                 break;
-                
+
             case ASTKind::LiteralExpr:
                 break;
 
             case ASTKind::IntrinsicCallExpr: {
-                // Intrinsics take real value arguments (e.g. #atomic_store(ptr, val),
-                // #memcpy(dst, src, len)) that can reference outer variables just
-                // like a normal call's arguments do - unlike a literal, this is
-                // NOT a leaf node. Previously grouped with LiteralExpr as a no-op,
-                // which meant a variable referenced only inside an intrinsic call
-                // was never detected as a capture.
-                const IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
+                IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
                 for (ExprAST* arg : intrinsic->args) {
                     walkExpr(arg);
                 }
                 break;
             }
-                
+
             default:
                 break;
         }
     }
-    
+
     void walkStmt(StmtAST* stmt) {
         if (!stmt) return;
-        
+
         switch (stmt->kind) {
             case ASTKind::BlockStmt: {
                 BlockStmtAST* block = stmt->as<BlockStmtAST>();
@@ -508,32 +761,26 @@ struct CaptureAnalyzer {
                 popLocalScope();
                 break;
             }
-            
+
             case ASTKind::ExprStmt: {
                 ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
                 walkExpr(exprStmt->expr);
                 break;
             }
-            
+
             case ASTKind::DeclStmt: {
                 DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
-                // Declarations inside the closure body don't create captures
-                // But their initializers might reference outer variables
                 if (declStmt->decl && declStmt->decl->isa<VarDeclAST>()) {
                     VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
                     if (var->init) {
                         walkExpr(var->init);
                     }
-                    // Register AFTER walking the initializer, so a use of
-                    // the same name inside the initializer itself (e.g.
-                    // shadowing an outer `x` with `let x = x + 1;`) still
-                    // correctly resolves the right-hand `x` to the outer
-                    // one, matching declare-before-use ordering.
+                    // Register AFTER walking the initializer
                     declareLocal(var->name);
                 }
                 break;
             }
-            
+
             case ASTKind::IfStmt: {
                 IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
                 walkExpr(ifStmt->condition);
@@ -543,7 +790,7 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::SwitchStmt: {
                 SwitchStmtAST* switchStmt = stmt->as<SwitchStmtAST>();
                 walkExpr(switchStmt->subject);
@@ -560,17 +807,13 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::ForStmt: {
                 ForStmtAST* forStmt = stmt->as<ForStmtAST>();
                 walkExpr(forStmt->iterable);
                 if (forStmt->step) {
                     walkExpr(forStmt->step);
                 }
-                // The index/value binders are scoped to the loop body, not
-                // to the loop statement's own enclosing block — push a
-                // frame that encloses body's own BlockStmt frame so they're
-                // visible inside it without leaking past the loop.
                 pushLocalScope();
                 if (forStmt->indexVar) declareLocal(forStmt->indexVar->name);
                 if (forStmt->valueVar) declareLocal(forStmt->valueVar->name);
@@ -580,7 +823,7 @@ struct CaptureAnalyzer {
                 popLocalScope();
                 break;
             }
-            
+
             case ASTKind::WhileStmt: {
                 WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
                 walkExpr(whileStmt->condition);
@@ -589,7 +832,7 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::DoWhileStmt: {
                 DoWhileStmtAST* doWhileStmt = stmt->as<DoWhileStmtAST>();
                 if (doWhileStmt->body) {
@@ -598,7 +841,7 @@ struct CaptureAnalyzer {
                 walkExpr(doWhileStmt->condition);
                 break;
             }
-            
+
             case ASTKind::ReturnStmt: {
                 ReturnStmtAST* returnStmt = stmt->as<ReturnStmtAST>();
                 if (returnStmt->value) {
@@ -606,35 +849,29 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::AsyncStmt: {
                 AsyncStmtAST* asyncStmt = stmt->as<AsyncStmtAST>();
                 if (asyncStmt->call) {
                     walkExpr(asyncStmt->call);
                 }
-                // Same reasoning as DeclStmt, above: 'binding' is a fresh
-                // local this statement introduces, registered after
-                // walking 'call' (declare-before-use — 'result' isn't in
-                // scope while evaluating its own initializing call).
                 if (asyncStmt->binding) {
                     declareLocal(asyncStmt->binding->name);
                 }
                 break;
             }
-            
+
             case ASTKind::SpawnStmt: {
                 SpawnStmtAST* spawnStmt = stmt->as<SpawnStmtAST>();
                 if (spawnStmt->call) {
                     walkExpr(spawnStmt->call);
                 }
-                // 'binding' is nullptr for the '_' discard pattern — nothing
-                // to register in that case.
                 if (spawnStmt->binding) {
                     declareLocal(spawnStmt->binding->name);
                 }
                 break;
             }
-            
+
             case ASTKind::AwaitStmt: {
                 AwaitStmtAST* awaitStmt = stmt->as<AwaitStmtAST>();
                 for (ExprAST* target : awaitStmt->targets) {
@@ -642,7 +879,7 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             case ASTKind::JoinStmt: {
                 JoinStmtAST* joinStmt = stmt->as<JoinStmtAST>();
                 for (ExprAST* target : joinStmt->targets) {
@@ -650,37 +887,37 @@ struct CaptureAnalyzer {
                 }
                 break;
             }
-            
+
             default:
                 break;
         }
     }
-    
+
     // ─── Store Captures ──────────────────────────────────────────────────────
-    
+
     /// @brief Store the captured variables on the appropriate AST node.
     void storeCaptures() {
         if (captures.empty()) {
             return;
         }
-        
+
         // Build the ArenaSpan
         auto builder = ctx.arena.makeBuilder<CapturedVariable>();
         for (const auto& capture : captures) {
             builder.push_back(capture);
         }
         ArenaSpan<CapturedVariable> captureSpan = builder.build();
-        
+
         // Store on the appropriate node
         if (closure) {
             closure->captures = captureSpan;
             closure->hasClosure = true;
-            Trace::detail("analyzeCaptures: anonymous closure captures ", 
+            Trace::detail("analyzeCaptures: anonymous closure captures ",
                      captures.size(), " variables");
         } else if (function) {
             function->captures = captureSpan;
             function->hasClosure = true;
-            Trace::detail("analyzeCaptures: function '", 
+            Trace::detail("analyzeCaptures: function '",
                      ctx.pool.lookup(function->name),
                      "' captures ", captures.size(), " variables");
         }
@@ -695,16 +932,13 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     if (!expr || !expr->body) {
         return;
     }
-    
-    Trace::detail("analyzeCaptures: analyzing anonymous closure at depth ", 
+
+    Trace::detail("analyzeCaptures: analyzing anonymous closure at depth ",
              ctx.getClosureDepth());
-    
+
     CaptureAnalyzer analyzer(ctx, expr);
-    
+
     // ─── Step 1: Collect the closure's own parameters ──────────────────────
-    // The parser has already desugared adjacent function groups into nested
-    // function nodes, so this walks the final parameter-group chain without
-    // needing any additional handling for adjacent groups here.
     if (expr->funcType) {
         for (FuncTypeAST* group = expr->funcType; group; group = group->getNext()) {
             for (ParamAST* param : group->params) {
@@ -712,13 +946,13 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
             }
         }
     }
-    
+
     // ─── Step 2: Walk the body to find captures ─────────────────────────────
     analyzer.walkStmt(expr->body);
-    
+
     // ─── Step 3: Store the captures on the AST node ─────────────────────────
     analyzer.storeCaptures();
-    
+
     if (!expr->hasClosure) {
         Trace::detail("analyzeCaptures: no captures detected for anonymous closure");
     }
@@ -730,36 +964,35 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
     if (!func || !func->body) {
         return;
     }
-    
+
     // ─── Only nested functions can capture variables ──────────────────────
-    // We use the context stack directly - no stored closureDepth needed.
     size_t currentDepth = ctx.getClosureDepth();
     if (currentDepth == 0) {
         // Top-level function - cannot capture anything
-        Trace::detail("analyzeCaptures: top-level function '", 
-                 ctx.pool.lookup(func->name), 
+        Trace::detail("analyzeCaptures: top-level function '",
+                 ctx.pool.lookup(func->name),
                  "' cannot capture variables");
         return;
     }
-    
-    Trace::detail("analyzeCaptures: analyzing nested function '", 
+
+    Trace::detail("analyzeCaptures: analyzing nested function '",
              ctx.pool.lookup(func->name),
              "' at depth ", currentDepth);
-    
+
     CaptureAnalyzer analyzer(ctx, func);
-    
+
     // ─── Step 1: Collect the function's own parameters ──────────────────────
-    if (func->type) {
+    if (func->funcType) {
         for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
             for (ParamAST* param : group->params) {
                 analyzer.ownParams.insert(param->name);
             }
         }
     }
-    
+
     // ─── Step 2: Walk the body to find captures ─────────────────────────────
     analyzer.walkStmt(func->body);
-    
+
     // ─── Step 3: Store the captures on the AST node ─────────────────────────
     if (!analyzer.captures.empty()) {
         auto builder = ctx.arena.makeBuilder<CapturedVariable>();
@@ -768,12 +1001,12 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
         }
         func->captures = builder.build();
         func->hasClosure = true;
-        
+
         Trace::detail("analyzeCaptures: function '", ctx.pool.lookup(func->name),
                  "' captures ", func->captures.size(), " variables");
     } else {
         func->hasClosure = false;
-        Trace::detail("analyzeCaptures: no captures detected for function '", 
+        Trace::detail("analyzeCaptures: no captures detected for function '",
                  ctx.pool.lookup(func->name), "'");
     }
 }
@@ -784,8 +1017,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
     if (!expr) return;
 
     switch (expr->kind) {
-        // ─── Case 1: Direct anonymous function ────────────────────────────
-        // `return (n int) -> int { ... };`
         case ASTKind::AnonFuncExpr: {
             AnonFuncExprAST* closure = expr->as<AnonFuncExprAST>();
             closure->isReturned = true;
@@ -793,33 +1024,20 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 2: Identifier expression ─────────────────────────────────
-        // `return myFunc;` where myFunc is a function declaration
         case ASTKind::IdentifierExpr: {
             IdentifierExprAST* id = expr->as<IdentifierExprAST>();
             ValueDeclAST* decl = ctx.lookupValue(id->name);
-            
+
             if (!decl) return;
-            
-            // ─── 2a. Module member (static) ──────────────────────────────
-            // Module members live for the entire program - no heap allocation needed.
+
             if (ctx.isModuleMember(id->name)) {
                 Trace::detail("markClosureIfEscaping: '", ctx.pool.lookup(id->name),
                          "' is a module member (static) - not marking as escaping");
                 return;
             }
-            
-            // ─── 2b. Function declaration (nested function) ────────────────
+
             if (decl->isa<FuncDeclAST>()) {
                 FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-                
-                // ─── Check if this is a nested function ──────────────────────
-                // We need to know if the function is nested. We can check by
-                // looking at the current context depth when the function was
-                // declared, but we don't store that.
-                // 
-                // Instead, we can check if the function is a module member.
-                // If it's NOT a module member, it's a nested function.
                 if (!ctx.isModuleMember(funcDecl->name)) {
                     funcDecl->isReturned = true;
                     Trace::detail("markClosureIfEscaping: nested function '",
@@ -831,41 +1049,35 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 3: Module access ─────────────────────────────────────────
-        // `return module:myFunc;` - static member, no escaping needed.
         case ASTKind::ModuleAccessExpr: {
-            const ModuleAccessExprAST* access = expr->as<ModuleAccessExprAST>();
             Trace::detail("markClosureIfEscaping: module member '",
-                     ctx.pool.lookup(access->moduleName), ":",
-                     ctx.pool.lookup(access->memberName),
+                     ctx.pool.lookup(expr->as<ModuleAccessExprAST>()->moduleName), ":",
+                     ctx.pool.lookup(expr->as<ModuleAccessExprAST>()->memberName),
                      "' is static - not marking as escaping");
             return;
         }
 
-        // ─── Case 4: Field access ──────────────────────────────────────────
-        // `return obj.funcField;` - depends on whether `obj` is local or static.
         case ASTKind::FieldAccessExpr: {
             const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-            
+
             if (field->object && field->object->isa<IdentifierExprAST>()) {
                 IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
-                
+
                 if (ctx.isModuleMember(id->name)) {
                     Trace::detail("markClosureIfEscaping: static struct field '",
-                             ctx.pool.lookup(id->name), ".", 
+                             ctx.pool.lookup(id->name), ".",
                              ctx.pool.lookup(field->fieldName),
                              "' is static - not marking as escaping");
                     return;
                 }
             }
-            
+
             Trace::detail("markClosureIfEscaping: field access '",
                      ctx.pool.lookup(field->fieldName),
                      "' may be a closure - conservative mark");
             return;
         }
 
-        // ─── Case 5: Call expression returning a function ───────────────────
         case ASTKind::CallExpr: {
             const CallExprAST* call = expr->as<CallExprAST>();
             FuncDeclAST* funcDecl = resolveCalleeOrError(call->callee, ctx);
@@ -877,7 +1089,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 6: Binary expression ─────────────────────────────────────
         case ASTKind::BinaryExpr: {
             BinaryExprAST* bin = expr->as<BinaryExprAST>();
             markClosureIfEscaping(bin->left, ctx);
@@ -885,7 +1096,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 7: If expression ─────────────────────────────────────────
         case ASTKind::IfExpr: {
             const IfExprAST* ifExpr = expr->as<IfExprAST>();
             markClosureIfEscaping(ifExpr->thenBranch, ctx);
@@ -893,7 +1103,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 8: Array literal containing functions ─────────────────────
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
             for (ExprAST* elem : arr->elements) {
@@ -902,7 +1111,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 9: Struct literal containing functions ────────────────────
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
             for (FieldInitAST* init : st->inits) {
@@ -911,7 +1119,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 10: Pipeline expression ──────────────────────────────────
         case ASTKind::PipelineExpr: {
             const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
             markClosureIfEscaping(pipeline->seed, ctx);
@@ -921,7 +1128,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 11: Compose expression ───────────────────────────────────
         case ASTKind::ComposeExpr: {
             const ComposeExprAST* compose = expr->as<ComposeExprAST>();
             if (compose->left) {
@@ -934,18 +1140,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             }
             return;
         }
-
-        // ─── Cases that cannot be closures ──────────────────────────────────
-        case ASTKind::LiteralExpr:
-        case ASTKind::PrimitiveType:
-        case ASTKind::NamedType:
-        case ASTKind::ArrayType:
-        case ASTKind::NullableType:
-        case ASTKind::FallibleType:
-        case ASTKind::CombinedType:
-        case ASTKind::RefType:
-        case ASTKind::PtrType:
-            return;
 
         default:
             return;

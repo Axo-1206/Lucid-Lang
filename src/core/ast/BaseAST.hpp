@@ -447,6 +447,12 @@ struct CapturedVariable {
     ValueDeclAST* decl = nullptr;
     bool byReference = false;
     size_t index = 0;
+
+    // | Field                                           | Purpose                                                                 |
+    // | ----------------------------------------------- | ----------------------------------------------------------------------- |
+    // | `hasClosure` on `FuncDeclAST`/`AnonFuncExprAST` | "This function is a closure (it has captures)"                          |
+    // | `isClosureValue` on `CapturedVariable`          | "The value we're capturing is a closure (it needs environment storage)" |
+    bool isClosureValue = false;
     
     // ─── CodeGen Annotations ──────────────────────────────────────────
     llvm::Value* envSlot = nullptr;   // LLVM slot in the environment

@@ -6,47 +6,30 @@
 /// and identifies all IdentifierExprAST nodes that reference variables from outer
 /// scopes, marking them as captures.
 ///
-/// Escape analysis detects when a closure is returned from a function or stored
-/// in a way that outlives the function call, which affects allocation strategy.
+/// ## Key Responsibilities
 ///
-/// The parser desugars adjacent function groups, such as `(a int)(b int)`, into
-/// nested `AnonFuncExprAST` nodes before capture analysis runs. Capture analysis
-/// therefore operates on the final nested AST and does not need special handling
-/// for adjacent function groups.
+/// 1. **Capture Detection**: Find all variables from outer scopes used inside a closure
+/// 2. **Closure Detection**: Determine if a captured value is itself a closure
+/// 3. **Mutation Analysis**: Detect if a captured variable is assigned to (by-reference vs by-value)
+/// 4. **Escape Analysis**: Detect when a closure is returned (heap allocation needed)
 ///
-/// ## How Capture Analysis Works
+/// ## Capture Rules (from Grammar.md)
 ///
-/// 1. Walk the AST of the function/closure body
-/// 2. Find all IdentifierExprAST nodes
-/// 3. For each identifier, determine if it references a variable from an outer scope
-///    - Uses `isCapture()` which checks:
-///      - Module members → NOT captures (global)
-///      - Current scope → NOT captures (local)
-///      - Generic parameters → NOT captures
-///      - Exists in outer scope → CAPTURE
-/// 4. Validate capture rules:
-///    - Borrowed types (&T, [_]T) cannot be captured
-///    - Linear types (Future<T>, Thread<T>) cannot be captured
-/// 5. Store captures on the function/closure node
+/// | Type             | Can Capture?  | Why                                     |
+/// | ---------------- | ------------  | --------------------------------------- |
+/// | `&T` (reference) | ❌ No         | Downward Flow Rule - cannot flow upward |
+/// | `[_]T` (slice)   | ❌ No         | Same as reference - borrowed view       |
+/// | `Future<T>`      | ❌ No         | Linear type - can only be consumed once |
+/// | `Thread<T>`      | ❌ No         | Linear type - can only be consumed once |
+/// | Plain function   | ✅ Yes        | Function pointer, no environment        |
+/// | Closure          | ✅ Yes        | Shared/refcounted - can be captured     |
+/// | Owned values     | ✅ Yes        | Full copy (or by-reference if mutated)  |
+/// | `*T` (raw ptr)   | ✅ Yes        | Sealed conduit - no lifetime guarantee  |
 ///
-/// ## Transitive Capture Propagation
+/// ## By-Reference vs By-Value
 ///
-/// A nested closure's body is NOT walked directly by its enclosing
-/// closure's analysis - the nested closure has already been independently
-/// analyzed by the time the enclosing walk reaches it (resolution runs
-/// inside-out, so nested closures are resolved, and thus capture-analyzed,
-/// strictly before the body containing them finishes resolving).
-///
-/// Instead, the enclosing walk reads what the nested closure already
-/// collected and PROPAGATES upward anything that isn't satisfied by the
-/// enclosing closure's own immediate scope (its own params or locals).
-/// This matters because CodeGen's decl -> llvm::Value* map is flat and
-/// unscoped, not a stack: if an intermediate closure never captures (and
-/// thus never re-stores) a variable that only its own nested closure
-/// needs, CodeGen ends up reusing a stale value belonging to a different
-/// LLVM function when it later builds the innermost closure's
-/// environment. Propagation closes that gap for any nesting depth - see
-/// `CaptureAnalyzer::propagateCapture()` in CaptureAnalysis.cpp.
+/// - **By-Reference**: Captured variable is mutated inside the closure body
+/// - **By-Value**: Captured variable is only read (snapshot copy)
 ///
 /// @related_files
 ///   - src/sema/rules/SemaExpr.cpp - resolveAnonFuncExpr calls analyzeCaptures
@@ -110,5 +93,15 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx);
 ///   const counter () -> int = { return count += 1 };
 ///   return counter;
 void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx);
+
+/// @brief Helper to determine if a value is a closure (has an environment).
+///
+/// Traverses the expression to find the underlying function declaration
+/// and checks its hasClosure flag.
+///
+/// @param expr The expression representing a function value.
+/// @param ctx The semantic context.
+/// @return True if the value is a closure (has captured variables).
+bool isClosureValue(ExprAST* expr, SemaContext& ctx);
 
 } // namespace sema
