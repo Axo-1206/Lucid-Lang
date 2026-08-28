@@ -605,11 +605,13 @@ lucid/
     │   │   └── CodeGenContext.hpp # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── generic/
-    │   │   ├── CodeGenGeneric.hpp/cpp   # Detection + Substitution + Instantiation
-    │   │   └── GenericMangledName.hpp/cpp  # Generic mangled name generation
+    │   │   ├── CodeGenGeneric.hpp/cpp      # Detection + Substitution + Instantiation
+    │   │   ├── GenericMangledName.hpp/cpp  # Generic mangled name generation
+    │   │   └── GenericRegistry.hpp         # generic instantiation cache
     │   │
     │   ├── support/
     │   │   ├── RuntimeError.hpp            # Define all runtime errors
+    │   │   ├── LiveVariableTracker.hpp     # live variable tracking
     │   │   ├── LLVMHelpers.hpp             # Work with llvm types, values
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
@@ -620,8 +622,9 @@ lucid/
     │   │                                         function CodeGen declares and calls
     │   │
     │   ├── closure/
-    │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations
-    │   │   └── CodeGenClosure.hpp/cpp # Closure implementation
+    │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
+    │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
+    │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API

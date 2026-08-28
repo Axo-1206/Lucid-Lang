@@ -2333,8 +2333,6 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* upstreamType, SemaC
     
     // ─── 4a: Add the upstream value ──────────────────────────────────────
     // Upstream can be a single value or multiple values packed together.
-    // For now, we treat it as a single value.
-    // TODO: Support multiple return values (tuple unpacking).
     if (upstreamType && !upstreamType->isa<UnknownTypeAST>()) {
         argTypes.push_back(upstreamType);
     }

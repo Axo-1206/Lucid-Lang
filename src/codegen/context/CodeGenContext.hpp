@@ -8,6 +8,9 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../runtime/RuntimeFunctionRegistry.hpp"
+#include "../generic/GenericRegistry.hpp"
+#include "../support/LiveVariableTracker.hpp"
+
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
@@ -17,60 +20,13 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/Instructions.h>
+
 #include <unordered_map>
 #include <vector>
 #include <string>
 
 namespace codegen {
-
-// ─── Forward declarations ──────────────────────────────────────────────────
-
-/// @brief A key for identifying a generic instantiation.
-struct GenericInstantiationKey {
-    DeclAST* decl;                    // The generic declaration
-    std::vector<TypeAST*> typeArgs;   // Concrete type arguments
-    
-    bool operator==(const GenericInstantiationKey& other) const {
-        if (decl != other.decl) return false;
-        if (typeArgs.size() != other.typeArgs.size()) return false;
-        for (size_t i = 0; i < typeArgs.size(); ++i) {
-            if (typeArgs[i] != other.typeArgs[i]) return false;
-        }
-        return true;
-    }
-};
-
-/// @brief Hash for GenericInstantiationKey.
-struct GenericInstantiationKeyHash {
-    size_t operator()(const GenericInstantiationKey& key) const {
-        size_t h1 = std::hash<DeclAST*>{}(key.decl);
-        size_t h2 = 0;
-        for (TypeAST* t : key.typeArgs) {
-            h2 ^= std::hash<TypeAST*>{}(t) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
-        }
-        return h1 ^ (h2 << 1);
-    }
-};
-
-/// @brief Registry of all generic instantiations in a module.
-/// 
-/// This is a CACHE, not a global registry. It tracks which specialized
-/// versions we've already generated so we don't generate them twice.
-struct GenericRegistry {
-    // ─── Function Instantiations ──────────────────────────────────────────
-    // Generic function → (type args → specialized function)
-    std::unordered_map<
-        FuncDeclAST*,
-        std::unordered_map<GenericInstantiationKey, llvm::Function*, GenericInstantiationKeyHash>
-    > functionInstantiations;
-    
-    // ─── Struct Instantiations ─────────────────────────────────────────────
-    // Generic struct → (type args → specialized struct type)
-    std::unordered_map<
-        StructDeclAST*,
-        std::unordered_map<GenericInstantiationKey, llvm::Type*, GenericInstantiationKeyHash>
-    > structInstantiations;
-};
 
 /// @brief Code generation context - LLVM state only.
 struct CodeGenContext {
@@ -98,6 +54,9 @@ struct CodeGenContext {
     
     // ─── Function Mapping: AST → LLVM Function ─────────────────────────
     std::unordered_map<FuncDeclAST*, llvm::Function*> functions;
+
+    // ─── Live Variable Tracking ──────────────────────────────────────────
+    std::vector<LiveVariableTracker> liveTrackers;
     
     // ─── Runtime Function Mapping ──────────────────────────────────────
     std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
@@ -253,6 +212,169 @@ struct CodeGenContext {
     
     bool insideLoop() const {
         return !loops.empty();
+    }
+
+    // ─── Live Variable Helpers ──────────────────────────────────────────
+    
+    void pushLiveScope() {
+        liveTrackers.emplace_back();
+    }
+
+    void popLiveScope() {
+        if (!liveTrackers.empty()) {
+            emitScopeExitCleanup();
+            liveTrackers.pop_back();
+        }
+    }
+
+    void markAlive(ValueDeclAST* decl) {
+        if (!liveTrackers.empty()) liveTrackers.back().markAlive(decl);
+    }
+
+    void markConsumed(ValueDeclAST* decl) {
+        if (!liveTrackers.empty()) liveTrackers.back().markConsumed(decl);
+    }
+
+    bool isAlive(ValueDeclAST* decl) const {
+        for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
+            if (it->isAlive(decl)) return true;
+        }
+        return false;
+    }
+
+    bool isConsumed(ValueDeclAST* decl) const {
+        for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
+            if (it->isConsumed(decl)) return true;
+        }
+        return false;
+    }
+
+    /// @brief Release closure environments owned by the current live scope.
+    ///
+    /// This is called when a scope exits (block, function, loop body).
+    /// It cleans up:
+    ///   1. Closure environments (__lucid_release_env)
+    ///   2. Heap-backed locals ([*]T, string)
+    ///   3. Scope exit callbacks (#scope_exit)
+    ///
+    /// @note This function is called automatically by popLiveScope().
+    void emitScopeExitCleanup() {
+        if (liveTrackers.empty() || !getCurrentFunction()) return;
+
+        LiveVariableTracker& tracker = liveTrackers.back();
+        llvm::Function* releaseFn = getRuntimeFn(RuntimeFn::ReleaseEnv);
+        llvm::Function* freeFn = getRuntimeFn(RuntimeFn::Free);
+        std::vector<ValueDeclAST*> declarations = tracker.getAliveVariables();
+
+        // ─── Helper: Load value if it's in an alloca ──────────────────────────
+        auto loadValue = [&](llvm::Value* val) -> llvm::Value* {
+            if (auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+                return builder.CreateLoad(alloca->getAllocatedType(), alloca, "cleanup_load");
+            }
+            return val;
+        };
+
+        for (ValueDeclAST* decl : declarations) {
+            llvm::Value* binding = lookupValue(decl);
+            if (!binding || !decl->type) continue;
+
+            llvm::Value* value = loadValue(binding);
+
+            // ─── 1. CLOSURE ENVIRONMENTS (FuncTypeAST) ──────────────────────────
+            if (decl->type->isa<FuncTypeAST>()) {
+                if (value->getType()->isStructTy() &&
+                    value->getType()->getStructNumElements() == 2) {
+                    llvm::Value* envPtr = builder.CreateExtractValue(value, 1, "closure_env");
+                    llvm::Value* isNull = builder.CreateIsNull(envPtr, "env_is_null");
+
+                    llvm::Function* func = getCurrentFunction();
+                    llvm::BasicBlock* releaseBlock = llvm::BasicBlock::Create(
+                        llvmCtx, "release_env", func);
+                    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                        llvmCtx, "release_continue", func);
+
+                    builder.CreateCondBr(isNull, continueBlock, releaseBlock);
+                    builder.SetInsertPoint(releaseBlock);
+                    builder.CreateCall(releaseFn, {envPtr});
+                    builder.CreateBr(continueBlock);
+                    builder.SetInsertPoint(continueBlock);
+
+                    tracker.markConsumed(decl);
+                }
+                continue;
+            }
+
+            // ─── 2. DYNAMIC ARRAYS [*]T ──────────────────────────────────────────
+            if (decl->type->isa<ArrayTypeAST>()) {
+                ArrayTypeAST* arrayType = decl->type->as<ArrayTypeAST>();
+                if (arrayType->isDynamic()) {
+                    // Dynamic array value is { ptr, len, cap }
+                    if (value->getType()->isStructTy() &&
+                        value->getType()->getStructNumElements() == 3) {
+                        llvm::Value* dataPtr = builder.CreateExtractValue(value, 0, "array_data");
+                        llvm::Value* isNull = builder.CreateIsNull(dataPtr, "array_is_null");
+
+                        llvm::Function* func = getCurrentFunction();
+                        llvm::BasicBlock* freeBlock = llvm::BasicBlock::Create(
+                            llvmCtx, "free_array", func);
+                        llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                            llvmCtx, "free_array_continue", func);
+
+                        builder.CreateCondBr(isNull, continueBlock, freeBlock);
+                        builder.SetInsertPoint(freeBlock);
+                        builder.CreateCall(freeFn, {dataPtr});
+                        builder.CreateBr(continueBlock);
+                        builder.SetInsertPoint(continueBlock);
+
+                        tracker.markConsumed(decl);
+                    }
+                }
+                // Slices [_]T - do NOT free (borrowed view)
+                // Fixed arrays [N]T - stack allocated, no free needed
+                continue;
+            }
+
+            // ─── 3. STRINGS ──────────────────────────────────────────────────────
+            if (decl->type->isa<PrimitiveTypeAST>()) {
+                PrimitiveTypeAST* primType = decl->type->as<PrimitiveTypeAST>();
+                if (primType->primitiveKind == PrimitiveKind::String) {
+                    if (value->getType()->isStructTy() &&
+                        value->getType()->getStructNumElements() == 3) {
+                        llvm::Value* dataPtr = builder.CreateExtractValue(value, 0, "string_data");
+
+                        // Check if this is a static string literal (global constant)
+                        bool isStaticString = false;
+                        if (llvm::Constant* constPtr = llvm::dyn_cast<llvm::Constant>(dataPtr)) {
+                            if (llvm::isa<llvm::GlobalVariable>(constPtr)) {
+                                isStaticString = true;
+                            }
+                        }
+
+                        // Skip freeing static strings
+                        if (isStaticString) {
+                            tracker.markConsumed(decl);
+                            continue;
+                        }
+
+                        llvm::Value* isNull = builder.CreateIsNull(dataPtr, "string_is_null");
+                        llvm::Function* func = getCurrentFunction();
+                        llvm::BasicBlock* freeBlock = llvm::BasicBlock::Create(
+                            llvmCtx, "free_string", func);
+                        llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                            llvmCtx, "free_string_continue", func);
+
+                        builder.CreateCondBr(isNull, continueBlock, freeBlock);
+                        builder.SetInsertPoint(freeBlock);
+                        builder.CreateCall(freeFn, {dataPtr});
+                        builder.CreateBr(continueBlock);
+                        builder.SetInsertPoint(continueBlock);
+
+                        tracker.markConsumed(decl);
+                    }
+                }
+                continue;
+            }
+        }
     }
     
     // ─── Type Cache Helpers ──────────────────────────────────────────────

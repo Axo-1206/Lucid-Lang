@@ -11,18 +11,18 @@
 /// ─── Memory Layout ───────────────────────────────────────────────────────────
 ///
 ///   ┌─────────────────────────────────────────────────────────────────────┐
-///   │  ┌─────────────────────────────────────────────────────────────┐   │
-///   │  │  ClosureEnvHeader (24-32 bytes)                             │   │
+///   │  ┌──────────────────────────────────────────────────────────────┐   │
+///   │  │  ClosureEnvHeader (24-32 bytes)                              │   │
 ///   │  │  ┌─────────────────────────────────────────────────────────┐ │   │
-///   │  │  │  refcount: atomic<uint32_t>   (4 bytes, 8-byte aligned)│ │   │
+///   │  │  │  refcount: atomic<uint32_t>   (4 bytes, 8-byte aligned) │ │   │
 ///   │  │  │  size: uint32_t               (4 bytes)                 │ │   │
 ///   │  │  │  padding: uint32_t            (4 bytes, for alignment)  │ │   │
 ///   │  │  └─────────────────────────────────────────────────────────┘ │   │
-///   │  └─────────────────────────────────────────────────────────────┘   │
-///   │  ┌─────────────────────────────────────────────────────────────┐   │
-///   │  │  Data Portion (size bytes)                                  │   │
-///   │  │  └── Captured variables stored contiguously               │   │
-///   │  └─────────────────────────────────────────────────────────────┘   │
+///   │  └──────────────────────────────────────────────────────────────┘   │
+///   │  ┌──────────────────────────────────────────────────────────────┐   │
+///   │  │  Data Portion (size bytes)                                   │   │
+///   │  │  └── Captured variables stored contiguously                  │   │
+///   │  └──────────────────────────────────────────────────────────────┘   │
 ///   └─────────────────────────────────────────────────────────────────────┘
 ///
 /// ─── Allocation ──────────────────────────────────────────────────────────────
@@ -53,6 +53,23 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+
+// ─── Magic Number for Closure Detection ──────────────────────────────────────
+// To reliably detect if a pointer is a closure environment, we add a magic
+// number to the header. This is more reliable than alignment checking alone.
+//
+// The magic number is stored in the padding field of ClosureEnvHeader.
+// When a closure environment is allocated, the magic number is set.
+// When __lucid_is_closure is called, it checks if the magic number matches.
+//
+// This is safe because:
+//   1. The padding field is unused otherwise
+//   2. The magic number is a known constant
+//   3. It provides a reliable detection mechanism
+//
+// Magic number: 0x4C55434944 (ASCII "LUCID" in hex)
+// This is unlikely to appear randomly in memory at an 8-byte aligned address.
+static constexpr uint32_t CLOSURE_MAGIC = 0x4C554349;  // "LUCID" (first 4 bytes)
 
 /// @brief Header for every closure environment.
 ///
@@ -113,7 +130,7 @@ struct ClosureEnvHeader {
         ClosureEnvHeader* env = new (mem) ClosureEnvHeader;
         env->refcount.store(1, std::memory_order_release);
         env->size = dataSize;
-        env->_padding = 0;
+        env->_padding = CLOSURE_MAGIC;
 
         // Zero-initialize the data portion
         std::memset(env->data(), 0, dataSize);

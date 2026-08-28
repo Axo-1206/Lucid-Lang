@@ -1496,6 +1496,57 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
+    // ─── Handle reassignment of mutable functions ──────────────────────────
+    // If the LHS is a `let` function that holds a closure, we need to:
+    //   1. Release the old closure's environment
+    //   2. Store the new value
+    //   3. Retain the new closure's environment if it's a closure
+    bool isLetFunctionReassignment = false;
+    FuncDeclAST* targetFuncDecl = nullptr;
+    
+    if (expr->lhs->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = expr->lhs->as<IdentifierExprAST>();
+        if (id->resolvedDecl && id->resolvedDecl->isa<FuncDeclAST>()) {
+            FuncDeclAST* funcDecl = id->resolvedDecl->as<FuncDeclAST>();
+            if (funcDecl->keyword == DeclKeyword::Let && funcDecl->hasClosure) {
+                isLetFunctionReassignment = true;
+                targetFuncDecl = funcDecl;
+            }
+        }
+    }
+
+    // If reassigning a mutable closure function, release the old environment
+    if (isLetFunctionReassignment && targetFuncDecl) {
+        llvm::Value* oldValue = ctx.lookupValue(targetFuncDecl);
+        if (oldValue) {
+            // Load the current closure value from the alloca
+            llvm::Value* loadedOld = ctx.builder.CreateLoad(
+                ctx.getClosureType(),
+                oldValue,
+                "old_closure_load"
+            );
+            
+            // Check if it has a non-null environment
+            llvm::Value* oldEnvPtr = ctx.builder.CreateExtractValue(loadedOld, 1);
+            llvm::Value* isNull = ctx.builder.CreateIsNull(oldEnvPtr, "old_env_is_null");
+            
+            llvm::Function* func = ctx.getCurrentFunction();
+            llvm::BasicBlock* releaseBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "release_old_env", func);
+            llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "release_continue", func);
+            
+            ctx.builder.CreateCondBr(isNull, continueBlock, releaseBlock);
+            
+            ctx.builder.SetInsertPoint(releaseBlock);
+            llvm::Function* releaseFn = ctx.getRuntimeFn(RuntimeFn::ReleaseEnv);
+            ctx.builder.CreateCall(releaseFn, {oldEnvPtr});
+            ctx.builder.CreateBr(continueBlock);
+            
+            ctx.builder.SetInsertPoint(continueBlock);
+        }
+    }
+
     llvm::Value* rhs = lowerExpression(expr->rhs, ctx);
     if (!rhs) {
         return nullptr;
@@ -1558,6 +1609,32 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
     }
 
     ctx.builder.CreateStore(rhs, lhs);
+
+    // ─── If assigning a closure to a let function, retain the environment ──
+    if (isLetFunctionReassignment && targetFuncDecl) {
+        if (expr->rhs->resolvedType && expr->rhs->resolvedType->isa<FuncTypeAST>()) {
+            if (rhs->getType()->isStructTy() && rhs->getType()->getStructNumElements() == 2) {
+                llvm::Value* newEnvPtr = ctx.builder.CreateExtractValue(rhs, 1);
+                llvm::Value* isNull = ctx.builder.CreateIsNull(newEnvPtr, "new_env_is_null");
+                
+                llvm::Function* func = ctx.getCurrentFunction();
+                llvm::BasicBlock* retainBlock = llvm::BasicBlock::Create(
+                    ctx.llvmCtx, "retain_new_env", func);
+                llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                    ctx.llvmCtx, "retain_continue", func);
+                
+                ctx.builder.CreateCondBr(isNull, continueBlock, retainBlock);
+                
+                ctx.builder.SetInsertPoint(retainBlock);
+                llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+                ctx.builder.CreateCall(retainFn, {newEnvPtr});
+                ctx.builder.CreateBr(continueBlock);
+                
+                ctx.builder.SetInsertPoint(continueBlock);
+            }
+        }
+    }
+
     expr->llvmValue = rhs;
     return rhs;
 }

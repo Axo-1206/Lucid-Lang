@@ -102,13 +102,23 @@ void lowerStatement(StmtAST* stmt, CodeGenContext& ctx) {
 // alongside emitLucidControlIntrinsic rather than here.
 
 void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
-    if (!block) return;
-
+    // ─── 1. Push live scope ──────────────────────────────────────────────
+    ctx.pushLiveScope();  // Creates a new LiveVariableTracker
+    
+    // ─── 2. Lower all statements ──────────────────────────────────────────
     for (StmtAST* stmt : block->stmts) {
         lowerStatement(stmt, ctx);
     }
-
-    // Emit scope-exit callbacks (LIFO order)
+    
+    // ─── 3. Pop live scope ────────────────────────────────────────────────
+    ctx.popLiveScope();
+    // └── This calls emitScopeExitCleanup() automatically:
+    //     - Releases closure environments
+    //     - Frees dynamic arrays
+    //     - Frees strings
+    //     - Pops the LiveVariableTracker
+    
+    // ─── 4. Emit user #scope_exit callbacks ──────────────────────────────
     for (size_t i = block->scopeExits.size(); i > 0; --i) {
         const ScopeExitRegistration* reg = block->scopeExits[i - 1];
         emitScopeExitCallback(reg, ctx);
@@ -400,6 +410,7 @@ static void lowerRangeForLoop(
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.emitScopeExitCleanup();
         ctx.builder.CreateBr(continueBlock);
     }
 
@@ -564,6 +575,7 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.emitScopeExitCleanup();
         ctx.builder.CreateBr(headerBlock);
     }
 
@@ -632,6 +644,13 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
 
     llvm::Type* returnType = func->getReturnType();
 
+    // ─── Emit cleanup for ALL scopes before returning ──────────────────
+    // Clean up from innermost to outermost
+    while (!ctx.liveTrackers.empty()) {
+        ctx.emitScopeExitCleanup();
+        ctx.liveTrackers.pop_back();
+    }
+    
     if (stmt->value) {
         llvm::Value* returnVal = lowerExpression(stmt->value, ctx);
         if (!returnVal) return;
@@ -678,6 +697,7 @@ void lowerBreakStmt(BreakStmtAST* stmt, CodeGenContext& ctx) {
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
     assert(loop && "Break statement outside of loop");
 
+    ctx.emitScopeExitCleanup();
     ctx.builder.CreateBr(loop->exit);
 }
 
@@ -691,6 +711,7 @@ void lowerContinueStmt(ContinueStmtAST* stmt, CodeGenContext& ctx) {
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
     assert(loop && "Continue statement outside of loop");
 
+    ctx.emitScopeExitCleanup();
     ctx.builder.CreateBr(loop->continueTarget);
 }
 

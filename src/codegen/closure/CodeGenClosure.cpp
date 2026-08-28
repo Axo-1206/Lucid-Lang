@@ -634,57 +634,51 @@ llvm::Value* emitCallableCall(
         return ctx.builder.CreateCall(fn, args, name);
     }
 
-    // ─── 3. Indirect function pointer ──────────────────────────────────────
-    // For values that might be closures, we need to check at runtime.
+    // ─── 3. Indirect function pointer - with runtime closure check ────────
     if (callee->getType()->isPointerTy()) {
-        // ─── Check if this might be a closure ──────────────────────────────
-        // If the value is a pointer, it could be either:
-        //   a) A plain function pointer (1 word)
-        //   b) A pointer to a closure struct (which would be a closure value)
-        //      Note: A closure value is { ptr, ptr } - a struct, not a pointer.
-        //      If we have a pointer to a closure struct, that means we have
-        //      a pointer to { ptr, ptr }, which is different from the closure
-        //      value itself.
-        //
-        // The closure value itself is { ptr, ptr } (a struct), not a pointer.
-        // So if we have a pointer, it's either:
-        //   a) A function pointer (plain function) - can call directly
-        //   b) A pointer to a closure struct - need to load first
-        //
-        // For case (b), the callee would be a pointer to { ptr, ptr }.
-        // In that case, we need to load the closure struct, then extract
-        // the function pointer and environment pointer.
-        
-        // Check if the pointee type is a closure type
-        llvm::Type* pointeeType = ctx.getPointeeType(callee);
-        if (pointeeType && pointeeType->isStructTy() && pointeeType->isStructTy()) {
-            // Check if it's a closure type { ptr, ptr }
-            llvm::StructType* st = llvm::cast<llvm::StructType>(pointeeType);
-            if (st->getNumElements() == 2 &&
-                st->getElementType(0)->isPointerTy() &&
-                st->getElementType(1)->isPointerTy()) {
-                // Load the closure struct
-                llvm::Value* closureVal = ctx.builder.CreateLoad(
-                    pointeeType,
-                    callee,
-                    name + "_closure_load"
-                );
-                
-                // Extract and call
-                llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
-                    closureVal, 0, name + "_closure_func"
-                );
-                llvm::Value* envPtr = ctx.builder.CreateExtractValue(
-                    closureVal, 1, name + "_closure_env"
-                );
-                return emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
-            }
-        }
+        // ─── Check if this might be a closure at runtime ──────────────────
+        // Use __lucid_is_closure to determine if the value is a closure.
+        llvm::Function* isClosureFn = ctx.getRuntimeFn(RuntimeFn::IsClosure);
+        llvm::Value* isClosure = ctx.builder.CreateCall(isClosureFn, {callee}, "is_closure");
 
-        // ─── Fallback: plain function pointer ──────────────────────────────
+        llvm::Function* func = ctx.getCurrentFunction();
+        llvm::BasicBlock* closureBranch = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "call_closure", func);
+        llvm::BasicBlock* plainBranch = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "call_plain", func);
+        llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "call_merge", func);
+
+        ctx.builder.CreateCondBr(isClosure, closureBranch, plainBranch);
+
+        // ─── Closure branch: load { func, env } and call ──────────────────
+        ctx.builder.SetInsertPoint(closureBranch);
+        // The callee pointer points to a closure struct { func, env }
+        // Load the closure struct
+        llvm::Type* closureType = ctx.getClosureType();
+        llvm::Value* closureVal = ctx.builder.CreateLoad(closureType, callee, "closure_load");
+        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(closureVal, 0, "closure_func");
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(closureVal, 1, "closure_env");
+        llvm::Value* closureResult = emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
+        ctx.builder.CreateBr(mergeBlock);
+
+        // ─── Plain branch: cast and call directly ──────────────────────────
+        ctx.builder.SetInsertPoint(plainBranch);
         llvm::Value* casted = ctx.builder.CreatePointerCast(
             callee, llvm::PointerType::get(fnType, 0), name + "_cast");
-        return ctx.builder.CreateCall(fnType, casted, args, name);
+        llvm::Value* plainResult = ctx.builder.CreateCall(fnType, casted, args, name);
+        ctx.builder.CreateBr(mergeBlock);
+
+        // ─── Merge block: PHI the result ───────────────────────────────────
+        ctx.builder.SetInsertPoint(mergeBlock);
+        llvm::Type* resultType = fnType->getReturnType();
+        if (resultType->isVoidTy()) {
+            return nullptr;
+        }
+        llvm::PHINode* phi = ctx.builder.CreatePHI(resultType, 2, "call_result");
+        phi->addIncoming(closureResult, closureBranch);
+        phi->addIncoming(plainResult, plainBranch);
+        return phi;
     }
     return nullptr;
 }

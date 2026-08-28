@@ -232,6 +232,58 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         funcType
     );
 
+
+    // ─── Track mutable functions that hold closures ──────────────────────────
+    // For `let` functions that hold closures, we need to track them so their
+    // environment is released when they go out of scope or are reassigned.
+    //
+    // const functions are immutable and never need tracking.
+    // let functions without closures don't need tracking (no environment).
+    if (decl->keyword == DeclKeyword::Let && decl->hasClosure) {
+        ctx.markAlive(decl);
+        
+        // ─── Create an alloca to store the closure value ──────────────────
+        // The closure value is { func_ptr, env_ptr } which is the same
+        // shape as ctx.getClosureType().
+        llvm::Type* closureType = ctx.getClosureType();
+        llvm::AllocaInst* alloca = createAlloca(
+            ctx.pool.lookup(decl->name) + "_closure",
+            closureType,
+            ctx
+        );
+        
+        // ─── Build the initial closure value ──────────────────────────────
+        // For a `let` function declared with a body that captures variables,
+        // the initial value is { func_ptr, env_ptr } where env_ptr is the
+        // environment allocated when the closure is created.
+        //
+        // The environment is allocated in lowerClosure when the function
+        // is actually called/used. At declaration time, we store a null
+        // environment initially.
+        llvm::Value* closureVal = llvm::UndefValue::get(closureType);
+        
+        // Function pointer
+        llvm::Value* funcPtr = ctx.builder.CreatePointerCast(
+            func,
+            llvm::PointerType::get(ctx.llvmCtx, 0),
+            "func_ptr"
+        );
+        closureVal = ctx.builder.CreateInsertValue(closureVal, funcPtr, 0);
+        
+        // Environment pointer (initially null - allocated when closure is created)
+        closureVal = ctx.builder.CreateInsertValue(
+            closureVal,
+            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx.llvmCtx, 0)),
+            1
+        );
+        
+        ctx.builder.CreateStore(closureVal, alloca);
+        ctx.storeValue(decl, alloca);
+        
+        Trace::detail("Tracked mutable closure function: ", ctx.pool.lookup(decl->name));
+    }
+
+
     Trace::detail("Lowered function declaration: ", funcName,
                 " (", func->arg_size(), " params, ",
                 decl->hasClosure ? "closure" : "plain", ")");
@@ -533,6 +585,11 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     ctx.storeValue(param, alloca);
     param->llvmAlloca = alloca;
     param->llvmValue = argValue;
+
+    // ─── Mark function-typed parameters as alive ─────────────────────────
+    if (param->type && param->type->isa<FuncTypeAST>()) {
+        ctx.markAlive(param);
+    }
 }
 
 // =============================================================================
@@ -625,6 +682,7 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
     ctx.storeValue(decl, alloca);
     decl->llvmAlloca = alloca;
+    ctx.markAlive(decl);
 
     Trace::detail("Lowered local variable: ", varName);
 }
