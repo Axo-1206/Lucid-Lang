@@ -99,32 +99,13 @@ void lowerStatement(StmtAST* stmt, CodeGenContext& ctx) {
 // Block Statement
 // =============================================================================
 
-// emitScopeExitCallback moved to intrinsic/LucidIntrinsicEmitter.cpp -
-// it's the codegen half of the #scope_exit intrinsic, so it belongs
-// alongside emitLucidControlIntrinsic rather than here.
-
 void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
-    // ─── 1. Push live scope ──────────────────────────────────────────────
-    ctx.pushLiveScope();  // Creates a new LiveVariableTracker
-    
-    // ─── 2. Lower all statements ──────────────────────────────────────────
+    ctx.pushLiveScope(block);
     for (StmtAST* stmt : block->stmts) {
         lowerStatement(stmt, ctx);
     }
-    
-    // ─── 3. Pop live scope ────────────────────────────────────────────────
     ctx.popLiveScope();
-    // └── This calls emitScopeExitCleanup() automatically:
-    //     - Releases closure environments
-    //     - Frees dynamic arrays
-    //     - Frees strings
-    //     - Pops the LiveVariableTracker
-    
-    // ─── 4. Emit user #scope_exit callbacks ──────────────────────────────
-    for (size_t i = block->scopeExits.size(); i > 0; --i) {
-        const ScopeExitRegistration* reg = block->scopeExits[i - 1];
-        emitScopeExitCallback(reg, ctx);
-    }
+    // Cleanup now happens in emitCleanupForTracker via popLiveScope()
 }
 
 // =============================================================================
@@ -385,7 +366,7 @@ static void lowerRangeForLoop(
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
-        ctx.emitScopeExitCleanup();
+        ctx.emitUnwindTo(ctx.currentLoop()->scopeDepth);
         ctx.builder.CreateBr(continueBlock);
     }
 
@@ -492,6 +473,7 @@ static void lowerCollectionForLoop(
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.emitUnwindTo(ctx.currentLoop()->scopeDepth);
         ctx.builder.CreateBr(continueBlock);
     }
 
@@ -582,7 +564,7 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
-        ctx.emitScopeExitCleanup();
+        ctx.emitUnwindTo(ctx.currentLoop()->scopeDepth);
         ctx.builder.CreateBr(headerBlock);
     }
 
@@ -616,6 +598,7 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.emitUnwindTo(ctx.currentLoop()->scopeDepth);
         ctx.builder.CreateBr(headerBlock);
     }
 
@@ -662,10 +645,7 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // ─── Emit cleanup for ALL scopes before returning ──────────────────
-    while (!ctx.liveTrackers.empty()) {
-        ctx.emitScopeExitCleanup();
-        ctx.liveTrackers.pop_back();
-    }
+    ctx.emitUnwindTo(0);
 
     // ─── If this is main, call __lucid_shutdown() before returning ──────
     if (isMain) {
@@ -719,7 +699,7 @@ void lowerBreakStmt(BreakStmtAST* stmt, CodeGenContext& ctx) {
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
     assert(loop && "Break statement outside of loop");
 
-    ctx.emitScopeExitCleanup();
+    ctx.emitUnwindTo(loop->scopeDepth);
     ctx.builder.CreateBr(loop->exit);
 }
 
@@ -733,7 +713,7 @@ void lowerContinueStmt(ContinueStmtAST* stmt, CodeGenContext& ctx) {
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
     assert(loop && "Continue statement outside of loop");
 
-    ctx.emitScopeExitCleanup();
+    ctx.emitUnwindTo(loop->scopeDepth);
     ctx.builder.CreateBr(loop->continueTarget);
 }
 

@@ -1,9 +1,9 @@
 /// @file support/LiveVariableTracker.hpp
 /// @brief Tracks which variables are alive in the current scope for cleanup.
 ///
-/// ─── Purpose ──────────────────────────────────────────────────────────────────
-/// When a block exits (via return, break, continue, or falling off the end),
-/// we need to clean up resources held by variables that are going out of scope.
+/// ─── Purpose ────────────────────────────────────────────────────────────────
+/// When a block exits (via return, break, continue, or fall-through), we need
+/// to clean up resources held by variables that are going out of scope.
 /// This includes:
 ///   - Closure environments (__lucid_release_env)
 ///   - Heap-backed locals ([*]T, string)
@@ -16,6 +16,7 @@
 #pragma once
 
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/StmtAST.hpp"  // For BlockStmtAST
 
 #include <unordered_set>
 #include <vector>
@@ -33,6 +34,13 @@ struct LiveVariableTracker {
 
     /// Variables that have been consumed (moved, awaited, joined).
     std::unordered_set<ValueDeclAST*> consumed;
+
+    /// The block this tracker belongs to, if any.
+    /// Used to find #scope_exit registrations at cleanup time.
+    /// Null for scopes not backed by a BlockStmtAST (e.g. loop-body wrappers).
+    /// Set by CodeGenContext::pushLiveScope(block).
+    /// @note This is only read at cleanup time - never mutated here.
+    BlockStmtAST* block = nullptr;
 
     /// @brief Mark a variable as alive.
     /// @param decl The variable declaration.
