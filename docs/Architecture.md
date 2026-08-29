@@ -505,6 +505,7 @@ lucid/
 ├── LICENSE
 ├── CMakeLists.txt
 ├── .gitignore
+├── .patches/ # contain patches from AI agent, use the Editor command to automatically apply new patches instead of manual edit
 │
 ├── docs/
 │   ├── internal/                           # compiler note and architecture

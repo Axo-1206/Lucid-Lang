@@ -219,6 +219,46 @@ during compilation — it produces ordinary `call` instructions inserted at
 each exit edge and leaves nothing behind in the generated IR that resembles
 a registry or a runtime list.
 
+**Unified scope-exit walk.** Every kind of scope-owned resource — a
+`#scope_exit` callback, a closure's environment, a heap-backed local
+(`[*]T`, `string`) — is drained by the same single mechanism, not several
+independent ones. An early exit (`return`, `break`, `continue`) unwinds
+however many scopes separate it from its target (the function boundary for
+`return`, the loop boundary for `break`/`continue`), processing each scope
+it passes through, innermost first, before moving to the next one out. A
+scope being unwound this way is never treated differently from one exited
+by ordinary fall-through — the same walk handles both, so a resource
+registered in a block is guaranteed to be cleaned up regardless of which of
+the four exit edges actually leaves that block.
+
+Within a single scope's turn in that walk, order is fixed and matters:
+
+1. **That scope's `#scope_exit` callbacks run first**, in LIFO order among
+   themselves, while every local this scope owns — and anything still-alive
+   from an enclosing scope — is still valid.
+2. **Only then does this scope's own implicit cleanup run** — closure
+   environments released, dynamic arrays and strings freed.
+
+Reversing this order would let a callback observe a resource from its own
+scope after that resource was already released — a callback that reads a
+`[*]T` local declared earlier in the same block, or that calls a closure
+declared earlier in the same block, must see it intact. This ordering
+holds at every scope the walk passes through, not just the innermost one:
+each scope fully completes both of its own phases before the walk
+continues to the scope enclosing it, so a callback can also safely
+reference a variable from any scope that is still further out and hasn't
+had its own turn yet.
+
+**Loops.** A resource registered directly in a loop's body scope is
+processed **once per iteration** — at the point that iteration's execution
+of the body scope ends, by whichever of the four exit edges actually
+happened for that pass through the loop (falling off the end of the body,
+or a `continue` reached from inside it). There is no separate "once, when
+the entire loop construct is finished" scope distinct from the body itself;
+a callback intended to run exactly once, after the loop as a whole
+completes, belongs in the scope that lexically contains the `for`/`while`
+statement, not inside the loop body.
+
 **Nullable / fallible tagged slots** — the tag byte is a Lucid-level abstraction.
 The frontend lowers `T?` and `T!` declarations to a struct in IR:
 
@@ -4426,6 +4466,55 @@ Reference Rules**, above), so a closure capturing one is no more or less
 safe than a struct storing one. The Downward Flow Rule exists to protect a
 guarantee `&T`/`[_]T` make and `*T` deliberately does not; it was never
 meant to reach `*T`, in a closure's environment or anywhere else.
+
+**Capture is by value unless the closure mutates it.** A captured variable
+that the closure body never assigns to is captured as an independent
+snapshot copy, exactly like any other by-value copy described above — the
+closure sees the value as it was at the moment of capture, and later
+changes to the outer variable are not visible inside the closure. A
+captured variable that the closure body *does* assign to is captured by
+reference instead, so the closure and the outer scope share the same
+storage and observe each other's writes:
+
+```lucid
+const f () -> () -> int {
+    let count int = 0;
+    return () -> int {
+        count += 1;    -- mutates the outer `count` -> captured by reference
+        return count;
+    };
+}
+
+const g (n int) -> () -> int {
+    return () -> int {
+        return n * 2;   -- only reads `n` -> captured by value, a frozen snapshot
+    };
+}
+```
+
+This determination is per-variable, not per-closure: a single closure may
+capture some variables by value and others by reference, depending on
+whether each one is individually mutated in its body.
+
+**Capturing a closure works the same as any other by-value capture of a
+Shared, refcounted value** — it retains the captured closure's environment,
+the same as assigning it or storing it in a struct field. A closure that
+captures another closure by value therefore holds its own independent
+reference to that environment, kept alive for as long as the outer
+closure's own environment is, regardless of what happens to the original
+binding the inner closure was captured from.
+
+**`let` vs. `const` for function-typed bindings.** A function declared with
+`const` can never be reassigned, so the compiler never needs to consider it
+capable of holding more than one specific value for its entire lifetime —
+no runtime discrimination between "plain function" and "closure" is ever
+generated for it. A function declared with `let` may be reassigned to a
+different named function or a different closure literal at any point
+across its lifetime, so the compiler must conservatively treat every
+`let`-bound function as potentially closure-shaped for as long as it's in
+scope, which carries a small but real cost (a runtime null-check on every
+copy, retain/release bookkeeping on every reassignment). Prefer `const` for
+any function-typed binding that is never reassigned.
 
 ### Extracting a Function-Typed Field Is Not a Dangling Reference
 
