@@ -1,0 +1,15 @@
+
+@[export] const main () -> int = {
+    let x int = 1;
+    const a int = x + 5 + 6; -- expect error
+    let s [4]int = [];
+    return 0;
+};
+
+const f (a int)() -> int {
+    field type;
+    
+};
+-- } = {
+    
+-- };
