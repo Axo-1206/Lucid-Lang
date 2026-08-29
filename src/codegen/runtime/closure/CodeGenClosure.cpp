@@ -188,8 +188,6 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     const bool hasCaptures = !expr->captures.empty();
 
     // ─── 1. Build the closure environment struct ──────────────────────────
-    // buildClosureEnvironment already returns a valid (empty) struct type
-    // when there are no captures, so this is safe to call unconditionally.
     llvm::StructType* envType = buildClosureEnvironment(expr, ctx);
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -251,9 +249,9 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
             // If the captured value is function-typed, we need to normalize it
             // to the closure type { ptr, ptr } before storing.
             TypeAST* declType = capture.decl->type;
-            if (declType && declType->isa<FuncTypeAST>()) {
-                // If isClosureValue is true, the value is a closure or we're
-                // conservative. If it's a plain function pointer, normalize it.
+            bool isFunctionType = declType && declType->isa<FuncTypeAST>();
+
+            if (isFunctionType) {
                 capturedValue = normalizeToClosureType(capturedValue, ctx);
                 if (!capturedValue) continue;
             }
@@ -270,6 +268,20 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
                                             ctx.pool.lookup(capture.decl->name),
                                             "' has invalid type");
                     continue;
+                }
+
+                // ─── Retain if this capture is a closure by value ──────
+                // If the captured value is a closure (function type AND it's a
+                // closure value), we need to retain its environment.
+                // __lucid_retain_env is null-safe (see ClosureEnvHeader::retain),
+                // so no branch/null-check needed here.
+                if (isFunctionType) {
+                    // Extract the environment pointer from the closure value
+                    llvm::Value* envPtrForRetain = ctx.builder.CreateExtractValue(
+                        capturedValue, 1, "captured_env_for_retain"
+                    );
+                    llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+                    ctx.builder.CreateCall(retainFn, {envPtrForRetain});
                 }
             } else {
                 // By reference: store the address (pointer) in the environment
@@ -302,7 +314,6 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     // ─── 9. Create the closure value (fat pointer) ─────────────────────────
     llvm::StructType* closureType = ctx.getClosureType();
 
-    // Build the closure value
     llvm::Value* closure = llvm::UndefValue::get(closureType);
     closure = ctx.builder.CreateInsertValue(
         closure,
