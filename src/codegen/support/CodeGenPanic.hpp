@@ -4,7 +4,7 @@
 #pragma once
 
 #include "../context/CodeGenContext.hpp"
-#include "RuntimeError.hpp"
+#include "codegen/runtime/RuntimeError.hpp"
 #include <llvm/IR/Value.h>
 #include <string>
 

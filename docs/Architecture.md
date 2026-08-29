@@ -604,7 +604,7 @@ lucid/
     │   ├── CodeGenClosure.cpp   # Closure lowering
     │   │
     │   ├── context/
-    │   │   └── CodeGenContext.hpp # LLVM state (module, builder, caches, symbols)
+    │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── generic/
     │   │   ├── CodeGenGeneric.hpp/cpp      # Detection + Substitution + Instantiation

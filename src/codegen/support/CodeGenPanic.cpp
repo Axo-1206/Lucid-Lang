@@ -2,7 +2,6 @@
 /// @brief Implementation of runtime panic and null check handling.
 
 #include "CodeGenPanic.hpp"
-#include "RuntimeError.hpp"
 #include "../CodeGenType.hpp"
 
 #include <llvm/IR/BasicBlock.h>
