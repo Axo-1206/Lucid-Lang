@@ -574,9 +574,11 @@ lucid/
     │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
     │   │
     │   ├── types/
-    │   │   ├── SemaResolve.hpp/cpp         # Resolves type annotations to their semantic representations.
-    │   │   ├── SemaCompare.hpp/cpp         # Type Compatibility Helpers
-    │   │   ├── SemaValidate.hpp/cpp        # Type Validation Helpers
+    │   │   ├── SemaResolve.cpp             # Resolves type annotations to their semantic representations.
+    │   │   ├── SemaSelfReference.cpp       # Self reference check
+    │   │   ├── SemaTypeEquality.cpp        # Type Equality Helpers
+    │   │   ├── SemaTypePredicates.cpp
+    │   │   ├── SemaValidate.cpp            # Type Validation Helpers
     │   │   └── SemaType.hpp                # Main header for document
     │   │
     │   ├── const_eval/

@@ -4,8 +4,7 @@
 #pragma once
 
 #include "../context/SemaContext.hpp"
-#include "../types/SemaCompare.hpp"
-#include "../types/SemaResolve.hpp"
+#include "../types/SemaType.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/registry/AttributeRegistry.hpp"
 #include <string>

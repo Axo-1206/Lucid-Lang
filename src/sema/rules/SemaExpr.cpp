@@ -884,7 +884,7 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
         
         // ─── 2b: LHS must be Arena type ──────────────────────────────────
         TypeAST* arenaType = expr->arenaExpr->resolvedType;
-        if (!arenaType || !ctx.isArenaType(arenaType)) {
+        if (!arenaType || !isArenaType(arenaType)) {
             ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidLHS, expr,
                                   "arena:: access requires an Arena value, got ",
                                   arenaType ? typeToString(arenaType, ctx.pool) : "unknown");

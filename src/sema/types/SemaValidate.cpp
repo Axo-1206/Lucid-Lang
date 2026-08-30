@@ -1,9 +1,7 @@
 /// @file SemaValidate.cpp
 /// @brief Implementation of semantic validation rules.
 
-#include "SemaValidate.hpp"
-#include "SemaCompare.hpp"
-#include "SemaResolve.hpp"
+#include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ASTStrings.hpp"

@@ -4,7 +4,7 @@
 #include "ConstEvaluator.hpp"
 #include "ConstEvalHelpers.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaCompare.hpp"
+#include "sema/types/SemaType.hpp"
 #include "sema/Sema.hpp"
 #include "sema/support/Truthiness.hpp"
 

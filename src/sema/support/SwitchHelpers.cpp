@@ -3,7 +3,7 @@
 
 #include "SwitchHelpers.hpp"
 #include "../types/SemaType.hpp"
-#include "../types/SemaCompare.hpp"
+#include "../types/SemaType.hpp"
 #include "../context/SemaContext.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../const_eval/ConstEvaluator.hpp"
-#include "../types/SemaCompare.hpp"
+#include "../types/SemaType.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 

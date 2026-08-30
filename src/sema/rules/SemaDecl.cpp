@@ -26,7 +26,7 @@
 #include "../support/CaptureAnalysis.hpp"
 #include "../support/MangledName.hpp"
 #include "../registry/AttributeValidator.hpp"
-#include "sema/types/SemaCompare.hpp"
+#include "sema/types/SemaType.hpp"
 
 
 namespace sema {
@@ -126,7 +126,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 
     // ─── 3. Arena type special validation ────────────────────────────
     // Arena bindings must be const and initialized with Arena::create/empty
-    if (ctx.isArenaType(declaredType)) {
+    if (isArenaType(declaredType)) {
         // ─── 3a. Arena bindings must be declared with `const` ──────
         if (decl->keyword == DeclKeyword::Let) {
             ctx.diagnostics.error(DiagCode::Sem_ConstRequired, decl,

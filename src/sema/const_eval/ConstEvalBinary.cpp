@@ -8,7 +8,7 @@
 #include "ConstEvalHelpers.hpp"
 #include "ConstEvaluator.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaCompare.hpp"
+#include "sema/types/SemaType.hpp"
 
 #include <cmath>
 #include <climits>

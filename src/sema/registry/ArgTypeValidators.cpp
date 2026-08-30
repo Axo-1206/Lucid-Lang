@@ -3,7 +3,6 @@
 
 #include "ArgTypeValidators.hpp"
 #include "core/ASTStrings.hpp"
-#include "../types/SemaCompare.hpp"
 #include "sema/Sema.hpp"
 
 namespace sema {

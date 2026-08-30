@@ -225,16 +225,6 @@ struct SemaContext {
     /// It has fixed layout: { base: *uint8, size: uint64 }
     /// This type is NOT literal-constructible by users.
     NamedTypeAST* getArenaDescriptorType();
-
-    // ─── Built-in Type Detection ──────────────────────────────────────
-    bool isArenaType(TypeAST* type) const;
-    bool isArenaDescriptorType(TypeAST* type) const;
-    bool isArenaNamedType(NamedTypeAST* named) const;
-    bool isArenaDescriptorNamedType(NamedTypeAST* named) const;
-    bool isArenaBinding(VarDeclAST* decl) const;
-    
-    // ─── Builtin Type Helpers ──────────────────────────────────────────
-    bool isArenaDescriptor(StructDeclAST* decl) const;
     
     // ─── Self-Reference Helpers ──────────────────────────────────────
     void pushDefiningType(TypeDeclAST* decl);

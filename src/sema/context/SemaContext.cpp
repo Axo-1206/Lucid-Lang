@@ -643,29 +643,6 @@ NamedTypeAST* SemaContext::getArenaDescriptorType() {
     return type;
 }
 
-// ─── Built-in Type Detection ─────────────────────────────────────────────
-
-bool SemaContext::isArenaType(TypeAST* type) const {
-    return builtins::isArenaType(type);
-}
-
-bool SemaContext::isArenaDescriptorType(TypeAST* type) const {
-    return builtins::isArenaDescriptorType(type);
-}
-
-bool SemaContext::isArenaNamedType(NamedTypeAST* named) const {
-    return builtins::isArenaNamedType(named);
-}
-
-bool SemaContext::isArenaDescriptorNamedType(NamedTypeAST* named) const {
-    return builtins::isArenaDescriptorNamedType(named);
-}
-
-bool SemaContext::isArenaBinding(VarDeclAST* decl) const {
-    if (!decl) return false;
-    return isArenaType(decl->type);
-}
-
 // ─── Self-Reference Helpers ──────────────────────────────────────────────
 
 void SemaContext::pushDefiningType(TypeDeclAST* decl) {

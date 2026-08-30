@@ -3,7 +3,7 @@
 
 #include "ConstEvalHelpers.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaCompare.hpp"
+#include "sema/types/SemaType.hpp"
 #include "sema/Sema.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 

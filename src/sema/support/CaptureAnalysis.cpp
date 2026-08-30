@@ -16,8 +16,7 @@
 /// - Handle refcounting for closure environments
 
 #include "CaptureAnalysis.hpp"
-#include "../types/SemaResolve.hpp"
-#include "../types/SemaCompare.hpp"
+#include "../types/SemaType.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"
 #include "core/ast/TypeAST.hpp"

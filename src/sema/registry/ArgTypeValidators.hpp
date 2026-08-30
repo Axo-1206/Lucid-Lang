@@ -4,7 +4,7 @@
 #pragma once
 
 #include "../context/SemaContext.hpp"
-#include "../types/SemaCompare.hpp"
+#include "../types/SemaType.hpp"
 #include <string>
 
 namespace sema {
