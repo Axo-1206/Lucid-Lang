@@ -152,10 +152,6 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         // ─── Memory Management ─────────────────────────────────────────────
         case IntrinsicKind::Alloc:
         case IntrinsicKind::Free:
-        case IntrinsicKind::ArenaCreate:
-        case IntrinsicKind::ArenaAlloc:
-        case IntrinsicKind::ArenaReset:
-        case IntrinsicKind::ArenaFree:
             return validateMemoryManagement(expr, ctx);
 
         // ─── Scope Exit ────────────────────────────────────────────────────
@@ -200,8 +196,8 @@ bool isIntrinsicVoid(InternedString name, SemaContext& ctx) {
 // ─── getIntrinsicReturnType - FULL Implementation ─────────────────────────
 
 TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
-                                       TypeAST* targetType,
-                                       SemaContext& ctx) {
+                                TypeAST* targetType,
+                                SemaContext& ctx) {
     if (!expr) return targetType;
 
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -301,15 +297,10 @@ TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
 
         // ─── Memory Management ─────────────────────────────────────────────
         case IntrinsicKind::Alloc:
-        case IntrinsicKind::ArenaAlloc:
             if (expr->resolvedType) {
                 return expr->resolvedType;
             }
             return ctx.getPtrType(ctx.getIntType());
-
-        case IntrinsicKind::ArenaCreate:
-            // Return ArenaDescriptor struct type
-            return targetType;
 
         // ─── SIMD ──────────────────────────────────────────────────────────
         case IntrinsicKind::SimdLoad:
@@ -359,7 +350,6 @@ ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) 
     switch (info->kind) {
         // ─── Memory allocations can fail ──────────────────────────────────
         case IntrinsicKind::Alloc:
-        case IntrinsicKind::ArenaAlloc:
             return ValueState::Unknown;
 
         // ─── toRef asserts non-null - always definite if it returns ──────
@@ -870,21 +860,6 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
         case IntrinsicKind::Free:
             if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-            return true;
-
-        case IntrinsicKind::ArenaCreate:
-            if (!expr->args.empty() && !validateIntArg(expr->args[0], "size", ctx)) return false;
-            return true;
-
-        case IntrinsicKind::ArenaAlloc:
-            // #arena_alloc(arena, T, count) - arena and count are the value args
-            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
-            if (expr->args.size() >= 2 && !validateIntArg(expr->args[1], "count", ctx)) return false;
-            return true;
-
-        case IntrinsicKind::ArenaReset:
-        case IntrinsicKind::ArenaFree:
-            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
             return true;
 
         default:
