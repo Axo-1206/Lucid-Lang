@@ -429,7 +429,7 @@ inline std::string tokenToString(const Token& token) {
  *   - Function types: (int, string) -> bool
  *   - Struct and enum types with their fields
  */
-inline std::string typeToString(TypeAST* type, const StringPool& pool) {
+inline std::string typeToString(TypeAST* type, StringPool& pool) {
     if (!type) return "<null>";
 
     // ─── PrimitiveType ──────────────────────────────────────────────────────
@@ -542,7 +542,7 @@ inline std::string llvmTypeToString(const llvm::Type* type) {
 }
 
 /// @brief Convert an LLVM type to a human-readable string (with pool).
-inline std::string llvmTypeToString(const llvm::Type* type, const StringPool& pool) {
+inline std::string llvmTypeToString(const llvm::Type* type, StringPool& pool) {
     // The pool is unused but kept for API consistency
     (void)pool;
     return llvmTypeToString(type);
@@ -558,7 +558,7 @@ inline std::string typeToString(const llvm::Type* type) {
 }
 
 /// @brief Convert an LLVM type to a human-readable string (with pool).
-inline std::string typeToString(const llvm::Type* type, const StringPool& pool) {
+inline std::string typeToString(const llvm::Type* type, StringPool& pool) {
     return llvmTypeToString(type, pool);
 }
 
@@ -571,7 +571,7 @@ inline std::string typeToString(const llvm::Type* type, const StringPool& pool) 
  * 
  * Shows struct/enum/trait definitions with their fields/variants.
  */
-inline std::string typeDeclToString(TypeDeclAST* decl, const StringPool& pool) {
+inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
     if (!decl) return "<null>";
 
     if (decl->isa<StructDeclAST>()) {
