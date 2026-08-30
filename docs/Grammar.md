@@ -93,14 +93,25 @@ execution path.
 > below do — but the full intrinsic surface (documented in full under
 > **Compiler Directives: Attributes `@` and Intrinsics `#`**) also includes
 > compile-time-only constructs (`#sizeof`, `#nameof`) that emit no LLVM node
-> at all, calls into the Lucid runtime library (`#alloc`, `#arena_create`)
-> that are ordinary function calls rather than `llvm.*` intrinsics, and
+> at all, a call into the Lucid runtime library (`#alloc`) that is an
+> ordinary function call rather than an `llvm.*` intrinsic, and
 > `#scope_exit`, which emits no call at its own call site and instead
 > registers a callback the compiler inserts at the enclosing block's exit
 > edges. See **Intrinsic Lowering Strategies** in that section for the full
 > breakdown. This table covers only the hardware/memory-instruction subset,
 > for which the "maps directly to an LLVM intrinsic or instruction" claim
 > does hold.
+>
+> Bulk/reusable allocation is **not** an intrinsic at all — see the `Arena`
+> builtin type under **Memory Management**. An earlier design exposed this
+> as an `#arena_create`/`#arena_alloc`/`#arena_reset`/`#arena_free` intrinsic
+> family returning raw pointers. That family has been removed: it required
+> the user to hand-manage a free call the compiler is fully capable of
+> inserting itself (the same way it already does for `[*]T` and `string`),
+> and it exposed pointers where a typed, bounds-checked slice is sufficient.
+> `Arena` is lowered directly by `IRLowering`, hooked into the same
+> block-entry/block-exit machinery as the scope arena stack, rather than
+> being assembled by the user from runtime-library calls.
 
 For the intrinsics below, the lowering is written once in the frontend and
 produces the same IR node regardless of whether the IR is later compiled AOT
@@ -204,10 +215,19 @@ no additional runtime mechanism needed.
 that the compiler maintains to catch double-free and null-free. The
 registry check is a single hash lookup on every `#free` call.
 
-**`#arena_create` / `#arena_alloc` / `#arena_free`** — implemented as a simple
-bump-pointer allocator over a `malloc`-ed region. `#arena_alloc` advances a
-pointer; `#arena_free` calls `free` on the original region. No per-slot tracking
-needed.
+**`Arena`** — implemented as a simple bump-pointer allocator over a
+`malloc`-ed region, same underlying strategy as the old arena intrinsics, but
+lowered directly by `IRLowering` instead of assembled from runtime-library
+calls the user writes by hand. `Arena::create` emits the one `malloc` call
+for the backing region; `arena::alloc<T>` advances the bump cursor and hands
+back a `[_]T` view over the reserved range, with a runtime bounds check
+against the region's remaining capacity (see **Runtime Panics**);
+`arena::reset` zeroes the cursor without touching the underlying region.
+Because an `Arena`-typed local is just one more scope-owned heap-backed
+value, its teardown call is inserted at block exit by the same compiler pass
+that already frees `[*]T` and `string` locals — there is no separate
+"arena free" call for the user to remember, and no `#scope_exit` wiring
+needed to get it. See **Memory Management** for the full type.
 
 **`#scope_exit`** — unlike every other memory intrinsic above, this one has
 no runtime component at all. `IRLowering` maintains a stack of pending-callback
@@ -4989,13 +5009,13 @@ one a given intrinsic uses; the registry tags each entry with one so
 included) can answer "does this intrinsic emit a call here, or somewhere
 else, or nowhere at all?" without guessing from the name.
 
-| Strategy               | What it emits                                                                                                                                                                           | Examples                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `LLVMIntrinsic`        | `call @llvm.*` — a genuine LLVM intrinsic function                                                                                                                                      | `#sqrt`, `#memcpy`, `#clz`, `#fma`, `#bswap`                                      |
-| `LLVMInstruction`      | A raw LLVM IR instruction — LLVM itself does not call these "intrinsics"                                                                                                                | `#bitcast`, `#ptrOffset`, `#atomic_add`, `#fence`                                 |
-| `CompileTimeConst`     | No codegen call at all — resolved to a literal during Sema/lowering                                                                                                                     | `#sizeof`, `#alignof`, `#nameof`, `#typeof`                                       |
-| `RuntimeCall`          | `call` against a symbol exported by `runtime/` — not an LLVM intrinsic, not a raw instruction, and not backend-specific: both the JIT and the AOT-linked binary resolve the same symbol | `#alloc`, `#free`, `#arena_create`, `#arena_alloc`, `#arena_reset`, `#arena_free` |
-| `ControlFlowTransform` | No call at the intrinsic's own call site — the compiler records a pending callback and emits ordinary calls at every exit edge of the enclosing block                                   | `#scope_exit`                                                                     |
+| Strategy               | What it emits                                                                                                                                                                           | Examples                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `LLVMIntrinsic`        | `call @llvm.*` — a genuine LLVM intrinsic function                                                                                                                                      | `#sqrt`, `#memcpy`, `#clz`, `#fma`, `#bswap`      |
+| `LLVMInstruction`      | A raw LLVM IR instruction — LLVM itself does not call these "intrinsics"                                                                                                                | `#bitcast`, `#ptrOffset`, `#atomic_add`, `#fence` |
+| `CompileTimeConst`     | No codegen call at all — resolved to a literal during Sema/lowering                                                                                                                     | `#sizeof`, `#alignof`, `#nameof`, `#typeof`       |
+| `RuntimeCall`          | `call` against a symbol exported by `runtime/` — not an LLVM intrinsic, not a raw instruction, and not backend-specific: both the JIT and the AOT-linked binary resolve the same symbol | `#alloc`, `#free`                                 |
+| `ControlFlowTransform` | No call at the intrinsic's own call site — the compiler records a pending callback and emits ordinary calls at every exit edge of the enclosing block                                   | `#scope_exit`                                     |
 
 Only the first two strategies correspond to the "maps to an LLVM intrinsic or
 instruction" claim in the overview section above; the rest are genuinely
@@ -5155,53 +5175,290 @@ c_free(buf);    -- must use C's free, not #free
 ```
 
 *Named arena* — for bulk allocation patterns where you want to free everything
-at once. Useful when building data structures that are handed to foreign code or
-when you need predictable allocation layout. The arena is described by an
-`ArenaDescriptor` — a plain POD struct that both Lucid and C can read, giving
-both sides unambiguous knowledge of the arena's boundaries without any
-per-pointer tagging:
+at once. Useful when building data structures that are handed to foreign code,
+when you need predictable allocation layout, or when the same shape of
+allocation repeats many times (a game loop's per-frame temporaries, a
+parser's per-node scratch data) and you want to pay one allocation instead of
+one per repetition. This is `Arena` — a compiler-builtin type, not a
+user-definable struct and not an intrinsic family.
+
+**`Arena` is not accessed with `.`.** `.` is reserved for struct field and
+array element access — plain data with no attached behavior. `Arena`'s
+operations are behavior the compiler recognizes specially, the same category
+`module:member` access already occupies, so they use `::` instead. This
+gives Lucid three distinct access operators, each naming a different kind of
+thing on its left-hand side:
+
+| Operator | Left-hand side is...            | Example                    |
+| -------- | ------------------------------- | -------------------------- |
+| `.`      | a struct or array value         | `player.health`, `nums[0]` |
+| `:`      | a module                        | `math:sqrt(2.0)`           |
+| `::`     | a builtin/compiler-special type | `arena::alloc<Node>(128)`  |
+
+`::` signals "this is not a struct with methods" on sight — Lucid otherwise
+has no method dispatch at all (see the opening note on removing `impl` and
+`self`), and `Arena` is a deliberate, narrow exception granted only to this
+one compiler-recognized type, not a reopening of general method syntax.
+
+```ebnf
+arena_static_call = 'Arena' '::' ( 'create' '(' expr ')' | 'empty' '(' ')' )
+arena_method_call  = expr '::' ( 'alloc' generic_args '(' expr ')'
+                                | 'reset' '(' ')'
+                                | 'descriptor' '(' ')'
+                                | 'capacity' '(' ')'
+                                | 'remaining' '(' ')'
+                                | 'isEmpty' '(' ')'
+                                | 'space' generic_args '(' ')'
+                                | 'canFit' generic_args '(' expr ')' )
+```
+
+**Creating an arena — fallible.** `Arena::create` is the one point in the
+whole API that actually asks the system allocator for memory, so it is the
+one point that can fail for a reason outside the program's own logic — the
+device is low on memory, the request is too large for any single contiguous
+block, or an OS-level budget rejects it. That is common enough on
+constrained devices (older phones, embedded targets, memory-capped
+containers) to model honestly rather than paper over:
 
 ```lucid
--- ArenaDescriptor is a built-in POD struct — identical layout on Lucid and C sides
--- Fields are read-only after creation; only the intrinsics may mutate them
-const ArenaDescriptor = struct {
-    base *uint8;    -- start address of the arena region (never changes after create)
-    size uint64;    -- total byte capacity (never changes after create)
-};
+const arena Arena! = Arena::create(4096);
+if arena == err { return -1 }    -- caller's problem to handle: skip the
+                                   -- operation, retry smaller, degrade a
+                                   -- feature — Lucid doesn't prescribe this
+-- arena is Arena here, not Arena!, for the rest of the scope
+```
 
--- usage
-let arena ArenaDescriptor = #arena_create(4096);
-const nodes *Node  = #arena_alloc(arena, Node, 128);
-const edges *Edge  = #arena_alloc(arena, Edge, 256);
--- ... build a graph, pass descriptor + pointers to foreign code ...
-#arena_free(arena);    -- releases everything at once, no per-slot free needed
+`Arena::create(0)` is rejected — it always returns `err`, never a usable
+zero-capacity arena. `size` is `uint64`, so a negative request was never
+representable to begin with; `0` is the one remaining degenerate input, and
+treating it as a normal `err` needs no new mechanism — it is simply one more
+condition, alongside real allocator failure, that this already-fallible
+function can report. A literal `0` argument can be constant-folded to `err`
+at compile time the same way a literal `8 / 0` already resolves to the
+error state directly for a fallible binding (see **`err` — Failure**),
+without waiting for a runtime check.
+
+**`Arena::empty()` — the one sanctioned way to get a zero-capacity arena.**
+Some call sites want to *choose* an empty, always-usable-but-inert arena on
+purpose — most commonly as the fallback half of a `??` after a failed
+`Arena::create`. `Arena::empty()` is non-fallible and never touches the
+system allocator at all (sidestepping `malloc(0)`'s notoriously
+implementation-defined behavior across platforms): it directly constructs an
+`Arena` with a null base and zero capacity.
+
+```lucid
+const arena Arena = Arena::create(4096) ?? Arena::empty();
+```
+
+Because `Arena::empty()` returns plain `Arena`, not `Arena!`, it unifies
+directly with `??`'s expected type — no unwrapping, no generic function, no
+new diverging/"never returns" type needed to express "give up gracefully."
+An empty arena isn't a special poisoned state either: it is an ordinary
+`Arena` whose remaining capacity happens to be `0`, so any subsequent
+`::alloc` call on it falls straight into the overflow behavior already
+defined below — panics unless guarded with `??`. The out-of-memory case is
+handled entirely by machinery that already exists.
+
+**`Arena` bindings must be declared `const`.** Reassigning an `Arena`
+binding to a different arena would silently orphan any `[_]T` still pointing
+into the old backing region while the region itself is torn down — a
+dangling-pointer hazard with no compiler signal at the reassignment site.
+Requiring `const` closes this off entirely by reusing the existing
+reassignment rule rather than inventing a new one:
+
+```lucid
+const arena Arena = Arena::create(4096) ?? Arena::empty();
+arena = Arena::create(8192);    -- ERROR: cannot reassign const binding
+arena::reset();                  -- OK — not a reassignment, it's the type's
+                                  -- own defined operation, same as a
+                                  -- `const rc &Player` binding staying
+                                  -- un-rebindable while what it points at
+                                  -- can still change through other means
+```
+
+**Allocating — bounds-checked like an index, not fallible like `T!`.** A
+slice cannot itself carry `!` — `?`/`!` bind to an array's *element* type,
+never to the array or slice as a whole (see **Array Literals**), so
+`arena::alloc<T>(n) -> [_]T!` was never a valid shape to begin with.
+Exceeding an arena's remaining capacity is instead the same kind of failure
+as indexing past an array's bound or dividing by a runtime-zero divisor: a
+primitive bounds check the type system doesn't track as `!`, checked at
+runtime, and — left unguarded — a **panic** (see **Runtime Panics**).
+Remaining capacity depends on however many prior `::alloc` calls actually
+ran, which can be conditional, so — exactly like indexing a `[_]T` or
+`[*]T` — it is never provably safe at compile time and is always
+runtime-checked:
+
+```lucid
+let nodes []Node = arena::alloc<Node>(128);          -- panics on overflow
+let edges []Edge  = arena::alloc<Edge>(9999) ?? [];  -- overflow → empty slice
+```
+
+`arena::alloc<T>` returns `[_]T` — a borrowed view, never a raw pointer.
+Because `[_]T` is already governed by the **Downward Flow Rule**, an
+arena-allocated slice inherits, for free, every guarantee that rule already
+gives ordinary slices: it cannot be stored in a struct field, cannot be an
+array/slice element, cannot be returned from a function, and cannot be
+closure-captured. It is structurally incapable of outliving the block it was
+allocated in — no new borrow-tracking rule was added to get this.
+
+**Resetting — reuses the backing region, does not shrink or grow it.**
+`arena::reset()` sets the bump cursor back to zero in O(1); the underlying
+region is untouched and immediately reusable for the next batch of
+`::alloc` calls, which is the whole point for a per-frame or per-iteration
+hot path:
+
+```lucid
+const pool Arena = Arena::create(2000 * #sizeof(Particle)) ?? Arena::empty();
+
+const frame () = {
+    let particles []Particle = pool::alloc<Particle>(2000);
+    updateParticles(particles);
+    pool::reset();    -- next frame's alloc reuses this same region
+};
+```
+
+> [!WARNING]
+> **`reset()` invalidates every `[_]T` already taken from this arena, even
+> ones still lexically reachable.** The Downward Flow Rule stops a slice
+> from escaping *upward or sideways* out of its scope, but it does not stop
+> a slice and a `reset()` call from coexisting *in the same scope* — nothing
+> prevents `arena::reset()` from running while an earlier `[_]T` from the
+> same arena is still a live, readable binding. Closing this fully would
+> require real cross-scope liveness tracking, which is exactly the complexity
+> Lucid has already chosen not to take on elsewhere (see the `spawn`
+> shared-state warning under **Threads**, which is left to the programmer
+> for the same reason). This is a genuine, documented hazard, not a
+> compiler-checked one. The safe idiom: allocate and consume a `[_]T` inside
+> the same block that will call `reset()`, and call `reset()` last —
+> the loop pattern above already does this naturally, since `particles` goes
+> out of scope before the next call to `frame()` ever reaches `pool::reset()`
+> again.
+
+**Querying before you allocate.** Left unguarded, `::alloc` finds out
+whether there's room the hard way — a panic. Five read-only methods let a
+caller check first instead, without adding any state the arena doesn't
+already track internally:
+
+```lucid
+arena::capacity()    -> uint64   -- total bytes, fixed at Arena::create/empty
+arena::remaining()   -> uint64   -- bytes left right now
+arena::isEmpty()     -> bool     -- arena::remaining() == 0
+arena::space<T>()    -> uint64   -- arena::remaining() / #sizeof(T) — how many T fit
+arena::canFit<T>(n)  -> bool     -- n <= arena::space<T>()
+```
+
+`capacity()` and `remaining()` stay in plain bytes — the same unit the
+internal cursor already uses, and the unit `::descriptor()` reports to C —
+so `capacity() - remaining()` (bytes used) is meaningful regardless of what
+types the arena actually holds, useful for logging or a fullness check
+without committing to one element type. `isEmpty()` is pure sugar over
+`remaining() == 0`; it reports `true` both for a genuine `Arena::empty()`
+and for a real arena you've simply exhausted through ordinary use, which is
+the more common thing to actually branch on.
+
+`space<T>()` is the one most call sites reach for, because bytes alone
+don't answer "how many `Node`s fit" without the caller doing the division by
+hand every time:
+
+```lucid
+let n uint64 = arena::space<int>();    -- exact count, no guessing
+```
+
+`canFit<T>(n)` is defined directly in terms of `space<T>()` rather than
+repeating the same division as a separate comparison — one source of truth
+for "does this fit," whether the caller wants the yes/no answer or the exact
+number:
+
+```lucid
+if arena::canFit<Node>(100) {
+    let nodes []Node = arena::alloc<Node>(100);   -- guaranteed not to panic
+} else {
+    -- fall back, log, request a bigger arena next time, etc.
+}
+```
+
+None of these five methods can themselves fail or panic — they only read
+already-known internal fields (or, for `space`/`canFit`, do one division
+against a value already known not to be zero-divided-by, since `#sizeof(T)`
+is never `0`), so none of them return `!` or need `??` at the call site.
+
+**No `::free()`.** `Arena` has no manual-free operation at all — a
+deliberate difference from the old `#arena_free` intrinsic, and the reason
+this redesign removes the intrinsic family rather than keeping it alongside
+the type. An `Arena`-typed local is just one more scope-owned heap-backed
+value, released by the same compiler-inserted call that already frees
+`[*]T` and `string` locals at block exit — nothing for the user to write, no
+`#scope_exit` wiring required to get RAII-style cleanup out of it.
+
+**FFI escape hatch — one method, not a parallel intrinsic family.**
+`ArenaDescriptor` is a **second compiler-builtin type**, not an ordinary
+stdlib struct — `arena::descriptor()` is the *only* way to produce one; a
+struct literal (`ArenaDescriptor{ base = ..., size = ... }`) is rejected,
+exactly like `Arena{ ... }` already is. This is deliberate, not a
+side-effect of how the compiler happens to implement it: C's whole reason to
+trust an `ArenaDescriptor` is that it can only describe a real, currently
+live arena. If it were an ordinary constructible struct, any code could
+fabricate `ArenaDescriptor{ base = someRandomPointer, size = 999999 }` and
+hand C a completely fictitious region — which defeats the boundary-checking
+this type exists for in the first place. The compiler already has to know
+`Arena`'s internal base/size/cursor layout natively to implement bump
+allocation at all; handing two of those three already-known fields out
+through a second fixed-shape builtin is a small, self-consistent extension
+of that existing knowledge, not a new category of problem.
+
+```lucid
+-- ArenaDescriptor is a built-in POD type — identical layout on Lucid and C sides.
+-- Shown here as a struct shape purely for documentation and for the C-side
+-- author; it is not literal-constructible Lucid source, the same way the
+-- tagged-slot byte layout for T?/T! elsewhere in this document describes a
+-- compiler-hardcoded layout without being a real struct declaration.
+--
+--   struct {
+--       base *uint8;    -- start address of the arena region (never changes)
+--       size uint64;    -- total byte capacity (never changes)
+--   }
+
+const arena Arena = Arena::create(4096) ?? Arena::empty();
+const nodes []Node = arena::alloc<Node>(128);
+const edges []Edge = arena::alloc<Edge>(256);
+const desc ArenaDescriptor = arena::descriptor();   -- only legal way to obtain one
+c_build_graph(nodes, edges, #addrof(desc));
+-- no free call needed here — released automatically at scope exit
 ```
 
 `ArenaDescriptor` carries only `base` and `size` — the two values needed to
-answer the ownership question "did this pointer come from this arena?" The
-allocation cursor (`used`) is tracked internally by the compiler and
-is not exposed in the descriptor. C never needs to know the cursor — it only
-needs the boundaries.
+answer "did this pointer come from this arena?" The allocation cursor stays
+internal to the compiler; C never needs it, only the boundaries.
 
 ---
 
 **Ownership at a Glance**
 
-| Memory origin                   | Lucid tracks it?      | How it is freed              | C can verify ownership?              |
-| ------------------------------- | --------------------- | ---------------------------- | ------------------------------------ |
-| Any local value, `[*]T`, struct | Yes — fully automatic | Scope exit                   | N/A — stack memory, never share      |
-| `#alloc`                        | Yes — compiler        | `#free` — double-free caught | No — pass size explicitly (Rule 3)   |
-| `#arena_alloc`                  | Yes — compiler        | `#arena_free`                | Yes — via `ArenaDescriptor` (Rule 4) |
-| C `malloc` / foreign library    | No                    | Matching C free function     | N/A — C owns it entirely             |
+| Memory origin                   | Lucid tracks it?      | How it is freed                      | C can verify ownership?             |
+| ------------------------------- | --------------------- | ------------------------------------ | ----------------------------------- |
+| Any local value, `[*]T`, struct | Yes — fully automatic | Scope exit                           | N/A — stack memory, never share     |
+| `#alloc`                        | Yes — compiler        | `#free` — double-free caught         | No — pass size explicitly (Rule 3)  |
+| `Arena`                         | Yes — compiler        | Scope exit — automatic, no user call | Yes — via `::descriptor()` (Rule 4) |
+| C `malloc` / foreign library    | No                    | Matching C free function             | N/A — C owns it entirely            |
 
-| Intrinsic                   | Args                              | Returns           | Notes                                  |
-| --------------------------- | --------------------------------- | ----------------- | -------------------------------------- |
-| `#alloc(T, count)`          | type, `uint64`                    | `*T`              | Lucid-tracked heap allocation          |
-| `#free(ptr)`                | `*T`                              | —                 | Rejects double-free and null-free      |
-| `#arena_create(size)`       | `uint64`                          | `ArenaDescriptor` | Create a named arena                   |
-| `#arena_alloc(arena, T, n)` | `ArenaDescriptor`, type, `uint64` | `*T`              | Allocate from arena                    |
-| `#arena_reset(arena)`       | `ArenaDescriptor`                 | —                 | Release contents; arena remains usable |
-| `#arena_free(arena)`        | `ArenaDescriptor`                 | —                 | Destroy arena and all contents         |
+| Intrinsic          | Args           | Returns | Notes                             |
+| ------------------ | -------------- | ------- | --------------------------------- |
+| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation     |
+| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free |
+
+| `Arena` operation         | Args                 | Returns           | Notes                                                      |
+| ------------------------- | -------------------- | ----------------- | ---------------------------------------------------------- |
+| `Arena::create(size)`     | `uint64`             | `Arena!`          | Fallible — the one call that touches the system allocator  |
+| `Arena::empty()`          | —                    | `Arena`           | Non-fallible; zero-capacity, no allocator call             |
+| `arena::alloc<T>(count)`  | type param, `uint64` | `[_]T`            | Bounds-checked; panics on overflow, or `??` for a fallback |
+| `arena::reset()`          | —                    | —                 | O(1); see the `reset()` hazard warning above               |
+| `arena::descriptor()`     | —                    | `ArenaDescriptor` | Read-only `{base, size}` for the FFI boundary              |
+| `arena::capacity()`       | —                    | `uint64`          | Total bytes, fixed at `create`/`empty`                     |
+| `arena::remaining()`      | —                    | `uint64`          | Bytes left right now                                       |
+| `arena::isEmpty()`        | —                    | `bool`            | `arena::remaining() == 0`                                  |
+| `arena::space<T>()`       | type param           | `uint64`          | `arena::remaining() / #sizeof(T)`                          |
+| `arena::canFit<T>(count)` | type param, `uint64` | `bool`            | `count <= arena::space<T>()`                               |
 
 ---
 
@@ -5346,7 +5603,7 @@ const process () = {
 - **Statement position only.** `#scope_exit` produces no value and cannot
   appear inside a larger expression (`let x = #scope_exit(...)` is a compile
   error, not `nil`) — this is the same restriction already implied for every
-  other void-returning intrinsic (`#free`, `#arena_free`, `#fence`, ...),
+  other void-returning intrinsic (`#free`, `#fence`, ...),
   not a special case invented for this one. Keeping registration order tied
   to unambiguous statement order is also what makes the LIFO guarantee mean
   anything.
@@ -5800,8 +6057,8 @@ territory. Lucid addresses them through four rules and one pattern:
 
 A scope arena pointer is only valid for the current scope's lifetime. If C stores
 the address and uses it after the call returns, it holds a dangling pointer into
-freed memory. Only `#alloc`-ed or `#arena_alloc`-ed pointers may be passed to
-foreign functions that need to hold the address past the call:
+Only `#alloc`-ed pointers or `Arena`-backed `[_]T` slices (see Rule 4) may be
+passed to foreign functions that need to hold the address past the call:
 
 ```lucid
 -- WRONG: scope arena address passed to C that stores it
@@ -5852,21 +6109,22 @@ c_fill(buf, 1024);   -- size passed explicitly — C knows its bounds
 
 Passing a bare pointer into arena-allocated memory gives C no way to know where
 the arena begins or ends, and no way to verify whether a pointer belongs to it.
-Always pass the `ArenaDescriptor` alongside any arena-allocated pointer given to
+Always pass the `ArenaDescriptor` alongside any arena-allocated data given to
 C. The descriptor gives C unambiguous boundary information — `base` and `size`
 are enough to answer "is this pointer mine to free?" with a single range check.
-Never pass a raw `*uint8` into arena memory to C without its descriptor:
+Never pass an arena-derived slice to C without its descriptor:
 
 ```lucid
 -- WRONG: C receives arena memory but has no boundary information
-let arena ArenaDescriptor = #arena_create(65536);
-const data *uint8 = #arena_alloc(arena, uint8, 4096);
+const arena Arena = Arena::create(65536) ?? Arena::empty();
+const data []uint8 = arena::alloc<uint8>(4096);
 c_process(data);    -- C has no way to verify ownership or bounds
 
 -- CORRECT: C receives both the data and the descriptor
-let arena ArenaDescriptor = #arena_create(65536);
-const data *uint8 = #arena_alloc(arena, uint8, 4096);
-c_process(data, #addrof(arena));    -- C can verify: is data inside arena?
+const arena Arena = Arena::create(65536) ?? Arena::empty();
+const data []uint8 = arena::alloc<uint8>(4096);
+const desc ArenaDescriptor = arena::descriptor();
+c_process(data, #addrof(desc));    -- C can verify: is data inside arena?
 ```
 
 **Pattern — Arena as a C sandbox**
@@ -5875,22 +6133,24 @@ The safest pattern for giving C a region to work in is a named arena backed by
 an `ArenaDescriptor`. Lucid allocates slices from the arena and passes both the
 slices and the descriptor to C. C receives a complete picture of the arena's
 boundaries — it can verify that any pointer it holds falls within the region and
-must not call `free()` on arena memory. When C is done, Lucid frees the whole
-arena at once.
+must not call `free()` on arena memory. When C is done, Lucid needs no explicit
+free call at all — the arena is released automatically at scope exit, the same
+as any other heap-backed local.
 
 ```lucid
 -- Lucid side: create arena and allocate slices from it
-let arena ArenaDescriptor = #arena_create(65536);
-const nodes *uint8 = #arena_alloc(arena, uint8, 4096);
-const edges *uint8 = #arena_alloc(arena, uint8, 8192);
+const arena Arena = Arena::create(65536) ?? Arena::empty();
+const nodes []uint8 = arena::alloc<uint8>(4096);
+const edges []uint8 = arena::alloc<uint8>(8192);
+const desc ArenaDescriptor = arena::descriptor();
 
 -- pass both the slices and the descriptor to C
 -- C receives: the data pointers AND the arena's base + size
--- C can verify ownership: is this pointer inside arena.base .. arena.base + arena.size?
+-- C can verify ownership: is this pointer inside desc.base .. desc.base + desc.size?
 -- C must not call free() on nodes or edges — they are not malloc-ed addresses
-c_build_graph(nodes, edges, #addrof(arena));
+c_build_graph(nodes, edges, #addrof(desc));
 
-#arena_free(arena);    -- Lucid frees everything at once when C is done
+-- no free call here — Lucid releases the whole arena automatically at scope exit
 ```
 
 On the C side, the descriptor arrives as a plain POD struct with an identical
@@ -5921,16 +6181,17 @@ void c_build_graph(uint8_t* nodes, uint8_t* edges,
 ```
 
 > [!IMPORTANT]
-> `ArenaDescriptor.base` and `ArenaDescriptor.size` are set once at
-> `#arena_create` and never change. They are safe to read from C at any point
-> during the arena's lifetime. The allocation cursor is managed internally by
-> the compiler and is not exposed in the descriptor — C does not need
-> it and must not attempt to track it.
+> `ArenaDescriptor.base` and `ArenaDescriptor.size` are set once when
+> `Arena::create` succeeds and never change. They are safe to read from C at
+> any point during the arena's lifetime. The allocation cursor is managed
+> internally by the compiler and is not exposed in the descriptor — C does
+> not need it and must not attempt to track it.
 
 > [!WARNING]
-> Passing `#addrof(arena)` to C is only safe when the `ArenaDescriptor` variable
-> outlives the C call. Declare arena descriptors at the outermost scope that
-> needs them — never as a short-lived local inside a loop that calls C.
+> Passing `#addrof(desc)` to C is only safe when the `ArenaDescriptor`
+> variable outlives the C call, which in turn requires the `Arena` it came
+> from to still be in scope. Call `::descriptor()` at the outermost scope
+> that needs it — never as a short-lived local inside a loop that calls C.
 
 ---
 
