@@ -3,7 +3,7 @@
 
 #include "LucidIntrinsicEmitter.hpp"
 #include "../CodeGenType.hpp"
-#include "../closure/CodeGenClosure.hpp"
+#include "codegen/runtime/closure/CodeGenClosure.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "../support/LLVMHelpers.hpp"

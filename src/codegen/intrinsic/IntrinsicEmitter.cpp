@@ -15,6 +15,123 @@
 
 namespace codegen {
 
+// ─── Helper: Determine if an intrinsic argument should NOT be loaded ────
+// 
+// Some intrinsics need raw addresses/pointers, not loaded values:
+//   - addrof(x)      → needs the address of x
+//   - toRef(ptr)     → needs the raw pointer (for null check)
+//   - ptrstr(x)      → needs the raw address, not the value
+//   - arena_alloc(arena, T, count) → needs arena descriptor pointer
+//   - alloc(T, count) → count should be loaded, but type T is compile-time
+//
+// This helper returns true for arguments that should skip the load.
+static bool shouldSkipLoadForArg(IntrinsicKind kind, size_t argIndex) {
+    switch (kind) {
+        // ─── These intrinsics need raw addresses ──────────────────────────
+        case IntrinsicKind::Addrof:
+        case IntrinsicKind::ToRef:
+        case IntrinsicKind::Ptrstr:
+            return true;  // All args should NOT be loaded
+            
+        // ─── Arena allocation: arena pointer must NOT be loaded ──────────
+        case IntrinsicKind::ArenaAlloc:
+            return argIndex == 0;  // Only the arena arg (first) should NOT be loaded
+            
+        // ─── All other intrinsics load their arguments normally ──────────
+        default:
+            return false;
+    }
+}
+
+// ─── Helper: Get the expected argument type for an intrinsic ────────────
+// 
+// Some intrinsics have special type requirements that don't come from
+// the argument's resolved type (e.g., arena_alloc's arena arg is i8*,
+// but the AST says ArenaDescriptor*). This helper maps intrinsic kinds
+// to the correct LLVM type for each argument.
+static llvm::Type* getExpectedArgType(
+    IntrinsicKind kind,
+    size_t argIndex,
+    CodeGenContext& ctx
+) {
+    switch (kind) {
+        // ─── Arena operations: arena pointer is i8* ──────────────────────
+        case IntrinsicKind::ArenaAlloc:
+        case IntrinsicKind::ArenaReset:
+        case IntrinsicKind::ArenaFree:
+            if (argIndex == 0) {
+                return llvm::PointerType::get(ctx.llvmCtx, 0);  // i8*
+            }
+            break;
+            
+        // ─── Alloc: count is i64 ──────────────────────────────────────────
+        case IntrinsicKind::Alloc:
+            if (argIndex == 0) {
+                return llvm::Type::getInt64Ty(ctx.llvmCtx);
+            }
+            break;
+            
+        default:
+            break;
+    }
+    return nullptr;  // Use the type from AST
+}
+
+// ─── Helper: Lower a single intrinsic argument ──────────────────────────
+static llvm::Value* lowerIntrinsicArg(
+    ExprAST* arg,
+    IntrinsicKind kind,
+    size_t argIndex,
+    CodeGenContext& ctx
+) {
+    if (!arg) return nullptr;
+    
+    // ─── Lower the expression ─────────────────────────────────────────────
+    llvm::Value* argVal = lowerExpression(arg, ctx);
+    if (!argVal) return nullptr;
+    
+    // ─── Check if we should skip loading ──────────────────────────────────
+    bool skipLoad = shouldSkipLoadForArg(kind, argIndex);
+    
+    if (skipLoad) {
+        // ─── For raw address arguments, just return the pointer ──────────
+        // But we may need to cast to the expected type
+        llvm::Type* expectedType = getExpectedArgType(kind, argIndex, ctx);
+        if (expectedType && argVal->getType() != expectedType) {
+            // Cast to the expected type (e.g., ArenaDescriptor* → i8*)
+            if (argVal->getType()->isPointerTy() && expectedType->isPointerTy()) {
+                argVal = ctx.builder.CreatePointerCast(argVal, expectedType, "intrinsic_arg_cast");
+            }
+        }
+        return argVal;
+    }
+    
+    // ─── Normal path: load lvalues ──────────────────────────────────────
+    if (arg->isLValue) {
+        // Get the element type from the AST
+        llvm::Type* elemType = getType(ctx, arg->resolvedType);
+        if (!elemType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, arg->loc,
+                                    "cannot determine type of argument for intrinsic");
+            return nullptr;
+        }
+        argVal = loadIfNeeded(argVal, elemType, ctx);
+        if (!argVal) return nullptr;
+    }
+    
+    // ─── Cast to expected type if needed ──────────────────────────────────
+    llvm::Type* expectedType = getExpectedArgType(kind, argIndex, ctx);
+    if (expectedType && argVal->getType() != expectedType) {
+        if (argVal->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
+            argVal = ctx.builder.CreateIntCast(argVal, expectedType, true, "intrinsic_int_cast");
+        } else if (argVal->getType()->isPointerTy() && expectedType->isPointerTy()) {
+            argVal = ctx.builder.CreatePointerCast(argVal, expectedType, "intrinsic_ptr_cast");
+        }
+    }
+    
+    return argVal;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 llvm::Value* emitIntrinsicFromAST(
@@ -26,80 +143,241 @@ llvm::Value* emitIntrinsicFromAST(
     SourceLocation loc = expr->loc;
     const IntrinsicInfo* info = IntrinsicRegistry::getInstance(ctx.pool).getInfo(expr->intrinsicName);
     if (!info) {
-        // Sema should already have rejected an unknown intrinsic name
-        // before CodeGen ever sees it - this is defensive, not a
-        // user-facing path, hence pool.lookup() here is fine (error path
-        // only, not a hot dispatch comparison).
         ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
                                 "unknown intrinsic '#", ctx.pool.lookup(expr->intrinsicName), "'");
         return nullptr;
     }
 
-    // ─── Special-case intrinsics that need raw addresses ────────────────
-    // These intrinsics should NOT load their arguments - dispatched by
-    // IntrinsicKind (an enum, resolved once above), not by re-comparing
-    // strings or InternedStrings against literals.
-    switch (info->kind) {
-        case IntrinsicKind::Addrof: {
-            if (expr->args.empty()) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                       "intrinsic '#addrof' requires an argument");
-                return nullptr;
-            }
-            // addrof(x) returns the address of x - do NOT load
-            llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-            if (!argVal) return nullptr;
-            // argVal should already be a pointer (l-value)
-            return argVal;
-        }
-
-        case IntrinsicKind::ToRef: {
-            if (expr->args.empty()) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                       "intrinsic '#toRef' requires an argument");
-                return nullptr;
-            }
-            // toRef(ptr) - do NOT load, but add null check
-            llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-            if (!argVal) return nullptr;
-            return emitNullCheck(argVal, ctx);
-        }
-
-        case IntrinsicKind::Ptrstr: {
-            if (expr->args.empty()) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                       "intrinsic '#ptrstr' requires an argument");
-                return nullptr;
-            }
-            // ptrstr(x) formats x's memory address as a hex string - like
-            // addrof, it needs the raw address itself, not x's value, so
-            // it must NOT be loaded here.
-            llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-            if (!argVal) return nullptr;
-            return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-        }
-
-        default:
-            break;
+    // ─── Special-case: #scope_exit ────────────────────────────────────────
+    // #scope_exit is handled entirely in Sema and stored on BlockStmtAST.
+    // No runtime code is generated at the call site itself.
+    if (info->kind == IntrinsicKind::ScopeExit) {
+        return nullptr;
     }
 
-    // ─── Normal path: load lvalues ────────────────────────────────────────
-    std::vector<llvm::Value*> args;
-    for (ExprAST* arg : expr->args) {
-        llvm::Value* argVal = lowerExpression(arg, ctx);
-        if (!argVal) return nullptr;
+    // ─── Special-case: #sizeof(T) / #alignof(T) ──────────────────────────
+    // These intrinsics operate on types, not values. They have no arguments
+    // at runtime - the type comes from expr->resolvedType.
+    if (info->kind == IntrinsicKind::Sizeof || info->kind == IntrinsicKind::Alignof) {
+        // Just delegate to the emitter with empty args
+        return emitIntrinsic(expr->intrinsicName, {}, expr, ctx);
+    }
 
-        if (arg->isLValue) {
-            // Load with explicit element type
-            llvm::Type* elemType = getType(ctx, arg->resolvedType);
-            if (!elemType) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, arg->loc,
-                                       "cannot determine type of argument for '#",
-                                       ctx.pool.lookup(expr->intrinsicName), "'");
-                return nullptr;
+    // ─── Special-case: #addrof(x) ─────────────────────────────────────────
+    // addrof(x) returns the address of x - do NOT load
+    if (info->kind == IntrinsicKind::Addrof) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#addrof' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        // argVal should already be a pointer (l-value)
+        return argVal;
+    }
+
+    // ─── Special-case: #toRef(ptr) ────────────────────────────────────────
+    // toRef(ptr) - do NOT load, but add null check
+    if (info->kind == IntrinsicKind::ToRef) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#toRef' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        return emitNullCheck(argVal, ctx);
+    }
+
+    // ─── Special-case: #ptrstr(x) ─────────────────────────────────────────
+    // ptrstr(x) formats x's memory address - needs the raw address
+    if (info->kind == IntrinsicKind::Ptrstr) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#ptrstr' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #bitcast(T, x) ─────────────────────────────────────
+    // #bitcast takes a type argument T (compile-time) and a value x (runtime)
+    // The type T comes from expr->resolvedType, not from the arguments.
+    if (info->kind == IntrinsicKind::Bitcast) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#bitcast' requires an argument");
+            return nullptr;
+        }
+        // Lower the value argument (the type T is from resolvedType)
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        if (expr->args[0]->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
+            if (elemType) {
+                argVal = loadIfNeeded(argVal, elemType, ctx);
             }
-            argVal = loadIfNeeded(argVal, elemType, ctx);
             if (!argVal) return nullptr;
+        }
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #alloc(T, count) ──────────────────────────────────
+    // #alloc takes a type argument T (compile-time) and a count (runtime)
+    // The type T comes from expr->resolvedType (*T), count is the argument.
+    if (info->kind == IntrinsicKind::Alloc) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#alloc' requires an argument (count)");
+            return nullptr;
+        }
+        // Lower the count argument - it should be loaded
+        llvm::Value* count = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!count) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {count}, expr, ctx);
+    }
+
+    // ─── Special-case: #arena_alloc(arena, T, count) ─────────────────────
+    // #arena_alloc takes:
+    //   - arena (pointer to ArenaDescriptor) - NOT loaded
+    //   - T (type argument, compile-time)
+    //   - count (runtime)
+    if (info->kind == IntrinsicKind::ArenaAlloc) {
+        if (expr->args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#arena_alloc' requires 2 arguments (arena, count)");
+            return nullptr;
+        }
+        // ─── Arena argument: do NOT load ──────────────────────────────────
+        llvm::Value* arena = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!arena) return nullptr;
+        
+        // ─── Count argument: load normally ─────────────────────────────────
+        llvm::Value* count = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
+        if (!count) return nullptr;
+        
+        return emitIntrinsic(expr->intrinsicName, {arena, count}, expr, ctx);
+    }
+
+    // ─── Special-case: #arena_create(size) ───────────────────────────────
+    // #arena_create takes a size (runtime) - load normally
+    if (info->kind == IntrinsicKind::ArenaCreate) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#arena_create' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* size = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!size) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {size}, expr, ctx);
+    }
+
+    // ─── Special-case: #arena_reset(arena) ───────────────────────────────
+    // #arena_reset takes an arena pointer - do NOT load
+    if (info->kind == IntrinsicKind::ArenaReset || 
+        info->kind == IntrinsicKind::ArenaFree) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#'", ctx.pool.lookup(expr->intrinsicName), 
+                                   "' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* arena = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!arena) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {arena}, expr, ctx);
+    }
+
+    // ─── Special-case: #tostr(x) ──────────────────────────────────────────
+    // #tostr can take ANY type - load the value normally
+    if (info->kind == IntrinsicKind::Tostr) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#tostr' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* argVal = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!argVal) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #type_of(x) / #name_of(x) ─────────────────────────
+    // These intrinsics operate on expressions - they need the AST info
+    if (info->kind == IntrinsicKind::Typeof || info->kind == IntrinsicKind::Nameof) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#'", ctx.pool.lookup(expr->intrinsicName), 
+                                   "' requires an argument");
+            return nullptr;
+        }
+        // For #typeof and #nameof, we actually DON'T need to lower the argument
+        // - we just need its type/name from the AST. But we still need to
+        // pass something to the emitter (it will ignore the value and use
+        // the AST).
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #simd_splat(x) ─────────────────────────────────────
+    // #simd_splat takes a scalar value and returns a vector - load normally
+    if (info->kind == IntrinsicKind::SimdSplat) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_splat' requires an argument");
+            return nullptr;
+        }
+        llvm::Value* argVal = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!argVal) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #simd_extract(vec, index) ─────────────────────────
+    // #simd_extract takes a vector and an index - index must be constant
+    if (info->kind == IntrinsicKind::SimdExtract) {
+        if (expr->args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_extract' requires 2 arguments");
+            return nullptr;
+        }
+        llvm::Value* vec = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!vec) return nullptr;
+        llvm::Value* idx = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
+        if (!idx) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {vec, idx}, expr, ctx);
+    }
+
+    // ─── Special-case: #simd_insert(vec, index, value) ───────────────────
+    if (info->kind == IntrinsicKind::SimdInsert) {
+        if (expr->args.size() < 3) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_insert' requires 3 arguments");
+            return nullptr;
+        }
+        llvm::Value* vec = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
+        if (!vec) return nullptr;
+        llvm::Value* idx = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
+        if (!idx) return nullptr;
+        llvm::Value* val = lowerIntrinsicArg(expr->args[2], info->kind, 2, ctx);
+        if (!val) return nullptr;
+        return emitIntrinsic(expr->intrinsicName, {vec, idx, val}, expr, ctx);
+    }
+
+    // ─── General case: Lower all arguments with the appropriate rules ────
+    // This handles all other intrinsics (math, memory, string, etc.)
+    std::vector<llvm::Value*> args;
+    args.reserve(expr->args.size());
+
+    for (size_t i = 0; i < expr->args.size(); ++i) {
+        ExprAST* arg = expr->args[i];
+        llvm::Value* argVal = lowerIntrinsicArg(arg, info->kind, i, ctx);
+        if (!argVal) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, arg->loc,
+                                    "failed to lower argument ", i, " for intrinsic '#",
+                                    ctx.pool.lookup(expr->intrinsicName), "'");
+            return nullptr;
         }
         args.push_back(argVal);
     }

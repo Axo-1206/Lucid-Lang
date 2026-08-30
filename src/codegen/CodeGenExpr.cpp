@@ -8,13 +8,13 @@
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/LLVMHelpers.hpp"
-#include "support/RuntimeError.hpp"
+#include "codegen/runtime/RuntimeError.hpp"
+#include "codegen/runtime/closure/CodeGenClosure.hpp"
 #include "intrinsic/IntrinsicEmitter.hpp"
 #include "../sema/types/SemaCompare.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "closure/CodeGenClosure.hpp"
 #include "generic/CodeGenGeneric.hpp"
 
 #include <llvm/IR/Constants.h>
@@ -61,44 +61,25 @@ llvm::Value* lowerExpression(ExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
     switch (expr->kind) {
-        case ASTKind::LiteralExpr:
-            return lowerLiteralExpr(expr->as<LiteralExprAST>(), ctx);
-        case ASTKind::IdentifierExpr:
-            return lowerIdentifierExpr(expr->as<IdentifierExprAST>(), ctx);
-        case ASTKind::ArrayLiteralExpr:
-            return lowerArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), ctx);
-        case ASTKind::StructLiteralExpr:
-            return lowerStructLiteralExpr(expr->as<StructLiteralExprAST>(), ctx);
-        case ASTKind::BinaryExpr:
-            return lowerBinaryExpr(expr->as<BinaryExprAST>(), ctx);
-        case ASTKind::UnaryExpr:
-            return lowerUnaryExpr(expr->as<UnaryExprAST>(), ctx);
-        case ASTKind::CallExpr:
-            return lowerCallExpr(expr->as<CallExprAST>(), ctx);
-        case ASTKind::IntrinsicCallExpr:
-            return lowerIntrinsicCallExpr(expr->as<IntrinsicCallExprAST>(), ctx);
-        case ASTKind::IndexExpr:
-            return lowerIndexExpr(expr->as<IndexExprAST>(), ctx);
-        case ASTKind::SliceExpr:
-            return lowerSliceExpr(expr->as<SliceExprAST>(), ctx);
-        case ASTKind::FieldAccessExpr:
-            return lowerFieldAccessExpr(expr->as<FieldAccessExprAST>(), ctx);
-        case ASTKind::ModuleAccessExpr:
-            return lowerModuleAccessExpr(expr->as<ModuleAccessExprAST>(), ctx);
-        case ASTKind::NullCoalesceExpr:
-            return lowerNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), ctx);
-        case ASTKind::AssignExpr:
-            return lowerAssignExpr(expr->as<AssignExprAST>(), ctx);
-        case ASTKind::PipelineExpr:
-            return lowerPipelineExpr(expr->as<PipelineExprAST>(), ctx);
-        case ASTKind::ComposeExpr:
-            return lowerComposeExpr(expr->as<ComposeExprAST>(), ctx);
-        case ASTKind::AnonFuncExpr:
-            return lowerAnonFuncExpr(expr->as<AnonFuncExprAST>(), ctx);
-        case ASTKind::IfExpr:
-            return lowerIfExpr(expr->as<IfExprAST>(), ctx);
-        case ASTKind::RangeExpr:
-            return lowerRangeExpr(expr->as<RangeExprAST>(), ctx);
+        case ASTKind::LiteralExpr:       return lowerLiteralExpr(expr->as<LiteralExprAST>(), ctx);
+        case ASTKind::IdentifierExpr:    return lowerIdentifierExpr(expr->as<IdentifierExprAST>(), ctx);
+        case ASTKind::ArrayLiteralExpr:  return lowerArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), ctx);
+        case ASTKind::StructLiteralExpr: return lowerStructLiteralExpr(expr->as<StructLiteralExprAST>(), ctx);
+        case ASTKind::BinaryExpr:        return lowerBinaryExpr(expr->as<BinaryExprAST>(), ctx);
+        case ASTKind::UnaryExpr:         return lowerUnaryExpr(expr->as<UnaryExprAST>(), ctx);
+        case ASTKind::CallExpr:          return lowerCallExpr(expr->as<CallExprAST>(), ctx);
+        case ASTKind::IntrinsicCallExpr: return lowerIntrinsicCallExpr(expr->as<IntrinsicCallExprAST>(), ctx);
+        case ASTKind::IndexExpr:         return lowerIndexExpr(expr->as<IndexExprAST>(), ctx);
+        case ASTKind::SliceExpr:         return lowerSliceExpr(expr->as<SliceExprAST>(), ctx);
+        case ASTKind::FieldAccessExpr:   return lowerFieldAccessExpr(expr->as<FieldAccessExprAST>(), ctx);
+        case ASTKind::ModuleAccessExpr:  return lowerModuleAccessExpr(expr->as<ModuleAccessExprAST>(), ctx);
+        case ASTKind::NullCoalesceExpr:  return lowerNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), ctx);
+        case ASTKind::AssignExpr:        return lowerAssignExpr(expr->as<AssignExprAST>(), ctx);
+        case ASTKind::PipelineExpr:      return lowerPipelineExpr(expr->as<PipelineExprAST>(), ctx);
+        case ASTKind::ComposeExpr:       return lowerComposeExpr(expr->as<ComposeExprAST>(), ctx);
+        case ASTKind::AnonFuncExpr:      return lowerAnonFuncExpr(expr->as<AnonFuncExprAST>(), ctx);
+        case ASTKind::IfExpr:            return lowerIfExpr(expr->as<IfExprAST>(), ctx);
+        case ASTKind::RangeExpr:         return lowerRangeExpr(expr->as<RangeExprAST>(), ctx);
         default:
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, expr->loc,
                                     "unsupported expression kind: ",
