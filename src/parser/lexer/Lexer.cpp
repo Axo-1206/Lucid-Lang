@@ -485,305 +485,236 @@ Token lexOperatorOrPunctuation(LexerState& state) {
     unsigned int startLine = state.line;
     unsigned short startCol = state.column;
     char c = currentChar(state);
+    char next = peekChar(state, 1);
+    char next2 = peekChar(state, 2);
     
-    // ─── Two-character operators ──────────────────────────────────────
+    // ─── Two-character and three-character operators ──────────────────
     
-    // ** and **=
-    if (c == '*') {
-        if (peekChar(state, 1) == '*') {
-            advance(state);
-            if (peekChar(state, 1) == '=') {
-                advance(state);
-                return Token{TokenType::POW_ASSIGN, "**=", startLine, startCol};
+    // Check multi-character operators first
+    switch (c) {
+        case '*':
+            if (next == '*') {
+                if (peekChar(state, 2) == '=') {
+                    advance(state); advance(state); advance(state);
+                    return Token{TokenType::POW_ASSIGN, "**=", startLine, startCol};
+                }
+                advance(state); advance(state);
+                return Token{TokenType::POW, "**", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::MUL_ASSIGN, "*=", startLine, startCol};
             }
             advance(state);
-            return Token{TokenType::POW, "**", startLine, startCol};
-        }
-    }
-    
-    // <<, <<=, >>, >>=
-    if (c == '<' && peekChar(state, 1) == '<') {
-        advance(state);
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::MUL, "*", startLine, startCol};
+            
+        case '<':
+            if (next == '<') {
+                if (peekChar(state, 2) == '=') {
+                    advance(state); advance(state); advance(state);
+                    return Token{TokenType::SHL_ASSIGN, "<<=", startLine, startCol};
+                }
+                advance(state); advance(state);
+                return Token{TokenType::SHL, "<<", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::LESS_EQUAL, "<=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::SHL_ASSIGN, "<<=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::SHL, "<<", startLine, startCol};
-    }
-    
-    if (c == '>' && peekChar(state, 1) == '>') {
-        advance(state);
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::LESS, "<", startLine, startCol};
+            
+        case '>':
+            if (next == '>') {
+                if (peekChar(state, 2) == '=') {
+                    advance(state); advance(state); advance(state);
+                    return Token{TokenType::SHR_ASSIGN, ">>=", startLine, startCol};
+                }
+                advance(state); advance(state);
+                return Token{TokenType::SHR, ">>", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::GREATER_EQUAL, ">=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::SHR_ASSIGN, ">>=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::SHR, ">>", startLine, startCol};
-    }
-    
-    // .. and ..<
-    if (c == '.' && peekChar(state, 1) == '.') {
-        advance(state);
-        if (peekChar(state, 1) == '<') {
+            return Token{TokenType::GREATER, ">", startLine, startCol};
+            
+        case '.':
+            if (next == '.' && peekChar(state, 2) == '.') {
+                advance(state); advance(state); advance(state);
+                return Token{TokenType::VARIADIC, "...", startLine, startCol};
+            }
+            if (next == '.') {
+                if (peekChar(state, 2) == '<') {
+                    advance(state); advance(state); advance(state);
+                    return Token{TokenType::RANGE_EXCLUSIVE, "..<", startLine, startCol};
+                }
+                advance(state); advance(state);
+                return Token{TokenType::RANGE, "..", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::RANGE_EXCLUSIVE, "..<", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::RANGE, "..", startLine, startCol};
-    }
-    
-    // +>
-    if (c == '+' && peekChar(state, 1) == '>') {
-        advance(state);
-        advance(state);
-        return Token{TokenType::COMPOSE, "+>", startLine, startCol};
-    }
-    
-    // |>
-    if (c == '|' && peekChar(state, 1) == '>') {
-        advance(state);
-        advance(state);
-        return Token{TokenType::PIPELINE, "|>", startLine, startCol};
-    }
-    
-    // ?.
-    if (c == '?' && peekChar(state, 1) == '.') {
-        advance(state);
-        advance(state);
-        return Token{TokenType::QUESTION_DOT, "?.", startLine, startCol};
-    }
-    
-    // ??
-    if (c == '?' && peekChar(state, 1) == '?') {
-        advance(state);
-        advance(state);
-        return Token{TokenType::QUESTION_QUESTION, "??", startLine, startCol};
-    }
-    
-    // ->
-    if (c == '-' && peekChar(state, 1) == '>') {
-        advance(state);
-        advance(state);
-        return Token{TokenType::ARROW, "->", startLine, startCol};
-    }
-    
-    // ─── Single-character operators ──────────────────────────────────
-    
-    if (c == '=') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::DOT, ".", startLine, startCol};
+            
+        case '+':
+            if (next == '>') {
+                advance(state); advance(state);
+                return Token{TokenType::COMPOSE, "+>", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::PLUS_ASSIGN, "+=", startLine, startCol};
+            }
             advance(state);
+            return Token{TokenType::PLUS, "+", startLine, startCol};
+            
+        case '|':
+            if (next == '>') {
+                advance(state); advance(state);
+                return Token{TokenType::PIPELINE, "|>", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::BIT_OR_ASSIGN, "|=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::EQUAL_EQUAL, "==", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::ASSIGN, "=", startLine, startCol};
-    }
-    
-    if (c == '+') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::BIT_OR, "|", startLine, startCol};
+            
+        case '?':
+            if (next == '.') {
+                advance(state); advance(state);
+                return Token{TokenType::QUESTION_DOT, "?.", startLine, startCol};
+            }
+            if (next == '?') {
+                advance(state); advance(state);
+                return Token{TokenType::QUESTION_QUESTION, "??", startLine, startCol};
+            }
             advance(state);
+            return Token{TokenType::QUESTION, "?", startLine, startCol};
+            
+        case '-':
+            if (next == '>') {
+                advance(state); advance(state);
+                return Token{TokenType::ARROW, "->", startLine, startCol};
+            }
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::MINUS_ASSIGN, "-=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::PLUS_ASSIGN, "+=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::PLUS, "+", startLine, startCol};
-    }
-    
-    if (c == '-') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::MINUS, "-", startLine, startCol};
+            
+        case '=':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::EQUAL_EQUAL, "==", startLine, startCol};
+            }
             advance(state);
+            return Token{TokenType::ASSIGN, "=", startLine, startCol};
+            
+        case '!':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::NOT_EQUAL, "!=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::MINUS_ASSIGN, "-=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::MINUS, "-", startLine, startCol};
-    }
-    
-    if (c == '*') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::BANG, "!", startLine, startCol};
+            
+        case '&':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::BIT_AND_ASSIGN, "&=", startLine, startCol};
+            }
             advance(state);
+            return Token{TokenType::BIT_AND, "&", startLine, startCol};
+            
+        case '^':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::BIT_XOR_ASSIGN, "^=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::MUL_ASSIGN, "*=", startLine, startCol};
-        }
-        // ** is handled above
-        advance(state);
-        return Token{TokenType::MUL, "*", startLine, startCol};
-    }
-    
-    if (c == '/') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::BIT_XOR, "^", startLine, startCol};
+            
+        case '/':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::DIV_ASSIGN, "/=", startLine, startCol};
+            }
             advance(state);
+            return Token{TokenType::DIV, "/", startLine, startCol};
+            
+        case '%':
+            if (next == '=') {
+                advance(state); advance(state);
+                return Token{TokenType::MOD_ASSIGN, "%=", startLine, startCol};
+            }
             advance(state);
-            return Token{TokenType::DIV_ASSIGN, "/=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::DIV, "/", startLine, startCol};
-    }
-    
-    if (c == '%') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::MOD, "%", startLine, startCol};
+            
+        // ─── Single-character operators ──────────────────────────────────
+            
+        case '~':
             advance(state);
+            return Token{TokenType::BIT_NOT, "~", startLine, startCol};
+            
+        case ':':
             advance(state);
-            return Token{TokenType::MOD_ASSIGN, "%=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::MOD, "%", startLine, startCol};
-    }
-    
-    if (c == '^') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::COLON, ":", startLine, startCol};
+            
+        case ',':
             advance(state);
+            return Token{TokenType::COMMA, ",", startLine, startCol};
+            
+        case ';':
             advance(state);
-            return Token{TokenType::BIT_XOR_ASSIGN, "^=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::BIT_XOR, "^", startLine, startCol};
-    }
-    
-    if (c == '&') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::SEMICOLON, ";", startLine, startCol};
+            
+        case '(':
             advance(state);
+            return Token{TokenType::LPAREN, "(", startLine, startCol};
+            
+        case ')':
             advance(state);
-            return Token{TokenType::BIT_AND_ASSIGN, "&=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::BIT_AND, "&", startLine, startCol};
-    }
-    
-    if (c == '|') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::RPAREN, ")", startLine, startCol};
+            
+        case '{':
             advance(state);
+            return Token{TokenType::LBRACE, "{", startLine, startCol};
+            
+        case '}':
             advance(state);
-            return Token{TokenType::BIT_OR_ASSIGN, "|=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::BIT_OR, "|", startLine, startCol};
-    }
-    
-    if (c == '~') {
-        advance(state);
-        return Token{TokenType::BIT_NOT, "~", startLine, startCol};
-    }
-    
-    if (c == '!') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::RBRACE, "}", startLine, startCol};
+            
+        case '[':
             advance(state);
+            return Token{TokenType::LBRACKET, "[", startLine, startCol};
+            
+        case ']':
             advance(state);
-            return Token{TokenType::NOT_EQUAL, "!=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::BANG, "!", startLine, startCol};
-    }
-    
-    if (c == '<') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::RBRACKET, "]", startLine, startCol};
+            
+        case '@':
             advance(state);
+            return Token{TokenType::AT_SIGN, "@", startLine, startCol};
+            
+        case '#':
             advance(state);
-            return Token{TokenType::LESS_EQUAL, "<=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::LESS, "<", startLine, startCol};
-    }
-    
-    if (c == '>') {
-        if (peekChar(state, 1) == '=') {
+            return Token{TokenType::HASH, "#", startLine, startCol};
+            
+        case '_':
             advance(state);
+            return Token{TokenType::UNDERSCORE, "_", startLine, startCol};
+            
+        default:
+            // Unknown character
+            std::string msg = "Unexpected character: '";
+            msg += c;
+            msg += "'";
+            reportError(state, DiagCode::Lex_InvalidCharacter, msg);
             advance(state);
-            return Token{TokenType::GREATER_EQUAL, ">=", startLine, startCol};
-        }
-        advance(state);
-        return Token{TokenType::GREATER, ">", startLine, startCol};
+            return Token{TokenType::UNKNOWN, msg, startLine, startCol};
     }
-    
-    if (c == '?') {
-        advance(state);
-        return Token{TokenType::QUESTION, "?", startLine, startCol};
-    }
-    
-    // ─── Punctuation ─────────────────────────────────────────────────
-    
-    if (c == '.') {
-        // ... is handled below
-        advance(state);
-        return Token{TokenType::DOT, ".", startLine, startCol};
-    }
-    
-    if (c == ':') {
-        advance(state);
-        return Token{TokenType::COLON, ":", startLine, startCol};
-    }
-    
-    if (c == ',') {
-        advance(state);
-        return Token{TokenType::COMMA, ",", startLine, startCol};
-    }
-    
-    if (c == ';') {
-        advance(state);
-        return Token{TokenType::SEMICOLON, ";", startLine, startCol};
-    }
-    
-    if (c == '(') {
-        advance(state);
-        return Token{TokenType::LPAREN, "(", startLine, startCol};
-    }
-    
-    if (c == ')') {
-        advance(state);
-        return Token{TokenType::RPAREN, ")", startLine, startCol};
-    }
-    
-    if (c == '{') {
-        advance(state);
-        return Token{TokenType::LBRACE, "{", startLine, startCol};
-    }
-    
-    if (c == '}') {
-        advance(state);
-        return Token{TokenType::RBRACE, "}", startLine, startCol};
-    }
-    
-    if (c == '[') {
-        advance(state);
-        return Token{TokenType::LBRACKET, "[", startLine, startCol};
-    }
-    
-    if (c == ']') {
-        advance(state);
-        return Token{TokenType::RBRACKET, "]", startLine, startCol};
-    }
-    
-    if (c == '@') {
-        advance(state);
-        return Token{TokenType::AT_SIGN, "@", startLine, startCol};
-    }
-    
-    if (c == '#') {
-        advance(state);
-        return Token{TokenType::HASH, "#", startLine, startCol};
-    }
-    
-    if (c == '_') {
-        advance(state);
-        return Token{TokenType::UNDERSCORE, "_", startLine, startCol};
-    }
-    
-    // Variadic: ...
-    if (c == '.' && peekChar(state, 1) == '.' && peekChar(state, 2) == '.') {
-        advance(state);
-        advance(state);
-        advance(state);
-        return Token{TokenType::VARIADIC, "...", startLine, startCol};
-    }
-    
-    // Unknown character
-    std::string msg = "Unexpected character: '";
-    msg += c;
-    msg += "'";
-    reportError(state, DiagCode::Lex_InvalidCharacter, msg);
-    advance(state);
-    return Token{TokenType::UNKNOWN, msg, startLine, startCol};
 }
 
 // ─── Main Tokenization Loop ─────────────────────────────────────────────

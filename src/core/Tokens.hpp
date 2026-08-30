@@ -170,8 +170,9 @@ enum TokenType {
     QUESTION_QUESTION, // ??   (nil/err fallback)
 
     // ─── Access ──────────────────────────────────────────────────────────
-    DOT,    // .       (field access: player.health)
-    COLON,  // :       (module access: math:sqrt, or trait constraint: T : Trait)
+    DOT,         // .  (field access: player.health)
+    COLON,       // :  (module access: math:sqrt, or trait constraint: T : Trait)
+    COLON_COLON, // :: (builtin type operation: arena::alloc, Arena::create)
 
     // ─── Delimiters ─────────────────────────────────────────────────────
     COMMA,      // ,
@@ -416,6 +417,7 @@ inline bool is_operator(TokenType type) {
         case TokenType::QUESTION_QUESTION:
         case TokenType::DOT:
         case TokenType::COLON:
+        case TokenType::COLON_COLON:
             return true;
         default:
             return false;
@@ -811,6 +813,7 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::QUESTION_QUESTION, "??"},
         {TokenType::DOT, "."},
         {TokenType::COLON, ":"},
+        {TokenType::COLON_COLON, "::"},
         {TokenType::COMMA, ","},
         {TokenType::SEMICOLON, ";"},
         {TokenType::LPAREN, "("},
