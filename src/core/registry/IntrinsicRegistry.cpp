@@ -21,7 +21,7 @@
 // Memory Operations: memcpy, memmove, memset
 // CPU Hints: prefetch, prefetch_r, prefetch_w, fence, pause
 // Atomics: atomic_store (others return a value)
-// Memory Management: free, arena_free, arena_reset
+// Memory Management: free
 // Scope Exit: scope_exit
 // SIMD: simd_store
 
@@ -97,12 +97,10 @@ static const IntrinsicEntry INTRINSIC_TABLE[] = {
     {"str_byte_at",   IntrinsicKind::StrByteAt,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
 
     // ─── Memory Management ──────────────────────────────────────────────────
+    // Note: Arena management is now handled by the builtin Arena type with :: operations.
+    // Only #alloc and #free remain for explicit heap management in FFI contexts.
     {"alloc",         IntrinsicKind::Alloc,       IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
     {"free",          IntrinsicKind::Free,        IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, true},
-    {"arena_create",  IntrinsicKind::ArenaCreate, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, false},
-    {"arena_alloc",   IntrinsicKind::ArenaAlloc,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
-    {"arena_reset",   IntrinsicKind::ArenaReset,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, true},
-    {"arena_free",    IntrinsicKind::ArenaFree,   IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, true},
 
     // ─── Scope Exit Callback ──────────────────────────────────────────────
     {"scope_exit",    IntrinsicKind::ScopeExit, IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 0, true, true, true},

@@ -40,7 +40,9 @@ enum class IntrinsicKind {
     // ─── String Operations ───────────────────────────────────────────────
     StrLen, StrPtr, StrFromPtr, StrConcat, StrSlice, StrEq, StrByteAt,
     // ─── Memory Management ───────────────────────────────────────────────
-    Alloc, Free, ArenaCreate, ArenaAlloc, ArenaReset, ArenaFree,
+    // Note: Arena management is now handled by the builtin Arena type with :: operations.
+    // Only #alloc and #free remain for explicit heap management in FFI contexts.
+    Alloc, Free,
     // ─── Scope Exit Callback ─────────────────────────────────────────────
     ScopeExit,
     // ─── SIMD ────────────────────────────────────────────────────────────
@@ -79,7 +81,7 @@ struct IntrinsicInfo {
     size_t maxArgs;
     bool isVarArg;
     bool isCompilerHandled;
-    bool isVoid;  // ✅ NEW: true if intrinsic returns no value
+    bool isVoid;  // true if intrinsic returns no value
 
     IntrinsicInfo()
         : llvmID(llvm::Intrinsic::not_intrinsic)
