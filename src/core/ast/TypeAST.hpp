@@ -14,6 +14,7 @@
 #pragma once
 
 #include "BaseAST.hpp"
+#include "core/memory/StringPool.hpp"
 
 #include <string>
 #include <vector>
@@ -232,6 +233,18 @@ struct NamedTypeAST : TypeAST {
     /// It can be a StructDeclAST, EnumDeclAST, or TraitDeclAST.
     /// For generic parameters, this remains nullptr (use isGenericParam instead).
     TypeDeclAST* resolvedDecl = nullptr;
+
+    /// @brief Check if this named type is the built-in ArenaDescriptor type.
+    bool isArenaDescriptorType() const {
+        // ArenaDescriptor has no generic arguments
+        return lookupStringView(name) == "ArenaDescriptor" && genericArgs.empty();
+    }
+
+    /// @brief Check if this named type is the built-in Arena type.
+    bool isArenaType() const {
+        // Arena has no generic arguments
+        return lookupStringView(name) == "Arena" && genericArgs.empty();
+    }
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
