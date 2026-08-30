@@ -221,6 +221,7 @@ enum class ASTKind : uint16_t {
     IdentifierExpr,
     FieldAccessExpr,
     ModuleAccessExpr,
+    ArenaAccessExpr,    // :: access for builtin types like Arena
     CallExpr,
     IndexExpr,
     SliceExpr,

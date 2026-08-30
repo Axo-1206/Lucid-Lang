@@ -231,6 +231,22 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return parseAnonFuncExpr(stream, ctx);
     }
     
+    // ─── Arena static access: Arena::create ──────────────────────────────
+    // Check if we have "Arena" followed by "::"
+    if (current == TokenType::IDENTIFIER) {
+        Token nameTok = stream.peek();
+        if (nameTok.value == "Arena") {
+            size_t savedPos = stream.getPos();
+            stream.consume(); // Consume "Arena"
+            if (stream.check(TokenType::COLON_COLON)) {
+                // It's Arena::something - parse it as static form
+                stream.setPos(savedPos);
+                return parseArenaAccessExpr(stream, ctx, /* isStatic */ true);
+            }
+            stream.setPos(savedPos);
+        }
+    }
+    
     // ─── Module Access: module:member ───────────────────────────────────
     // Only parse as module access if the current token is IDENTIFIER followed by ':'
     // This prevents parsing 'obj.field:something' as module access
@@ -241,11 +257,6 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         stream.setPos(savedPos);
         
         if (isModuleAccess) {
-            // ─── Additional check: Ensure the token before ':' is a valid module name ──
-            // The parser already checks this via the grammar, but we add a safety check
-            // to prevent things like 'obj.field:member' from being parsed as module access
-            
-            // This is safe because parseModuleAccessExpr will parse IDENTIFIER ':' IDENTIFIER
             return parseModuleAccessExpr(stream, ctx);
         }
     }
@@ -877,6 +888,13 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
         return parseFieldAccessExpr(stream, ctx, lhs);
     }
     
+    // ─── Arena Instance Access: expr::method ─────────────────────────────
+    // This handles: arena::alloc, arena::reset, arena::descriptor
+    // Note: Arena::create is handled in parsePrimaryExpr as a static form
+    if (current == TokenType::COLON_COLON) {
+        return parseArenaAccessExpr(stream, ctx, /* isStatic */ false);
+    }
+    
     return lhs;
 }
 
@@ -1234,6 +1252,83 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     moduleAccess->genericArgs = genericArgs;
     
     return moduleAccess;
+}
+
+// =============================================================================
+// Arena Access (::)
+// =============================================================================
+
+/// @brief Parse Arena access expressions.
+/// 
+/// Grammar:
+///   arena_access_expr := expr '::' IDENTIFIER [ '<' type_arg { ',' type_arg } '>' ] '(' [ arg_list ] ')'
+/// 
+/// @example
+///   Arena::create(4096)          → target = IdentifierExprAST("Arena")
+///   arena::alloc<Node>(128)      → target = arena (some ExprAST)
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @param lhs The left-hand side expression
+/// @return ArenaAccessExprAST* The parsed arena access expression
+ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx, bool isStatic) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // ─── 1. If static form, consume "Arena" ──────────────────────────────
+    if (isStatic) {
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected 'Arena' for static arena access");
+            return nullptr;
+        }
+        
+        Token nameTok = stream.consume();
+        if (nameTok.value != "Arena") {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected 'Arena', got '", nameTok.value, "'");
+            return nullptr;
+        }
+    }
+    
+    // ─── 2. Consume '::' ───────────────────────────────────────────────────
+    if (!stream.match(TokenType::COLON_COLON)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '::', got '", stream.peekValue(), "'");
+        return nullptr;
+    }
+    
+    // ─── 3. Parse method name ─────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected method name, got '", stream.peekValue(), "'");
+        return nullptr;
+    }
+    
+    Token methodTok = stream.consume();
+    InternedString methodName = ctx.pool.intern(methodTok.value);
+    
+    // ─── 4. Check for generic arguments ──────────────────────────────────
+    ArenaSpan<TypeAST*> genericArgs;
+    if (stream.check(TokenType::LESS)) {
+        genericArgs = parseGenericArgs(stream, ctx);
+    }
+    
+    // ─── 5. Expect '(' and parse arguments ───────────────────────────────
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '(', got '", stream.peekValue(), "'");
+        return nullptr;
+    }
+    
+    ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
+    
+    // ─── 6. Build the AST node ──────────────────────────────────────────
+    auto* access = ctx.arena.make<ArenaAccessExprAST>(methodName, isStatic);
+    access->loc = loc;
+    access->genericArgs = genericArgs;
+    access->args = args;
+    
+    return access;
 }
 
 // =============================================================================

@@ -348,8 +348,53 @@ struct IntrinsicCallExprAST : ExprAST {
     // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
     std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
 
-    IntrinsicCallExprAST(InternedString n) 
+    explicit IntrinsicCallExprAST(InternedString n) 
         : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARENA ACCESS NODE (::)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARENA ACCESS NODE (::)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Accesses a builtin type operation via the '::' operator.
+/// 
+/// The `::` operator is used for compiler-builtin types like `Arena`.
+/// 
+/// @example
+///   Arena::create(4096)          → method = "create", isStatic = true,  args = [4096]
+///   arena::alloc<Node>(128)      → method = "alloc",  isStatic = false, args = [128], genericArgs = [Node]
+///   arena::reset()               → method = "reset",  isStatic = false, args = []
+///   arena::descriptor()          → method = "descriptor", isStatic = false, args = []
+/// 
+/// Grammar:
+///   arena_access_expr := IDENTIFIER '::' IDENTIFIER [ '<' type_arg { ',' type_arg } '>' ] '(' [ arg_list ] ')'
+///                      | expr '::' IDENTIFIER [ '<' type_arg { ',' type_arg } '>' ] '(' [ arg_list ] ')'
+/// 
+/// @field methodName    The method name ("create", "alloc", "reset", "descriptor").
+/// @field genericArgs   Generic arguments (only valid for "alloc").
+/// @field args          Call arguments.
+/// @field isStatic      True if this is "Arena::create" (type name on LHS).
+struct ArenaAccessExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::ArenaAccessExpr;
+
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString methodName;     // "create", "alloc", "reset", "descriptor"
+    ArenaSpan<TypeAST*> genericArgs;     // Generic arguments for method
+    ArenaSpan<ExprAST*> args;            // Call arguments
+    const bool isStatic;                 // true for Arena::create, false for instance forms
+
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    /// @brief The resolved declaration for the method.
+    ValueDeclAST* resolvedDecl = nullptr;
+
+    ArenaAccessExprAST(InternedString method, bool stat)
+        : ExprAST(ASTKind::ArenaAccessExpr),
+          methodName(method),
+          isStatic(stat) {}
 };
 
 /// @brief Array element access.
