@@ -124,7 +124,34 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Check initializer ────────────────────────────────────────
+    // ─── 3. Arena type special validation ────────────────────────────
+    // Arena bindings must be const and initialized with Arena::create/empty
+    if (ctx.isArenaType(declaredType)) {
+        // ─── 3a. Arena bindings must be declared with `const` ──────
+        if (decl->keyword == DeclKeyword::Let) {
+            ctx.diagnostics.error(DiagCode::Sem_ConstRequired, decl,
+                                  "Arena bindings must be declared with `const`");
+            ctx.diagnostics.note(decl,
+                                  "Reassigning an Arena binding would orphan slices "
+                                  "into its backing region");
+            return;
+        }
+        
+        // ─── 3b. Initializer must exist ─────────────────────────────
+        if (!decl->init) {
+            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
+                                  "Arena binding must be initialized with "
+                                  "Arena::create(size) or Arena::empty()");
+            return;
+        }
+        
+        // ─── 3c. Validate the initializer ───────────────────────────
+        if (!validateArenaInitializer(decl->init, ctx)) {
+            return;
+        }
+    }
+
+    // ─── 4. Check initializer ────────────────────────────────────────
     if (decl->init) {
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
@@ -135,7 +162,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 4. CONST EVALUATION ──────────────────────────────────────
+        // ─── 5. CONST EVALUATION ──────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
@@ -153,7 +180,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         defaultExpr->isLValue = false;
         defaultExpr->isConst = true;
         
-        // ─── 4a. Check if type is nullable (T?) ──────────────────────
+        // ─── 5a. Check if type is nullable (T?) ──────────────────────
         if (isNullableType(declaredType)) {
             // Nullable variables default to nil
             defaultExpr->valueState = ValueState::Nil;
@@ -164,7 +191,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 4b. Check if type is fallible (T!) ──────────────────────
+        // ─── 5b. Check if type is fallible (T!) ──────────────────────
         if (isFallibleType(declaredType)) {
             // Fallible variables default to err
             defaultExpr->valueState = ValueState::Err;
@@ -175,7 +202,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 4c. Check if type is combined (T?!) ─────────────────────
+        // ─── 5c. Check if type is combined (T?!) ─────────────────────
         if (declaredType->isa<CombinedTypeAST>()) {
             // Combined types default to nil (the tag is nil)
             defaultExpr->valueState = ValueState::Nil;
@@ -186,7 +213,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 4d. Check for function type with default body ───────────
+        // ─── 5d. Check for function type with default body ───────────
         // Function types can have a default body at declaration site,
         // but at variable declaration site, we need an explicit initializer.
         if (declaredType->isa<FuncTypeAST>()) {
@@ -196,7 +223,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 4e. Non-nullable, non-fallible, non-combined type ──────
+        // ─── 5e. Non-nullable, non-fallible, non-combined type ──────
         // These cannot be default-initialized
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                               "variable '", ctx.pool.lookup(decl->name),
@@ -208,7 +235,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 5. Generate mangled name for exported globals ───────────────────
+    // ─── 6. Generate mangled name for exported globals ───────────────────
     // Only module-level variables that are exported need mangled names.
     // Local variables don't need mangling - they're not visible outside.
     bool isModuleLevel = isModuleLevelDeclaration(decl, ctx);

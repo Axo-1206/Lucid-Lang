@@ -5,6 +5,7 @@
 /// keeping the header clean and focused on declarations.
 
 #include "SemaContext.hpp"
+#include "core/builtins/BuiltinTypes.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
@@ -608,6 +609,61 @@ RefTypeAST* SemaContext::getRefType(TypeAST* inner) {
     RefTypeAST* type = arena.make<RefTypeAST>(inner);
     typeCache.refTypes[key] = type;
     return type;
+}
+
+// ─── Built-in Type Accessors ─────────────────────────────────────────────
+
+NamedTypeAST* SemaContext::getArenaType() {
+    // Check cache first - look for existing Arena type
+    InternedString name = pool.intern("Arena");
+    TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
+    auto it = typeCache.namedTypes.find(key);
+    if (it != typeCache.namedTypes.end()) {
+        return it->second;
+    }
+    
+    // Create and cache the Arena type using the pure factory
+    NamedTypeAST* type = builtins::createArenaType(pool, arena);
+    typeCache.namedTypes[key] = type;
+    return type;
+}
+
+NamedTypeAST* SemaContext::getArenaDescriptorType() {
+    // Check cache first - look for existing ArenaDescriptor type
+    InternedString name = pool.intern("ArenaDescriptor");
+    TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
+    auto it = typeCache.namedTypes.find(key);
+    if (it != typeCache.namedTypes.end()) {
+        return it->second;
+    }
+    
+    // Create and cache the ArenaDescriptor type using the pure factory
+    NamedTypeAST* type = builtins::createArenaDescriptorType(pool, arena);
+    typeCache.namedTypes[key] = type;
+    return type;
+}
+
+// ─── Built-in Type Detection ─────────────────────────────────────────────
+
+bool SemaContext::isArenaType(TypeAST* type) const {
+    return builtins::isArenaType(type);
+}
+
+bool SemaContext::isArenaDescriptorType(TypeAST* type) const {
+    return builtins::isArenaDescriptorType(type);
+}
+
+bool SemaContext::isArenaNamedType(NamedTypeAST* named) const {
+    return builtins::isArenaNamedType(named);
+}
+
+bool SemaContext::isArenaDescriptorNamedType(NamedTypeAST* named) const {
+    return builtins::isArenaDescriptorNamedType(named);
+}
+
+bool SemaContext::isArenaBinding(VarDeclAST* decl) const {
+    if (!decl) return false;
+    return isArenaType(decl->type);
 }
 
 // ─── Self-Reference Helpers ──────────────────────────────────────────────

@@ -5,6 +5,7 @@
 #include "SemaCompare.hpp"
 #include "SemaValidate.hpp"
 #include "../context/SemaContext.hpp"
+#include "core/builtins/BuiltinTypes.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
@@ -54,6 +55,17 @@ TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
 
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
+
+    // ─── 0. Check if this is a built-in type ───────────────────────────────
+    if (builtins::isArenaDescriptorNamedType(type)) {
+        // ArenaDescriptor is a built-in type - return it directly
+        return ctx.getArenaDescriptorType();
+    }
+    
+    if (builtins::isArenaNamedType(type)) {
+        // Arena is a built-in type - return it directly
+        return ctx.getArenaType();
+    }
 
     // ─── 1. Resolve the declaration if not already set ─────────────────────
     if (!type->resolvedDecl) {

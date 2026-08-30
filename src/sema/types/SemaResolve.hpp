@@ -223,18 +223,12 @@ void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& c
 /// @param currentStruct The struct being defined.
 /// @param ctx The semantic context.
 /// @return true if this is a valid self-reference, false if invalid.
-bool isValidStructSelfReference(TypeAST* fieldType,
-                                 StructDeclAST* currentStruct,
-                                 SemaContext& ctx);
+bool isValidStructSelfReference(TypeAST* fieldType, StructDeclAST* currentStruct, SemaContext& ctx);
 
 /// @brief Check if a field is accessible on a generic type.
-bool isFieldAccessibleOnGenericType(TypeAST* genericType,
-                                    InternedString fieldName,
-                                    SemaContext& ctx);
+bool isFieldAccessibleOnGenericType(TypeAST* genericType, InternedString fieldName, SemaContext& ctx);
 
 /// @brief Get the type of a field on a generic type.
-TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
-                                         InternedString fieldName,
-                                         SemaContext& ctx);
+TypeAST* getFieldTypeOnGenericType(TypeAST* genericType, InternedString fieldName, SemaContext& ctx);
 
 } // namespace sema

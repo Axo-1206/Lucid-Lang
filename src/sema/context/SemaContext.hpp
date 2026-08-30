@@ -216,6 +216,22 @@ struct SemaContext {
     ArrayTypeAST* getArrayType(ArrayKind kind, uint64_t size, TypeAST* element);
     PtrTypeAST* getPtrType(TypeAST* inner);
     RefTypeAST* getRefType(TypeAST* inner);
+
+    /// Arena is a compiler-builtin type representing a bump allocator.
+    /// Bindings of this type must be declared with `const`.
+    NamedTypeAST* getArenaType();
+
+    /// ArenaDescriptor is a compiler-builtin POD type used for FFI.
+    /// It has fixed layout: { base: *uint8, size: uint64 }
+    /// This type is NOT literal-constructible by users.
+    NamedTypeAST* getArenaDescriptorType();
+
+    // ─── Built-in Type Detection ──────────────────────────────────────
+    bool isArenaType(TypeAST* type) const;
+    bool isArenaDescriptorType(TypeAST* type) const;
+    bool isArenaNamedType(NamedTypeAST* named) const;
+    bool isArenaDescriptorNamedType(NamedTypeAST* named) const;
+    bool isArenaBinding(VarDeclAST* decl) const;
     
     // ─── Builtin Type Helpers ──────────────────────────────────────────
     bool isArenaDescriptor(StructDeclAST* decl) const;

@@ -174,6 +174,9 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 /// @brief Resolve a module access expression.
 TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx);
 
+/// @brief Resolve and validate an Arena access expression.
+TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx);
+
 /// @brief Resolve a null coalesce expression.
 TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType, SemaContext& ctx);
 

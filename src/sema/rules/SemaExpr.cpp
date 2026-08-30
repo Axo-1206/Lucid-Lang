@@ -13,6 +13,7 @@
 #include "../registry/IntrinsicValidator.hpp"
 #include "../support/CaptureAnalysis.hpp"
 #include "core/ASTStrings.hpp"
+#include "core/builtins/BuiltinTypes.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -73,6 +74,9 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType, SemaContext& 
             break;
         case ASTKind::ModuleAccessExpr:
             result = resolveModuleAccessExpr(expr->as<ModuleAccessExprAST>(), targetType, ctx);
+            break;
+        case ASTKind::ArenaAccessExpr:
+            result = resolveArenaAccess(expr->as<ArenaAccessExprAST>(), ctx);
             break;
         case ASTKind::NullCoalesceExpr:
             result = resolveNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), targetType, ctx);
@@ -843,6 +847,157 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
              " resolved to ", typeToString(declType, ctx.pool));
 
     return declType;
+}
+
+// =============================================================================
+// resolveArenaAccess
+// =============================================================================
+
+TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
+    if (!expr) return nullptr;
+    
+    // ─── Step 1: Validate the access using the pure validator ──────────────
+    auto methodOpt = builtins::validateArenaAccess(expr, ctx.pool, ctx.diagnostics);
+    if (!methodOpt) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    builtins::ArenaMethodKind method = *methodOpt;
+    
+    // ─── Step 2: For instance methods, validate the LHS ────────────────────
+    if (!expr->isStatic) {
+        // Instance form: arena::method()
+        
+        // ─── 2a: LHS must exist ──────────────────────────────────────────
+        if (!expr->arenaExpr) {
+            ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidLHS, expr,
+                                  "instance arena access requires an Arena expression");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+        
+        // ─── 2b: LHS must be Arena type ──────────────────────────────────
+        TypeAST* arenaType = expr->arenaExpr->resolvedType;
+        if (!arenaType || !ctx.isArenaType(arenaType)) {
+            ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidLHS, expr,
+                                  "arena:: access requires an Arena value, got ",
+                                  arenaType ? typeToString(arenaType, ctx.pool) : "unknown");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+        
+        // ─── 2c: LHS must be a const binding ──────────────────────────────
+        if (expr->arenaExpr->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = expr->arenaExpr->as<IdentifierExprAST>();
+            ValueDeclAST* decl = id->resolvedDecl;
+            if (decl && decl->isa<VarDeclAST>()) {
+                VarDeclAST* varDecl = decl->as<VarDeclAST>();
+                if (varDecl->keyword == DeclKeyword::Let) {
+                    ctx.diagnostics.error(DiagCode::Sem_ArenaNotConst, expr,
+                                          "Arena access requires a const binding");
+                    ctx.diagnostics.note(expr,
+                                          "Arena bindings must be declared with const");
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
+                    expr->isLValue = false;
+                    expr->isConst = false;
+                    return ctx.getUnknownType();
+                }
+            }
+        }
+    }
+    
+    // ─── Step 3: Build the return type ─────────────────────────────────────
+    TypeAST* returnType = nullptr;
+    TypeAST* genericArg = nullptr;
+    
+    if (!expr->genericArgs.empty() && expr->genericArgs[0]) {
+        genericArg = expr->genericArgs[0];
+    }
+    
+    returnType = builtins::getArenaMethodReturnType(
+        method, 
+        genericArg,
+        ctx.pool,
+        ctx.arena
+    );
+    
+    // ─── Step 4: Determine value state based on method ─────────────────────
+    ValueState state = ValueState::Definite;
+    
+    switch (method) {
+        case builtins::ArenaMethodKind::Create: {
+            // Arena::create(size) -> Arena!
+            // Wrap Arena in FallibleTypeAST
+            TypeAST* arenaType = ctx.getArenaType();
+            returnType = ctx.arena.make<FallibleTypeAST>(arenaType);
+            state = ValueState::Err;  // Can fail (out of memory)
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::Empty: {
+            // Arena::empty() -> Arena
+            returnType = ctx.getArenaType();
+            state = ValueState::Definite;
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::Alloc: {
+            // arena::alloc<T>(count) -> [_]T
+            // Return type is already ArrayTypeAST with Slice kind
+            // The slice is a borrowed view - state is unknown (bounds check at runtime)
+            state = ValueState::Unknown;
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::Reset: {
+            // arena::reset() -> ()
+            returnType = nullptr;
+            state = ValueState::None;
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::Descriptor: {
+            // arena::descriptor() -> ArenaDescriptor
+            returnType = ctx.getArenaDescriptorType();
+            state = ValueState::Definite;
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::Capacity:
+        case builtins::ArenaMethodKind::Remaining:
+        case builtins::ArenaMethodKind::Space: {
+            // capacity() -> uint64, remaining() -> uint64, space<T>() -> uint64
+            // Return type is already PrimitiveTypeAST (Uint64)
+            state = ValueState::Definite;
+            break;
+        }
+        
+        case builtins::ArenaMethodKind::IsEmpty:
+        case builtins::ArenaMethodKind::CanFit: {
+            // isEmpty() -> bool, canFit<T>() -> bool
+            // Return type is already PrimitiveTypeAST (Bool)
+            state = ValueState::Definite;
+            break;
+        }
+    }
+    
+    // ─── Step 5: Store results ─────────────────────────────────────────────
+    expr->resolvedType = returnType;
+    expr->valueState = state;
+    expr->isLValue = false;
+    expr->isConst = false;
+    
+    return returnType;
 }
 
 // =============================================================================

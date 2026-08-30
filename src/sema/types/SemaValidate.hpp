@@ -122,4 +122,13 @@ bool validateForeignFunction(FuncDeclAST* decl,
 /// @return true if the borrowed type is in a valid context.
 bool validateBorrowedContext(TypeAST* type, SemaContext& ctx);
 
+// ─── Arena Initializer Validation ─────────────────────────────────────────
+
+/// @brief Validate that an Arena initializer is valid.
+/// 
+/// @param init The initializer expression.
+/// @param ctx The semantic context.
+/// @return true if valid, false if error reported.
+bool validateArenaInitializer(ExprAST* init, SemaContext& ctx);
+
 } // namespace sema

@@ -571,4 +571,68 @@ bool validateBorrowedContext(TypeAST* type, SemaContext& ctx) {
     return true;
 }
 
+// ─── Arena Initializer Validation ─────────────────────────────────────────
+
+bool validateArenaInitializer(ExprAST* init, SemaContext& ctx) {
+    if (!init) {
+        return false;
+    }
+    
+    // Must be an ArenaAccessExprAST
+    if (!init->isa<ArenaAccessExprAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
+                              "Arena binding must be initialized with "
+                              "Arena::create(size) or Arena::empty()");
+        ctx.diagnostics.note(init,
+                              "Found: ", init->resolvedType 
+                              ? typeToString(init->resolvedType, ctx.pool) 
+                              : "unknown");
+        return false;
+    }
+    
+    ArenaAccessExprAST* access = init->as<ArenaAccessExprAST>();
+    
+    // Must be static form (Arena::method)
+    if (!access->isStatic) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
+                              "Arena binding must be initialized with "
+                              "Arena::create(size) or Arena::empty(), "
+                              "not an existing arena");
+        return false;
+    }
+    
+    // Method must be "create" or "empty"
+    std::string_view methodName = lookupStringView(access->methodName);
+    if (methodName != "create" && methodName != "empty") {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
+                              "Arena binding must be initialized with "
+                              "Arena::create(size) or Arena::empty()");
+        ctx.diagnostics.note(init,
+                              "Found: Arena::", methodName, 
+                              " - only create and empty are valid");
+        return false;
+    }
+    
+    // create(size) requires exactly one argument
+    if (methodName == "create") {
+        if (access->args.size() != 1) {
+            ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, init,
+                                  "Arena::create expects exactly 1 argument (size), got ",
+                                  access->args.size());
+            return false;
+        }
+    }
+    
+    // empty() requires no arguments
+    if (methodName == "empty") {
+        if (access->args.size() != 0) {
+            ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, init,
+                                  "Arena::empty takes no arguments");
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 } // namespace sema
