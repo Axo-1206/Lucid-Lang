@@ -4,7 +4,7 @@
 #include "IntrinsicValidator.hpp"
 #include "core/registry/IntrinsicRegistry.hpp"
 #include "core/ASTStrings.hpp"
-#include "../types/ArgTypeValidators.hpp"
+#include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
 
 namespace sema {

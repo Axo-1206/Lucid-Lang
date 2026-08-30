@@ -4,7 +4,7 @@
 #include "AttributeValidator.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/registry/AttributeRegistry.hpp"
-#include "../types/ArgTypeValidators.hpp"
+#include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
 
 #include <unordered_set>
