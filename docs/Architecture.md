@@ -521,12 +521,17 @@ lucid/
     ├── core/                               # shared data structures (no LLVM dependency)
     │   ├── Tokens.hpp                      # Token and TokenKind definitions
     │   ├── diagnostics/                    # user-facing error and warning reporting
+    │   ├── JSONFormatter.hpp/cpp           # format the final result from parse and semantic phase for lsp as .json file
+    │   ├── SourceLocation.hpp              # definition of AST node source location
+    │   ├── ASTString.hpp                   # convert llvm value and AST node into strings
     │   ├── ast/                            # AST node types
     │   │   ├── BaseAST.hpp                 # base node, SourceLocation, visitor interface
     │   │   ├── DeclAST.hpp                 # declaration nodes
     │   │   ├── StmtAST.hpp                 # statement nodes
     │   │   ├── ExprAST.hpp                 # expression nodes
     │   │   └── TypeAST.hpp                 # type annotation nodes
+    │   ├── builtins/
+    │   │   └── BuiltinTypes.hpp/cpp        # Arena and ArenaDescriptor
     │   ├── registry/
     │   │   ├── AttributeRegistry.hpp/cpp
     │   │   └── IntrinsicRegistry.hpp/cpp
@@ -561,7 +566,7 @@ lucid/
     │   │
     │   ├── context/                        # Context components
     │   │   ├── ContextStack.hpp/cpp        
-    │   │   └── SemaContext.hpp             # Unified context (composition)
+    │   │   └── SemaContext.hpp/cpp         # Unified context (composition)
     │   │
     │   ├── rules/                          # Analysis rules
     │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
@@ -569,7 +574,6 @@ lucid/
     │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
     │   │
     │   ├── types/
-    │   │   ├── ArgTypeValidators.hpp/cpp   # Validate argument type for attribute and intrinsics
     │   │   ├── SemaResolve.hpp/cpp         # Resolves type annotations to their semantic representations.
     │   │   ├── SemaCompare.hpp/cpp         # Type Compatibility Helpers
     │   │   ├── SemaValidate.hpp/cpp        # Type Validation Helpers
@@ -584,6 +588,7 @@ lucid/
     │   │   └── ConstEvalStatement.cpp      # Statement execution: block, return, if, while, expr, decl
     │   │ 
     │   ├── registry/
+    │   │   ├── ArgTypeValidators.hpp/cpp   # Validate argument type for attribute and intrinsics
     │   │   ├── AttributeValidator.hpp/cpp  # validate if the attribute exist and the argument is correct
     │   │   └── IntrinsicValidator.hpp/cpp  # validate if the intrinsic exist and the argument is correct
     │   │
