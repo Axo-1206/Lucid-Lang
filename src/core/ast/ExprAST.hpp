@@ -385,16 +385,17 @@ struct ArenaAccessExprAST : ExprAST {
     const InternedString methodName;     // "create", "alloc", "reset", "descriptor"
     ArenaSpan<TypeAST*> genericArgs;     // Generic arguments for method
     ArenaSpan<ExprAST*> args;            // Call arguments
-    const bool isStatic;                 // true for Arena::create, false for instance forms
+    const bool isStatic;                 // true for Arena::create/empty, false for instance forms
+    ExprAST* arenaExpr = nullptr;        // LHS expression (nullptr for static form)
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    /// @brief The resolved declaration for the method.
     ValueDeclAST* resolvedDecl = nullptr;
 
-    ArenaAccessExprAST(InternedString method, bool stat)
+    ArenaAccessExprAST(InternedString method, bool stat, ExprAST* lhs = nullptr)
         : ExprAST(ASTKind::ArenaAccessExpr),
           methodName(method),
-          isStatic(stat) {}
+          isStatic(stat),
+          arenaExpr(lhs) {}
 };
 
 /// @brief Array element access.

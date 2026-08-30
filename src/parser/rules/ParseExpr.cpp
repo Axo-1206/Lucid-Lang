@@ -241,7 +241,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
             if (stream.check(TokenType::COLON_COLON)) {
                 // It's Arena::something - parse it as static form
                 stream.setPos(savedPos);
-                return parseArenaAccessExpr(stream, ctx, /* isStatic */ true);
+                return parseArenaAccessExpr(stream, ctx, nullptr, true);
             }
             stream.setPos(savedPos);
         }
@@ -892,7 +892,7 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     // This handles: arena::alloc, arena::reset, arena::descriptor
     // Note: Arena::create is handled in parsePrimaryExpr as a static form
     if (current == TokenType::COLON_COLON) {
-        return parseArenaAccessExpr(stream, ctx, /* isStatic */ false);
+        return parseArenaAccessExpr(stream, ctx, lhs, false);;
     }
     
     return lhs;
@@ -1275,6 +1275,7 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
     SourceLocation loc = stream.currentLoc();
     
     // ─── 1. If static form, consume "Arena" ──────────────────────────────
+    ExprAST* lhs = nullptr;
     if (isStatic) {
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
@@ -1288,6 +1289,12 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
                                     "expected 'Arena', got '", nameTok.value, "'");
             return nullptr;
         }
+        // lhs remains nullptr for static form
+    } else {
+        // Instance form: the LHS is already parsed and passed via the context
+        // We need to store it. The parser calls this from parsePostfixExpr
+        // with the lhs expression, but we don't have it here.
+        // We need to change the signature or store it differently.
     }
     
     // ─── 2. Consume '::' ───────────────────────────────────────────────────
@@ -1323,7 +1330,10 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
     ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
     
     // ─── 6. Build the AST node ──────────────────────────────────────────
-    auto* access = ctx.arena.make<ArenaAccessExprAST>(methodName, isStatic);
+    // For instance form, we need the LHS. The caller (parsePostfixExpr)
+    // has it, so we need to pass it through.
+    // We'll change the signature to take ExprAST* lhs.
+    auto* access = ctx.arena.make<ArenaAccessExprAST>(methodName, isStatic, lhs);
     access->loc = loc;
     access->genericArgs = genericArgs;
     access->args = args;

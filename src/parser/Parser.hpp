@@ -195,7 +195,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* t
 
 FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
 ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& ctx);
-ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx, bool isStatic);
+ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, bool isStatic);
 
 // ─── Pipeline & Composition ───────────────────────────────────────────────
 
