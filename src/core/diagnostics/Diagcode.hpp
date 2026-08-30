@@ -208,6 +208,35 @@ enum class DiagCode : uint32_t {
     Sem_NilInConst               = 4304,  // Nil not allowed in const context
     Sem_ErrInConst               = 4305,  // Err not allowed in const context
 
+
+    // Arena & Built-in Types (4400-4499)
+    Sem_ConstRequired             = 4400,  // const required for Arena binding
+    Sem_InvalidArenaInit          = 4401,  // Invalid Arena initializer
+    Sem_InvalidArenaAccess        = 4402,  // Invalid Arena access (wrong form)
+    Sem_UnknownMethod             = 4403,  // Unknown method on builtin type
+    Sem_ArenaMethodArgCount       = 4404,  // Wrong argument count for Arena method
+    Sem_ArenaMethodGenericArg     = 4405,  // Missing or extra generic argument for Arena method
+    Sem_ArenaMethodStatic         = 4406,  // Static/instance method mismatch
+    Sem_ArenaMethodNotFound       = 4407,  // Arena method not found
+    Sem_ArenaInvalidLHS           = 4408,  // Invalid LHS for Arena access
+    Sem_ArenaNotConst             = 4409,  // Arena binding not const
+    Sem_ArenaDescriptorLiteral    = 4410,  // ArenaDescriptor cannot be constructed via literal
+    Sem_ArenaDescriptorNotFound   = 4411,  // ArenaDescriptor type not found
+    Sem_ArenaAllocNoGenericArg    = 4412,  // arena::alloc<T> missing type argument
+    Sem_ArenaSpaceNoGenericArg    = 4413,  // arena::space<T> missing type argument
+    Sem_ArenaCanFitNoGenericArg   = 4414,  // arena::canFit<T> missing type argument
+    Sem_ArenaCannotFit            = 4415,  // Not enough capacity in arena
+    Sem_ArenaEmptyCapacity        = 4416,  // Arena::create(0) is invalid
+    Sem_ArenaCapacityOverflow     = 4417,  // Requested allocation exceeds arena capacity
+
+    // Built-in Types (4450-4499)
+    Sem_BuiltinTypeMisuse         = 4450,  // Built-in type used incorrectly
+    Sem_BuiltinTypeNotConstructible = 4451,  // Built-in type cannot be constructed
+    Sem_BuiltinTypeNoUserDef      = 4452,  // Built-in type cannot be redefined by user
+    Sem_BuiltinFieldNotFound      = 4453,  // Field not found on built-in type
+    Sem_BuiltinMethodNotFound     = 4454,  // Method not found on built-in type
+    Sem_BuiltinTypeMismatch       = 4455,  // Expected built-in type, got something else
+
     // ──────────────────────────────────────────────────────────────────────────
     // FFI/FOREIGN ERRORS (5000-5499)
     // These can happen at compile-time OR runtime.
