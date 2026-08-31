@@ -33,10 +33,6 @@ static bool shouldSkipLoadForArg(IntrinsicKind kind, size_t argIndex) {
         case IntrinsicKind::Ptrstr:
             return true;  // All args should NOT be loaded
             
-        // ─── Arena allocation: arena pointer must NOT be loaded ──────────
-        case IntrinsicKind::ArenaAlloc:
-            return argIndex == 0;  // Only the arena arg (first) should NOT be loaded
-            
         // ─── All other intrinsics load their arguments normally ──────────
         default:
             return false;
@@ -55,15 +51,6 @@ static llvm::Type* getExpectedArgType(
     CodeGenContext& ctx
 ) {
     switch (kind) {
-        // ─── Arena operations: arena pointer is i8* ──────────────────────
-        case IntrinsicKind::ArenaAlloc:
-        case IntrinsicKind::ArenaReset:
-        case IntrinsicKind::ArenaFree:
-            if (argIndex == 0) {
-                return llvm::PointerType::get(ctx.llvmCtx, 0);  // i8*
-            }
-            break;
-            
         // ─── Alloc: count is i64 ──────────────────────────────────────────
         case IntrinsicKind::Alloc:
             if (argIndex == 0) {
@@ -238,56 +225,6 @@ llvm::Value* emitIntrinsicFromAST(
         llvm::Value* count = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
         if (!count) return nullptr;
         return emitIntrinsic(expr->intrinsicName, {count}, expr, ctx);
-    }
-
-    // ─── Special-case: #arena_alloc(arena, T, count) ─────────────────────
-    // #arena_alloc takes:
-    //   - arena (pointer to ArenaDescriptor) - NOT loaded
-    //   - T (type argument, compile-time)
-    //   - count (runtime)
-    if (info->kind == IntrinsicKind::ArenaAlloc) {
-        if (expr->args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#arena_alloc' requires 2 arguments (arena, count)");
-            return nullptr;
-        }
-        // ─── Arena argument: do NOT load ──────────────────────────────────
-        llvm::Value* arena = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!arena) return nullptr;
-        
-        // ─── Count argument: load normally ─────────────────────────────────
-        llvm::Value* count = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
-        if (!count) return nullptr;
-        
-        return emitIntrinsic(expr->intrinsicName, {arena, count}, expr, ctx);
-    }
-
-    // ─── Special-case: #arena_create(size) ───────────────────────────────
-    // #arena_create takes a size (runtime) - load normally
-    if (info->kind == IntrinsicKind::ArenaCreate) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#arena_create' requires an argument");
-            return nullptr;
-        }
-        llvm::Value* size = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!size) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {size}, expr, ctx);
-    }
-
-    // ─── Special-case: #arena_reset(arena) ───────────────────────────────
-    // #arena_reset takes an arena pointer - do NOT load
-    if (info->kind == IntrinsicKind::ArenaReset || 
-        info->kind == IntrinsicKind::ArenaFree) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#'", ctx.pool.lookup(expr->intrinsicName), 
-                                   "' requires an argument");
-            return nullptr;
-        }
-        llvm::Value* arena = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!arena) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {arena}, expr, ctx);
     }
 
     // ─── Special-case: #tostr(x) ──────────────────────────────────────────
@@ -515,10 +452,6 @@ llvm::Value* emitIntrinsic(
                 // Memory Management
                 case IntrinsicKind::Alloc:
                 case IntrinsicKind::Free:
-                case IntrinsicKind::ArenaCreate:
-                case IntrinsicKind::ArenaAlloc:
-                case IntrinsicKind::ArenaReset:
-                case IntrinsicKind::ArenaFree:
                     return emitLucidMemoryMgmtIntrinsic(info->kind, nameStr, args, expr, ctx);
 
                 // String Operations
