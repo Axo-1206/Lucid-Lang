@@ -2,7 +2,7 @@
 /// @brief Implementation of generic instantiation.
 
 #include "CodeGenGeneric.hpp"
-#include "../CodeGenType.hpp"
+#include "../types/CodeGenType.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "GenericMangledName.hpp"
