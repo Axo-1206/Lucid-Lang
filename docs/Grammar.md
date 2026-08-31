@@ -4936,15 +4936,15 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 
 #### Built-in Attributes
 
-| Attribute              | Valid on                  | Meaning                                                  |
-| ---------------------- | ------------------------- | -------------------------------------------------------- |
-| `@[export]`            | any top-level declaration | Visible outside this module                              |
-| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign compiler; ABI string e.g. `"C"` |
-| `@[link("name")]`      | module or declaration     | Link against this native library                         |
-| `@[deprecated("msg")]` | any declaration           | Compiler warning at use sites                            |
-| `@[inline]`            | function declaration      | Hint to inline at call sites                             |
-| `@[noinline]`          | function declaration      | Prevent inlining                                         |
-| `@[specialize]`        | generic function/struct   | Force monomorphization instead of type erasure           |
+| Attribute              | Valid on                                                             | Meaning                                                  |
+| ---------------------- | -------------------------------------------------------------------- | -------------------------------------------------------- |
+| `@[export]`            | any top-level declaration except `Arena` (see **Memory Management**) | Visible outside this module                              |
+| `@[foreign("abi")]`    | function declaration                                                 | Implemented in a foreign compiler; ABI string e.g. `"C"` |
+| `@[link("name")]`      | module or declaration                                                | Link against this native library                         |
+| `@[deprecated("msg")]` | any declaration                                                      | Compiler warning at use sites                            |
+| `@[inline]`            | function declaration                                                 | Hint to inline at call sites                             |
+| `@[noinline]`          | function declaration                                                 | Prevent inlining                                         |
+| `@[specialize]`        | generic function/struct                                              | Force monomorphization instead of type erasure           |
 
 
 **Rules:**
@@ -5303,6 +5303,23 @@ the original binding — so:
   closure-captured** — the same three restrictions the Downward Flow Rule
   already places on `&T`/`[_]T`, arrived at for a different reason (no copy
   operation exists, vs. "would dangle").
+- **`Arena` cannot be declared at the top level (module scope), and
+  therefore `@[export]` — otherwise valid on any top-level declaration — is
+  unreachable on it.** `var_decl` is ordinarily a legal `top_level_decl`, so
+  this needs stating explicitly rather than left implied. A module-scope
+  `Arena` would be a single global reachable from every function in every
+  module that imports it, and from inside every `spawn`ed thread's call
+  tree — the same unsynchronized-shared-mutable-state hazard the grammar
+  already documents for `spawn` (see **Threads**), reintroduced at the
+  type level this section was specifically built to avoid. `@[export]` only
+  makes this worse, not merely redundant: it widens the same single
+  instance from "shared within this module" to "shared with every module
+  that imports it," on top of every thread any of them spawn.
+
+```lucid
+-- ERROR: Arena cannot be declared at module scope
+const arena Arena = Arena::create(4096) ?? Arena::empty();
+```
 
 ```lucid
 const arena Arena = Arena::create(4096) ?? Arena::empty();
@@ -5328,6 +5345,24 @@ const run () = {
     const arena Arena = Arena::create(4096) ?? Arena::empty();
     buildGraph(arena);    -- binds as &Arena at the parameter; no copy, no move
 };    -- freed exactly once, here — buildGraph never took ownership
+```
+
+**Wanting one arena for the whole program's run is still possible — it just
+belongs in `main`'s own scope, not the module's.** This gets an effectively
+program-length lifetime without any of the sharing problems above, because
+it stays inside one ordinary, well-defined function scope: the existing
+block-exit-free machinery applies cleanly, and the arena is not reachable
+from any other module or thread unless explicitly handed out via `&arena`
+at a specific call site — sharing stays opt-in and visible, never implicit:
+
+```lucid
+const main () = {
+    const arena Arena = Arena::create(65536) ?? Arena::empty();
+    while running {
+        frame(arena);      -- passed as &Arena, per the pattern above
+        arena::reset();
+    }
+};    -- freed here, once, when main's block exits — i.e. program end
 ```
 
 **Allocating — bounds-checked like an index, not fallible like `T!`.** A
