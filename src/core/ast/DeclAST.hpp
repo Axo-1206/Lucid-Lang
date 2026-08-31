@@ -402,6 +402,7 @@ struct StructDeclAST : TypeDeclAST {
 /// 
 /// @field variants      Enum variants with their explicit values
 /// @field backingType   Optional backing integer type (defaults to int32)
+// In DeclAST.hpp
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
@@ -410,9 +411,12 @@ struct EnumDeclAST : TypeDeclAST {
     PrimitiveTypeAST* backingType;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    ArenaSpan<llvm::ConstantInt*> variantConstants;
+    // Changed from ArenaSpan to std::vector because LLVM objects
+    // are not allocated in the AST arena.
+    std::vector<llvm::ConstantInt*> variantConstants;
     llvm::IntegerType* backingLLVMType = nullptr;
-    uint64_t byteSize = 0;  // From LLVM DataLayout
+    uint64_t byteSize = 0;
+    InternedString mangledName;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumDeclAST(InternedString n,
@@ -422,14 +426,10 @@ struct EnumDeclAST : TypeDeclAST {
         , variants(vars)
         , backingType(backing) {}
     
+    // ─── Helper to find variant constant by name ──────────────────────
     llvm::ConstantInt* constantForVariant(InternedString name) const {
         for (size_t i = 0; i < variants.size(); ++i) {
             if (variants[i]->name == name) {
-                // variantConstants is populated later, by CodeGen - variants
-                // (a Parser field) is populated first. If this is called
-                // before CodeGen has run, variantConstants may still be its
-                // default-empty span, making variantConstants[i] an
-                // out-of-bounds read.
                 return i < variantConstants.size() ? variantConstants[i] : nullptr;
             }
         }

@@ -110,6 +110,35 @@ InternedString generateMangledNameForGeneric(
     return ctx.pool.intern(result);
 }
 
+InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
+    if (!decl) return InternedString(0);
+    
+    std::string result;
+    
+    // ─── 1. Module path ──────────────────────────────────────────────────
+    result += getMangledModulePath(ctx) + "_";
+    
+    // ─── 2. Enum name ──────────────────────────────────────────────────
+    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
+    
+    // ─── 3. Backing type (for disambiguation) ──────────────────────────────
+    // This helps distinguish enums with different backing types
+    // but the same name (unlikely, but safe for consistency).
+    if (decl->backingType) {
+        result += "_B" + typeToMangleString(decl->backingType, ctx);
+    } else {
+        // Default backing type is int32
+        result += "_B" + typeToMangleString(ctx.getIntType(), ctx);
+    }
+    
+    // ─── 4. Variant count (for disambiguation) ─────────────────────────────
+    // Two enums with the same name and same backing type but different
+    // variants would be different types. This ensures uniqueness.
+    result += "_V" + std::to_string(decl->variants.size());
+    
+    return buildMangledName(result, ctx);
+}
+
 InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
     

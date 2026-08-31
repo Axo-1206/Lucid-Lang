@@ -84,32 +84,7 @@ void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx) {
 
         // ─── Lower all declarations except function bodies ──────────────
         // For functions, this creates the prototype but not the body.
-        switch (decl->kind) {
-            case ASTKind::ImportDecl:
-                // Imports are handled by the module resolver, not CodeGen.
-                break;
-
-            case ASTKind::FuncDecl:
-                lowerFunctionDecl(decl->as<FuncDeclAST>(), ctx);
-                break;
-
-            case ASTKind::StructDecl:
-                lowerStructDecl(decl->as<StructDeclAST>(), ctx);
-                break;
-
-            case ASTKind::EnumDecl:
-                lowerEnumDecl(decl->as<EnumDeclAST>(), ctx);
-                break;
-
-            case ASTKind::VarDecl:
-                lowerVarDecl(decl->as<VarDeclAST>(), ctx);
-                break;
-
-            default:
-                // Other declaration kinds don't need special handling
-                // in the declaration phase.
-                break;
-        }
+        lowerDeclaration(decl, ctx);
     }
 }
 

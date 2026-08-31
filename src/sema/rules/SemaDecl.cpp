@@ -527,6 +527,24 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
             }
         }
     }
+
+    // ─── 3. Generate mangled name ────────────────────────────────────────────
+    // This is CRITICAL for CodeGen to create unique enum types.
+    // Without mangling, two enums with the same name in different modules
+    // would collide in LLVM.
+    //
+    // Example:
+    //   module1: enum Status { Ok = 0, Err = 1 }
+    //   module2: enum Status { Active = 0, Inactive = 1 }
+    //   Both would be named "Status" without mangling → conflict!
+    //
+    // With mangling:
+    //   module1 → _Lmodule1_Status_Bi_V2
+    //   module2 → _Lmodule2_Status_Bi_V2
+    InternedString mangled = generateMangledName(decl, ctx);
+    if (mangled.isValid()) {
+        decl->mangledName = mangled;
+    }
 }
 
 // ─── resolveTraitDecl ─────────────────────────────────────────────────────────
@@ -614,6 +632,15 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
+
+    // ─── 5. Generate mangled name ───────────────────────────────────────────
+    // This is CRITICAL for CodeGen to create unique struct types.
+    // For non-exported structs, we still need a mangled name to avoid
+    // collisions between structs with the same name in different modules.
+    InternedString mangled = generateMangledName(decl, ctx);
+    if (mangled.isValid()) {
+        decl->mangledName = mangled;
+    }
 }
 
 // ─── resolveStructFields ──────────────────────────────────────────────────────

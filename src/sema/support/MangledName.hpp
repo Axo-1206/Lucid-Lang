@@ -110,6 +110,12 @@ InternedString generateMangledNameForGeneric(
 /// @return The mangled name as an InternedString.
 InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx);
 
+/// @brief Generate a mangled name for an enum.
+/// @param decl The enum declaration.
+/// @param ctx The semantic context.
+/// @return The mangled name as an InternedString.
+InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx);
+
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
 /// @brief Encode a type to a mangled string.

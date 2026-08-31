@@ -56,9 +56,6 @@ namespace codegen {
 /// This is the main dispatch for declaration lowering. It routes to the
 /// appropriate specialized function based on the declaration kind.
 ///
-/// @param decl The declaration to lower.
-/// @param ctx The code generation context.
-///
 /// @note This is called from lowerModuleDeclarations() during Phase 1.
 ///       All declarations are processed before any function bodies.
 void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
@@ -115,9 +112,6 @@ void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
 /// ─── Closures ─────────────────────────────────────────────────────────────
 /// If a function is a closure (has captured variables), it gets an extra
 /// "env" parameter as its first argument. This is set in decl->hasClosure.
-///
-/// @param decl The function declaration to lower.
-/// @param ctx The code generation context.
 void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -299,9 +293,6 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
 ///
 /// For type-erased generic functions, the body is generated once and works
 /// for all instantiations using tagged slots.
-///
-/// @param decl The function declaration whose body to lower.
-/// @param ctx The code generation context.
 void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -347,10 +338,6 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
 /// This is called for non-generic functions and for type-erased generic
 /// functions. It creates the entry block, lowers parameters, and generates
 /// the function body.
-///
-/// @param decl The function declaration.
-/// @param func The LLVM function to generate the body for.
-/// @param ctx The code generation context.
 void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx) {
     // ─── Push function context ────────────────────────────────────────────
     ctx.setCurrentFunction(func);
@@ -519,9 +506,6 @@ void lowerSpecializedFunctionBody(
 ///   1. Parameters can be referenced as l-values (e.g., &param)
 ///   2. Parameters can be mutable (if declared with `let`)
 ///   3. It provides a consistent way to access parameters
-///
-/// @param param The parameter to lower.
-/// @param ctx The code generation context.
 void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     if (!param) return;
 
@@ -598,9 +582,6 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
 /// @brief Lower a variable declaration.
 ///
 /// Variables can be either module-level (globals) or local (allocas).
-///
-/// @param decl The variable declaration to lower.
-/// @param ctx The code generation context.
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -659,7 +640,6 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         ctx.storeValue(decl, global);
         decl->llvmGlobal = global;
 
-        Trace::info("Lowered global variable: ", varName);
         return;
     }
 
@@ -682,8 +662,6 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     ctx.storeValue(decl, alloca);
     decl->llvmAlloca = alloca;
     ctx.markAlive(decl);
-
-    Trace::detail("Lowered local variable: ", varName);
 }
 
 // =============================================================================
@@ -717,9 +695,6 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 ///      it returns a pointer to the opaque type
 ///   4. The pointer breaks the recursion
 ///   5. Call setBody() to define the struct with all field types
-///
-/// @param decl The struct declaration to lower.
-/// @param ctx The code generation context.
 void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -818,9 +793,6 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
 ///
 /// Enums in Lucid are simple integer enumerations. Each variant has an
 /// explicit integer value.
-///
-/// @param decl The enum declaration to lower.
-/// @param ctx The code generation context.
 void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -833,22 +805,34 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Create constants for each variant ────────────────────────────────
-    std::vector<llvm::ConstantInt*> variantConstants;
-    variantConstants.reserve(decl->variants.size());
+    // ─── Get the mangled enum name ────────────────────────────────────────
+    std::string enumName;
+    if (decl->mangledName.isValid()) {
+        enumName = ctx.pool.lookup(decl->mangledName);
+    } else {
+        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, decl->loc,
+                                  "enum '", ctx.pool.lookup(decl->name),
+                                  "' has no mangled name, using raw name");
+        enumName = ctx.pool.lookup(decl->name);
+    }
 
+    // ─── Clear existing variant constants ─────────────────────────────────
+    decl->variantConstants.clear();
+    decl->variantConstants.reserve(decl->variants.size());
+
+    // ─── Create constants for each variant ────────────────────────────────
     for (EnumVariantAST* variant : decl->variants) {
         llvm::ConstantInt* constVal = llvm::ConstantInt::get(
             backingType,
             variant->value,
             true
         );
-        variantConstants.push_back(constVal);
+        decl->variantConstants.push_back(constVal);
 
         variant->llvmValue = constVal;
 
-        std::string varName = ctx.pool.lookup(decl->name) + "." +
-                             ctx.pool.lookup(variant->name);
+        // ─── Use mangled name for the variant symbol ──────────────────────
+        std::string varName = enumName + "." + ctx.pool.lookup(variant->name);
         new llvm::GlobalVariable(
             *ctx.module,
             backingType,
@@ -862,10 +846,11 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
                            variant->value);
     }
 
+    // ─── Store backing type ───────────────────────────────────────────────
     decl->backingLLVMType = backingType;
 
-    Trace::detail("Lowered enum: ", ctx.pool.lookup(decl->name), " (",
-                variantConstants.size(), " variants)");
+    Trace::detail("Lowered enum: ", enumName, " (",
+                decl->variantConstants.size(), " variants)");
 }
 
 // =============================================================================
