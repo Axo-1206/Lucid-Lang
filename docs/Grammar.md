@@ -5293,6 +5293,23 @@ the original binding — so:
   produce a second `Arena` value from nowhere, which isn't defined, and would
   in any case orphan any `[_]T` still pointing into the old region while it
   was torn down.
+- **Initializing a fresh binding from an existing `Arena`-typed variable is
+  rejected too** — `const b Arena = a;` needs exactly the same undefined
+  copy as reassignment does, it just arrives at it through ordinary
+  variable initialization instead of `arena = ...`. The only two
+  expressions ever allowed to initialize an `Arena`-typed binding are
+  `Arena::create(...)` and `Arena::empty()`. This is arguably the easier
+  mistake to make of the two, since `const b Arena = a;` reads as completely
+  ordinary `let`/`const` syntax if you don't already know the rule — the fix
+  is the same reference-binding form used everywhere else non-owning arena
+  access is needed:
+
+  ```lucid
+  const a Arena = Arena::create(4096) ?? Arena::empty();
+  const b Arena = a;      -- ERROR: no copy operation defined for Arena
+  const c &Arena = a;     -- OK: c is a borrowed reference to the arena a owns
+  ```
+
 - **No user-defined function may declare `Arena` as a parameter type (by
   value) or as a return type.** A by-value parameter or a returned value both
   require a copy to hand across the boundary, which — again — isn't defined
@@ -5317,8 +5334,12 @@ the original binding — so:
   that imports it," on top of every thread any of them spawn.
 
 ```lucid
--- ERROR: Arena cannot be declared at module scope
-const arena Arena = Arena::create(4096) ?? Arena::empty();
+const arena Arena = Arena::create(4096) ?? Arena::empty();    -- ERROR:
+                                                                 -- Arena
+                                                                 -- cannot be
+                                                                 -- declared
+                                                                 -- at module
+                                                                 -- scope
 ```
 
 ```lucid
