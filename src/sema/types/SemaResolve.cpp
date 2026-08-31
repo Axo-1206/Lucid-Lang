@@ -234,6 +234,15 @@ TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // ─── Arena validation: Cannot store Arena in arrays ──────────────────
+    if (isArenaType(element)) {
+        ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
+                              "array element cannot be of type Arena");
+        ctx.diagnostics.note(type,
+                             "Arena is scope-confined and cannot be stored in arrays");
+        return nullptr;
+    }
+
     // ─── Check: Array element cannot be a reference type ──────────────────
     if (element->isa<RefTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
@@ -400,14 +409,26 @@ TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
+    // ─── Validate parameter types ──────────────────────────────────────────
     for (ParamAST* param : type->params) {
         if (!resolveType(param->type, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
                                   "invalid parameter type");
             return nullptr;
         }
+
+        // ─── Arena validation: Cannot pass Arena by value ────────────────
+        if (isArenaType(param->type)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
+                                  "parameter '", ctx.pool.lookup(param->name),
+                                  "' cannot be of type Arena (use &Arena to pass by reference)");
+            ctx.diagnostics.note(param,
+                                 "Arena is scope-confined and cannot be passed by value");
+            return nullptr;
+        }
     }
 
+    // ─── Validate return type ──────────────────────────────────────────────
     if (type->returnType) {
         TypeAST* returnType = resolveType(type->returnType, ctx);
         if (!returnType) {
@@ -416,8 +437,17 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
+        // ─── Arena validation: Cannot return Arena by value ──────────────
+        if (isArenaType(returnType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, type,
+                                  "function cannot return Arena by value");
+            ctx.diagnostics.note(type,
+                                 "Arena is scope-confined. Use &Arena to return a reference, "
+                                 "or use Arena::create()/Arena::empty() to construct a new arena.");
+            return nullptr;
+        }
+
         // ─── Check: Function cannot return a borrowed type ────────────────
-        // Rule 3: No Borrowed Returns - a function cannot return &T or [_]T
         if (isBorrowedType(returnType)) {
             ctx.diagnostics.error(DiagCode::Sem_ReturnRef, type,
                                   "function cannot return borrowed type (",

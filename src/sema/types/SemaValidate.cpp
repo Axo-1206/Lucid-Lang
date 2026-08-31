@@ -506,6 +506,17 @@ bool validateForeignFunction(FuncDeclAST* decl,
 
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
+            // ─── Arena cannot be passed to FFI ─────────────────────────────
+            if (isArenaType(param->type)) {
+                ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, param,
+                                      "foreign function parameter '", 
+                                      ctx.pool.lookup(param->name),
+                                      "' cannot be of type Arena");
+                ctx.diagnostics.note(param,
+                                     "Arena is scope-confined and cannot cross the FFI boundary");
+                allValid = false;
+            }
+
             if (!isValidFFIType(param->type, ctx)) {
                 ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
                                       "parameter '", ctx.pool.lookup(param->name),
@@ -517,11 +528,22 @@ bool validateForeignFunction(FuncDeclAST* decl,
 
     // ─── 4. Validate return type ─────────────────────────────────────────────
     TypeAST* returnType = funcType->returnType;
-    if (returnType && !isValidFFIType(returnType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
-                              "return type of foreign function '",
-                              ctx.pool.lookup(decl->name), "' is not FFI-compatible");
-        allValid = false;
+    if (returnType) {
+        // ─── Arena cannot be returned from FFI ─────────────────────────────
+        if (isArenaType(returnType)) {
+            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
+                                  "foreign function cannot return Arena");
+            ctx.diagnostics.note(decl,
+                                 "Arena is scope-confined and cannot cross the FFI boundary");
+            allValid = false;
+        }
+
+        if (!isValidFFIType(returnType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
+                                  "return type of foreign function '",
+                                  ctx.pool.lookup(decl->name), "' is not FFI-compatible");
+            allValid = false;
+        }
     }
 
     // ─── 5. Validate no generic parameters ──────────────────────────────────

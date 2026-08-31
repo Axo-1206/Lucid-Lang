@@ -700,6 +700,15 @@ bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
+        // ─── Arena validation: Cannot return Arena by value ──────────────
+        if (isArenaType(valueType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, stmt->value,
+                                  "cannot return Arena by value");
+            ctx.diagnostics.note(stmt->value,
+                                 "Arena is scope-confined and cannot cross function boundaries by value");
+            return true;
+        }
+
         // ─── DETECT CLOSURE RETURN ───────────────────────────────────────────
         // Check if the returned expression is a closure that needs to be
         // marked as escaping (heap-allocated).

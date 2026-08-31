@@ -303,7 +303,7 @@ bool isSwitchCaseCompatible(ExprAST* value,
 
 // ─── FFI Compatibility ──────────────────────────────────────────────────
 
-bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
+bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
     if (!type) return true;
 
     if (type->isa<PrimitiveTypeAST>()) return true;
@@ -331,6 +331,16 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
 
     if (type->isa<NamedTypeAST>()) {
         NamedTypeAST* named = const_cast<NamedTypeAST*>(type->as<NamedTypeAST>());
+        
+        // ─── Handle built-in types ──────────────────────────────────────────
+        // ArenaDescriptor is a built-in POD type that is FFI-compatible.
+        // Arena is NOT FFI-compatible (scope-confined).
+        if (isArenaDescriptorNamedType(named)) {
+            return true;
+        }
+        if (isArenaNamedType(named)) {
+            return false;  // Arena cannot cross FFI boundary by value
+        }
         
         // Ensure resolvedDecl is populated
         resolveNamedType(named, ctx);

@@ -342,6 +342,18 @@ struct CaptureAnalyzer {
         // ─── Validate capture rules ─────────────────────────────────────────
         TypeAST* varType = decl->type;
 
+        // ─── Rule: Arena cannot be captured by value ──────────────────────
+        // Arena is Owned, scope-confined - it has no copy operation and
+        // cannot cross function boundaries by value.
+        if (varType && isArenaType(varType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
+                                  "closure cannot capture Arena by value");
+            ctx.diagnostics.note(diagLoc,
+                                 "Arena is scope-confined and cannot be captured by closures. "
+                                 "Use &Arena to reference an arena from a closure.");
+            return;
+        }
+
         // Rule 3: Borrowed types (&T, [_]T) cannot be captured
         if (varType && isBorrowedType(varType)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,

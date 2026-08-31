@@ -1120,6 +1120,18 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
+    // ─── ArenaDescriptor cannot be constructed via struct literal ──────
+    if (lookupStringView(expr->typeName) == "ArenaDescriptor") {
+        ctx.diagnostics.error(DiagCode::Sem_ArenaDescriptorLiteral, expr,
+                              "ArenaDescriptor is a built-in type and cannot be constructed "
+                              "via struct literal syntax");
+        ctx.diagnostics.note(expr,
+                              "ArenaDescriptor can only be obtained via arena::descriptor()");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
     if (!typeDecl->isa<StructDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                               "'", ctx.pool.lookup(expr->typeName), "' is not a struct");

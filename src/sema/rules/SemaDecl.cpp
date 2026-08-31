@@ -130,22 +130,32 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         // ─── 3a. Arena bindings must be declared with `const` ──────
         if (decl->keyword == DeclKeyword::Let) {
             ctx.diagnostics.error(DiagCode::Sem_ConstRequired, decl,
-                                  "Arena bindings must be declared with `const`");
+                                "Arena bindings must be declared with `const`");
             ctx.diagnostics.note(decl,
-                                  "Reassigning an Arena binding would orphan slices "
-                                  "into its backing region");
+                                "Reassigning an Arena binding would orphan slices "
+                                "into its backing region");
             return;
         }
         
-        // ─── 3b. Initializer must exist ─────────────────────────────
+        // ─── 3b. Arena cannot be declared at module level ───────────
+        if (ctx.isAtModuleLevel()) {
+            ctx.diagnostics.error(DiagCode::Sem_BuiltinTypeMisuse, decl,
+                                "Arena cannot be declared at top level");
+            ctx.diagnostics.note(decl,
+                                "Arena is scope-confined and should be declared inside "
+                                "a function or block where it will be properly scoped");
+            return;
+        }
+        
+        // ─── 3c. Initializer must exist ─────────────────────────────
         if (!decl->init) {
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
-                                  "Arena binding must be initialized with "
-                                  "Arena::create(size) or Arena::empty()");
+                                "Arena binding must be initialized with "
+                                "Arena::create(size) or Arena::empty()");
             return;
         }
         
-        // ─── 3c. Validate the initializer ───────────────────────────
+        // ─── 3d. Validate the initializer ───────────────────────────
         if (!validateArenaInitializer(decl->init, ctx)) {
             return;
         }
@@ -483,6 +493,15 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
             continue;
         }
 
+        // ─── Arena validation: Cannot store Arena in struct fields ──────
+        if (isArenaType(fieldType)) {
+            ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
+                                  "field '", ctx.pool.lookup(field->name), "' cannot be of type Arena");
+            ctx.diagnostics.note(field,
+                                 "Arena is scope-confined and cannot be stored in traits");
+            continue;
+        }
+
         // ─── Validate const trait field ──────────────────────────────────
         // const trait fields must have a definite type (not nullable or fallible)
         if (field->isConst()) {
@@ -549,6 +568,15 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         // ─── 1. Resolve the field's type ──────────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
+            continue;
+        }
+
+        // ─── Arena validation: Cannot store Arena in struct fields ──────
+        if (isArenaType(fieldType)) {
+            ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
+                                  "field '", ctx.pool.lookup(field->name), "' cannot be of type Arena");
+            ctx.diagnostics.note(field,
+                                 "Arena is scope-confined and cannot be stored in structs");
             continue;
         }
 
