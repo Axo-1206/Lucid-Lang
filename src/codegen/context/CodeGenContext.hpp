@@ -260,13 +260,6 @@ struct CodeGenContext {
         llvm::ArrayRef<llvm::Type*> argTypes
     );
     
-    static llvm::AtomicOrdering parseOrdering(const std::string& order);
-    
-    // ─── DataLayout Helpers ─────────────────────────────────────────────
-    
-    uint64_t getTypeSize(llvm::Type* type) const;
-    uint64_t getTypeAlign(llvm::Type* type) const;
-    
     // ─── Pointee Type Helpers (opaque pointer safe) ─────────────────────
     
     llvm::Type* getPointeeType(llvm::Value* ptr) const;

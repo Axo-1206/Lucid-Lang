@@ -256,16 +256,6 @@ llvm::Function* CodeGenContext::getLLVMIntrinsicDecl(
     return llvm::Intrinsic::getDeclaration(module, id, argTypes);
 }
 
-// ─── DataLayout Helpers ───────────────────────────────────────────────────
-
-uint64_t CodeGenContext::getTypeSize(llvm::Type* type) const {
-    return module->getDataLayout().getTypeAllocSize(type);
-}
-
-uint64_t CodeGenContext::getTypeAlign(llvm::Type* type) const {
-    return module->getDataLayout().getABITypeAlign(type).value();
-}
-
 // ─── Pointee Type Helpers ─────────────────────────────────────────────────
 
 llvm::Type* CodeGenContext::getPointeeType(llvm::Value* ptr) const {

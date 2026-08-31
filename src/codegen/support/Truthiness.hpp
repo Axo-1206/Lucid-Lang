@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../CodeGenType.hpp"
+#include "../types/CodeGenType.hpp"
 #include "CodeGenHelpers.hpp"
-#include "LLVMHelpers.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 #include "core/ast/TypeAST.hpp"
 
 namespace codegen {

@@ -7,7 +7,7 @@
 
 #include "RuntimeFunctionRegistry.hpp"
 #include "../context/CodeGenContext.hpp"
-#include "../support/LLVMHelpers.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Type.h>

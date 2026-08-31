@@ -2,11 +2,11 @@
 /// @brief Implementation of Lucid-specific intrinsic emissions.
 
 #include "LucidIntrinsicEmitter.hpp"
-#include "../CodeGenType.hpp"
+#include "../types/CodeGenType.hpp"
 #include "codegen/runtime/closure/CodeGenClosure.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
-#include "../support/LLVMHelpers.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 #include "codegen/CodeGen.hpp"
 
 #include <llvm/IR/Intrinsics.h>
@@ -310,7 +310,7 @@ llvm::Value* emitLucidTypeIntrinsic(
         if (expr && expr->resolvedType) {
             llvm::Type* llvmType = getType(ctx, expr->resolvedType);
             if (llvmType) {
-                uint64_t size = ctx.getTypeSize(llvmType);
+                uint64_t size = getTypeSize(llvmType, ctx.module);
                 return llvm::ConstantInt::get(i64, size);
             }
         }
@@ -322,7 +322,7 @@ llvm::Value* emitLucidTypeIntrinsic(
         if (expr && expr->resolvedType) {
             llvm::Type* llvmType = getType(ctx, expr->resolvedType);
             if (llvmType) {
-                uint64_t alignment = ctx.getTypeAlign(llvmType);
+                uint64_t alignment = getTypeAlign(llvmType, ctx.module);
                 return llvm::ConstantInt::get(i64, alignment);
             }
         }

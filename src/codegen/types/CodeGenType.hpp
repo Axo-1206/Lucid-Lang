@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "context/CodeGenContext.hpp"
+#include "../context/CodeGenContext.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include <llvm/IR/DerivedTypes.h>

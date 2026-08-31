@@ -38,7 +38,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "context/CodeGenContext.hpp"
-#include "CodeGenType.hpp"
+#include "types/CodeGenType.hpp"
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>

@@ -2,12 +2,11 @@
 /// @brief Implementation of expression lowering to LLVM IR.
 
 #include "CodeGen.hpp"
-#include "CodeGenType.hpp"
 #include "core/ASTStrings.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
-#include "support/LLVMHelpers.hpp"
+#include "types/LLVMTypeHelpers.hpp"
 #include "codegen/runtime/RuntimeError.hpp"
 #include "codegen/runtime/closure/CodeGenClosure.hpp"
 #include "intrinsic/IntrinsicEmitter.hpp"
@@ -1601,7 +1600,7 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
         if (!elemLLVMType) return nullptr;
         
         // Get element size
-        uint64_t elemSize = ctx.getTypeSize(elemLLVMType);
+        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
         if (elemSize == 0) elemSize = 1;
         
         // Get count (defaults to 1 if not specified)
@@ -1747,7 +1746,7 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
         llvm::Type* elemLLVMType = getType(ctx, elemType);
         if (!elemLLVMType) return nullptr;
         
-        uint64_t elemSize = ctx.getTypeSize(elemLLVMType);
+        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
         if (elemSize == 0) elemSize = 1;
         
         llvm::Value* remaining = lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);
@@ -1774,7 +1773,7 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
         llvm::Type* elemLLVMType = getType(ctx, elemType);
         if (!elemLLVMType) return nullptr;
         
-        uint64_t elemSize = ctx.getTypeSize(elemLLVMType);
+        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
         if (elemSize == 0) elemSize = 1;
         
         llvm::Value* remaining = lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);

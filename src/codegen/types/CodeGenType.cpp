@@ -3,8 +3,8 @@
 
 #include "CodeGenType.hpp"
 #include "core/ASTStrings.hpp"
-#include "generic/CodeGenGeneric.hpp"  // For GenericSubstitution
-#include "generic/GenericMangledName.hpp"
+#include "../generic/CodeGenGeneric.hpp"  // For GenericSubstitution
+#include "../generic/GenericMangledName.hpp"
 #include "core/ast/DeclAST.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>

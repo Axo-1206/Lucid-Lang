@@ -40,7 +40,6 @@
 
 #include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
-#include "codegen/CodeGenType.hpp"
 #include "codegen/generic/CodeGenGeneric.hpp"
 #include "codegen/support/CodeGenAlloca.hpp"
 #include "codegen/support/CodeGenPanic.hpp"

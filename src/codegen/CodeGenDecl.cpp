@@ -31,7 +31,6 @@
 ///      - Cached in GenericRegistry to avoid duplication
 
 #include "CodeGen.hpp"
-#include "CodeGenType.hpp"
 #include "generic/CodeGenGeneric.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/StmtAST.hpp"

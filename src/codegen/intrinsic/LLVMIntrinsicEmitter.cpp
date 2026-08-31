@@ -2,7 +2,7 @@
 /// @brief Implementation of LLVM intrinsic emissions.
 
 #include "LLVMIntrinsicEmitter.hpp"
-#include "../support/LLVMHelpers.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "../CodeGenType.hpp"
 

@@ -1473,11 +1473,11 @@ CodeGenStmt.cpp
 
 CodeGenExpr.cpp
 ├── #include "support/CodeGenPanic.hpp"
-├── #include "support/LLVMHelpers.hpp"
+├── #include "types/LLVMTypeHelpers.hpp"
 └── Used for: emitBoundsCheck(), emitZeroCheck(), isIntegerType()
 
 CodeGenType.cpp
-├── #include "support/LLVMHelpers.hpp"
+├── #include "types/LLVMTypeHelpers.hpp"
 └── Used for: getI8Type(), getI64Type(), isStructType()
 ```
 

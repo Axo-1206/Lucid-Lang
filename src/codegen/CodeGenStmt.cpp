@@ -10,11 +10,10 @@
 /// Never use diagnostics in CodeGen for semantic errors.
 
 #include "CodeGen.hpp"
-#include "CodeGenType.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
-#include "support/LLVMHelpers.hpp"
+#include "types/LLVMTypeHelpers.hpp"
 #include "support/Truthiness.hpp"
 #include "intrinsic/LucidIntrinsicEmitter.hpp"
 #include "core/ast/StmtAST.hpp"

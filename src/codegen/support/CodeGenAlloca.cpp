@@ -2,7 +2,6 @@
 /// @brief Implementation of memory allocation and basic block management helpers.
 
 #include "CodeGenAlloca.hpp"
-#include "../CodeGenType.hpp"
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Function.h>

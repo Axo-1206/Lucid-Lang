@@ -4,11 +4,11 @@
 #include "IntrinsicEmitter.hpp"
 #include "LLVMIntrinsicEmitter.hpp"
 #include "LucidIntrinsicEmitter.hpp"
-#include "../CodeGenType.hpp"
+#include "../types/CodeGenType.hpp"
 #include "../CodeGen.hpp"
 #include "../support/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
-#include "../support/LLVMHelpers.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 #include "core/registry/IntrinsicRegistry.hpp"
 
 #include <llvm/IR/Intrinsics.h>
