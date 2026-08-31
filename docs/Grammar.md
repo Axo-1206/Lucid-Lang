@@ -4136,8 +4136,8 @@ const view [_]float = mat4;
 
 ## Value and Reference Semantics
 
-Every type falls into exactly one of three categories, not two. Getting these
-three confused — treating a shared-ownership type as if it behaved like a
+Every type falls into exactly one of four categories, not two. Getting these
+confused — treating a shared-ownership type as if it behaved like a
 borrow, or a borrow as if it behaved like a plain value — is the single most
 common source of memory-model bugs in this section, so the categories are
 spelled out before any type-by-type table:
@@ -4161,6 +4161,20 @@ spelled out before any type-by-type table:
   this category the language itself produces implicitly today; the stdlib's
   planned `Shared<T>` / `Weak<T>` wrappers (see **Modeling Complex Data
   Structures** below) use the same mechanism for user-defined data.
+- **Owned, scope-confined** — the type genuinely owns a heap allocation, like
+  an Owned value, but unlike every other Owned value it has **no defined copy
+  operation at all**. Deep-copying its backing region on every
+  assignment/parameter-pass/return (the Owned value rule) would be far too
+  expensive and would defeat the type's purpose; treating it as
+  Shared/refcounted instead would let multiple live bindings alias the same
+  allocation, reopening exactly the aliasing hazards this category exists to
+  avoid. With no copy operation possible, the only value with an identity is
+  the original binding — so the type is scope-confined by necessity, the same
+  restriction shape as a Borrowed view, even though (unlike a borrow) it owns
+  what it points at rather than aliasing someone else's storage. `Arena` is
+  the only member of this category (see **Memory Management**); non-owning
+  access to it from elsewhere still goes through the ordinary `&T` mechanism
+  above, not a bespoke rule of its own.
 
 The difference between the second and third category is the one worth
 sitting with: both let you avoid a deep copy, but a **borrowed view is
@@ -4169,25 +4183,29 @@ value is allowed to outlive its source, and pays a small runtime cost
 (refcounting) so that it can do so safely.** If a value needs to escape
 upward out of the scope that created it — returned, stored in a struct,
 captured by a closure — it cannot be a borrowed view; it must be owned
-outright or shared.
+outright or shared. The fourth category is the exception to that last
+sentence: `Arena` is owned outright, yet still cannot escape upward, because
+"owned outright" was only ever a path around the Borrowed-view restriction by
+virtue of being copyable — and `Arena` isn't.
 
 ### Ownership Categories at a Glance
 
-| Type                            | Category                       | Copy behavior                                                                                 | Freed                                                                                                           | Can it escape its creating scope?                |
-| ------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `bool` `int` `float` `char` …   | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant — copies are independent              |
-| `Direction.North` (enum)        | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant                                       |
-| `[N]T` (fixed array)            | Owned value                    | full element copy                                                                             | scope arena, automatic                                                                                          | irrelevant                                       |
-| `[*]T` (dynamic array)          | Owned value                    | full deep copy                                                                                | scope arena, automatic — heap-backed, but the free call is compiler-inserted at scope exit like everything else | irrelevant                                       |
-| `string`                        | Owned value                    | full deep copy                                                                                | scope arena, automatic (same as `[*]T`)                                                                         | irrelevant                                       |
-| `struct`                        | Owned value                    | full deep copy, recursive per field                                                           | scope arena, automatic                                                                                          | irrelevant                                       |
-| Named function                  | Owned value                    | pointer copy, no state                                                                        | never — static                                                                                                  | yes, trivially (no state to dangle)              |
-| **Closure**                     | Shared, refcounted             | copies fat pointer `{func, env}`; env is retained                                             | heap, automatic — freed when refcount hits 0, not scope-tied                                                    | **yes — this is the point of it**                |
-| **`&T`** (reference)            | Borrowed view                  | not copied in the escaping sense — assignment *through* it mutates the pointee, never rebinds | n/a — never owns anything to free                                                                               | **no — structurally forbidden**                  |
-| **`[_]T`** (slice)              | Borrowed view                  | copies the view header `(ptr, len, cap)` — never the backing buffer                           | n/a — never owns anything to free                                                                               | **no — structurally forbidden, same as `&T`**    |
-| `*T` (raw pointer)              | Sealed conduit                 | pointer copy                                                                                  | never automatic — manual, or none at all                                                                        | yes — this is the explicitly unsafe escape hatch |
-| `Shared<T>` *(stdlib, planned)* | Shared, refcounted             | copies handle, retains                                                                        | heap, automatic — freed when refcount hits 0                                                                    | yes                                              |
-| `Weak<T>` *(stdlib, planned)*   | Shared, refcounted, non-owning | copies handle, does not retain                                                                | rides on the `Shared<T>` it observes; auto-nulls                                                                | yes, but never keeps its target alive            |
+| Type                            | Category                       | Copy behavior                                                                                 | Freed                                                                                                           | Can it escape its creating scope?                                                                                     |
+| ------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `bool` `int` `float` `char` …   | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant — copies are independent                                                                                   |
+| `Direction.North` (enum)        | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant                                                                                                            |
+| `[N]T` (fixed array)            | Owned value                    | full element copy                                                                             | scope arena, automatic                                                                                          | irrelevant                                                                                                            |
+| `[*]T` (dynamic array)          | Owned value                    | full deep copy                                                                                | scope arena, automatic — heap-backed, but the free call is compiler-inserted at scope exit like everything else | irrelevant                                                                                                            |
+| `string`                        | Owned value                    | full deep copy                                                                                | scope arena, automatic (same as `[*]T`)                                                                         | irrelevant                                                                                                            |
+| `struct`                        | Owned value                    | full deep copy, recursive per field                                                           | scope arena, automatic                                                                                          | irrelevant                                                                                                            |
+| Named function                  | Owned value                    | pointer copy, no state                                                                        | never — static                                                                                                  | yes, trivially (no state to dangle)                                                                                   |
+| **Closure**                     | Shared, refcounted             | copies fat pointer `{func, env}`; env is retained                                             | heap, automatic — freed when refcount hits 0, not scope-tied                                                    | **yes — this is the point of it**                                                                                     |
+| **`&T`** (reference)            | Borrowed view                  | not copied in the escaping sense — assignment *through* it mutates the pointee, never rebinds | n/a — never owns anything to free                                                                               | **no — structurally forbidden**                                                                                       |
+| **`[_]T`** (slice)              | Borrowed view                  | copies the view header `(ptr, len, cap)` — never the backing buffer                           | n/a — never owns anything to free                                                                               | **no — structurally forbidden, same as `&T`**                                                                         |
+| `*T` (raw pointer)              | Sealed conduit                 | pointer copy                                                                                  | never automatic — manual, or none at all                                                                        | yes — this is the explicitly unsafe escape hatch                                                                      |
+| `Shared<T>` *(stdlib, planned)* | Shared, refcounted             | copies handle, retains                                                                        | heap, automatic — freed when refcount hits 0                                                                    | yes                                                                                                                   |
+| `Weak<T>` *(stdlib, planned)*   | Shared, refcounted, non-owning | copies handle, does not retain                                                                | rides on the `Shared<T>` it observes; auto-nulls                                                                | yes, but never keeps its target alive                                                                                 |
+| **`Arena`**                     | Owned, scope-confined          | **none — not copyable**; only the original `const` binding is ever valid                      | scope arena, automatic — same compiler-inserted call as `[*]T`/`string`, never manual                           | **no — no user function may return it, take it by value, store it in a struct, or capture it; pass `&Arena` instead** |
 
 ### Owned Types — Copied on Assignment
 
@@ -5259,12 +5277,32 @@ An empty arena isn't a special poisoned state either: it is an ordinary
 defined below — panics unless guarded with `??`. The out-of-memory case is
 handled entirely by machinery that already exists.
 
-**`Arena` bindings must be declared `const`.** Reassigning an `Arena`
-binding to a different arena would silently orphan any `[_]T` still pointing
-into the old backing region while the region itself is torn down — a
-dangling-pointer hazard with no compiler signal at the reassignment site.
-Requiring `const` closes this off entirely by reusing the existing
-reassignment rule rather than inventing a new one:
+**`Arena` bindings must be declared `const`, and `Arena` cannot cross a
+function boundary by value.** This is the same underlying fact showing up in
+two places, not two separate rules. `Arena` is **Owned, scope-confined** (see
+**Value and Reference Semantics**) — it genuinely owns its backing region,
+but unlike every other owned type it has **no defined copy operation**:
+deep-copying the region on every copy would be prohibitively expensive and
+defeat the point of using an arena at all, and making it cheaply copyable via
+a refcounted handle instead would let multiple live bindings alias the same
+region, reopening the exact aliasing hazard the `reset()` warning above
+already flags. With no copy operation, there is only ever one valid value —
+the original binding — so:
+
+- **Reassignment is rejected** (`const`-only): rebinding would need to
+  produce a second `Arena` value from nowhere, which isn't defined, and would
+  in any case orphan any `[_]T` still pointing into the old region while it
+  was torn down.
+- **No user-defined function may declare `Arena` as a parameter type (by
+  value) or as a return type.** A by-value parameter or a returned value both
+  require a copy to hand across the boundary, which — again — isn't defined
+  for this type. (`Arena::create` and `Arena::empty()` are not affected by
+  this: they are the two sanctioned constructors, the sole source of `Arena`
+  values, not an existing local being copied or moved out of its scope.)
+- **`Arena` cannot be a struct field, an array/slice element, or be
+  closure-captured** — the same three restrictions the Downward Flow Rule
+  already places on `&T`/`[_]T`, arrived at for a different reason (no copy
+  operation exists, vs. "would dangle").
 
 ```lucid
 const arena Arena = Arena::create(4096) ?? Arena::empty();
@@ -5274,6 +5312,22 @@ arena::reset();                  -- OK — not a reassignment, it's the type's
                                   -- `const rc &Player` binding staying
                                   -- un-rebindable while what it points at
                                   -- can still change through other means
+```
+
+Access from a helper function goes through `&Arena` — an ordinary borrowed
+reference, governed by the ordinary Downward Flow Rule, exactly like passing
+`&Player` today. No bespoke passing convention was added for `Arena`:
+
+```lucid
+const buildGraph (a &Arena) = {
+    let nodes [_]Node = a::alloc<Node>(128);   -- mutates the arena through
+    let edges [_]Edge = a::alloc<Edge>(256);   -- the reference, same as any
+};                                              -- other write-through-&T
+
+const run () = {
+    const arena Arena = Arena::create(4096) ?? Arena::empty();
+    buildGraph(arena);    -- binds as &Arena at the parameter; no copy, no move
+};    -- freed exactly once, here — buildGraph never took ownership
 ```
 
 **Allocating — bounds-checked like an index, not fallible like `T!`.** A
@@ -5290,8 +5344,8 @@ ran, which can be conditional, so — exactly like indexing a `[_]T` or
 runtime-checked:
 
 ```lucid
-let nodes []Node = arena::alloc<Node>(128);          -- panics on overflow
-let edges []Edge  = arena::alloc<Edge>(9999) ?? [];  -- overflow → empty slice
+let nodes [_]Node = arena::alloc<Node>(128);          -- panics on overflow
+let edges [_]Edge  = arena::alloc<Edge>(9999) ?? [];  -- overflow → empty slice
 ```
 
 `arena::alloc<T>` returns `[_]T` — a borrowed view, never a raw pointer.
@@ -5312,7 +5366,7 @@ hot path:
 const pool Arena = Arena::create(2000 * #sizeof(Particle)) ?? Arena::empty();
 
 const frame () = {
-    let particles []Particle = pool::alloc<Particle>(2000);
+    let particles [_]Particle = pool::alloc<Particle>(2000);
     updateParticles(particles);
     pool::reset();    -- next frame's alloc reuses this same region
 };
@@ -5372,7 +5426,7 @@ number:
 
 ```lucid
 if arena::canFit<Node>(100) {
-    let nodes []Node = arena::alloc<Node>(100);   -- guaranteed not to panic
+    let nodes [_]Node = arena::alloc<Node>(100);   -- guaranteed not to panic
 } else {
     -- fall back, log, request a bigger arena next time, etc.
 }
@@ -5420,8 +5474,8 @@ of that existing knowledge, not a new category of problem.
 --   }
 
 const arena Arena = Arena::create(4096) ?? Arena::empty();
-const nodes []Node = arena::alloc<Node>(128);
-const edges []Edge = arena::alloc<Edge>(256);
+const nodes [_]Node = arena::alloc<Node>(128);
+const edges [_]Edge = arena::alloc<Edge>(256);
 const desc ArenaDescriptor = arena::descriptor();   -- only legal way to obtain one
 c_build_graph(nodes, edges, #addrof(desc));
 -- no free call needed here — released automatically at scope exit
@@ -6117,12 +6171,12 @@ Never pass an arena-derived slice to C without its descriptor:
 ```lucid
 -- WRONG: C receives arena memory but has no boundary information
 const arena Arena = Arena::create(65536) ?? Arena::empty();
-const data []uint8 = arena::alloc<uint8>(4096);
+const data [_]uint8 = arena::alloc<uint8>(4096);
 c_process(data);    -- C has no way to verify ownership or bounds
 
 -- CORRECT: C receives both the data and the descriptor
 const arena Arena = Arena::create(65536) ?? Arena::empty();
-const data []uint8 = arena::alloc<uint8>(4096);
+const data [_]uint8 = arena::alloc<uint8>(4096);
 const desc ArenaDescriptor = arena::descriptor();
 c_process(data, #addrof(desc));    -- C can verify: is data inside arena?
 ```
@@ -6140,8 +6194,8 @@ as any other heap-backed local.
 ```lucid
 -- Lucid side: create arena and allocate slices from it
 const arena Arena = Arena::create(65536) ?? Arena::empty();
-const nodes []uint8 = arena::alloc<uint8>(4096);
-const edges []uint8 = arena::alloc<uint8>(8192);
+const nodes [_]uint8 = arena::alloc<uint8>(4096);
+const edges [_]uint8 = arena::alloc<uint8>(8192);
 const desc ArenaDescriptor = arena::descriptor();
 
 -- pass both the slices and the descriptor to C
