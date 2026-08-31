@@ -228,6 +228,7 @@ enum class DiagCode : uint32_t {
     Sem_ArenaCannotFit            = 4415,  // Not enough capacity in arena
     Sem_ArenaEmptyCapacity        = 4416,  // Arena::create(0) is invalid
     Sem_ArenaCapacityOverflow     = 4417,  // Requested allocation exceeds arena capacity
+    Sem_ArenaInvalidInit          = 4418,  // Invalid initial value for the arena
 
     // Built-in Types (4450-4499)
     Sem_BuiltinTypeMisuse         = 4450,  // Built-in type used incorrectly

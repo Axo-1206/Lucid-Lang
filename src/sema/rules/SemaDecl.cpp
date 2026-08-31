@@ -106,28 +106,74 @@ void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx) {
     }
 }
 
+// ─── isArenaConstructionCall ──────────────────────────────────────────────
+
+/// @brief Check if an expression is a valid Arena construction call.
+/// 
+/// Valid Arena construction calls are:
+///   - Arena::create(size)   (static method call)
+///   - Arena::empty()        (static method call)
+/// 
+/// This rejects:
+///   - IdentifierExprAST (copying an existing Arena binding)
+///   - Any other expression that evaluates to Arena
+/// 
+/// @param expr The expression to check.
+/// @param ctx The semantic context.
+/// @return True if the expression is an Arena::create or Arena::empty call.
+static bool isArenaConstructionCall(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+    
+    // ─── Check if it's an ArenaAccessExprAST ──────────────────────────────
+    if (expr->isa<ArenaAccessExprAST>()) {
+        ArenaAccessExprAST* arenaAccess = expr->as<ArenaAccessExprAST>();
+        
+        // Must be a static call (Arena::create or Arena::empty)
+        if (!arenaAccess->isStatic) {
+            return false;
+        }
+        
+        InternedString createName = ctx.pool.intern("create");
+        InternedString emptyName = ctx.pool.intern("empty");
+        
+        return (arenaAccess->methodName == createName ||
+                arenaAccess->methodName == emptyName);
+    }
+    
+    // ─── Also check if it's a call that resolves to Arena::create/empty ──
+    // For example, a module alias: myArena::create(4096) should also be valid
+    // But this is handled by the ArenaAccessExprAST case above, since
+    // module:arena::create would be parsed as a ModuleAccessExprAST containing
+    // an ArenaAccessExprAST? Actually, the parser should produce an
+    // ArenaAccessExprAST directly for Arena::create.
+    // 
+    // The parser recognizes Arena::create via the :: operator, not module::
+    // So this case should be sufficient.
+    
+    return false;
+}
+
 // ─── resolveVarDecl ──────────────────────────────────────────────────────────
 
 void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
-    // ─── 1. Resolve the declared type ───────────────────────────────
+    // ─── 1. Resolve the declared type ──────────────────────────────────────
     TypeAST* declaredType = resolveType(decl->type, ctx);
     if (!declaredType) {
         return;
     }
 
-    // ─── 2. Validate const type ──────────────────────────────────────
+    // ─── 2. Validate const type ────────────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
             return;
         }
     }
 
-    // ─── 3. Arena type special validation ────────────────────────────
-    // Arena bindings must be const and initialized with Arena::create/empty
+    // ─── 3. Arena type special validation ──────────────────────────────────
     if (isArenaType(declaredType)) {
-        // ─── 3a. Arena bindings must be declared with `const` ──────
+        // ─── 3a. Arena bindings must be declared with `const` ──────────────
         if (decl->keyword == DeclKeyword::Let) {
             ctx.diagnostics.error(DiagCode::Sem_ConstRequired, decl,
                                 "Arena bindings must be declared with `const`");
@@ -137,7 +183,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 3b. Arena cannot be declared at module level ───────────
+        // ─── 3b. Arena cannot be declared at module level ───────────────────
         if (ctx.isAtModuleLevel()) {
             ctx.diagnostics.error(DiagCode::Sem_BuiltinTypeMisuse, decl,
                                 "Arena cannot be declared at top level");
@@ -147,7 +193,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 3c. Initializer must exist ─────────────────────────────
+        // ─── 3c. Initializer must exist ─────────────────────────────────────
         if (!decl->init) {
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                                 "Arena binding must be initialized with "
@@ -155,13 +201,51 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 3d. Validate the initializer ───────────────────────────
+        // ─── 3d. Validate the initializer ───────────────────────────────────
+        // The only valid initializers for an Arena binding are:
+        //   - Arena::create(size)  (fallible)
+        //   - Arena::empty()       (non-fallible)
+        // 
+        // This rejects:
+        //   - const b Arena = a;               (copy of existing arena)
+        //   - const b Arena = someFunction();  (any other expression)
+        //   - const b Arena = Arena{};         (struct literal - already rejected elsewhere)
         if (!validateArenaInitializer(decl->init, ctx)) {
             return;
         }
+        
+        // ─── 3e. Additional check: RHS must be an Arena static call ────────
+        // This is a stronger check than validateArenaInitializer - we ensure
+        // the RHS is literally Arena::create or Arena::empty, not just any
+        // expression that happens to produce an Arena.
+        if (!isArenaConstructionCall(decl->init, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidInit, decl,
+                                "Arena binding must be initialized with "
+                                "Arena::create(size) or Arena::empty()");
+            ctx.diagnostics.note(decl,
+                                "Copying an existing Arena is not allowed. "
+                                "Use 'const ref &Arena = existing' to borrow "
+                                "a reference to an existing Arena.");
+            
+            // Try to provide a helpful suggestion
+            if (decl->init->isa<IdentifierExprAST>()) {
+                IdentifierExprAST* id = decl->init->as<IdentifierExprAST>();
+                ctx.diagnostics.note(decl,
+                                    "If you want to borrow an existing Arena, "
+                                    "use 'const ref &Arena = ", 
+                                    ctx.pool.lookup(id->name), "'");
+            }
+            return;
+        }
+        
+        // ─── 3f. Mark the binding as the owner of the Arena ─────────────────
+        // This flag can be used by other passes to know this binding owns the
+        // Arena and should be freed at scope exit. (Not needed for CodeGen
+        // since the LiveVariableTracker handles this, but useful for clarity.)
+        decl->isArenaOwner = true;
     }
 
-    // ─── 4. Check initializer ────────────────────────────────────────
+    // ─── 4. Check initializer ──────────────────────────────────────────────
     if (decl->init) {
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
@@ -172,7 +256,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 5. CONST EVALUATION ──────────────────────────────────────
+        // ─── 5. CONST EVALUATION ──────────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
@@ -180,52 +264,37 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             }
         }
     } else {
-        // ─── NO INITIALIZER: Set default value state ────────────────
-        
-        // Create a placeholder expression to represent the default value
-        // This expression won't be used for code generation - only Sema needs
-        // the valueState and resolvedType for flow analysis.
+        // ─── NO INITIALIZER: Set default value state ──────────────────────
+        // (Only for nullable/fallible/combined types - Arena is handled above)
         UnknownExprAST* defaultExpr = ctx.arena.make<UnknownExprAST>();
         defaultExpr->resolvedType = declaredType;
         defaultExpr->isLValue = false;
         defaultExpr->isConst = true;
         
-        // ─── 5a. Check if type is nullable (T?) ──────────────────────
         if (isNullableType(declaredType)) {
-            // Nullable variables default to nil
             defaultExpr->valueState = ValueState::Nil;
             decl->init = defaultExpr;
-            
             Trace::info("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to nil (nullable type)");
             return;
         }
         
-        // ─── 5b. Check if type is fallible (T!) ──────────────────────
         if (isFallibleType(declaredType)) {
-            // Fallible variables default to err
             defaultExpr->valueState = ValueState::Err;
             decl->init = defaultExpr;
-            
             Trace::info("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to err (fallible type)");
             return;
         }
         
-        // ─── 5c. Check if type is combined (T?!) ─────────────────────
         if (declaredType->isa<CombinedTypeAST>()) {
-            // Combined types default to nil (the tag is nil)
             defaultExpr->valueState = ValueState::Nil;
             decl->init = defaultExpr;
-            
             Trace::detail("Variable '", ctx.pool.lookup(decl->name),
                      "' default-initialized to nil (combined type)");
             return;
         }
         
-        // ─── 5d. Check for function type with default body ───────────
-        // Function types can have a default body at declaration site,
-        // but at variable declaration site, we need an explicit initializer.
         if (declaredType->isa<FuncTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                                   "function type variable '", ctx.pool.lookup(decl->name),
@@ -233,8 +302,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             return;
         }
         
-        // ─── 5e. Non-nullable, non-fallible, non-combined type ──────
-        // These cannot be default-initialized
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
                               "variable '", ctx.pool.lookup(decl->name),
                               "' of type '", typeToString(declaredType, ctx.pool),
@@ -246,8 +313,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 6. Generate mangled name for exported globals ───────────────────
-    // Only module-level variables that are exported need mangled names.
-    // Local variables don't need mangling - they're not visible outside.
     bool isModuleLevel = isModuleLevelDeclaration(decl, ctx);
     bool isExported = false;
     InternedString exportName = ctx.pool.intern("export");
@@ -264,9 +329,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             decl->mangledName = mangled;
         }
     }
-
-    // ─── NOTE: Registration is handled by registerVarName() ──────────
-    // Do NOT call ctx.insertValue() here.
 }
 
 // ─── resolveFuncDecl ──────────────────────────────────────────────────────────

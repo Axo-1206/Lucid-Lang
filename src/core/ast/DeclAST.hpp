@@ -140,6 +140,7 @@ struct VarDeclAST : ValueDeclAST {
     InternedString mangledName;        // Mangled name for AOT compilation
     llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
     llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
+    bool isArenaOwner = false;  // True if this binding owns an Arena
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)

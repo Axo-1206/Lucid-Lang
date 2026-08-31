@@ -45,6 +45,15 @@ llvm::Type* getType(
 
         case ASTKind::NamedType: {
             NamedTypeAST* named = type->as<NamedTypeAST>();
+
+            // ─── Check for built-in types ──────────────────────────────────
+            if (named->isArenaType()) {
+                return getArenaType(ctx);
+            }
+            if (named->isArenaDescriptorType()) {
+                return getArenaDescriptorType(ctx);
+            }
+
             // ─── Check if this is a generic parameter ──────────────────────
             if (subst) {
                 TypeAST* substituted = subst->lookup(named->name);
@@ -710,6 +719,48 @@ uint64_t getTypeAlign(CodeGenContext& ctx, TypeAST* type) {
     }
 
     return 0;
+}
+
+bool isArenaType(TypeAST* type) {
+    if (auto* named = type->as<NamedTypeAST>()) {
+        return named->isArenaType();
+    }
+    return false;
+}
+
+bool isArenaDescriptorType(TypeAST* type) {
+    if (auto* named = type->as<NamedTypeAST>()) {
+        return named->isArenaDescriptorType();
+    }
+    return false;
+}
+
+llvm::StructType* getArenaType(CodeGenContext& ctx) {
+    // Arena is an opaque struct: { i8* base, i64 size, i64 cursor }
+    // The compiler manages this directly; user code never sees the fields.
+    llvm::StructType* type = llvm::StructType::getTypeByName(ctx.llvmCtx, "lucid.Arena");
+    if (!type) {
+        type = llvm::StructType::create(ctx.llvmCtx, "lucid.Arena");
+        type->setBody({
+            llvm::PointerType::get(ctx.llvmCtx, 0),  // base
+            llvm::Type::getInt64Ty(ctx.llvmCtx),    // size
+            llvm::Type::getInt64Ty(ctx.llvmCtx)     // cursor
+        });
+    }
+    return type;
+}
+
+llvm::StructType* getArenaDescriptorType(CodeGenContext& ctx) {
+    // ArenaDescriptor: { i8* base, i64 size }
+    llvm::StructType* type = llvm::StructType::getTypeByName(ctx.llvmCtx, "lucid.ArenaDescriptor");
+    if (!type) {
+        type = llvm::StructType::create(ctx.llvmCtx, "lucid.ArenaDescriptor");
+        type->setBody({
+            llvm::PointerType::get(ctx.llvmCtx, 0),  // base
+            llvm::Type::getInt64Ty(ctx.llvmCtx)     // size
+        });
+    }
+    return type;
 }
 
 } // namespace codegen

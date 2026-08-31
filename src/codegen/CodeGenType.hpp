@@ -94,9 +94,6 @@ llvm::Type* getPtrType(CodeGenContext& ctx, PtrTypeAST* type);
 llvm::Type* getRefType(CodeGenContext& ctx, RefTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid array type.
-/// @param ctx The code generation context.
-/// @param type The array type.
-/// @param subst Optional generic substitution context.
 /// @return The LLVM array type.
 llvm::Type* getArrayType(
     CodeGenContext& ctx,
@@ -105,9 +102,6 @@ llvm::Type* getArrayType(
 );
 
 /// @brief Get the LLVM type for a Lucid nullable type (T?).
-/// @param ctx The code generation context.
-/// @param type The nullable type.
-/// @param subst Optional generic substitution context.
 /// @return A struct type { i8 tag, T value }.
 llvm::StructType* getNullableType(
     CodeGenContext& ctx,
@@ -116,10 +110,6 @@ llvm::StructType* getNullableType(
 );
 
 /// @brief Get the LLVM type for a Lucid fallible type (T!).
-/// @param ctx The code generation context.
-/// @param type The fallible type.
-/// @param subst Optional generic substitution context.
-/// @return A struct type { i8 tag, T value }.
 llvm::StructType* getFallibleType(
     CodeGenContext& ctx,
     FallibleTypeAST* type,
@@ -127,9 +117,6 @@ llvm::StructType* getFallibleType(
 );
 
 /// @brief Get the LLVM type for a Lucid combined type (T?!).
-/// @param ctx The code generation context.
-/// @param type The combined type.
-/// @param subst Optional generic substitution context.
 /// @return A struct type { i8 tag, T value } (tag encodes nil/err/value).
 llvm::StructType* getCombinedType(
     CodeGenContext& ctx,
@@ -138,9 +125,6 @@ llvm::StructType* getCombinedType(
 );
 
 /// @brief Get the LLVM type for a Lucid future type (Future<T>).
-/// @param ctx The code generation context.
-/// @param type The future type.
-/// @param subst Optional generic substitution context.
 /// @return A struct type { T value, i8 state }.
 llvm::StructType* getFutureType(
     CodeGenContext& ctx,
@@ -149,9 +133,6 @@ llvm::StructType* getFutureType(
 );
 
 /// @brief Get the LLVM type for a Lucid thread type (Thread<T>).
-/// @param ctx The code generation context.
-/// @param type The thread type.
-/// @param subst Optional generic substitution context.
 /// @return A struct type { T value, i8 state }.
 llvm::StructType* getThreadType(
     CodeGenContext& ctx,
@@ -178,5 +159,17 @@ uint64_t getTypeSize(CodeGenContext& ctx, TypeAST* type);
 
 /// @brief Get the alignment of a Lucid type in bytes (compile-time).
 uint64_t getTypeAlign(CodeGenContext& ctx, TypeAST* type);
+
+/// @brief Check if a type is the built-in Arena type.
+bool isArenaType(TypeAST* type);
+
+/// @brief Check if a type is the built-in ArenaDescriptor type.
+bool isArenaDescriptorType(TypeAST* type);
+
+/// @brief Get the LLVM type for Arena (opaque struct).
+llvm::StructType* getArenaType(CodeGenContext& ctx);
+
+/// @brief Get the LLVM type for ArenaDescriptor (struct { i8*, i64 }).
+llvm::StructType* getArenaDescriptorType(CodeGenContext& ctx);
 
 } // namespace codegen
