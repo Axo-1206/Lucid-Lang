@@ -604,7 +604,6 @@ lucid/
     ├── codegen/
     │   ├── CodeGen.hpp          # Public API
     │   ├── CodeGen.cpp          # Orchestrator
-    │   ├── CodeGenType.hpp/cpp  # Lucid → LLVM type mapping
     │   ├── CodeGenDecl.cpp      # Declaration lowering
     │   ├── CodeGenStmt.cpp      # Statement lowering
     │   ├── CodeGenExpr.cpp      # Expression lowering
@@ -618,10 +617,13 @@ lucid/
     │   │   ├── GenericMangledName.hpp/cpp  # Generic mangled name generation
     │   │   └── GenericRegistry.hpp         # generic instantiation cache
     │   │
+    │   ├── types/
+    │   │   ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
+    │   │   └── LLVMTypesHelpers.hpp        # Work with llvm types
+    │   │
     │   ├── support/
     │   │   ├── RuntimeError.hpp            # Define all runtime errors
     │   │   ├── LiveVariableTracker.hpp     # live variable tracking
-    │   │   ├── LLVMHelpers.hpp             # Work with llvm types, values
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
     │   │   ├── Truthiness.hpp              # Collection of rules for conditions

@@ -181,11 +181,8 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Use the mangled name from Sema ──────────────────────────────────────
-    // Sema guarantees this is valid for all non-foreign, non-generic functions.
-    // If it's not valid, Sema has a bug and we should fail loudly.
+    // ─── Use the mangled name from Sema ──────────────────────────────────
     if (!decl->mangledName.isValid()) {
-        // This should never happen - Sema should have generated it
         llvm_unreachable("Function has no mangled name - Sema bug");
     }
     std::string funcName = ctx.pool.lookup(decl->mangledName);
@@ -205,8 +202,6 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         func->getArg(paramIndex++)->setName("env");
     }
 
-    // The parser desugars adjacent groups into nested function expressions.
-    // This LLVM function represents only the outermost parameter group.
     for (ParamAST* param : decl->funcType->params) {
         if (paramIndex < func->arg_size()) {
             std::string paramName = ctx.pool.lookup(param->name);
@@ -220,11 +215,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     decl->llvmFunction = func;
 
     // ─── Store in module's symbol table ──────────────────────────────────
-    ctx.module->getOrInsertFunction(
-        funcName,
-        funcType
-    );
-
+    ctx.module->getOrInsertFunction(funcName, funcType);
 
     // ─── Track mutable functions that hold closures ──────────────────────────
     // For `let` functions that hold closures, we need to track them so their
@@ -275,7 +266,6 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         
         Trace::detail("Tracked mutable closure function: ", ctx.pool.lookup(decl->name));
     }
-
 
     Trace::detail("Lowered function declaration: ", funcName,
                 " (", func->arg_size(), " params, ",
@@ -506,6 +496,9 @@ void lowerSpecializedFunctionBody(
 ///   1. Parameters can be referenced as l-values (e.g., &param)
 ///   2. Parameters can be mutable (if declared with `let`)
 ///   3. It provides a consistent way to access parameters
+///
+/// IMPORTANT: Parameters do NOT own their environment. The caller owns the
+/// closure environment, not the callee. So we should NOT mark parameters as alive.
 void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     if (!param) return;
 
@@ -568,11 +561,6 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
     ctx.storeValue(param, alloca);
     param->llvmAlloca = alloca;
     param->llvmValue = argValue;
-
-    // ─── Mark function-typed parameters as alive ─────────────────────────
-    if (param->type && param->type->isa<FuncTypeAST>()) {
-        ctx.markAlive(param);
-    }
 }
 
 // =============================================================================
@@ -582,6 +570,8 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
 /// @brief Lower a variable declaration.
 ///
 /// Variables can be either module-level (globals) or local (allocas).
+///
+/// IMPORTANT: Only variables that own heap memory AND are mutable need tracking.
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
@@ -599,14 +589,10 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
     if (isModuleLevel) {
         // ─── Module-level global variable ──────────────────────────────────
-        // ─── Use the mangled name from Sema for exported globals ────────────────
-        // Sema generates mangled names for all exported module-level variables.
-        // Un-exported globals use their original name.
         std::string varName;
         if (decl->mangledName.isValid()) {
             varName = ctx.pool.lookup(decl->mangledName);
         } else {
-            // Only non-exported globals fall back to original name
             varName = ctx.pool.lookup(decl->name);
         }
 
@@ -621,7 +607,6 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
             varName
         );
 
-        // ─── Set initializer if present ──────────────────────────────────
         if (decl->init) {
             llvm::Value* initValue = lowerExpression(decl->init, ctx);
             if (initValue) {
@@ -639,11 +624,10 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
         ctx.storeValue(decl, global);
         decl->llvmGlobal = global;
-
         return;
     }
 
-    // ─── Local variable (unchanged) ───────────────────────────────────────
+    // ─── Local variable ───────────────────────────────────────────────────
     std::string varName = ctx.pool.lookup(decl->name);
     llvm::AllocaInst* alloca = createAlloca(varName, varType, ctx);
 
@@ -661,7 +645,32 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
     ctx.storeValue(decl, alloca);
     decl->llvmAlloca = alloca;
-    ctx.markAlive(decl);
+    
+    // ─── Mark alive if the variable owns heap memory ──────────────────────
+    // VarDeclAST can NEVER store function types! Only:
+    //   - Dynamic arrays ([*]T) - own heap memory
+    //   - Strings (string) - own heap memory
+    //   - Structs containing these - handled by struct cleanup
+    //
+    // NOTE: No FuncTypeAST check here because VarDeclAST can't store functions!
+    if (!isModuleLevel) {
+        TypeAST* type = decl->type;
+        if (type) {
+            bool needsCleanup = false;
+            
+            if (type->isa<ArrayTypeAST>()) {
+                ArrayTypeAST* array = type->as<ArrayTypeAST>();
+                needsCleanup = array->isDynamic();
+            } else if (type->isa<PrimitiveTypeAST>()) {
+                PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
+                needsCleanup = (prim->primitiveKind == PrimitiveKind::String);
+            }
+            
+            if (needsCleanup) {
+                ctx.markAlive(decl);
+            }
+        }
+    }
 }
 
 // =============================================================================

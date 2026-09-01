@@ -2054,11 +2054,13 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
+    // 1. Lower the seed expression (initial value)
     llvm::Value* currentValue = lowerExpression(expr->seed, ctx);
     if (!currentValue) {
         return nullptr;
     }
 
+    // 2. If seed is an l-value, load it (get the value, not the address)
     if (expr->seed->isLValue) {
         llvm::Type* elemType = getType(ctx, expr->seed->resolvedType);
         if (elemType) {
@@ -2066,14 +2068,16 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
+    // 3. Process each step sequentially
     for (PipelineStepAST* step : expr->steps) {
-        // ─── FIX: Pass currentValue to lowerPipelineStep ─────────────────
+        // Pass the current value to the step, get the new value
         currentValue = lowerPipelineStep(step, currentValue, ctx);
         if (!currentValue) {
             return nullptr;
         }
     }
 
+    // 4. Store the final result
     expr->llvmValue = currentValue;
     return currentValue;
 }
