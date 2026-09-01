@@ -4,7 +4,7 @@
 #include "LLVMIntrinsicEmitter.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 #include "../support/CodeGenPanic.hpp"
-#include "../CodeGenType.hpp"
+#include "../types/CodeGenType.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
@@ -20,8 +20,7 @@ namespace codegen {
 // ─── Helper: Recover a compile-time string literal from an AST argument ──
 //
 // By the time an argument reaches `args` it has already been lowered to
-// LLVM IR - a Lucid string literal becomes a runtime {ptr,len,cap} aggregate
-// built via InsertValue instructions (see CodeGenContext::createStringLiteral),
+// LLVM IR - a Lucid string literal becomes a runtime {ptr,len,cap}
 // never a raw llvm::ConstantDataArray. So the *compile-time* text (e.g. a
 // memory ordering name like "acquire") can only be recovered from the AST
 // node itself, not from the lowered llvm::Value.
@@ -310,7 +309,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
     if (numValueArgs > 0) {
         std::string orderStr;
         if (tryGetStringLiteralArg(expr, numValueArgs - 1, ctx, orderStr)) {
-            ordering = CodeGenContext::parseOrdering(orderStr);
+            ordering = parseAtomicOrdering(orderStr);
             numValueArgs--;
         }
     }
@@ -334,7 +333,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
 
         llvm::LoadInst* load = ctx.builder.CreateLoad(elemType, ptr, "atomic_load");
         load->setAtomic(ordering);
-        load->setAlignment(llvm::Align(ctx.getTypeAlign(elemType)));
+        load->setAlignment(llvm::Align(getTypeAlign(elemType, ctx.module)));
         return load;
     }
 
@@ -349,7 +348,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
         llvm::Value* val = args[1];
         llvm::StoreInst* store = ctx.builder.CreateStore(val, ptr);
         store->setAtomic(ordering);
-        store->setAlignment(llvm::Align(ctx.getTypeAlign(val->getType())));
+        store->setAlignment(llvm::Align(getTypeAlign(val->getType(), ctx.module)));
         return nullptr;
     }
 
@@ -698,7 +697,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
         if (!args.empty()) {
             std::string orderStr;
             if (tryGetStringLiteralArg(expr, 0, ctx, orderStr)) {
-                ordering = CodeGenContext::parseOrdering(orderStr);
+                ordering = parseAtomicOrdering(orderStr);
             }
         }
 

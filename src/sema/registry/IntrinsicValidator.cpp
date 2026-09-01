@@ -23,6 +23,93 @@ static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
     return registry.isVoid(name);
 }
 
+// ─── Helper: Check if a type is a generic parameter ──────────────────────
+
+static bool isGenericParameterType(TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    return ctx.isGenericParam(named->name);
+}
+
+// ─── Helper: Check if a type contains a generic parameter ────────────────
+
+static bool containsGenericParameter(TypeAST* type, SemaContext& ctx) {
+    if (!type) return false;
+    
+    if (type->isa<NamedTypeAST>()) {
+        NamedTypeAST* named = type->as<NamedTypeAST>();
+        if (ctx.isGenericParam(named->name)) {
+            return true;
+        }
+        // Check generic arguments of a named type (e.g., Box<T>)
+        for (TypeAST* arg : named->genericArgs) {
+            if (containsGenericParameter(arg, ctx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    if (type->isa<ArrayTypeAST>()) {
+        ArrayTypeAST* array = type->as<ArrayTypeAST>();
+        return containsGenericParameter(array->element, ctx);
+    }
+    
+    if (type->isa<NullableTypeAST>()) {
+        NullableTypeAST* nullable = type->as<NullableTypeAST>();
+        return containsGenericParameter(nullable->inner, ctx);
+    }
+    
+    if (type->isa<FallibleTypeAST>()) {
+        FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
+        return containsGenericParameter(fallible->inner, ctx);
+    }
+    
+    if (type->isa<CombinedTypeAST>()) {
+        CombinedTypeAST* combined = type->as<CombinedTypeAST>();
+        return containsGenericParameter(combined->inner, ctx);
+    }
+    
+    if (type->isa<PtrTypeAST>()) {
+        PtrTypeAST* ptr = type->as<PtrTypeAST>();
+        return containsGenericParameter(ptr->inner, ctx);
+    }
+    
+    if (type->isa<RefTypeAST>()) {
+        RefTypeAST* ref = type->as<RefTypeAST>();
+        return containsGenericParameter(ref->inner, ctx);
+    }
+    
+    if (type->isa<FuncTypeAST>()) {
+        FuncTypeAST* func = type->as<FuncTypeAST>();
+        for (ParamAST* param : func->params) {
+            if (containsGenericParameter(param->type, ctx)) {
+                return true;
+            }
+        }
+        if (func->returnType && containsGenericParameter(func->returnType, ctx)) {
+            return true;
+        }
+        return false;
+    }
+    
+    return false;  // Primitive types don't contain generic parameters
+}
+
+// ─── Helper: Check if we're inside a generic function ─────────────────────
+
+static bool isInsideGenericFunction(SemaContext& ctx) {
+    FuncDeclAST* func = ctx.stack.getInnermostFunction();
+    return func && !func->genericParams.empty();
+}
+
+// ─── Helper: Check if we're inside a specialized function ─────────────────
+
+static bool isInsideSpecializedFunction(SemaContext& ctx) {
+    FuncDeclAST* func = ctx.stack.getInnermostFunction();
+    return func && func->shouldSpecialize;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -77,14 +164,13 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         case IntrinsicKind::Prefetch:
         case IntrinsicKind::PrefetchR:
         case IntrinsicKind::PrefetchW:
-            // These just need a pointer argument - validated above
             return true;
 
         case IntrinsicKind::Fence:
             return validateFence(expr, ctx);
 
         case IntrinsicKind::Pause:
-            return true;  // No arguments, always valid
+            return true;
 
         // ─── Atomics ──────────────────────────────────────────────────────
         case IntrinsicKind::AtomicLoad:
@@ -102,11 +188,12 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         case IntrinsicKind::Alignof:
         case IntrinsicKind::Typeof:
         case IntrinsicKind::Nameof:
-        case IntrinsicKind::Tostr:
         case IntrinsicKind::Ptrstr:
         case IntrinsicKind::Addrof:
-            // These have minimal validation - mostly just ensure arguments exist
             return true;
+
+        case IntrinsicKind::Tostr:
+            return validateTostr(expr, ctx);
 
         // ─── Pointer Operations ────────────────────────────────────────────
         case IntrinsicKind::PtrOffset:
@@ -117,15 +204,12 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
         // ─── Bit Manipulation ─────────────────────────────────────────────
         case IntrinsicKind::Bitcast:
-            // bitcast(T, x) - T is a type argument, x is any value
-            // Type validation happens elsewhere
             return true;
 
         case IntrinsicKind::Clz:
         case IntrinsicKind::Ctz:
         case IntrinsicKind::Popcount:
         case IntrinsicKind::Bswap:
-            // These take a single integer argument
             if (!expr->args.empty() && !validateIntArg(expr->args[0], "value", ctx)) {
                 return false;
             }
@@ -865,6 +949,78 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         default:
             return true;
     }
+}
+
+bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+    
+    // ─── 1. Must have exactly one argument ─────────────────────────────────
+    if (expr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#tostr requires exactly 1 argument");
+        return false;
+    }
+    
+    if (expr->args.size() > 1) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#tostr expects exactly 1 argument, got ", 
+                              expr->args.size());
+        return false;
+    }
+    
+    ExprAST* arg = expr->args[0];
+    if (!arg->resolvedType) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#tostr argument has unknown type");
+        return false;
+    }
+    
+    TypeAST* argType = arg->resolvedType;
+    
+    // ─── 2. Function types are ALLOWED ────────────────────────────────────
+    // #tostr on functions returns the function's declared name
+    if (argType->isa<FuncTypeAST>()) {
+        // No validation needed - functions are always valid
+        return true;
+    }
+    
+    // ─── 3. Reject generic parameters ──────────────────────────────────────
+    if (isGenericParameterType(argType, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                              "#tostr cannot be used with generic type '", 
+                              ctx.pool.lookup(argType->as<NamedTypeAST>()->name), 
+                              "' - the concrete type is not known at compile time");
+        ctx.diagnostics.note(expr,
+                             "Only concrete types can be converted to strings");
+        return false;
+    }
+    
+    // ─── 4. Reject types containing generic parameters ─────────────────────
+    if (containsGenericParameter(argType, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                              "#tostr cannot be used with type '", 
+                              typeToString(argType, ctx.pool),
+                              "' which contains generic parameters");
+        ctx.diagnostics.note(expr,
+                             "Only fully concrete types can be converted to strings");
+        return false;
+    }
+    
+    // ─── 5. Reject trait types ─────────────────────────────────────────────
+    if (argType->isa<NamedTypeAST>()) {
+        NamedTypeAST* named = argType->as<NamedTypeAST>();
+        if (named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#tostr cannot be used with trait type '", 
+                                  ctx.pool.lookup(named->name), "'");
+            ctx.diagnostics.note(expr,
+                                 "Traits are field contracts, not concrete types");
+            return false;
+        }
+    }
+    
+    // ─── 6. All checks passed ──────────────────────────────────────────────
+    return true;
 }
 
 } // namespace sema

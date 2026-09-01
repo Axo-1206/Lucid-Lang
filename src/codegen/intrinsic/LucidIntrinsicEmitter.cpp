@@ -8,6 +8,7 @@
 #include "../support/CodeGenPanic.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 #include "codegen/CodeGen.hpp"
+#include "core/ASTStrings.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
@@ -60,6 +61,33 @@ static llvm::Value* emitIntToStr(llvm::Value* val, PrimitiveKind kind, CodeGenCo
     }
 }
 
+// ─── Helper: Get the full name of a field access chain ────────────────────
+static std::string getFieldAccessPath(FieldAccessExprAST* field, CodeGenContext& ctx) {
+    std::string path = ctx.pool.lookup(field->fieldName);
+    
+    // Walk up the object chain
+    ExprAST* obj = field->object;
+    while (obj) {
+        if (obj->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = obj->as<IdentifierExprAST>();
+            path = ctx.pool.lookup(id->name) + "." + path;
+            break;
+        } else if (obj->isa<FieldAccessExprAST>()) {
+            FieldAccessExprAST* parentField = obj->as<FieldAccessExprAST>();
+            path = ctx.pool.lookup(parentField->fieldName) + "." + path;
+            obj = parentField->object;
+        } else if (obj->isa<ModuleAccessExprAST>()) {
+            ModuleAccessExprAST* mod = obj->as<ModuleAccessExprAST>();
+            path = ctx.pool.lookup(mod->moduleName) + ":" + path;
+            break;
+        } else {
+            break;
+        }
+    }
+    
+    return path;
+}
+
 // ─── #tostr core: recursive value formatter ───────────────────────────────
 //
 // Shared by the top-level #tostr(x) call and by struct-field formatting,
@@ -79,18 +107,22 @@ static llvm::Value* emitTostrValue(
     llvm::Type* strType = ctx.getStringType();
     llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
 
-    // ─── Functions/closures: declared name ────────────────────────────────
+    // ─── In emitTostrValue for functions ─────────────────────────────────────
     if (type && type->isa<FuncTypeAST>()) {
         std::string nameStr;
         IdentifierExprAST* ident = sourceExpr ? sourceExpr->as<IdentifierExprAST>() : nullptr;
         FieldAccessExprAST* field = (!ident && sourceExpr) ? sourceExpr->as<FieldAccessExprAST>() : nullptr;
+        ModuleAccessExprAST* module = (!ident && !field && sourceExpr) ? sourceExpr->as<ModuleAccessExprAST>() : nullptr;
+        
         if (ident) {
             nameStr = ctx.pool.lookup(ident->name);
         } else if (field) {
-            nameStr = ctx.pool.lookup(field->fieldName);
+            // ─── Build full path: var.struct.field ──────────────────────────
+            nameStr = getFieldAccessPath(field, ctx);
+        } else if (module) {
+            nameStr = ctx.pool.lookup(module->moduleName) + ":" + 
+                    ctx.pool.lookup(module->memberName);
         } else {
-            // No source expression (recursive struct-field call) or an
-            // anonymous closure literal with no declared name to report.
             nameStr = "<closure>";
         }
         return ctx.createStringLiteral(nameStr);
@@ -129,11 +161,6 @@ static llvm::Value* emitTostrValue(
 
         // ─── Floating point ─────────────────────────────────────────────────
         if (isFloatKind(kind)) {
-            // NOTE: Decimal is 128-bit high-precision. Routing it
-            // through the same double formatter as Float/Double loses
-            // precision - a real fix needs its own
-            // __lucid_decimal_to_str helper. Known, scoped-out gap
-            // for Decimal specifically.
             llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
             llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::FloatToStr);
             llvm::Value* floatVal = val;
@@ -143,16 +170,24 @@ static llvm::Value* emitTostrValue(
             return ctx.builder.CreateCall(fn, {floatVal});
         }
 
-        // ─── Fallback for unknown primitive ──────────────────────────────
         return ctx.createStringLiteral("<unknown primitive>");
     }
 
-    // ─── Named types: enum or struct ──────────────────────────────────────
+    // ─── Named types: enum or struct (concrete only - Sema guarantees) ────
     if (type && type->isa<NamedTypeAST>()) {
         NamedTypeAST* named = type->as<NamedTypeAST>();
+        
+        // ─── Defensive: This should never happen (Sema rejects generic) ────
+        if (!named->resolvedDecl) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                                    "INTERNAL ERROR: unresolved type '", 
+                                    ctx.pool.lookup(named->name),
+                                    "' reached CodeGen - Sema should have caught this");
+            return ctx.createStringLiteral("<" + ctx.pool.lookup(named->name) + ">");
+        }
 
-        // ─── Enum: "EnumType.VariantName" via a runtime switch ─────────────
-        if (named->resolvedDecl && named->resolvedDecl->isa<EnumDeclAST>()) {
+        // ─── Enum: "EnumType.VariantName" via switch ──────────────────────
+        if (named->resolvedDecl->isa<EnumDeclAST>()) {
             EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();
             std::string enumName = ctx.pool.lookup(enumDecl->name);
 
@@ -199,8 +234,8 @@ static llvm::Value* emitTostrValue(
             return phi;
         }
 
-        // ─── Struct: "Name{ field: value, ... }", or the `str` override ────
-        if (named->resolvedDecl && named->resolvedDecl->isa<StructDeclAST>()) {
+        // ─── Struct: "Name{ field: value, ... }" or `str` override ──────
+        if (named->resolvedDecl->isa<StructDeclAST>()) {
             StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();
             std::string structName = ctx.pool.lookup(structDecl->name);
 
@@ -211,10 +246,6 @@ static llvm::Value* emitTostrValue(
                 return llvm::Constant::getNullValue(strType);
             }
 
-            // Reads a field out of `val`, which may be a pointer to the
-            // struct (GEP + load) or an already-loaded aggregate value
-            // (ExtractValue) - the same dual path lowerFieldAccessExpr
-            // (CodeGenExpr.cpp) already has to handle for the same reason.
             auto readField = [&](size_t index) -> llvm::Value* {
                 if (val->getType()->isPointerTy()) {
                     llvm::Type* fieldType = llvmStructType->getElementType(index);
@@ -281,14 +312,13 @@ static llvm::Value* emitTostrValue(
         }
     }
 
-    // ─── Trait, generic params, or anything else not yet covered ─────────
-    // Trait-by-value is mechanically identical to the struct case above
-    // (walk TraitDeclAST::fields instead of StructDeclAST::fields, no
-    // `str` override since traits have no methods) but isn't wired up
-    // yet. Trait-by-reference (&TraitA) needs the field-offset-table
-    // design agreed on separately and isn't implemented at all yet.
-    assert(false && "#tostr is not implemented for this type yet");
-    return llvm::Constant::getNullValue(strType);
+    // ─── Fallback ──────────────────────────────────────────────────────────
+    std::string typeName = type ? typeToString(type, ctx.pool) : "unknown";
+    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, loc,
+                              "#tostr not fully implemented for type '", 
+                              typeName,
+                              "' - returning placeholder");
+    return ctx.createStringLiteral("<" + typeName + ">");
 }
 
 
