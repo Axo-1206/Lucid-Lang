@@ -671,7 +671,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             continue;
         }
 
-        FieldDeclAST* field = parseFieldDecl(stream, ctx);
+        FieldDeclAST* field = parseFieldDecl(stream, ctx, name);
         fields.push_back(field);
     }
     
@@ -707,7 +707,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
 
 /// NOTE: parseStructDecl already filter the context for us, we will
 ///  start with tokens IDENTIFIER or CONST in this function
-FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
+FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx, InternedString structName) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
@@ -735,12 +735,10 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse field type ──────────────────────────────────────────────
     TypeAST* type = parseType(stream, ctx);
     if (!type) {
-        // Create an UnknownTypeAST as a placeholder
         type = ctx.arena.make<UnknownTypeAST>();
         type->hasSyntaxError = true;
         hasSyntaxError = true;
         
-        // Check what went wrong for better diagnostics
         if (stream.check(TokenType::ASSIGN)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected field type before '='");
@@ -752,16 +750,13 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
                                     "expected field type, got '", stream.peekValue(), "'");
         }
         
-        // ─── Build broken node with UnknownTypeAST ──────────────────────
+        // Build broken node and return
         auto* fieldDecl = ctx.arena.make<FieldDeclAST>(name, type, nullptr, nullptr, isConst);
         fieldDecl->loc = loc;
         fieldDecl->attributes = attrs;
-        if (doc.has_value()) {
-            fieldDecl->doc = doc;
-        }
+        if (doc.has_value()) fieldDecl->doc = doc;
         fieldDecl->hasSyntaxError = true;
         
-        // Synchronize to a valid recovery point (field separator or closing brace)
         synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
         return fieldDecl;
     }
@@ -769,13 +764,46 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 5. Parse default value ─────────────────────────────────────────────
     ExprAST* defaultVal = nullptr;
     StmtAST* defaultBody = nullptr;
+    TypeAST* finalType = type;
     
     if (stream.match(TokenType::ASSIGN)) {
         // ─── 5a. Check for block body ──────────────────────────────────────
         if (stream.check(TokenType::LBRACE)) {
-            defaultBody = parseBlock(stream, ctx);
+            // ─── If this is a function type with a block body, synthesize self ──
+            if (type && type->isa<FuncTypeAST>() && structName.isValid()) {
+                FuncTypeAST* funcType = type->as<FuncTypeAST>();
+                
+                // ─── Create self parameter ──────────────────────────────────
+                // self: &StructName
+                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(structName);
+                RefTypeAST* selfType = ctx.arena.make<RefTypeAST>(namedType);
+                
+                InternedString selfName = ctx.pool.intern("self");
+                ParamAST* selfParam = ctx.arena.make<ParamAST>(
+                    selfName,
+                    selfType,
+                    false,  // not variadic
+                    false   // not const (self is mutable by default)
+                );
+                selfParam->loc = loc;
+                
+                // ─── Build new function type with self prepended ──────────────
+                FuncTypeAST* newFuncType = ctx.arena.make<FuncTypeAST>();
+                
+                auto paramsBuilder = ctx.arena.makeBuilder<ParamAST*>();
+                paramsBuilder.push_back(selfParam);  // self is first
+                for (ParamAST* origParam : funcType->params) {
+                    paramsBuilder.push_back(origParam);
+                }
+                newFuncType->params = paramsBuilder.build();
+                newFuncType->returnType = funcType->returnType;
+                newFuncType->loc = funcType->loc;
+                
+                finalType = newFuncType;
+            }
             
-            /// Check if parseBlock actually got a valid block
+            // ─── Parse the block body ──────────────────────────────────────
+            defaultBody = parseBlock(stream, ctx);
             if (!defaultBody) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
                                         "expected block body");
@@ -785,6 +813,9 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
             }
         } else {
             // ─── 5b. Expression default ─────────────────────────────────────
+            // For function fields with expression defaults, the self parameter
+            // must already be present in the function signature (user wrote it).
+            // We don't synthesize anything here.
             if (looksLikeAnonFunc(stream, ctx)) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration,
                                         stream.currentLoc(),
@@ -794,7 +825,6 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
                 ctx.diagnostics.noteAt(stream.currentLoc(),
                                        "The block body borrows its signature from the field type");
                 hasSyntaxError = true;
-                // Create a placeholder and continue
                 defaultVal = ctx.arena.make<UnknownExprAST>();
                 defaultVal->hasSyntaxError = true;
             } else {
@@ -811,22 +841,19 @@ FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 6. Build AST using constructor ──────────────────────────────────
-    auto* fieldDecl = ctx.arena.make<FieldDeclAST>(name, type, defaultVal, defaultBody, isConst);
+    auto* fieldDecl = ctx.arena.make<FieldDeclAST>(name, finalType, defaultVal, defaultBody, isConst);
     fieldDecl->loc = loc;
     fieldDecl->attributes = attrs;
+    if (doc.has_value()) fieldDecl->doc = doc;
     
-    if (doc.has_value()) {
-        fieldDecl->doc = doc;
-    }
-    
-    // ─── 7. Mark as broken if any component is broken ──────────────────────
-    if (hasSyntaxError || name.isEmpty() || (type && type->hasSyntaxError) ||
+    if (hasSyntaxError || name.isEmpty() || 
+        (finalType && finalType->hasSyntaxError) ||
         (defaultVal && defaultVal->hasSyntaxError) || 
         (defaultBody && defaultBody->hasSyntaxError)) {
         fieldDecl->hasSyntaxError = true;
     }
 
-    // ─── 8. Check for semicolon ─────────────────────────────────────────────
+    // ─── 7. Check for semicolon ─────────────────────────────────────────────
     if (stream.consumeTrailing(TokenType::SEMICOLON) == 0) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ';' after field declaration");

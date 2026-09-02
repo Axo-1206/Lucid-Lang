@@ -227,14 +227,39 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaConte
 // =============================================================================
 
 TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    if (!expr) return ctx.getUnknownType();
+
     // ─── Special case: `_` is the discard placeholder ──────────────────────
     if (ctx.pool.lookupView(expr->name) == "_") {
-        // `_` has no type - it's a placeholder, not a real value
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
         expr->isConst = false;
         return ctx.getUnknownType();
+    }
+
+    // ─── Handle `self` parameter ────────────────────────────────────────────
+    // `self` is a special parameter that refers to the current struct instance.
+    // It can be synthesized by the parser OR written explicitly by the user.
+    if (ctx.pool.lookupView(expr->name) == "self") {
+        ValueDeclAST* decl = ctx.lookupValue(expr->name);
+        if (!decl || !decl->isa<ParamAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, expr,
+                                  "'self' is not available in this context");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+
+        ParamAST* selfParam = decl->as<ParamAST>();
+        expr->resolvedDecl = selfParam;
+        expr->resolvedType = selfParam->type;
+        expr->valueState = ValueState::Definite;
+        expr->isLValue = true;   // self is a reference (l-value)
+        expr->isConst = false;   // self is mutable by default
+        return selfParam->type;
     }
 
     // ─── Step 1: Check if this is a generic parameter ─────────────────────
@@ -245,6 +270,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
+        expr->isConst = false;
         return ctx.getUnknownType();
     }
 
@@ -256,26 +282,47 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
+        expr->isConst = false;
         return ctx.getUnknownType();
     }
 
-    // ─── Store the resolved declaration on the AST node ────────────────
-    expr->as<IdentifierExprAST>()->resolvedDecl = decl;
-
-    // ─── Step 3: Get the declaration's type ──────────────────────
-    // The type should have been set during resolution of the declaration
-    // (resolveVarDecl, resolveParam, resolveFuncDecl, resolveStructFields, etc.)
-    TypeAST* declType = decl->type;
-    if (!declType) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "'", ctx.pool.lookup(expr->name), "' has no type information");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        expr->isLValue = false;
-        return ctx.getUnknownType();
+    // ─── Step 3: Transform field access through self ──────────────────────
+    // If the identifier resolves to a FieldDeclAST, and 'self' is in scope,
+    // then this is actually a field access: self.field
+    if (decl->isa<FieldDeclAST>()) {
+        ValueDeclAST* selfDecl = ctx.lookupValue(ctx.pool.intern("self"));
+        if (selfDecl && selfDecl->isa<ParamAST>()) {
+            FieldDeclAST* fieldDecl = decl->as<FieldDeclAST>();
+            
+            // ─── Mark this as an implicit field access ─────────────────────
+            expr->isImplicitFieldAccess = true;
+            expr->fieldIndex = fieldDecl->fieldIndex;
+            
+            // ─── Create the self identifier expression ─────────────────────
+            IdentifierExprAST* selfIdent = ctx.arena.make<IdentifierExprAST>(
+                ctx.pool.intern("self")
+            );
+            selfIdent->resolvedDecl = selfDecl;
+            selfIdent->resolvedType = selfDecl->type;
+            selfIdent->loc = expr->loc;
+            selfIdent->isLValue = true;
+            selfIdent->valueState = ValueState::Definite;
+            
+            // ─── Store the self object ──────────────────────────────────────
+            expr->selfObject = selfIdent;
+            expr->resolvedDecl = fieldDecl;
+            expr->resolvedType = fieldDecl->type;
+            expr->isLValue = true;
+            expr->isConst = fieldDecl->isConst();
+            expr->valueState = (isNullableType(fieldDecl->type) || 
+                                isFallibleType(fieldDecl->type))
+                               ? ValueState::Unknown : ValueState::Definite;
+            
+            return fieldDecl->type;
+        }
     }
 
-    // ─── Step 4: Check: Is this a pending future (async/spawn not resolved)? ──
+    // ─── Step 4: Check pending future (async/spawn) ──────────────────────
     if (ctx.isPendingFuture(expr->name)) {
         if (ctx.hasPendingAsync(expr->name)) {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, expr,
@@ -296,38 +343,28 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         return ctx.getUnknownType();
     }
 
-    // ─── Step 5: CLOSURE CAPTURE VALIDATION ──────────────────────────────────
-    // If we're inside a function body, check if this variable is captured
-    // from an outer scope. Captured variables must not be borrowed types.
+    // ─── Step 5: Closure capture validation ──────────────────────────────
     if (ctx.stack.insideFunction()) {
         bool isInCurrentScope = ctx.isInCurrentScope(expr->name);
         bool isModuleMember = ctx.isModuleMember(expr->name);
-        
-        // A variable is captured if:
-        //   1. It's NOT in the current scope (local variable or parameter)
-        //   2. It's NOT a module member (top-level declaration)
         bool isCaptured = !isInCurrentScope && !isModuleMember;
         
-        if (isCaptured) {
-            // ─── Rule 4: No borrowed types in closures ──────────────────────
-            if (isBorrowedType(declType)) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, expr,
-                                      "closure cannot capture borrowed type '",
-                                      ctx.pool.lookup(expr->name),
-                                      "' (", typeToString(declType, ctx.pool),
-                                      ") — closures cannot capture &T or [_]T");
-                ctx.diagnostics.note(expr,
-                                     "Only owned values can be captured by closures. "
-                                     "Use a value copy or pass the value as a parameter.");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                expr->isLValue = false;
-                return ctx.getUnknownType();
-            }
+        if (isCaptured && isBorrowedType(decl->type)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, expr,
+                                  "closure cannot capture borrowed type '",
+                                  ctx.pool.lookup(expr->name),
+                                  "' (", typeToString(decl->type, ctx.pool),
+                                  ") — closures cannot capture &T or [_]T");
+            ctx.diagnostics.note(expr,
+                                 "Only owned values can be captured by closures.");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
         }
     }
 
-    // ─── Step 6: Handle generic arguments (function instantiation) ────────
+    // ─── Step 6: Handle generic arguments ──────────────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -339,8 +376,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         }
 
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-
-        // Resolve each generic argument
         for (TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -353,19 +388,16 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             }
         }
 
-        // Validate generic arguments against the function's parameters
         if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             expr->isLValue = false;
             return ctx.getUnknownType();
         }
-
-        // ─── For generic function references, use the function's type ──
-        // The function's type is the resolved function type.
-        // Full generic substitution would go here for instantiated types.
-        declType = funcDecl->type;
-        if (!declType) {
+        
+        // Use the function's type (generic args are stored on the expression)
+        decl->type = funcDecl->type;
+        if (!decl->type) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                                   "'", ctx.pool.lookup(expr->name), "' has no type information");
             expr->resolvedType = ctx.getUnknownType();
@@ -375,26 +407,22 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         }
     }
 
-    // ─── Step 7: Determine value state ─────────────────────────────────────
+    // ─── Step 7: Determine value state ────────────────────────────────────
+    TypeAST* declType = decl->type;
     ValueState state = ValueState::Unknown;
+    
     if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
         state = ValueState::Definite;
     } else if (decl->isa<VarDeclAST>()) {
         VarDeclAST* var = decl->as<VarDeclAST>();
-        if (var->init && var->init->isConst) {
-            state = ValueState::Definite;
-        } else {
-            state = ValueState::Unknown;
-        }
+        state = (var->init && var->init->isConst) ? ValueState::Definite : ValueState::Unknown;
     } else if (decl->isa<ParamAST>()) {
-        state = ValueState::Unknown;
+        state = ValueState::Definite;
     } else if (decl->isa<FieldDeclAST>()) {
-        state = ValueState::Unknown;
-    } else {
         state = ValueState::Unknown;
     }
 
-    // ─── Step 8: Set isLValue and isConst based on declaration type ──────
+    // ─── Step 8: Set isLValue and isConst ──────────────────────────────────
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -405,30 +433,31 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<ParamAST>()) {
         ParamAST* param = decl->as<ParamAST>();
-        expr->isLValue = !param->isConst();
-        expr->isConst = param->isConst();
+        expr->isLValue = !param->isConstParam;
+        expr->isConst = param->isConstParam;
     } else if (decl->isa<EnumVariantAST>()) {
         expr->isLValue = false;
         expr->isConst = true;
     } else if (decl->isa<FieldDeclAST>()) {
         FieldDeclAST* field = decl->as<FieldDeclAST>();
-        expr->isLValue = false;  // Field access sets this based on object mutability
+        expr->isLValue = false;  // Set by transform above
         expr->isConst = field->isConst();
     } else {
         expr->isLValue = false;
         expr->isConst = false;
     }
 
-    // ─── Step 9: Apply type narrowing from if conditions ────────────────────
+    // ─── Step 9: Apply type narrowing ──────────────────────────────────────
     TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
         expr->resolvedType = narrowedType;
         expr->valueState = state;
-        expr->isLValue = true;  // Narrowed variables are still l-values
+        expr->isLValue = true;
         return narrowedType;
     }
 
-    // ─── Step 10: Set the expression's type ──────────────────────
+    // ─── Step 10: Set final type ──────────────────────────────────────────
+    expr->resolvedDecl = decl;
     expr->resolvedType = declType;
     expr->valueState = state;
     
@@ -458,8 +487,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                               "cannot access field on nullable or fallible type '",
                               typeToString(objectType, ctx.pool),
                               "'. Narrow the value first using 'if' or '?\?'");
-        ctx.diagnostics.note(expr->object,
-                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Err;
         return ctx.getUnknownType();
@@ -491,11 +518,9 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                 return ctx.getUnknownType();
             }
 
-            // Cache the generic field info (not stored on AST)
-            ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
-                               ? ValueState::Unknown : ValueState::Definite;
             expr->resolvedType = fieldType;
-            expr->valueState = state;
+            expr->valueState = (isNullableType(fieldType) || isFallibleType(fieldType))
+                               ? ValueState::Unknown : ValueState::Definite;
             expr->isLValue = false;
             expr->isConst = false;
             return fieldType;
@@ -514,46 +539,20 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 
     NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
     
-    // ─── Step 5: Cache lookup - check if already resolved ──────────────
-    if (expr->resolvedDecl) {
-        // Already resolved - use cached values
-        if (expr->isEnumAccess) {
-            // Enum variant access
-            EnumVariantAST* variant = expr->resolvedDecl->as<EnumVariantAST>();
-            expr->resolvedType = ctx.getNamedType(variant->name);  // Enum type
-            expr->valueState = ValueState::Definite;
-            expr->isLValue = false;
-            expr->isConst = true;
-            return expr->resolvedType;
-        } else {
-            // Struct field access
-            FieldDeclAST* field = expr->resolvedDecl->as<FieldDeclAST>();
-            TypeAST* fieldType = field->type;
-            ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
-                               ? ValueState::Unknown : ValueState::Definite;
-            expr->resolvedType = fieldType;
-            expr->valueState = state;
-            
-            // Set isLValue and isConst based on field and object
-            if (expr->object->isLValue) {
-                expr->isLValue = !field->isConst();
-                expr->isConst = field->isConst();
-            } else {
-                expr->isLValue = false;
-                expr->isConst = expr->object->isConst;
-            }
-            return fieldType;
-        }
-    }
-
-    // ─── Step 6: Resolve the type declaration ──────────────────────────
-    TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
+    // ─── Step 5: Resolve the type declaration ──────────────────────────
+    TypeDeclAST* typeDecl = namedType->resolvedDecl;
     if (!typeDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "undefined type '", ctx.pool.lookup(namedType->name), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+        // Try to look it up if not resolved
+        typeDecl = ctx.lookupType(namedType->name);
+        if (typeDecl) {
+            namedType->resolvedDecl = typeDecl;
+        } else {
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                                  "undefined type '", ctx.pool.lookup(namedType->name), "'");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
     }
 
     if (typeDecl->hasSyntaxError) {
@@ -563,11 +562,10 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 7: Handle enum type ──────────────────────────────────────
+    // ─── Step 6: Handle enum type ──────────────────────────────────────
     if (typeDecl->isa<EnumDeclAST>()) {
         EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
         
-        // Find the variant by name
         for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
             EnumVariantAST* variant = enumDecl->variants[i];
             if (variant->name == expr->fieldName) {
@@ -579,7 +577,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                     return ctx.getUnknownType();
                 }
 
-                // ─── Cache the result ─────────────────────────────────────
                 expr->resolvedDecl = variant;
                 expr->ownerType = enumDecl;
                 expr->isEnumAccess = true;
@@ -601,10 +598,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 8: Handle struct type ────────────────────────────────────
+    // ─── Step 7: Handle struct type ────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
         StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
+        // ─── Look up field by name in struct's field list ────────────
+        // NOT in the symbol table!
         for (size_t i = 0; i < structDecl->fields.size(); ++i) {
             FieldDeclAST* field = structDecl->fields[i];
             if (field->name == expr->fieldName) {
@@ -616,7 +615,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                     return ctx.getUnknownType();
                 }
 
-                // ─── Cache the result ─────────────────────────────────────
                 expr->resolvedDecl = field;
                 expr->ownerType = structDecl;
                 expr->isEnumAccess = false;
@@ -624,7 +622,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 
                 TypeAST* fieldType = field->type;
                 if (!fieldType) {
-                    fieldType = field->type;  // Fallback to parser type
+                    fieldType = field->type;
                 }
                 
                 ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
@@ -632,7 +630,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                 expr->resolvedType = fieldType;
                 expr->valueState = state;
                 
-                // Set isLValue and isConst
                 if (expr->object->isLValue) {
                     expr->isLValue = !field->isConst();
                     expr->isConst = field->isConst();

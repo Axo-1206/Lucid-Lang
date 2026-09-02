@@ -85,13 +85,11 @@ void registerTraitName(TraitDeclAST* decl, SemaContext& ctx) {
 
 void registerStructName(StructDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-
-    /// Register all field names in a struct (no type resolution).
-    for (FieldDeclAST* field : decl->fields) {
-        if (!field->name.isEmpty()) {
-            ctx.insertValue(field);
-        }
-    }
+    /// NOTE: Do not ignore this comment
+    /// ─── REMOVED: Field registration at module level ──────────────────────
+    // Fields are NOT registered in the global symbol table.
+    // They are accessed through self.field or instance.field.
+    // Field lookup is done via the struct's field list, not the symbol table.
 }
 
 // =============================================================================
@@ -613,6 +611,19 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 
     ScopedTypeDefinition defining(ctx, decl);
 
+    // ─── Push a scope for struct fields ──────────────────────────────
+    // This scope exists only during struct resolution.
+    // Fields are registered here so they can be resolved during default
+    // body resolution (for function fields with default bodies).
+    ctx.pushScope();
+
+    // ─── Register all fields in the struct scope ──────────────────────────
+    for (FieldDeclAST* field : decl->fields) {
+        if (!field->name.isEmpty()) {
+            ctx.insertValue(field);
+        }
+    }
+
     // ─── 1. Resolve generic parameters ──────────────────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
@@ -634,13 +645,13 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 
     // ─── 5. Generate mangled name ───────────────────────────────────────────
-    // This is CRITICAL for CodeGen to create unique struct types.
-    // For non-exported structs, we still need a mangled name to avoid
-    // collisions between structs with the same name in different modules.
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
+
+    // ─── Pop the struct scope ─────────────────────────────────────────
+    ctx.popScope();
 }
 
 // ─── resolveStructFields ──────────────────────────────────────────────────────
@@ -648,17 +659,13 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
     // ─── Phase 1: Resolve field types and validate ──────────────────────────
     for (FieldDeclAST* field : decl->fields) {
-        if (field->hasSyntaxError) {
-            continue;
-        }
+        if (field->hasSyntaxError) continue;
 
         validateAllAttributes(field, ctx);
 
         // ─── 1. Resolve the field's type ──────────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
-        if (!fieldType) {
-            continue;
-        }
+        if (!fieldType) continue;
 
         // ─── Arena validation: Cannot store Arena in struct fields ──────
         if (isArenaType(fieldType)) {
@@ -670,7 +677,6 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         }
 
         // ─── 2. Downward Flow Rule: Check borrowed types ──────────────────
-        // Struct fields cannot contain &T or [_]T (borrowed types)
         if (isBorrowedType(fieldType)) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
                                   "field '", ctx.pool.lookup(field->name),
@@ -681,87 +687,68 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         }
 
         // ─── 3. Validate self-reference ──────────────────────────────────────
-        // Self-reference is only valid if nullable or a raw pointer
         isValidStructSelfReference(fieldType, decl, ctx);
 
         // ─── 4. Validate const field type ──────────────────────────────────
-        // const fields must have a definite type (not nullable or fallible)
         if (field->isConst()) {
             if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
                 continue;
             }
         }
 
-        // ─── 5. Handle default value ───────────────────────────────────────
+        // ─── 5. Handle default value (NO self synthesis needed!) ──────────
         bool isFunctionType = fieldType->isa<FuncTypeAST>();
 
-        if (field->defaultBody) {
-            // ─── Block body default (only for function fields) ─────────────
-            if (!isFunctionType) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
-                                      "block body can only be used with function fields, but '",
-                                      ctx.pool.lookup(field->name), "' has type ",
-                                      typeToString(fieldType, ctx.pool));
-                continue;
-            }
-
+        if (isFunctionType && field->defaultBody) {
+            // ─── The parser already synthesized self as the first parameter ──
+            // We just need to resolve the parameters and the body.
             FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
-
-            if (funcType->params.empty()) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, field,
-                                      "function field '", ctx.pool.lookup(field->name),
-                                      "' must have at least one parameter");
-                continue;
-            }
-
-            // ─── Push scope for the function field's parameters ──────────
+            
+            // ─── Push scope for parameters ──────────────────────────────────
             ctx.pushScope();
-
+            
+            // Resolve all parameters (including self)
             for (ParamAST* param : funcType->params) {
                 resolveParam(param, ctx);
             }
-
+            
+            // ─── Resolve the body ──────────────────────────────────────────
             if (field->defaultBody->isa<BlockStmtAST>()) {
                 resolveBlock(field->defaultBody->as<BlockStmtAST>(), ctx);
             } else {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, field,
                                       "function field body must be a block");
             }
-
+            
             ctx.popScope();
+            
+        } else if (isFunctionType && field->defaultVal) {
+            // ─── Expression default (function reference) ────────────────────
+            // The self parameter must already be in the signature
+            // (the user wrote it explicitly)
+            TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
+            if (!initType || initType->isa<UnknownTypeAST>()) {
+                continue;
+            }
 
-        } else if (field->defaultVal) {
-            // ─── Expression default ──────────────────────────────────────────
-            if (isFunctionType) {
-                FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
-
-                TypeAST* initType = resolveExprWithTarget(field->defaultVal, funcType, ctx);
-                if (!initType || initType->isa<UnknownTypeAST>()) {
-                    continue;
-                }
-
-                if (!isFunctionValue(field->defaultVal, ctx)) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
-                                          "field '", ctx.pool.lookup(field->name),
-                                          "' default value must be a function value");
-                    continue;
-                }
-
-            } else {
-                TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
-                if (!initType || initType->isa<UnknownTypeAST>()) {
-                    continue;
-                }
+            if (!isFunctionValue(field->defaultVal, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
+                                      "field '", ctx.pool.lookup(field->name),
+                                      "' default value must be a function value");
+                continue;
+            }
+        } else if (!isFunctionType && field->defaultVal) {
+            // ─── Non-function field with default value ────────────────────
+            TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
+            if (!initType || initType->isa<UnknownTypeAST>()) {
+                continue;
             }
         }
         // ─── No default value ─────────────────────────────────────────────
         // The struct literal must supply a value for this field.
-        // This is valid - no action needed.
     }
 
     // ─── Phase 2: Compute logical layout ────────────────────────────────────
-    // Field indices are simple - just the position in the fields span.
-    // This is always valid regardless of target ABI.
     for (size_t i = 0; i < decl->fields.size(); ++i) {
         FieldDeclAST* field = decl->fields[i];
         field->fieldIndex = i;

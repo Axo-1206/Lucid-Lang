@@ -182,6 +182,7 @@ struct StructLiteralExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A bare identifier used as an expression.
+/// @brief A bare identifier used as an expression.
 /// 
 /// @example
 ///   x        – local variable or parameter
@@ -189,12 +190,8 @@ struct StructLiteralExprAST : ExprAST {
 ///   Direction – enum type name (used before .North in Direction.North)
 /// 
 /// The semantic pass resolves the name against the symbol table and sets
-/// resolvedType. If the name resolves to an enum type followed by '.', the
-/// parser produces a FieldAccessExprAST – an IdentifierExprAST always refers
-/// to a single symbol, never a qualified name.
-/// 
-/// @field name          The identifier name.
-/// @field genericArgs   Generic arguments for generic function instantiation.
+/// resolvedType. If the name resolves to a struct field and 'self' is in scope,
+/// it's transformed into an implicit field access through self.
 struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
@@ -203,6 +200,18 @@ struct IdentifierExprAST : ExprAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     ValueDeclAST* resolvedDecl = nullptr;
+
+    // ─── Field Access Through Self Information ─────────────────────
+    /// @brief True if this identifier was resolved as a field access through 'self'.
+    /// This tells CodeGen that this identifier is actually `self.field`.
+    bool isImplicitFieldAccess = false;
+    
+    /// @brief The 'self' parameter expression (for CodeGen to use as the object).
+    /// This is set when isImplicitFieldAccess is true.
+    ExprAST* selfObject = nullptr;
+    
+    /// @brief The field index for fast access (set by Sema).
+    size_t fieldIndex = SIZE_MAX;
 
     explicit IdentifierExprAST(InternedString n) 
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}

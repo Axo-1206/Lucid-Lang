@@ -138,7 +138,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx);
 TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx);
 StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx);
 
-FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx);
+FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx, InternedString structName);
 EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx);
 TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx);
 

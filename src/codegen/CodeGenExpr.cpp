@@ -228,6 +228,97 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
+    // ─── Handle implicit field access through self ─────────────────────
+    // If this identifier was resolved as a field access through self,
+    // generate it as: selfObject.field
+    if (expr->isImplicitFieldAccess && expr->selfObject) {
+        // ─── First, lower the self object ───────────────────────────────────
+        llvm::Value* selfVal = lowerExpression(expr->selfObject, ctx);
+        if (!selfVal) return nullptr;
+        
+        // ─── Get the field declaration ──────────────────────────────────────
+        if (!decl->isa<FieldDeclAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                    "implicit field access resolved to non-field declaration");
+            return nullptr;
+        }
+        
+        FieldDeclAST* fieldDecl = decl->as<FieldDeclAST>();
+        StructDeclAST* structDecl = nullptr;
+        
+        // ─── Find the parent struct from self's type ───────────────────────
+        TypeAST* selfType = expr->selfObject->resolvedType;
+        if (selfType && selfType->isa<RefTypeAST>()) {
+            RefTypeAST* refType = selfType->as<RefTypeAST>();
+            if (refType->inner && refType->inner->isa<NamedTypeAST>()) {
+                NamedTypeAST* namedType = refType->inner->as<NamedTypeAST>();
+                if (namedType->resolvedDecl && namedType->resolvedDecl->isa<StructDeclAST>()) {
+                    structDecl = namedType->resolvedDecl->as<StructDeclAST>();
+                }
+            }
+        }
+        
+        if (!structDecl) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                    "could not determine struct for implicit field access");
+            return nullptr;
+        }
+        
+        // ─── Get the LLVM struct type ───────────────────────────────────────
+        llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
+        if (!llvmStructType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "struct '", ctx.pool.lookup(structDecl->name), 
+                                    "' has no LLVM type");
+            return nullptr;
+        }
+        
+        // ─── Get the field index ─────────────────────────────────────────────
+        size_t fieldIndex = expr->fieldIndex;
+        if (fieldIndex == SIZE_MAX) {
+            fieldIndex = structDecl->indexOfField(fieldDecl->name);
+            if (fieldIndex == SIZE_MAX) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                        "field '", ctx.pool.lookup(fieldDecl->name), 
+                                        "' not found in struct");
+                return nullptr;
+            }
+        }
+        
+        // ─── GEP to the field ────────────────────────────────────────────────
+        // selfVal is a pointer to the struct (from &self)
+        std::vector<llvm::Value*> indices = {
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 
+                                    static_cast<uint32_t>(fieldIndex))
+        };
+        
+        llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
+            llvmStructType,
+            selfVal,
+            indices,
+            "implicit_field_ptr_" + ctx.pool.lookup(fieldDecl->name)
+        );
+        
+        // ─── If this is an l-value, return the pointer ──────────────────────
+        if (expr->isLValue) {
+            expr->llvmValue = fieldPtr;
+            return fieldPtr;
+        }
+        
+        // ─── Otherwise, load the field value ────────────────────────────────
+        llvm::Type* fieldType = llvmStructType->getElementType(fieldIndex);
+        llvm::Value* fieldVal = ctx.builder.CreateLoad(
+            fieldType,
+            fieldPtr,
+            "implicit_field_load_" + ctx.pool.lookup(fieldDecl->name)
+        );
+        
+        expr->llvmValue = fieldVal;
+        return fieldVal;
+    }
+
+    // ─── Normal identifier handling ──────────────────────────────────────────
     if (decl->isa<VarDeclAST>() || decl->isa<ParamAST>()) {
         llvm::Value* binding = ctx.lookupValue(decl);
         if (!binding) {
@@ -1061,7 +1152,6 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
     // ─── 3. Determine what kind of access this is ──────────────────────────
     // Case 1: Enum variant access (e.g., Direction.North)
     // Case 2: Struct field access (e.g., point.x)
-    // Case 3: Module access (handled by ModuleAccessExprAST)
     
     // Check if the object is a type name (enum access)
     bool isEnumAccess = false;
@@ -1136,22 +1226,40 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
         return nullptr;
     }
 
-    // ─── 5. Find the field in the struct ────────────────────────────────────
+    // ─── 5. Get the field index ─────────────────────────────────────────────
+    // Use cached field index from Sema if available
+    size_t fieldIndex = expr->fieldIndex;
     FieldDeclAST* field = nullptr;
-    size_t fieldIndex = 0;
-    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
-        if (structDecl->fields[i]->name == expr->fieldName) {
-            field = structDecl->fields[i];
-            fieldIndex = i;
-            break;
+    
+    if (fieldIndex != SIZE_MAX && fieldIndex < structDecl->fields.size()) {
+        field = structDecl->fields[fieldIndex];
+        // Verify the field name matches (defensive)
+        if (field->name != expr->fieldName) {
+            // Fall back to name lookup if cache is stale
+            fieldIndex = SIZE_MAX;
+            field = nullptr;
         }
     }
     
-    if (!field) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
-                                "struct '", ctx.pool.lookup(structDecl->name), 
-                                "' has no field '", ctx.pool.lookup(expr->fieldName), "'");
-        return nullptr;
+    // If cache wasn't available or was stale, look up by name
+    if (fieldIndex == SIZE_MAX) {
+        for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+            if (structDecl->fields[i]->name == expr->fieldName) {
+                field = structDecl->fields[i];
+                fieldIndex = i;
+                break;
+            }
+        }
+        
+        if (!field) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
+                                    "struct '", ctx.pool.lookup(structDecl->name), 
+                                    "' has no field '", ctx.pool.lookup(expr->fieldName), "'");
+            return nullptr;
+        }
+        
+        // Cache the field index for future use
+        expr->fieldIndex = fieldIndex;
     }
 
     // ─── 6. Get the LLVM struct type ──────────────────────────────────────
@@ -1163,87 +1271,78 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
         return nullptr;
     }
 
-    // ─── 7. If the object is an l-value, we need the pointer ──────────────
-    // If the object is already a pointer (from an l-value), we can GEP directly.
-    // If it's a value (struct value), we need to take its address first.
-    
-    bool objectIsLValue = expr->object->isLValue;
-    llvm::Value* structPtr = nullptr;
-    llvm::Value* fieldPtr = nullptr;
+    // ─── 7. Get the field pointer or value ─────────────────────────────────
     llvm::Type* fieldType = llvmStructType->getElementType(fieldIndex);
-
+    bool objectIsLValue = expr->object->isLValue;
+    
+    // For l-value object: we have a pointer → GEP
     if (objectIsLValue) {
         // Object is an l-value - we have a pointer to the struct
-        structPtr = object;
+        llvm::Value* structPtr = object;
         
         // GEP to the field
         std::vector<llvm::Value*> indices = {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
-            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), static_cast<uint32_t>(fieldIndex))
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 
+                                    static_cast<uint32_t>(fieldIndex))
         };
-        fieldPtr = ctx.builder.CreateInBoundsGEP(
+        llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
             llvmStructType,
             structPtr,
             indices,
             "field_ptr_" + ctx.pool.lookup(field->name)
         );
-    } else {
-        // Object is a value - we need to extract the field directly
-        // If the object is a struct value (not a pointer), we can extract
-        if (object->getType()->isStructTy()) {
-            // Extract the field value directly
-            llvm::Value* fieldVal = ctx.builder.CreateExtractValue(
-                object,
-                static_cast<unsigned>(fieldIndex),
-                "field_val_" + ctx.pool.lookup(field->name)
-            );
-            expr->llvmValue = fieldVal;
-            return fieldVal;
-        } else {
-            // Object is a pointer to a struct - GEP and load
-            structPtr = object;
-            
-            std::vector<llvm::Value*> indices = {
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), static_cast<uint32_t>(fieldIndex))
-            };
-            fieldPtr = ctx.builder.CreateInBoundsGEP(
-                llvmStructType,
-                structPtr,
-                indices,
-                "field_ptr_" + ctx.pool.lookup(field->name)
-            );
-            
-            // Load the field value
-            llvm::Value* fieldVal = ctx.builder.CreateLoad(
-                fieldType,
-                fieldPtr,
-                "field_load_" + ctx.pool.lookup(field->name)
-            );
-            
-            // If this is an l-value (for assignment), return the pointer
-            if (expr->isLValue) {
-                expr->llvmValue = fieldPtr;
-                return fieldPtr;
-            }
-            
-            expr->llvmValue = fieldVal;
-            return fieldVal;
+        
+        if (expr->isLValue) {
+            expr->llvmValue = fieldPtr;
+            return fieldPtr;
         }
+        
+        llvm::Value* fieldVal = ctx.builder.CreateLoad(
+            fieldType,
+            fieldPtr,
+            "field_load_" + ctx.pool.lookup(field->name)
+        );
+        expr->llvmValue = fieldVal;
+        return fieldVal;
     }
-
-    // ─── 8. Load the field value if not an l-value ─────────────────────────
+    
+    // For value object: we have the struct value → ExtractValue
+    if (object->getType()->isStructTy()) {
+        llvm::Value* fieldVal = ctx.builder.CreateExtractValue(
+            object,
+            static_cast<unsigned>(fieldIndex),
+            "field_val_" + ctx.pool.lookup(field->name)
+        );
+        expr->llvmValue = fieldVal;
+        return fieldVal;
+    }
+    
+    // Object is a pointer but not an l-value (e.g., pointer from #toRef)
+    // GEP and load
+    llvm::Value* structPtr = object;
+    std::vector<llvm::Value*> indices = {
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 
+                                static_cast<uint32_t>(fieldIndex))
+    };
+    llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
+        llvmStructType,
+        structPtr,
+        indices,
+        "field_ptr_" + ctx.pool.lookup(field->name)
+    );
+    
     if (expr->isLValue) {
         expr->llvmValue = fieldPtr;
         return fieldPtr;
     }
-
+    
     llvm::Value* fieldVal = ctx.builder.CreateLoad(
         fieldType,
         fieldPtr,
         "field_load_" + ctx.pool.lookup(field->name)
     );
-    
     expr->llvmValue = fieldVal;
     return fieldVal;
 }
