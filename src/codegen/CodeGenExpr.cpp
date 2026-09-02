@@ -701,10 +701,22 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
 
         case BinaryOp::Div: {
             if (isIntegerType(left->getType()) && isIntegerType(right->getType())) {
-                // Check for division by zero
                 RuntimeErrorKind kind = RuntimeErrorKind::DivisionByZero;
-                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx);
-                if (!checkedRight) return nullptr;
+                
+                // ─── Check for division by zero with fallback support ──────────────
+                llvm::BasicBlock* fallbackBlock = ctx.isInsideNullCoalesce 
+                    ? ctx.nullCoalesceFallbackBlock 
+                    : nullptr;
+                
+                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx, fallbackBlock);
+                
+                // If fallback was taken, emitZeroCheck branched to fallbackBlock
+                // and returned nullptr. We should return nullptr to signal that
+                // the operation didn't produce a value.
+                if (ctx.isInsideNullCoalesce && !checkedRight) {
+                    return nullptr;  // Branch to fallback already generated
+                }
+                
                 result = ctx.builder.CreateSDiv(left, checkedRight, "sdiv");
             } else {
                 result = ctx.builder.CreateFDiv(left, right, "fdiv");
@@ -715,8 +727,18 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
         case BinaryOp::Mod: {
             if (isIntegerType(left->getType()) && isIntegerType(right->getType())) {
                 RuntimeErrorKind kind = RuntimeErrorKind::ModuloByZero;
-                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx);
-                if (!checkedRight) return nullptr;
+                
+                // ─── Check for modulo by zero with fallback support ────────────────
+                llvm::BasicBlock* fallbackBlock = ctx.isInsideNullCoalesce 
+                    ? ctx.nullCoalesceFallbackBlock 
+                    : nullptr;
+                
+                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx, fallbackBlock);
+                
+                if (ctx.isInsideNullCoalesce && !checkedRight) {
+                    return nullptr;  // Branch to fallback already generated
+                }
+                
                 result = ctx.builder.CreateSRem(left, checkedRight, "srem");
             } else {
                 result = ctx.builder.CreateFRem(left, right, "frem");
@@ -1009,9 +1031,16 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Bounds check ──────────────────────────────────────────────────
-    llvm::Value* checkedIndex = emitBoundsCheck(index, len, ctx);
-    if (!checkedIndex) return nullptr;
+    // ─── Bounds check with fallback support ──────────────────────────────────
+    llvm::BasicBlock* fallbackBlock = ctx.isInsideNullCoalesce 
+        ? ctx.nullCoalesceFallbackBlock 
+        : nullptr;
+
+    llvm::Value* checkedIndex = emitBoundsCheck(index, len, ctx, fallbackBlock);
+
+    if (ctx.isInsideNullCoalesce && !checkedIndex) {
+        return nullptr;  // Branch to fallback already generated
+    }
 
     // ─── GEP and load ──────────────────────────────────────────────────
     llvm::Value* gep = ctx.builder.CreateGEP(elemType, ptr, checkedIndex, "array_idx");
@@ -1091,9 +1120,16 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
         end = len;
     }
 
-    // ─── Slice bounds check ──────────────────────────────────────────────
-    auto [checkedStart, checkedEnd] = emitSliceBoundsCheck(start, end, len, ctx);
-    if (!checkedStart || !checkedEnd) return nullptr;
+    // ─── Slice bounds check with fallback support ────────────────────────────
+    llvm::BasicBlock* fallbackBlock = ctx.isInsideNullCoalesce 
+        ? ctx.nullCoalesceFallbackBlock 
+        : nullptr;
+
+    auto [checkedStart, checkedEnd] = emitSliceBoundsCheck(start, end, len, ctx, fallbackBlock);
+
+    if (ctx.isInsideNullCoalesce && (!checkedStart || !checkedEnd)) {
+        return nullptr;  // Branch to fallback already generated
+    }
 
     // ─── Get data pointer ──────────────────────────────────────────────────
     llvm::Value* dataPtr = target;
@@ -1744,22 +1780,52 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             {arenaPtr, totalSize}, 
             "arena_alloc_data"
         );
-        
-        // Cast to element type pointer
+
+        // ─── Check for allocation failure with fallback support ──────────────
+        llvm::Value* isNull = ctx.builder.CreateIsNull(data, "arena_alloc_failed");
+
+        if (ctx.isInsideNullCoalesce) {
+            // ─── In `??` context: branch to fallback on failure ────────────────
+            llvm::BasicBlock* successBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "arena_alloc_success", func);
+            llvm::BasicBlock* fallbackBlock = ctx.nullCoalesceFallbackBlock;
+            
+            ctx.builder.CreateCondBr(isNull, fallbackBlock, successBlock);
+            ctx.builder.SetInsertPoint(successBlock);
+        } else {
+            // ─── Normal mode: panic on failure ──────────────────────────────────
+            llvm::BasicBlock* successBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "arena_alloc_success", func);
+            llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "arena_alloc_panic", func);
+            
+            ctx.builder.CreateCondBr(isNull, panicBlock, successBlock);
+            
+            // ─── Panic block ─────────────────────────────────────────────────────
+            ctx.builder.SetInsertPoint(panicBlock);
+            emitPanic(RuntimeErrorKind::ArenaOutOfCapacity, ctx, 
+                    "arena out of capacity");
+            ctx.builder.CreateUnreachable();
+            
+            ctx.builder.SetInsertPoint(successBlock);
+        }
+
+        // ─── Cast to element type pointer ──────────────────────────────────────
         llvm::Type* elemPtrType = llvm::PointerType::get(ctx.llvmCtx, 0);
         llvm::Value* typedData = ctx.builder.CreatePointerCast(
             data, 
             elemPtrType, 
             "arena_alloc_typed"
         );
-        
-        // Return as [_]T (slice view) - use the resolved type from Sema
-        llvm::StructType* sliceType = llvm::cast<llvm::StructType>(getType(ctx, expr->resolvedType));
+
+        // ─── Return as [_]T (slice view) ───────────────────────────────────────
+        llvm::StructType* sliceType = llvm::cast<llvm::StructType>(
+            getType(ctx, expr->resolvedType));
         llvm::Value* slice = llvm::UndefValue::get(sliceType);
         slice = ctx.builder.CreateInsertValue(slice, typedData, 0);
         slice = ctx.builder.CreateInsertValue(slice, count, 1);  // len
         slice = ctx.builder.CreateInsertValue(slice, count, 2);  // cap
-        
+
         return slice;
     }
     
@@ -1918,16 +1984,6 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
 llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    llvm::Value* lhs = lowerExpression(expr->value, ctx);
-    if (!lhs) {
-        return nullptr;
-    }
-
-    llvm::Value* rhs = lowerExpression(expr->fallback, ctx);
-    if (!rhs) {
-        return nullptr;
-    }
-
     TypeAST* lhsType = expr->value->resolvedType;
     if (!lhsType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->value->loc,
@@ -1935,35 +1991,128 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    if (!sema::isNullableType(lhsType) && !sema::isFallibleType(lhsType)) {
-        expr->llvmValue = lhs;
-        return lhs;
+    llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "Null coalesce expression outside of function");
+
+    // ─── CASE 1: LHS is already nullable/fallible (tagged type) ─────────────
+    if (sema::isNullableType(lhsType) || sema::isFallibleType(lhsType)) {
+        // ─── Lower the LHS ──────────────────────────────────────────────────
+        llvm::Value* lhs = lowerExpression(expr->value, ctx);
+        if (!lhs) return nullptr;
+
+        // ─── LHS should be a tagged struct { i8 tag, T value } ─────────────
+        if (!lhs->getType()->isStructTy() || 
+            lhs->getType()->getStructNumElements() != 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->value->loc,
+                                    "LHS must be a tagged type (T?, T!, or T?!)");
+            return nullptr;
+        }
+
+        // ─── Create basic blocks ─────────────────────────────────────────────
+        llvm::BasicBlock* successBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "coalesce_success", func);
+        llvm::BasicBlock* fallbackBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "coalesce_fallback", func);
+        llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "coalesce_merge", func);
+
+        // ─── Extract and check the tag ──────────────────────────────────────
+        llvm::Value* tag = ctx.builder.CreateExtractValue(lhs, 0, "coalesce_tag");
+        llvm::Value* isNil = ctx.builder.CreateICmpEQ(
+            tag,
+            llvm::ConstantInt::get(tag->getType(), 0),
+            "is_nil"
+        );
+
+        // ─── For fallible types, check both nil (0) and err (2) ────────────
+        llvm::Value* isFailure = isNil;
+        if (sema::isFallibleType(lhsType)) {
+            llvm::Value* isErr = ctx.builder.CreateICmpEQ(
+                tag,
+                llvm::ConstantInt::get(tag->getType(), 2),
+                "is_err"
+            );
+            isFailure = ctx.builder.CreateOr(isNil, isErr, "is_failure");
+        }
+
+        ctx.builder.CreateCondBr(isFailure, fallbackBlock, successBlock);
+
+        // ─── Success block: extract the value ──────────────────────────────
+        ctx.builder.SetInsertPoint(successBlock);
+        llvm::Value* lhsValid = ctx.builder.CreateExtractValue(lhs, 1, "coalesce_value");
+        ctx.builder.CreateBr(mergeBlock);
+
+        // ─── Fallback block: lower the RHS ──────────────────────────────────
+        ctx.builder.SetInsertPoint(fallbackBlock);
+        llvm::Value* rhsValue = lowerExpression(expr->fallback, ctx);
+        if (!rhsValue) return nullptr;
+        if (expr->fallback->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->fallback->resolvedType);
+            if (elemType) {
+                rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
+            }
+        }
+        ctx.builder.CreateBr(mergeBlock);
+
+        // ─── Merge block: PHI selects the correct value ─────────────────────
+        ctx.builder.SetInsertPoint(mergeBlock);
+        llvm::PHINode* phi = ctx.builder.CreatePHI(
+            lhsValid->getType(),
+            2,
+            "coalesce_result"
+        );
+        phi->addIncoming(lhsValid, successBlock);
+        phi->addIncoming(rhsValue, fallbackBlock);
+
+        expr->llvmValue = phi;
+        return phi;
     }
 
-    llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* lhsBlock = ctx.builder.GetInsertBlock();
-    llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "then", func);
-    llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "else", func);
-    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "merge", func);
+    // ─── CASE 2: LHS is a plain risky operation (division, index, etc.) ─────
+    // The grammar says: `10 / d ?? -1` - the LHS is plain int, not int!
+    // We need to emit the LHS with a fallback block.
 
-    // ─── Check the tag ────────────────────────────────────────────────────
-    llvm::Value* tag = ctx.builder.CreateExtractValue(lhs, 0);
-    llvm::Value* isNil = ctx.builder.CreateICmpEQ(
-        tag,
-        llvm::ConstantInt::get(tag->getType(), 0),
-        "is_nil"
-    );
+    // ─── Create basic blocks ─────────────────────────────────────────────────
+    llvm::BasicBlock* successBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx, "coalesce_risky_success", func);
+    llvm::BasicBlock* fallbackBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx, "coalesce_risky_fallback", func);
+    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx, "coalesce_risky_merge", func);
 
-    ctx.builder.CreateCondBr(isNil, elseBlock, thenBlock);
+    // ─── Set the `??` context flag ──────────────────────────────────────────
+    ctx.enterNullCoalesce(fallbackBlock);
 
-    // ─── Then block (LHS is valid) ──────────────────────────────────────
-    ctx.builder.SetInsertPoint(thenBlock);
-    llvm::Value* lhsValid = ctx.builder.CreateExtractValue(lhs, 1);
+    // ─── Lower the LHS in `??` context ──────────────────────────────────────
+    // Risky operations (division, index, arena::alloc) will check
+    // ctx.isInsideNullCoalesce and branch to fallbackBlock on failure.
+    llvm::Value* lhs = lowerExpression(expr->value, ctx);
+    if (!lhs) {
+        ctx.exitNullCoalesce();
+        return nullptr;
+    }
+
+    // ─── If we're still here, the operation succeeded ──────────────────────
+    ctx.builder.CreateBr(successBlock);
+
+    // ─── Success block ──────────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(successBlock);
+    llvm::Value* lhsValid = lhs;
+    if (expr->value->isLValue) {
+        llvm::Type* elemType = getType(ctx, expr->value->resolvedType);
+        if (elemType) {
+            lhsValid = loadIfNeeded(lhsValid, elemType, ctx);
+        }
+    }
     ctx.builder.CreateBr(mergeBlock);
 
-    // ─── Else block (LHS is nil/err) ────────────────────────────────────
-    ctx.builder.SetInsertPoint(elseBlock);
-    llvm::Value* rhsValue = rhs;
+    // ─── Fallback block ──────────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(fallbackBlock);
+    llvm::Value* rhsValue = lowerExpression(expr->fallback, ctx);
+    if (!rhsValue) {
+        ctx.exitNullCoalesce();
+        return nullptr;
+    }
     if (expr->fallback->isLValue) {
         llvm::Type* elemType = getType(ctx, expr->fallback->resolvedType);
         if (elemType) {
@@ -1972,15 +2121,18 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
     }
     ctx.builder.CreateBr(mergeBlock);
 
-    // ─── Merge block ──────────────────────────────────────────────────────
+    // ─── Merge block ─────────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(mergeBlock);
     llvm::PHINode* phi = ctx.builder.CreatePHI(
         lhsValid->getType(),
         2,
-        "coalesce"
+        "coalesce_risky_result"
     );
-    phi->addIncoming(lhsValid, thenBlock);
-    phi->addIncoming(rhsValue, elseBlock);
+    phi->addIncoming(lhsValid, successBlock);
+    phi->addIncoming(rhsValue, fallbackBlock);
+
+    // ─── Exit `??` context ──────────────────────────────────────────────────
+    ctx.exitNullCoalesce();
 
     expr->llvmValue = phi;
     return phi;

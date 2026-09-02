@@ -333,9 +333,11 @@ enum class DiagCode : uint32_t {
     Sem_AllocationFailed       = 6514,  // Runtime memory allocation failed
     Sem_ArenaAllocationFailed  = 6515,  // Runtime arena allocation failed
     Sem_ArenaInvalidDescriptor = 6516,  // Invalid arena descriptor used at runtime
-    Sem_TagMismatch            = 6517,  // Tagged slot tag mismatch
-    Sem_RuntimePanic           = 6518,  // Generic/uncategorized runtime panic
-    Sem_AssertionFailed        = 6519,  // #assert failed at runtime
+    Sem_ArenaOutOfCapacity     = 6517,  // Arena out of remaining capacity
+    Sem_TagMismatch            = 6518,  // Tagged slot tag mismatch
+    Sem_RuntimePanic           = 6519,  // Generic/uncategorized runtime panic
+    Sem_AssertionFailed        = 6520,  // #assert failed at runtime
+    Sem_UnsupportedOperation   = 6521,  // Unsupported operation at runtime
 
     // ──────────────────────────────────────────────────────────────────────────
     // BACKEND & LINKING ERRORS (7000-7999)

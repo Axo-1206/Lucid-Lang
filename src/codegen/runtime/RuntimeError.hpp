@@ -38,6 +38,7 @@ enum class RuntimeErrorKind {
     AllocationFailed,        ///< Memory allocation failure
     ArenaAllocationFailed,   ///< Arena allocation failure
     ArenaInvalidDescriptor,  ///< Invalid arena descriptor
+    ArenaOutOfCapacity,      ///< Arena out of remaining capacity (NEW)
     
     // ─── Type System Errors ──────────────────────────────────────────────
     UnwrappedNil,            ///< Using nil value without narrowing
@@ -57,36 +58,57 @@ enum class RuntimeErrorKind {
     // ─── Runtime Library Errors ──────────────────────────────────────────
     RuntimePanic,            ///< Generic runtime panic
     AssertionFailed,         ///< Assertion failed
+    Unreachable,             ///< Reached unreachable code (NEW)
+    UnsupportedOperation,    ///< Unsupported operation (NEW)
 };
 
 /// @brief Get the error message for a runtime error kind.
-inline const char* getRuntimeErrorMessage(RuntimeErrorKind kind) {
+inline const std::string getRuntimeErrorMessage(RuntimeErrorKind kind) {
     switch (kind) {
+        // ─── Arithmetic Errors ────────────────────────────────────────────
         case RuntimeErrorKind::DivisionByZero:          return "division by zero";
         case RuntimeErrorKind::ModuloByZero:            return "modulo by zero";
         case RuntimeErrorKind::IntegerOverflow:         return "integer overflow";
         case RuntimeErrorKind::NegationOverflow:        return "negation overflow";
+        
+        // ─── Array/Slice Errors ───────────────────────────────────────────
         case RuntimeErrorKind::ArrayIndexOutOfBounds:   return "array index out of bounds";
         case RuntimeErrorKind::SliceBoundsOutOfRange:   return "slice bounds out of range";
         case RuntimeErrorKind::NegativeArraySize:       return "negative array size";
+        
+        // ─── Pointer Errors ───────────────────────────────────────────────
         case RuntimeErrorKind::NullPointerDereference:  return "null pointer dereference";
         case RuntimeErrorKind::DanglingPointer:         return "dangling pointer dereference";
+        
+        // ─── Memory Errors ────────────────────────────────────────────────
         case RuntimeErrorKind::DoubleFree:              return "double free detected";
         case RuntimeErrorKind::FreeNullPointer:         return "free called on null pointer";
         case RuntimeErrorKind::AllocationFailed:        return "memory allocation failed";
         case RuntimeErrorKind::ArenaAllocationFailed:   return "arena allocation failed";
         case RuntimeErrorKind::ArenaInvalidDescriptor:  return "invalid arena descriptor";
+        case RuntimeErrorKind::ArenaOutOfCapacity:      return "arena out of remaining capacity";
+        
+        // ─── Type System Errors ───────────────────────────────────────────
         case RuntimeErrorKind::UnwrappedNil:            return "unwrapped nil value";
-        case RuntimeErrorKind::UnwrappedErr:            return "unwrapped err value";
+        case RuntimeErrorKind::UnwrappedErr:             return "unwrapped err value";
         case RuntimeErrorKind::TagMismatch:             return "tagged slot tag mismatch";
+        
+        // ─── Foreign Function Errors ──────────────────────────────────────
         case RuntimeErrorKind::ForeignCallFailed:       return "foreign function call failed";
         case RuntimeErrorKind::ForeignSymbolNotFound:   return "foreign symbol not found";
+        
+        // ─── Concurrency Errors ───────────────────────────────────────────
         case RuntimeErrorKind::AwaitOnNonFuture:        return "await called on non-future value";
         case RuntimeErrorKind::JoinOnNonThread:         return "join called on non-thread value";
         case RuntimeErrorKind::FutureAlreadyConsumed:   return "future already consumed";
         case RuntimeErrorKind::ThreadAlreadyJoined:     return "thread already joined";
+        
+        // ─── Runtime Library Errors ───────────────────────────────────────
         case RuntimeErrorKind::RuntimePanic:            return "runtime panic";
         case RuntimeErrorKind::AssertionFailed:         return "assertion failed";
+        case RuntimeErrorKind::Unreachable:             return "reached unreachable code";
+        case RuntimeErrorKind::UnsupportedOperation:    return "unsupported operation";
+        
         default:                                        return "unknown runtime error";
     }
 }
@@ -136,6 +158,7 @@ inline DiagCode toDiagCode(RuntimeErrorKind kind) {
         case RuntimeErrorKind::AllocationFailed:        return DiagCode::Sem_AllocationFailed;
         case RuntimeErrorKind::ArenaAllocationFailed:   return DiagCode::Sem_ArenaAllocationFailed;
         case RuntimeErrorKind::ArenaInvalidDescriptor:  return DiagCode::Sem_ArenaInvalidDescriptor;
+        case RuntimeErrorKind::ArenaOutOfCapacity:      return DiagCode::Sem_ArenaOutOfCapacity;
 
         // ─── Type System Errors ───────────────────────────────────────────
         case RuntimeErrorKind::UnwrappedNil:            return DiagCode::Sem_UnhandledNil;
@@ -155,6 +178,7 @@ inline DiagCode toDiagCode(RuntimeErrorKind kind) {
         // ─── Runtime Library Errors ───────────────────────────────────────
         case RuntimeErrorKind::RuntimePanic:            return DiagCode::Sem_RuntimePanic;
         case RuntimeErrorKind::AssertionFailed:         return DiagCode::Sem_AssertionFailed;
+        case RuntimeErrorKind::UnsupportedOperation:    return DiagCode::Sem_UnsupportedOperation;
 
         default:                                        return DiagCode::Sem_RuntimePanic;
     }

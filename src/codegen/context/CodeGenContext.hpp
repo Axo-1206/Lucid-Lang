@@ -110,6 +110,60 @@ struct CodeGenContext {
     bool hasValue(ValueDeclAST* decl) const {
         return values.find(decl) != values.end();
     }
+
+    // ─── Null Coalesce Context Stack ──────────────────────────────────────────
+    /// @brief Context for each active `??` expression.
+    /// Each entry represents a `??` whose LHS is currently being lowered.
+    struct NullCoalesceContext {
+        llvm::BasicBlock* fallbackBlock;  ///< Where to jump on failure
+        bool fallbackTaken;               ///< Whether the fallback was taken
+        bool isActive;                    ///< Whether this context is active
+    };
+    
+    std::vector<NullCoalesceContext> nullCoalesceStack;
+
+    // ─── Null Coalesce Helpers ────────────────────────────────────────────
+
+    /// @brief Enter a `??` expression context.
+    void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
+        nullCoalesceStack.push_back({fallbackBlock, false, true});
+    }
+
+    /// @brief Exit the current `??` expression context.
+    void popNullCoalesce() {
+        if (!nullCoalesceStack.empty()) {
+            nullCoalesceStack.pop_back();
+        }
+    }
+
+    /// @brief Get the current `??` context (top of stack).
+    NullCoalesceContext* currentNullCoalesce() {
+        return nullCoalesceStack.empty() ? nullptr : &nullCoalesceStack.back();
+    }
+
+    /// @brief Check if we're inside a `??` expression.
+    bool isInsideNullCoalesce() const {
+        return !nullCoalesceStack.empty() && nullCoalesceStack.back().isActive;
+    }
+
+    /// @brief Get the fallback block for the current `??` expression.
+    llvm::BasicBlock* getNullCoalesceFallbackBlock() const {
+        if (nullCoalesceStack.empty()) return nullptr;
+        return nullCoalesceStack.back().fallbackBlock;
+    }
+
+    /// @brief Mark that the fallback block was taken for the current `??`.
+    void markNullCoalesceFallbackTaken() {
+        if (!nullCoalesceStack.empty()) {
+            nullCoalesceStack.back().fallbackTaken = true;
+        }
+    }
+
+    /// @brief Check if the fallback was taken for the current `??`.
+    bool wasNullCoalesceFallbackTaken() const {
+        if (nullCoalesceStack.empty()) return false;
+        return nullCoalesceStack.back().fallbackTaken;
+    }
     
     // ─── Function Helpers ──────────────────────────────────────────────────
     

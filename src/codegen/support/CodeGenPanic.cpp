@@ -1,266 +1,218 @@
 /// @file support/CodeGenPanic.cpp
-/// @brief Implementation of runtime panic and null check handling.
+/// @brief Implementation of panic and bounds checking utilities.
 
 #include "CodeGenPanic.hpp"
-#include "../types/CodeGenType.hpp"
-
-#include <llvm/IR/BasicBlock.h>
+#include "../runtime/RuntimeError.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 #include <llvm/IR/Function.h>
+#include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Type.h>
 #include <llvm/IR/IRBuilder.h>
-
-#include <iomanip>
-#include <sstream>
 
 namespace codegen {
 
-// ─── Internal Helper ──────────────────────────────────────────────────────
+// ─── Helper: Build panic message ───────────────────────────────────────────
 
-/// @brief Format a DiagCode the same way Diagnostic.hpp's formatOneLine()
-///        does for a compile-time diagnostic ("E" + 4-digit zero-padded
-///        code), so a runtime panic and a compile-time error for the same
-///        underlying problem show a matching code to the person reading it.
-static std::string formatDiagCodePrefix(DiagCode code) {
-    std::ostringstream oss;
-    oss << (isWarningCode(code) ? 'W' : 'E')
-        << std::setfill('0') << std::setw(4) << static_cast<uint32_t>(code);
-    return oss.str();
+static std::string buildPanicMessageFull(RuntimeErrorKind kind, SourceLocation loc) {
+    return getRuntimeErrorMessage(kind) + " at " + loc.toString();
 }
 
-static void emitPanicInternal(const std::string& message, CodeGenContext& ctx) {
-    llvm::Function* panicFunc = ctx.getRuntimeFn(RuntimeFn::Panic);
+// ─── emitPanic ─────────────────────────────────────────────────────────────
 
-    llvm::Constant* msgConst = llvm::ConstantDataArray::getString(
-        ctx.llvmCtx,
-        message,
-        true
-    );
+void emitPanic(RuntimeErrorKind kind, CodeGenContext& ctx, const std::string& message) {
+    llvm::Function* panicFn = ctx.getRuntimeFn(RuntimeFn::Panic);
+    if (!panicFn) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, SourceLocation(),
+                                "panic function not found");
+        return;
+    }
 
-    llvm::GlobalVariable* msgGlobal = new llvm::GlobalVariable(
-        *ctx.module,
-        msgConst->getType(),
-        true,
-        llvm::GlobalValue::PrivateLinkage,
-        msgConst,
-        "panic_msg"
-    );
-
-    llvm::Value* msgPtr = ctx.builder.CreatePointerCast(
-        msgGlobal,
-        llvm::PointerType::get(ctx.llvmCtx, 0)
-    );
-
-    ctx.builder.CreateCall(panicFunc, {msgPtr});
+    std::string fullMsg = message.empty() ? getRuntimeErrorMessage(kind) : message;
+    llvm::Value* msgVal = ctx.createStringLiteral(fullMsg);
+    ctx.builder.CreateCall(panicFn, {msgVal});
     ctx.builder.CreateUnreachable();
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────
+// ─── emitZeroCheck ─────────────────────────────────────────────────────────
 
-void emitPanic(RuntimeErrorKind kind, CodeGenContext& ctx) {
-    // Embed the matching DiagCode so a person reading a runtime panic sees
-    // the same code a compile-time diagnostic for the identical error would
-    // show (e.g. "[E4101] division by zero" whether caught during const
-    // evaluation or at runtime). This has to be baked into the message
-    // string at compile time - CodeGenContext's DiagnosticEngine never gets
-    // linked into the compiled program, so nothing downstream (the
-    // interpreter's PanicHandler, or an AOT binary's crash output) can look
-    // this up later; it must already be plain text by the time we emit it.
-    std::string message = "[" + formatDiagCodePrefix(toDiagCode(kind)) + "] " +
-                           getRuntimeErrorMessage(kind);
-    emitPanicInternal(message, ctx);
-}
+llvm::Value* emitZeroCheck(
+    llvm::Value* val,
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock
+) {
+    if (!val) return nullptr;
 
-void emitPanic(const std::string& message, CodeGenContext& ctx) {
-    // No RuntimeErrorKind here, so no DiagCode to embed - this overload is
-    // for ad-hoc/uncategorized panics that don't fit the RuntimeErrorKind
-    // registry. Prefer the RuntimeErrorKind overload when the panic does
-    // correspond to a known kind, so it gets a code.
-    emitPanicInternal(message, ctx);
-}
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
 
-llvm::Value* emitNullCheck(llvm::Value* ptr, CodeGenContext& ctx) {
-    if (!ptr) return nullptr;
+    // Cast to i64 if needed
+    llvm::Value* checkedVal = val;
+    if (checkedVal->getType() != i64) {
+        checkedVal = ctx.builder.CreateIntCast(checkedVal, i64, false, "zero_check_cast");
+    }
 
-    llvm::Type* ptrType = ptr->getType();
-    if (!ptrType->isPointerTy()) return ptr;
+    llvm::Value* isZero = ctx.builder.CreateICmpEQ(
+        checkedVal,
+        llvm::ConstantInt::get(i64, 0),
+        "is_zero"
+    );
 
     llvm::Function* func = ctx.getCurrentFunction();
-    if (!func) return ptr;
-
-    llvm::Value* isNull = ctx.builder.CreateICmpEQ(
-        ptr,
-        llvm::Constant::getNullValue(ptrType),
-        "ptr_is_null"
-    );
-
-    llvm::BasicBlock* passBlock = llvm::BasicBlock::Create(
+    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
         ctx.llvmCtx,
-        "null_check_pass",
-        func
-    );
-    llvm::BasicBlock* failBlock = llvm::BasicBlock::Create(
-        ctx.llvmCtx,
-        "null_check_fail",
-        func
-    );
-    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
-        ctx.llvmCtx,
-        "null_check_merge",
+        "zero_check_continue",
         func
     );
 
-    ctx.builder.CreateCondBr(isNull, failBlock, passBlock);
+    if (fallbackBlock) {
+        // ─── Fallback mode: branch to fallback on zero ──────────────────────
+        ctx.builder.CreateCondBr(isZero, fallbackBlock, continueBlock);
+        ctx.builder.SetInsertPoint(continueBlock);
+        return checkedVal;
+    } else {
+        // ─── Panic mode: call __lucid_panic on zero ─────────────────────────
+        llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx,
+            "zero_check_panic",
+            func
+        );
+        ctx.builder.CreateCondBr(isZero, panicBlock, continueBlock);
 
-    ctx.builder.SetInsertPoint(passBlock);
-    ctx.builder.CreateBr(mergeBlock);
+        // ─── Panic block ─────────────────────────────────────────────────────
+        ctx.builder.SetInsertPoint(panicBlock);
+        std::string msg = getRuntimeErrorMessage(kind);
+        emitPanic(kind, ctx, msg);
+        ctx.builder.CreateUnreachable();
 
-    ctx.builder.SetInsertPoint(failBlock);
-    emitPanic(RuntimeErrorKind::NullPointerDereference, ctx);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(mergeBlock);
-    llvm::PHINode* phi = ctx.builder.CreatePHI(ptrType, 2, "null_check_result");
-    phi->addIncoming(ptr, passBlock);
-    phi->addIncoming(llvm::Constant::getNullValue(ptrType), failBlock);
-
-    return phi;
+        ctx.builder.SetInsertPoint(continueBlock);
+        return checkedVal;
+    }
 }
+
+// ─── emitBoundsCheck ──────────────────────────────────────────────────────
 
 llvm::Value* emitBoundsCheck(
     llvm::Value* index,
     llvm::Value* length,
-    CodeGenContext& ctx
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock
 ) {
-    if (!index || !length) return index;
+    if (!index || !length) return nullptr;
 
-    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    if (index->getType() != i64Ty) {
-        index = ctx.builder.CreateIntCast(index, i64Ty, true, "idx_cast");
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+
+    // Cast to i64 if needed
+    if (index->getType() != i64) {
+        index = ctx.builder.CreateIntCast(index, i64, true, "bounds_index_cast");
     }
-    if (length->getType() != i64Ty) {
-        length = ctx.builder.CreateIntCast(length, i64Ty, true, "len_cast");
+    if (length->getType() != i64) {
+        length = ctx.builder.CreateIntCast(length, i64, false, "bounds_length_cast");
     }
 
-    llvm::Value* idxNeg = ctx.builder.CreateICmpSLT(
-        index,
-        llvm::ConstantInt::get(i64Ty, 0),
-        "idx_neg"
-    );
-    llvm::Value* idxGE = ctx.builder.CreateICmpSGE(
-        index,
-        length,
-        "idx_ge_len"
-    );
-    llvm::Value* outOfBounds = ctx.builder.CreateOr(idxNeg, idxGE, "idx_oob");
+    // ─── Check: 0 <= index < length ──────────────────────────────────────
+    llvm::Value* isNegative = ctx.builder.CreateICmpSLT(index, llvm::ConstantInt::get(i64, 0), "idx_negative");
+    llvm::Value* isGE = ctx.builder.CreateICmpSGE(index, length, "idx_ge_len");
+    llvm::Value* isOutOfBounds = ctx.builder.CreateOr(isNegative, isGE, "out_of_bounds");
 
     llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* passBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "bounds_ok", func);
-    llvm::BasicBlock* failBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "bounds_fail", func);
-    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "bounds_merge", func);
+    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx,
+        "bounds_check_continue",
+        func
+    );
 
-    ctx.builder.CreateCondBr(outOfBounds, failBlock, passBlock);
+    if (fallbackBlock) {
+        // ─── Fallback mode: branch to fallback on out-of-bounds ─────────────
+        ctx.builder.CreateCondBr(isOutOfBounds, fallbackBlock, continueBlock);
+        ctx.builder.SetInsertPoint(continueBlock);
+        return index;
+    } else {
+        // ─── Panic mode: call __lucid_panic on out-of-bounds ────────────────
+        llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx,
+            "bounds_check_panic",
+            func
+        );
+        ctx.builder.CreateCondBr(isOutOfBounds, panicBlock, continueBlock);
 
-    ctx.builder.SetInsertPoint(passBlock);
-    ctx.builder.CreateBr(mergeBlock);
+        // ─── Panic block ─────────────────────────────────────────────────────
+        ctx.builder.SetInsertPoint(panicBlock);
+        std::string msg = getRuntimeErrorMessage(RuntimeErrorKind::ArrayIndexOutOfBounds);
+        emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx, msg);
+        ctx.builder.CreateUnreachable();
 
-    ctx.builder.SetInsertPoint(failBlock);
-    emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(mergeBlock);
-    llvm::PHINode* phi = ctx.builder.CreatePHI(i64Ty, 2, "bounds_result");
-    phi->addIncoming(index, passBlock);
-    phi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), failBlock);
-
-    return phi;
+        ctx.builder.SetInsertPoint(continueBlock);
+        return index;
+    }
 }
+
+// ─── emitSliceBoundsCheck ─────────────────────────────────────────────────
 
 std::pair<llvm::Value*, llvm::Value*> emitSliceBoundsCheck(
     llvm::Value* start,
     llvm::Value* end,
     llvm::Value* length,
-    CodeGenContext& ctx
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock
 ) {
-    if (!start || !end || !length) return {start, end};
-
-    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    if (start->getType() != i64Ty) {
-        start = ctx.builder.CreateIntCast(start, i64Ty, true, "start_cast");
-    }
-    if (end->getType() != i64Ty) {
-        end = ctx.builder.CreateIntCast(end, i64Ty, true, "end_cast");
-    }
-    if (length->getType() != i64Ty) {
-        length = ctx.builder.CreateIntCast(length, i64Ty, true, "len_cast");
+    if (!start || !end || !length) {
+        return {nullptr, nullptr};
     }
 
-    llvm::Value* startNeg = ctx.builder.CreateICmpSLT(start, llvm::ConstantInt::get(i64Ty, 0), "start_neg");
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+
+    // Cast to i64 if needed
+    if (start->getType() != i64) {
+        start = ctx.builder.CreateIntCast(start, i64, true, "slice_start_cast");
+    }
+    if (end->getType() != i64) {
+        end = ctx.builder.CreateIntCast(end, i64, true, "slice_end_cast");
+    }
+    if (length->getType() != i64) {
+        length = ctx.builder.CreateIntCast(length, i64, false, "slice_length_cast");
+    }
+
+    // ─── Check: 0 <= start <= end <= length ──────────────────────────────
+    llvm::Value* startNeg = ctx.builder.CreateICmpSLT(start, llvm::ConstantInt::get(i64, 0), "start_neg");
+    llvm::Value* endNeg = ctx.builder.CreateICmpSLT(end, llvm::ConstantInt::get(i64, 0), "end_neg");
     llvm::Value* startGTEnd = ctx.builder.CreateICmpSGT(start, end, "start_gt_end");
     llvm::Value* endGTLen = ctx.builder.CreateICmpSGT(end, length, "end_gt_len");
-
-    llvm::Value* outOfBounds = ctx.builder.CreateOr(
-        startNeg,
-        ctx.builder.CreateOr(startGTEnd, endGTLen, "slice_oob_or"),
-        "slice_oob"
-    );
+    llvm::Value* isOutOfBounds = ctx.builder.CreateOr(startNeg, endNeg, "bounds_check_1");
+    isOutOfBounds = ctx.builder.CreateOr(isOutOfBounds, startGTEnd, "bounds_check_2");
+    isOutOfBounds = ctx.builder.CreateOr(isOutOfBounds, endGTLen, "bounds_check_3");
 
     llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* passBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "slice_bounds_ok", func);
-    llvm::BasicBlock* failBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "slice_bounds_fail", func);
-    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "slice_bounds_merge", func);
-
-    ctx.builder.CreateCondBr(outOfBounds, failBlock, passBlock);
-
-    ctx.builder.SetInsertPoint(passBlock);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(failBlock);
-    emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(mergeBlock);
-    llvm::PHINode* startPhi = ctx.builder.CreatePHI(i64Ty, 2, "start_result");
-    startPhi->addIncoming(start, passBlock);
-    startPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), failBlock);
-
-    llvm::PHINode* endPhi = ctx.builder.CreatePHI(i64Ty, 2, "end_result");
-    endPhi->addIncoming(end, passBlock);
-    endPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), failBlock);
-
-    return {startPhi, endPhi};
-}
-
-llvm::Value* emitZeroCheck(llvm::Value* divisor, RuntimeErrorKind kind, CodeGenContext& ctx) {
-    if (!divisor) return nullptr;
-
-    llvm::Value* isZero = ctx.builder.CreateICmpEQ(
-        divisor,
-        llvm::ConstantInt::get(divisor->getType(), 0),
-        "divisor_is_zero"
+    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+        ctx.llvmCtx,
+        "slice_bounds_continue",
+        func
     );
 
-    llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* passBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "zero_check_ok", func);
-    llvm::BasicBlock* failBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "zero_check_fail", func);
-    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "zero_check_merge", func);
+    if (fallbackBlock) {
+        // ─── Fallback mode: branch to fallback on out-of-bounds ─────────────
+        ctx.builder.CreateCondBr(isOutOfBounds, fallbackBlock, continueBlock);
+        ctx.builder.SetInsertPoint(continueBlock);
+        return {start, end};
+    } else {
+        // ─── Panic mode: call __lucid_panic on out-of-bounds ────────────────
+        llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx,
+            "slice_bounds_panic",
+            func
+        );
+        ctx.builder.CreateCondBr(isOutOfBounds, panicBlock, continueBlock);
 
-    ctx.builder.CreateCondBr(isZero, failBlock, passBlock);
+        // ─── Panic block ─────────────────────────────────────────────────────
+        ctx.builder.SetInsertPoint(panicBlock);
+        std::string msg = getRuntimeErrorMessage(RuntimeErrorKind::SliceBoundsOutOfRange);
+        emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx, msg);
+        ctx.builder.CreateUnreachable();
 
-    ctx.builder.SetInsertPoint(passBlock);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(failBlock);
-    emitPanic(kind, ctx);
-    ctx.builder.CreateBr(mergeBlock);
-
-    ctx.builder.SetInsertPoint(mergeBlock);
-    llvm::PHINode* phi = ctx.builder.CreatePHI(divisor->getType(), 2, "zero_check_result");
-    phi->addIncoming(divisor, passBlock);
-    phi->addIncoming(llvm::ConstantInt::get(divisor->getType(), 0), failBlock);
-
-    return phi;
+        ctx.builder.SetInsertPoint(continueBlock);
+        return {start, end};
+    }
 }
 
 } // namespace codegen
