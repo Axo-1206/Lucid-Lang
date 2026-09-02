@@ -183,45 +183,7 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
     }
 }
 
-// ─── Fat Pointer Type Helpers ─────────────────────────────────────────────
-
-llvm::StructType* CodeGenContext::getSliceType() const {
-    llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.Slice");
-    if (!type) {
-        type = llvm::StructType::create(llvmCtx, "lucid.Slice");
-        type->setBody({
-            llvm::PointerType::get(llvmCtx, 0),
-            llvm::Type::getInt64Ty(llvmCtx),
-            llvm::Type::getInt64Ty(llvmCtx)
-        });
-    }
-    return type;
-}
-
-llvm::StructType* CodeGenContext::getClosureType() const {
-    llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.Closure");
-    if (!type) {
-        type = llvm::StructType::create(llvmCtx, "lucid.Closure");
-        type->setBody({
-            llvm::PointerType::get(llvmCtx, 0),
-            llvm::PointerType::get(llvmCtx, 0)
-        });
-    }
-    return type;
-}
-
-llvm::StructType* CodeGenContext::getStringType() const {
-    llvm::StructType* type = llvm::StructType::getTypeByName(llvmCtx, "lucid.String");
-    if (!type) {
-        type = llvm::StructType::create(llvmCtx, "lucid.String");
-        type->setBody({
-            llvm::PointerType::get(llvmCtx, 0),
-            llvm::Type::getInt64Ty(llvmCtx),
-            llvm::Type::getInt64Ty(llvmCtx)
-        });
-    }
-    return type;
-}
+// ─── String Literal Helper ───────────────────────────────────────────────
 
 llvm::Value* CodeGenContext::createStringLiteral(const std::string& str) {
     llvm::Constant* strConst = llvm::ConstantDataArray::getString(llvmCtx, str);

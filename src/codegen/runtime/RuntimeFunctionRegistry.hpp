@@ -26,6 +26,7 @@
 ///            IMPLEMENT them. The actual C++ implementations live in:
 ///            `src/codegen/runtime/closure/ClosureRuntime.cpp`
 ///            `src/codegen/runtime/concurrency/ConcurrencyRuntime.cpp`
+///            `src/codegen/runtime/memory/MemoryRuntime.cpp`
 /// ════════════════════════════════════════════════════════════════════════════
 ///
 /// ─── The Two Steps: Declaration vs Implementation ──────────────────────────
@@ -36,7 +37,7 @@
 ///      │           signature" so CodeGen can generate call instructions.     │
 ///      └─────────────────────────────────────────────────────────────────────┘
 ///
-///   2. IMPLEMENTATION (src/runtime/closure/ClosureRuntime.cpp and
+///   2. IMPLEMENTATION (src/runtime/memory/MemoryRuntime.cpp and
 ///      src/runtime/concurrency/ConcurrencyRuntime.cpp)
 ///      ┌─────────────────────────────────────────────────────────────────────┐
 ///      │  Purpose: The actual C++ code that runs when the function is        │
@@ -88,10 +89,16 @@ enum class RuntimeFn {
     // ─── Memory Management ──────────────────────────────────────────────
     Alloc,              // void* __lucid_alloc(uint64_t size)
     Free,               // void __lucid_free(void* ptr)
-    ArenaCreate,        // { void*, uint64_t } __lucid_arena_create(uint64_t size)
-    ArenaAlloc,         // void* __lucid_arena_alloc(void* arena, uint64_t size)
-    ArenaReset,         // void __lucid_arena_reset(void* arena)
-    ArenaFree,          // void __lucid_arena_free(void* arena)
+    
+    // ─── Arena ──────────────────────────────────────────────────────────
+    ArenaCreate,        // ArenaDescriptor __lucid_arena_create(uint64_t size)
+    ArenaAlloc,         // void* __lucid_arena_alloc(Arena* arena, uint64_t size, uint64_t alignment)
+    ArenaReset,         // void __lucid_arena_reset(Arena* arena)
+    ArenaCapacity,      // uint64_t __lucid_arena_capacity(const Arena* arena)
+    ArenaRemaining,     // uint64_t __lucid_arena_remaining(const Arena* arena)
+    ArenaIsEmpty,       // bool __lucid_arena_is_empty(const Arena* arena)
+    ArenaSpace,         // uint64_t __lucid_arena_space(const Arena* arena, uint64_t elem_size)
+    ArenaCanFit,        // bool __lucid_arena_can_fit(const Arena* arena, uint64_t elem_size, uint64_t count)
 
     // ─── Strings ────────────────────────────────────────────────────────
     StrConcat,          // string __lucid_str_concat(string a, string b)

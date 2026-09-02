@@ -1,7 +1,5 @@
 /// @file CodeGenContext.hpp
 /// @brief Code generation context - LLVM state only.
-///
-/// This file has been updated with the new scope-exit cleanup design.
 
 #pragma once
 
@@ -12,6 +10,7 @@
 #include "../runtime/RuntimeFunctionRegistry.hpp"
 #include "../generic/GenericRegistry.hpp"
 #include "../support/LiveVariableTracker.hpp"
+#include "../types/LLVMTypeHelpers.hpp"
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
@@ -29,10 +28,7 @@
 #include <string>
 
 namespace codegen {
-
-// Forward declaration for emitScopeExitCallback (implemented in intrinsic/LucidIntrinsicEmitter.cpp)
-void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx);
-
+    
 /// @brief Code generation context - LLVM state only.
 struct CodeGenContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -51,7 +47,7 @@ struct CodeGenContext {
     std::unordered_map<TypeAST*, llvm::Type*> typeCache;
     std::unordered_map<StructDeclAST*, llvm::StructType*> structCache;
     
-    // ─── Current Environment Pointer (for closures) ──────────────────────
+    // ─── Current Environment Pointer (for closures) ────────────────────
     llvm::Value* currentEnvPtr = nullptr;
     
     // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
@@ -84,7 +80,15 @@ struct CodeGenContext {
     
     llvm::Function* currentFunction = nullptr;
     llvm::BasicBlock* returnBlock = nullptr;
-    
+
+    // ─── Null Coalesce Context Stack ──────────────────────────────────
+    struct NullCoalesceContext {
+        llvm::BasicBlock* fallbackBlock = nullptr;
+        bool fallbackTaken = false;
+        bool isActive = false;
+    };
+    std::vector<NullCoalesceContext> nullCoalesceStack;
+
     // ─── Constructor ────────────────────────────────────────────────────
     
     CodeGenContext(StringPool& p, DiagnosticEngine& d, llvm::LLVMContext& ctx)
@@ -111,17 +115,7 @@ struct CodeGenContext {
         return values.find(decl) != values.end();
     }
 
-    // ─── Null Coalesce Context Stack ──────────────────────────────────────────
-    /// @brief Context for each active `??` expression.
-    /// Each entry represents a `??` whose LHS is currently being lowered.
-    struct NullCoalesceContext {
-        llvm::BasicBlock* fallbackBlock = nullptr;  ///< Where to jump on failure
-        bool fallbackTaken = false;               ///< Whether the fallback was taken
-        bool isActive = false;                    ///< Whether this context is active
-    };
-    std::vector<NullCoalesceContext> nullCoalesceStack;
-
-    // ─── Null Coalesce Helpers ────────────────────────────────────────────
+    // ─── Null Coalesce Helpers ──────────────────────────────────────────
 
     /// @brief Enter a `??` expression context.
     void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
@@ -299,11 +293,29 @@ struct CodeGenContext {
         return it != structCache.end() ? it->second : nullptr;
     }
 
-    // ─── Fat Pointer Type Helpers ────────────────────────────────────────
+    // ─── Fat Pointer Type Helpers ──────────────────────────────────────
+    // These delegate to LLVMTypeHelpers - NO DUPLICATION
 
-    llvm::StructType* getSliceType() const;
-    llvm::StructType* getClosureType() const;
-    llvm::StructType* getStringType() const;
+    llvm::StructType* getSliceType() const {
+        return codegen::getSliceType(module);
+    }
+    
+    llvm::StructType* getClosureType() const {
+        return codegen::getClosureType(module);
+    }
+    
+    llvm::StructType* getStringType() const {
+        return codegen::getStringType(module);
+    }
+    
+    llvm::StructType* getArenaType() const {
+        return codegen::getArenaType(module);
+    }
+    
+    llvm::StructType* getArenaDescriptorType() const {
+        return codegen::getArenaDescriptorType(module);
+    }
+    
     llvm::Value* createStringLiteral(const std::string& str);
     
     // ─── Intrinsic Helpers ─────────────────────────────────────────────
@@ -313,7 +325,7 @@ struct CodeGenContext {
         llvm::ArrayRef<llvm::Type*> argTypes
     );
     
-    // ─── Pointee Type Helpers (opaque pointer safe) ─────────────────────
+    // ─── Pointee Type Helpers ──────────────────────────────────────────
     
     llvm::Type* getPointeeType(llvm::Value* ptr) const;
     llvm::Type* getPointeeType(llvm::Type* type) const;

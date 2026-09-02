@@ -1,9 +1,5 @@
 /// @file runtime/RuntimeFunctionRegistry.cpp
 /// @brief Implementation of the runtime function registry.
-///
-/// This is the ONLY file in CodeGen where a "__lucid_*" symbol name is
-/// spelled as a string literal. Every call site elsewhere goes through
-/// CodeGenContext::getRuntimeFn(RuntimeFn), which looks the entry up here.
 
 #include "RuntimeFunctionRegistry.hpp"
 #include "../context/CodeGenContext.hpp"
@@ -16,16 +12,6 @@
 #include <unordered_map>
 
 namespace codegen {
-
-namespace {
-
-// Matches the anonymous { void*, uint64_t } ArenaDescriptor built inline
-// at the #arena_create call site (LucidIntrinsicEmitter.cpp).
-llvm::Type* arenaTy(CodeGenContext& ctx) {
-    return llvm::StructType::get(ctx.llvmCtx, {getPtrType(ctx.llvmCtx), getI64Type(ctx.llvmCtx)});
-}
-
-} // namespace
 
 // ─── Registry Table ─────────────────────────────────────────────────────
 
@@ -69,16 +55,22 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
 
+        // ─── Arena ──────────────────────────────────────────────────────────
         { RuntimeFn::ArenaCreate, { "__lucid_arena_create",
             [](CodeGenContext& ctx) {
-                return llvm::FunctionType::get(arenaTy(ctx), {getI64Type(ctx.llvmCtx)}, false);
+                // ArenaDescriptor __lucid_arena_create(uint64_t size)
+                // Returns: { i8* base, i64 size }
+                return llvm::FunctionType::get(
+                    ctx.getArenaDescriptorType(), {getI64Type(ctx.llvmCtx)}, false);
             } } },
 
         { RuntimeFn::ArenaAlloc, { "__lucid_arena_alloc",
             [](CodeGenContext& ctx) {
+                // void* __lucid_arena_alloc(Arena* arena, uint64_t size, uint64_t alignment)
+                llvm::Type* arenaPtr = getPtrType(ctx.llvmCtx);
+                llvm::Type* i64 = getI64Type(ctx.llvmCtx);
                 return llvm::FunctionType::get(
-                    getPtrType(ctx.llvmCtx),
-                    {getPtrType(ctx.llvmCtx), getI64Type(ctx.llvmCtx)}, false);
+                    arenaPtr, {arenaPtr, i64, i64}, false);
             } } },
 
         { RuntimeFn::ArenaReset, { "__lucid_arena_reset",
@@ -87,10 +79,36 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
 
-        { RuntimeFn::ArenaFree, { "__lucid_arena_free",
+        { RuntimeFn::ArenaCapacity, { "__lucid_arena_capacity",
             [](CodeGenContext& ctx) {
                 return llvm::FunctionType::get(
-                    getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+                    getI64Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+            } } },
+
+        { RuntimeFn::ArenaRemaining, { "__lucid_arena_remaining",
+            [](CodeGenContext& ctx) {
+                return llvm::FunctionType::get(
+                    getI64Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+            } } },
+
+        { RuntimeFn::ArenaIsEmpty, { "__lucid_arena_is_empty",
+            [](CodeGenContext& ctx) {
+                return llvm::FunctionType::get(
+                    getI1Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+            } } },
+
+        { RuntimeFn::ArenaSpace, { "__lucid_arena_space",
+            [](CodeGenContext& ctx) {
+                return llvm::FunctionType::get(
+                    getI64Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx), getI64Type(ctx.llvmCtx)}, false);
+            } } },
+
+        { RuntimeFn::ArenaCanFit, { "__lucid_arena_can_fit",
+            [](CodeGenContext& ctx) {
+                return llvm::FunctionType::get(
+                    getI1Type(ctx.llvmCtx), 
+                    {getPtrType(ctx.llvmCtx), getI64Type(ctx.llvmCtx), getI64Type(ctx.llvmCtx)}, 
+                    false);
             } } },
 
         // ─── Strings ────────────────────────────────────────────────────────
@@ -157,7 +175,7 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
 
-        // ─── Concurrency (Async/Spawn) ──────────────────────────────────────
+        // ─── Concurrency ────────────────────────────────────────────────────
         { RuntimeFn::Async, { "__lucid_async",
             [](CodeGenContext& ctx) {
                 // void* __lucid_async(void* callable, void* args, void* future_handle)
@@ -198,6 +216,7 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
                     false);
             } } },
 
+        // ─── System ──────────────────────────────────────────────────────────
         { RuntimeFn::Shutdown, { "__lucid_shutdown",
             [](CodeGenContext& ctx) {
                 // void __lucid_shutdown()

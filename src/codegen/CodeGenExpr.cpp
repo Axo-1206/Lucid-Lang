@@ -6,6 +6,7 @@
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
+#include "support/ArenaHelpers.hpp"
 #include "types/LLVMTypeHelpers.hpp"
 #include "codegen/runtime/RuntimeError.hpp"
 #include "codegen/runtime/closure/CodeGenClosure.hpp"
@@ -1555,67 +1556,12 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
     return nullptr;
 }
 
-/// @brief Helper to get the arena remaining bytes (size - cursor).
-/// 
-/// This is used by multiple arena methods (remaining, space, canFit, isEmpty).
-/// 
-/// @param expr The arena access expression (for diagnostics and type info).
-/// @param arenaVal The LLVM value representing the arena (value).
-/// @param arenaPtr The LLVM value representing the arena (pointer, may be null).
-/// @param ctx The code generation context.
-/// @return The remaining bytes as an i64 value.
-static llvm::Value* lowerArenaRemaining(
-    ArenaAccessExprAST* expr,
-    llvm::Value* arenaVal,
-    llvm::Value* arenaPtr,
-    CodeGenContext& ctx
-) {
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    llvm::StructType* arenaType = getArenaType(ctx);
-    
-    // ─── Case 1: Use pointer if available ──────────────────────────────────
-    if (arenaPtr) {
-        // GEP to size field (index 1)
-        llvm::Value* sizePtr = ctx.builder.CreateStructGEP(arenaType, arenaPtr, 1, "arena_size_ptr");
-        llvm::Value* size = ctx.builder.CreateLoad(i64, sizePtr, "arena_size");
-        
-        // GEP to cursor field (index 2)
-        llvm::Value* cursorPtr = ctx.builder.CreateStructGEP(arenaType, arenaPtr, 2, "arena_cursor_ptr");
-        llvm::Value* cursor = ctx.builder.CreateLoad(i64, cursorPtr, "arena_cursor");
-        
-        return ctx.builder.CreateSub(size, cursor, "arena_remaining");
-    }
-    
-    // ─── Case 2: Use value (already loaded) ────────────────────────────────
-    if (arenaVal && arenaVal->getType()->isStructTy()) {
-        llvm::Value* size = ctx.builder.CreateExtractValue( arenaVal, 1, "arena_size");
-        llvm::Value* cursor = ctx.builder.CreateExtractValue(arenaVal, 2, "arena_cursor");
-        return ctx.builder.CreateSub(size, cursor, "arena_remaining");
-    }
-    
-    // ─── Error: unexpected arena type ─────────────────────────────────────
-    ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                            "arena expression has unexpected type");
-    return llvm::ConstantInt::get(i64, 0);
-}
-
-/// @brief Lower an arena access expression (:: operator).
-/// 
-/// Handles both static forms (Arena::create, Arena::empty) and instance
-/// forms (arena::alloc, arena::reset, arena::descriptor, etc.).
-/// 
-/// Sema has already resolved the types and stored them on the AST node.
-/// This function just generates the LLVM IR.
-/// 
-/// @param expr The arena access expression AST node.
-/// @param ctx The code generation context.
-/// @return The LLVM value, or nullptr if void or invalid.
 llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
     
     llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    llvm::StructType* arenaType = getArenaType(ctx);
-    llvm::StructType* descType = getArenaDescriptorType(ctx);
+    llvm::StructType* arenaType = ctx.getArenaType();
+    llvm::Function* func = ctx.getCurrentFunction();
     
     // ──────────────────────────────────────────────────────────────────────────
     // STATIC FORMS: Arena::create(size) or Arena::empty()
@@ -1630,11 +1576,9 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
                 return nullptr;
             }
             
-            // Lower the size argument
             llvm::Value* size = lowerExpression(expr->args[0], ctx);
             if (!size) return nullptr;
             
-            // If size is an l-value, load it
             if (expr->args[0]->isLValue) {
                 llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
                 if (elemType) {
@@ -1643,50 +1587,32 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
                 if (!size) return nullptr;
             }
             
-            // Cast to i64 if needed
             if (size->getType() != i64) {
                 size = ctx.builder.CreateIntCast(size, i64, false, "arena_size_cast");
             }
             
-            // Check for zero size (Sema should have caught this, but double-check)
-            if (llvm::ConstantInt* constSize = llvm::dyn_cast<llvm::ConstantInt>(size)) {
-                if (constSize->isZero()) {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, expr->loc,
-                                            "Arena::create(0) is not allowed - use Arena::empty() for a zero-capacity arena");
-                    return nullptr;
-                }
-            }
-            
-            // Call __lucid_arena_create(size) -> ArenaDescriptor
-            // ArenaDescriptor is { i8* base, i64 size }
+            // ─── Call __lucid_arena_create(size) ──────────────────────────
             llvm::Function* createFn = ctx.getRuntimeFn(RuntimeFn::ArenaCreate);
             llvm::Value* desc = ctx.builder.CreateCall(createFn, {size}, "arena_create_result");
             
-            // Convert ArenaDescriptor to Arena (add cursor field = 0)
-            llvm::Value* arena = llvm::UndefValue::get(arenaType);
-            
-            // Field 0: base (from descriptor field 0)
+            // ─── Check for allocation failure ──────────────────────────────
             llvm::Value* base = ctx.builder.CreateExtractValue(desc, 0, "arena_base");
-            arena = ctx.builder.CreateInsertValue(arena, base, 0);
+            llvm::Value* isNull = ctx.builder.CreateIsNull(base, "arena_create_failed");
             
-            // Field 1: size (from descriptor field 1)
+            // ─── Convert ArenaDescriptor to Arena ──────────────────────────
+            // Arena { base: i8*, size: i64, cursor: i64 }
+            llvm::Value* arena = llvm::UndefValue::get(arenaType);
             llvm::Value* descSize = ctx.builder.CreateExtractValue(desc, 1, "arena_size");
+            arena = ctx.builder.CreateInsertValue(arena, base, 0);
             arena = ctx.builder.CreateInsertValue(arena, descSize, 1);
+            arena = ctx.builder.CreateInsertValue(arena, llvm::ConstantInt::get(i64, 0), 2);
             
-            // Field 2: cursor (initially 0)
-            arena = ctx.builder.CreateInsertValue(arena, llvm::ConstantInt::get(i64, 0),  2);
-            
-            // ─── Use the resolved type from Sema ─────────────────────────────
-            // Sema already created the FallibleTypeAST and set expr->resolvedType
-            // We just need to wrap the arena value in the fallible struct
+            // ─── Wrap in fallible type ─────────────────────────────────────
             llvm::StructType* fallibleType = llvm::cast<llvm::StructType>(getType(ctx, expr->resolvedType));
             
             llvm::Value* result = llvm::UndefValue::get(fallibleType);
             
-            // Check if base is null (allocation failed)
-            llvm::Value* isNull = ctx.builder.CreateIsNull(base, "arena_create_is_null");
-            
-            // Tag: 1 = value present, 2 = err
+            // Tag: 1 = valid, 2 = err
             llvm::Value* tag = ctx.builder.CreateSelect(
                 isNull,
                 llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx.llvmCtx), 2),
@@ -1700,14 +1626,11 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             return result;
         }
         
-        // ─── Arena::empty() -> Arena (non-fallible) ─────────────────────────────
+        // ─── Arena::empty() -> Arena ──────────────────────────────────────
         if (expr->methodName == ctx.pool.intern("empty")) {
-            // Return zero-initialized Arena (null base, zero size, zero cursor)
-            // This never calls __lucid_arena_create
             return llvm::Constant::getNullValue(arenaType);
         }
         
-        // ─── Unknown static method ─────────────────────────────────────────
         ctx.diagnostics.errorAt(DiagCode::Sem_UnknownMethod, expr->loc,
                                 "unknown Arena static method '", 
                                 ctx.pool.lookup(expr->methodName), 
@@ -1719,63 +1642,20 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
     // INSTANCE FORMS: arena::method(...)
     // ──────────────────────────────────────────────────────────────────────────
     
-    // ─── Lower the arena expression ─────────────────────────────────────────
-    llvm::Value* arenaExpr = lowerExpression(expr->arenaExpr, ctx);
-    if (!arenaExpr) return nullptr;
-    
-    // Determine if arenaExpr is a pointer to the arena struct or the value itself
-    bool isPointer = arenaExpr->getType()->isPointerTy();
-    bool isValue = arenaExpr->getType()->isStructTy();
-    
-    if (!isPointer && !isValue) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->arenaExpr->loc,
-                                "arena expression must be Arena or &Arena");
-        return nullptr;
-    }
-    
-    // For methods that need to modify the arena, we need a pointer
-    // For read-only methods, we can work with the value or pointer
-    bool needsPointer = (expr->methodName == ctx.pool.intern("reset") ||
-                         expr->methodName == ctx.pool.intern("alloc"));
-    
-    llvm::Value* arenaPtr = nullptr;
-    llvm::Value* arenaVal = nullptr;
-    
-    if (isPointer) {
-        arenaPtr = arenaExpr;
-        // Load the value if we need it (for read-only methods)
-        if (!needsPointer) {
-            arenaVal = ctx.builder.CreateLoad(arenaType, arenaPtr, "arena_load");
-        }
-    } else {
-        // It's a value - we need to store it to get a pointer for modifying methods
-        arenaVal = arenaExpr;
-        if (needsPointer) {
-            // Allocate a temporary for the arena value
-            llvm::AllocaInst* tempAlloca = createAlloca("arena_temp", arenaType, ctx);
-            ctx.builder.CreateStore(arenaVal, tempAlloca);
-            arenaPtr = tempAlloca;
-        }
-    }
+    // ─── Get pointer to the Arena struct (must be &Arena) ──────────────────
+    llvm::Value* arenaPtr = getArenaPointer(expr, ctx);
+    if (!arenaPtr) return nullptr;
     
     // ─── arena::alloc<T>(count) -> [_]T ─────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("alloc")) {
-        // Validate type argument
         if (expr->genericArgs.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
                                     "arena::alloc requires a type argument (e.g., arena::alloc<Node>(128))");
             return nullptr;
         }
         
-        TypeAST* elemType = expr->genericArgs[0];
-        llvm::Type* elemLLVMType = getType(ctx, elemType);
-        if (!elemLLVMType) return nullptr;
+        auto [elemSize, elemAlign] = getElementSizeAndAlignment(expr->genericArgs[0], ctx);
         
-        // Get element size
-        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
-        if (elemSize == 0) elemSize = 1;
-        
-        // Get count (defaults to 1 if not specified)
         llvm::Value* count = llvm::ConstantInt::get(i64, 1);
         if (!expr->args.empty()) {
             count = lowerExpression(expr->args[0], ctx);
@@ -1794,144 +1674,89 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             }
         }
         
-        // Calculate total size: count * elemSize
         llvm::Value* totalSize = ctx.builder.CreateMul(
             count,
             llvm::ConstantInt::get(i64, elemSize),
             "alloc_total_size"
         );
         
-        // We need a pointer to the arena for allocation
-        if (!arenaPtr) {
-            llvm::AllocaInst* tempAlloca = createAlloca("arena_temp", arenaType, ctx);
-            ctx.builder.CreateStore(arenaVal, tempAlloca);
-            arenaPtr = tempAlloca;
-        }
-        
-        // Call __lucid_arena_alloc(arena_ptr, size) -> i8*
         llvm::Function* allocFn = ctx.getRuntimeFn(RuntimeFn::ArenaAlloc);
         llvm::Value* data = ctx.builder.CreateCall(
-            allocFn, 
-            {arenaPtr, totalSize}, 
+            allocFn,
+            {arenaPtr, totalSize, llvm::ConstantInt::get(i64, elemAlign)},
             "arena_alloc_data"
         );
-
-        // ─── Check for allocation failure ──────────────────────────────────
+        
+        // ─── Check for allocation failure with fallback support ──────────────
         llvm::Value* isNull = ctx.builder.CreateIsNull(data, "arena_alloc_failed");
-        llvm::Function* func = ctx.getCurrentFunction();
+        
         llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
             ctx.llvmCtx, "arena_alloc_continue", func);
-
+        
         if (ctx.isInsideNullCoalesce()) {
-            // ─── In ?? context: branch to fallback on failure ────────────────
             llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
             ctx.builder.CreateCondBr(isNull, fallbackBlock, continueBlock);
             ctx.markNullCoalesceFallbackTaken();
         } else {
-            // ─── Normal context: panic on failure ──────────────────────────────
             llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
                 ctx.llvmCtx, "arena_alloc_panic", func);
             ctx.builder.CreateCondBr(isNull, panicBlock, continueBlock);
             
             ctx.builder.SetInsertPoint(panicBlock);
             emitPanic(RuntimeErrorKind::ArenaOutOfCapacity, ctx, 
-                    "arena out of capacity");
+                      "arena out of capacity");
             ctx.builder.CreateUnreachable();
         }
-
+        
         ctx.builder.SetInsertPoint(continueBlock);
-
-        // ─── Cast to element type pointer ──────────────────────────────────────
+        
         llvm::Type* elemPtrType = llvm::PointerType::get(ctx.llvmCtx, 0);
         llvm::Value* typedData = ctx.builder.CreatePointerCast(
-            data, 
-            elemPtrType, 
+            data,
+            elemPtrType,
             "arena_alloc_typed"
         );
-
-        // ─── Return as [_]T (slice view) ───────────────────────────────────────
-        llvm::StructType* sliceType = llvm::cast<llvm::StructType>(
-            getType(ctx, expr->resolvedType));
+        
+        llvm::StructType* sliceType = llvm::cast<llvm::StructType>(getType(ctx, expr->resolvedType));
         llvm::Value* slice = llvm::UndefValue::get(sliceType);
         slice = ctx.builder.CreateInsertValue(slice, typedData, 0);
-        slice = ctx.builder.CreateInsertValue(slice, count, 1);  // len
-        slice = ctx.builder.CreateInsertValue(slice, count, 2);  // cap
-
+        slice = ctx.builder.CreateInsertValue(slice, count, 1);
+        slice = ctx.builder.CreateInsertValue(slice, count, 2);
+        
         return slice;
     }
     
     // ─── arena::reset() -> void ────────────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("reset")) {
-        if (!arenaPtr) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, expr->loc,
-                                    "arena::reset requires a mutable arena");
-            return nullptr;
-        }
-        
         llvm::Function* resetFn = ctx.getRuntimeFn(RuntimeFn::ArenaReset);
         ctx.builder.CreateCall(resetFn, {arenaPtr}, "arena_reset");
-        return nullptr;  // void
+        return nullptr;
     }
     
-    // ─── arena::descriptor() -> ArenaDescriptor ────────────────────────────
+    // ─── arena::descriptor() -> ArenaDescriptor ──────────────────────────
     if (expr->methodName == ctx.pool.intern("descriptor")) {
-        llvm::Value* base;
-        llvm::Value* size;
-        
-        if (arenaPtr) {
-            // Load base (field 0)
-            llvm::Value* basePtr = ctx.builder.CreateStructGEP(
-                arenaType, arenaPtr, 0, "desc_base_ptr");
-            base = ctx.builder.CreateLoad(
-                llvm::PointerType::get(ctx.llvmCtx, 0), 
-                basePtr, 
-                "desc_base"
-            );
-            
-            // Load size (field 1)
-            llvm::Value* sizePtr = ctx.builder.CreateStructGEP(
-                arenaType, arenaPtr, 1, "desc_size_ptr");
-            size = ctx.builder.CreateLoad(i64, sizePtr, "desc_size");
-        } else {
-            // Extract from value
-            base = ctx.builder.CreateExtractValue(arenaVal, 0, "desc_base");
-            size = ctx.builder.CreateExtractValue(arenaVal, 1, "desc_size");
-        }
-        
-        // Build ArenaDescriptor struct { i8* base, i64 size }
-        llvm::Value* desc = llvm::UndefValue::get(descType);
-        desc = ctx.builder.CreateInsertValue(desc, base, 0);
-        desc = ctx.builder.CreateInsertValue(desc, size, 1);
-        
-        return desc;
+        return buildArenaDescriptor(arenaPtr, ctx);
     }
     
-    // ─── arena::capacity() -> uint64 ───────────────────────────────────────
+    // ─── arena::capacity() -> uint64 ──────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("capacity")) {
-        if (arenaPtr) {
-            llvm::Value* sizePtr = ctx.builder.CreateStructGEP(
-                arenaType, arenaPtr, 1, "capacity_ptr");
-            return ctx.builder.CreateLoad(i64, sizePtr, "arena_capacity");
-        }
-        return ctx.builder.CreateExtractValue(arenaVal, 1, "arena_capacity");
+        llvm::Function* capFn = ctx.getRuntimeFn(RuntimeFn::ArenaCapacity);
+        return ctx.builder.CreateCall(capFn, {arenaPtr}, "arena_capacity");
     }
     
     // ─── arena::remaining() -> uint64 ──────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("remaining")) {
-        return lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);
+        llvm::Function* remainingFn = ctx.getRuntimeFn(RuntimeFn::ArenaRemaining);
+        return ctx.builder.CreateCall(remainingFn, {arenaPtr}, "arena_remaining");
     }
     
     // ─── arena::isEmpty() -> bool ──────────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("isEmpty")) {
-        llvm::Value* remaining = lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);
-        return ctx.builder.CreateICmpEQ(
-            remaining,
-            llvm::ConstantInt::get(i64, 0),
-            "arena_is_empty"
-        );
+        llvm::Function* isEmptyFn = ctx.getRuntimeFn(RuntimeFn::ArenaIsEmpty);
+        return ctx.builder.CreateCall(isEmptyFn, {arenaPtr}, "arena_is_empty");
     }
     
-    // ─── arena::space<T>() -> uint64 ───────────────────────────────────────
+    // ─── arena::space<T>() -> uint64 ──────────────────────────────────────
     if (expr->methodName == ctx.pool.intern("space")) {
         if (expr->genericArgs.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
@@ -1939,17 +1764,14 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             return nullptr;
         }
         
-        TypeAST* elemType = expr->genericArgs[0];
-        llvm::Type* elemLLVMType = getType(ctx, elemType);
-        if (!elemLLVMType) return nullptr;
+        auto [elemSize, _] = getElementSizeAndAlignment(expr->genericArgs[0], ctx);
         
-        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
-        if (elemSize == 0) elemSize = 1;
-        
-        llvm::Value* remaining = lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);
-        llvm::Value* elemSizeVal = llvm::ConstantInt::get(i64, elemSize);
-        
-        return ctx.builder.CreateUDiv(remaining, elemSizeVal, "arena_space");
+        llvm::Function* spaceFn = ctx.getRuntimeFn(RuntimeFn::ArenaSpace);
+        return ctx.builder.CreateCall(
+            spaceFn,
+            {arenaPtr, llvm::ConstantInt::get(i64, elemSize)},
+            "arena_space"
+        );
     }
     
     // ─── arena::canFit<T>(count) -> bool ──────────────────────────────────
@@ -1966,14 +1788,7 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             return nullptr;
         }
         
-        TypeAST* elemType = expr->genericArgs[0];
-        llvm::Type* elemLLVMType = getType(ctx, elemType);
-        if (!elemLLVMType) return nullptr;
-        
-        uint64_t elemSize = getTypeSize(elemLLVMType, ctx.module);
-        if (elemSize == 0) elemSize = 1;
-        
-        llvm::Value* remaining = lowerArenaRemaining(expr, arenaVal, arenaPtr, ctx);
+        auto [elemSize, _] = getElementSizeAndAlignment(expr->genericArgs[0], ctx);
         
         llvm::Value* count = lowerExpression(expr->args[0], ctx);
         if (!count) return nullptr;
@@ -1990,16 +1805,14 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             count = ctx.builder.CreateIntCast(count, i64, false, "canfit_count_cast");
         }
         
-        llvm::Value* needed = ctx.builder.CreateMul(
-            count,
-            llvm::ConstantInt::get(i64, elemSize),
-            "canfit_needed"
+        llvm::Function* canFitFn = ctx.getRuntimeFn(RuntimeFn::ArenaCanFit);
+        return ctx.builder.CreateCall(
+            canFitFn,
+            {arenaPtr, llvm::ConstantInt::get(i64, elemSize), count},
+            "arena_can_fit"
         );
-        
-        return ctx.builder.CreateICmpULE(needed, remaining, "arena_can_fit");
     }
     
-    // ─── Unknown instance method ───────────────────────────────────────────
     ctx.diagnostics.errorAt(DiagCode::Sem_UnknownMethod, expr->loc,
                             "unknown Arena method '", 
                             ctx.pool.lookup(expr->methodName),
