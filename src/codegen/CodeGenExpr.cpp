@@ -1628,9 +1628,10 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             return result;
         }
         
-        // ─── Arena::empty() -> Arena (non-fallible) ─────────────────────────
+        // ─── Arena::empty() -> Arena (non-fallible) ─────────────────────────────
         if (expr->methodName == ctx.pool.intern("empty")) {
             // Return zero-initialized Arena (null base, zero size, zero cursor)
+            // This never calls __lucid_arena_create
             return llvm::Constant::getNullValue(arenaType);
         }
         

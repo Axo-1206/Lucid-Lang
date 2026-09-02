@@ -153,11 +153,16 @@ uint64_t __lucid_total_freed() {
 // ─── Arena Management ──────────────────────────────────────────────────────
 
 /// @brief Create a new arena.
-/// @param size Size of the arena in bytes.
-/// @return ArenaDescriptor { base, size }.
+/// @param size Size of the arena in bytes. MUST be > 0.
+/// @return ArenaDescriptor { base, size }. Returns {nullptr, 0} on failure.
+///         NOTE: size == 0 is considered a failure (returns err).
 ArenaDescriptor __lucid_arena_create(uint64_t size) {
+    // ─── Reject size 0 ──────────────────────────────────────────────────────
+    // Arena::create(0) is not allowed by the language. The user should use
+    // Arena::empty() for a zero-capacity arena. This function returns err
+    // (null base) for size 0 to signal failure.
     if (size == 0) {
-        size = 4096;  // Default to 4KB
+        return ArenaDescriptor{nullptr, 0};
     }
 
     // Align to page size (4KB) for efficiency
@@ -165,7 +170,7 @@ ArenaDescriptor __lucid_arena_create(uint64_t size) {
 
     void* arenaMem = std::malloc(alignedSize);
     if (!arenaMem) {
-        return ArenaDescriptor{nullptr, 0};
+        return ArenaDescriptor{nullptr, 0};  // Out of memory
     }
 
     // Zero-initialize the arena
@@ -190,8 +195,8 @@ void* __lucid_arena_alloc(void* arena, uint64_t size) {
     }
 
     ArenaDescriptor* desc = static_cast<ArenaDescriptor*>(arena);
-    if (!desc->base) {
-        return nullptr;
+    if (!desc->base || desc->size == 0) {
+        return nullptr;  // Empty arena (from Arena::empty())
     }
 
     // Current allocation pointer stored at the end of the arena
@@ -223,8 +228,8 @@ void __lucid_arena_reset(void* arena) {
     }
 
     ArenaDescriptor* desc = static_cast<ArenaDescriptor*>(arena);
-    if (!desc->base) {
-        return;
+    if (!desc->base || desc->size == 0) {
+        return;  // Empty arena - nothing to reset
     }
 
     // Reset the current position to 0
