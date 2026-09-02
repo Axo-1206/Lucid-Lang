@@ -163,20 +163,6 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 6. Trait conformance ──────────────────────────────────────────────
-    if (isTraitType(target, ctx)) {
-        NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
-        TypeDeclAST* targetDecl = ctx.lookupType(namedTarget->name);
-        
-        if (targetDecl && targetDecl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = targetDecl->as<TraitDeclAST>();
-            if (isTraitType(source, ctx)) {
-                return false;
-            }
-            return isTraitConformant(source, traitDecl, ctx);
-        }
-    }
-
     return false;
 }
 

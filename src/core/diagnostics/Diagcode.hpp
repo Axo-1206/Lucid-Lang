@@ -165,7 +165,7 @@ enum class DiagCode : uint32_t {
     Sem_InvalidParamType         = 4023,
     Sem_InvalidReturnType        = 4024,
     Sem_ReturnRef                = 4025,
-    Sem_ReturnTrait              = 4026,
+    Sem_TraitInvalidContext      = 4026,
     Sem_GenericParamNotCallable  = 4027,
     Sem_SelfReferentialInit      = 4028,
     Sem_InvalidAssignment        = 4029,

@@ -186,6 +186,16 @@ static llvm::Value* emitTostrValue(
             return ctx.createStringLiteral("<" + ctx.pool.lookup(named->name) + ">");
         }
 
+        // ─── Trait handling ──────────────────────────────────────────────────────
+        // Traits should never reach CodeGen because Sema rejects them everywhere
+        // except generic constraints. This is a safety net.
+        if (named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TraitInvalidContext, loc,
+                                    "INTERNAL ERROR: trait '", ctx.pool.lookup(named->name),
+                                    "' reached CodeGen in #tostr - Sema should have rejected this");
+            return ctx.createStringLiteral("<trait " + ctx.pool.lookup(named->name) + ">");
+        }
+
         // ─── Enum: "EnumType.VariantName" via switch ──────────────────────
         if (named->resolvedDecl->isa<EnumDeclAST>()) {
             EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();

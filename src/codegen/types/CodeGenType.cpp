@@ -382,6 +382,17 @@ llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type) {
 llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* type) {
     if (!type) return nullptr;
 
+    // ─── Defensive check for traits ──────────────────────────────────
+    // Traits should never reach CodeGen because Sema rejects them everywhere
+    // except generic constraints. This is a safety net.
+    if (type->resolvedDecl && type->resolvedDecl->isa<TraitDeclAST>()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TraitInvalidContext, type->loc,
+                                "INTERNAL ERROR: trait '", ctx.pool.lookup(type->name),
+                                "' reached CodeGen - Sema should have rejected this");
+        return llvm::StructType::create(ctx.llvmCtx, 
+            ctx.pool.lookup(type->name) + "__trait_placeholder");
+    }
+
     std::string typeName = ctx.pool.lookup(type->name);
 
     // ─── 1. Try to resolve as a primitive type ──────────────────────────────

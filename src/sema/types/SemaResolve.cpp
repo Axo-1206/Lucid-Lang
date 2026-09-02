@@ -56,18 +56,16 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
 
     // ─── 0. Check if this is a built-in type ───────────────────────────────
     if (builtins::isArenaDescriptorNamedType(type)) {
-        // ArenaDescriptor is a built-in type - return it directly
         return ctx.getArenaDescriptorType();
     }
     
     if (builtins::isArenaNamedType(type)) {
-        // Arena is a built-in type - return it directly
         return ctx.getArenaType();
     }
 
     // ─── 1. Resolve the declaration if not already set ─────────────────────
     if (!type->resolvedDecl) {
-        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name); // Type with no name are never registered
+        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
                                   "undefined type '", ctx.pool.lookup(type->name), "'");
@@ -80,8 +78,26 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         return ctx.getUnknownType();
     }
 
-    // ─── 2. Generic parameters can't have generic arguments ───────────────
+    // ─── 2. Check if this resolves to a trait ──────────────────────────────
     TypeDeclAST* decl = type->resolvedDecl;
+    if (decl->isa<TraitDeclAST>()) {
+        // ─── Trait is only valid as a generic constraint ───────────────────
+        if (!ctx.stack.isInside(ContextKind::GenericConstraint)) {
+            ctx.diagnostics.error(DiagCode::Sem_TraitInvalidContext, type,
+                                  "trait '", ctx.pool.lookup(type->name), 
+                                  "' can only be used as a generic constraint "
+                                  "(e.g., '<T : ", ctx.pool.lookup(type->name), ">')");
+            ctx.diagnostics.note(type,
+                                 "Traits are field contracts, not concrete types. "
+                                 "They cannot be used as field types, parameter types, "
+                                 "return types, or variable types.");
+            return nullptr;
+        }
+        // ─── In constraint context, return the trait type ──────────────────
+        return type;
+    }
+
+    // ─── 3. Generic parameters can't have generic arguments ───────────────
     if (decl->isa<GenericParamDeclAST>()) {
         if (!type->genericArgs.empty()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
@@ -92,7 +108,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         return type;
     }
 
-    // ─── 3. Resolve generic arguments if present ─────────────────────────
+    // ─── 4. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
         // Check which kind of declaration we have
         size_t expectedParams = 0;
@@ -377,13 +393,6 @@ TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Additional validation: Cannot reference a trait ──────────────────
-    if (isTraitType(inner, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_RefToTrait, type,
-                              "cannot take reference to trait type (&Trait)");
-        return nullptr;
-    }
-
     return type;
 }
 
@@ -456,12 +465,6 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        if (isTraitType(returnType, ctx)) {
-            ctx.diagnostics.error(DiagCode::Sem_ReturnTrait, type,
-                                  "function cannot return trait type (use a concrete struct instead)");
-            return nullptr;
-        }
-
         if (returnType->isa<FuncTypeAST>()) {
             if (!resolveFuncType(returnType->as<FuncTypeAST>(), ctx)) {
                 return nullptr;
@@ -478,7 +481,7 @@ TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
     // ─── Step 1: Resolve the named type ────────────────────────────────────
-    // This will set resolvedDecl and validate generic arguments
+    // This will check that we're in a generic constraint context
     TypeAST* resolved = resolveNamedType(ref, ctx);
     if (!resolved) return nullptr;
 
