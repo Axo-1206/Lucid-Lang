@@ -2143,7 +2143,139 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& 
 // resolveNullCoalesceExpr
 // =============================================================================
 
+/// @brief Check if an expression can panic at runtime by inspecting its AST kind.
+/// 
+/// An expression can panic if it contains:
+/// - Division or modulo (could divide by zero)
+/// - Array indexing (could be out of bounds)
+/// - Slice bounds (could be out of range)
+/// - arena::alloc (could be out of capacity)
+/// 
+/// @note This is purely syntactic - we inspect the AST kind and structure.
+///       No flags or metadata are needed.
+static bool isPanicProneExpression(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+    
+    switch (expr->kind) {
+        case ASTKind::BinaryExpr: {
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            // Division or modulo can divide by zero
+            if (bin->op == BinaryOp::Div || bin->op == BinaryOp::Mod) {
+                return true;
+            }
+            // Other ops might contain panic-prone sub-expressions
+            return isPanicProneExpression(bin->left, ctx) || 
+                   isPanicProneExpression(bin->right, ctx);
+        }
+        
+        case ASTKind::IndexExpr: {
+            // Array indexing can be out of bounds
+            return true;
+        }
+        
+        case ASTKind::SliceExpr: {
+            // Slice bounds can be out of range
+            return true;
+        }
+        
+        case ASTKind::ArenaAccessExpr: {
+            ArenaAccessExprAST* arena = expr->as<ArenaAccessExprAST>();
+            // arena::alloc can fail (out of capacity)
+            if (arena->methodName == ctx.pool.intern("alloc")) {
+                return true;
+            }
+            return false;
+        }
+        
+        case ASTKind::CallExpr: {
+            // Function calls can panic if the function body can panic
+            // We can check if the called function is foreign or contains panic-prone ops
+            CallExprAST* call = expr->as<CallExprAST>();
+            
+            // Check if callee is a foreign function
+            if (call->callee && call->callee->isa<IdentifierExprAST>()) {
+                IdentifierExprAST* id = call->callee->as<IdentifierExprAST>();
+                if (id->resolvedDecl && id->resolvedDecl->isa<FuncDeclAST>()) {
+                    FuncDeclAST* func = id->resolvedDecl->as<FuncDeclAST>();
+                    if (func->isForeignFunction) {
+                        return true;  // Foreign calls can fail
+                    }
+                    // Check if function is const (const functions can't panic)
+                    if (func->isConst()) {
+                        return false;
+                    }
+                    // For regular functions, we'd need to inspect the body
+                    // Conservative: assume any function call can panic
+                    return true;
+                }
+            }
+            
+            // Check arguments for panic-prone expressions
+            for (ExprAST* arg : call->args) {
+                if (isPanicProneExpression(arg, ctx)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        case ASTKind::UnaryExpr: {
+            UnaryExprAST* unary = expr->as<UnaryExprAST>();
+            // Unary ops don't panic by themselves
+            return isPanicProneExpression(unary->operand, ctx);
+        }
+        
+        case ASTKind::NullCoalesceExpr: {
+            // ?? handles panics, so the expression itself is safe
+            // But the LHS and RHS might contain panics
+            NullCoalesceExprAST* coalesce = expr->as<NullCoalesceExprAST>();
+            return isPanicProneExpression(coalesce->value, ctx) ||
+                   isPanicProneExpression(coalesce->fallback, ctx);
+        }
+        
+        case ASTKind::PipelineExpr: {
+            PipelineExprAST* pipe = expr->as<PipelineExprAST>();
+            // Check seed and each step
+            if (isPanicProneExpression(pipe->seed, ctx)) return true;
+            for (PipelineStepAST* step : pipe->steps) {
+                if (isPanicProneExpression(step->callable, ctx)) return true;
+                for (ExprAST* arg : step->packArgs) {
+                    if (isPanicProneExpression(arg, ctx)) return true;
+                }
+            }
+            return false;
+        }
+        
+        case ASTKind::FieldAccessExpr: {
+            FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+            // Field access doesn't panic (Sema prevents null/err access)
+            // But the object might contain panic-prone expressions
+            return isPanicProneExpression(field->object, ctx);
+        }
+        
+        case ASTKind::ModuleAccessExpr: {
+            // Module access doesn't panic (members are compile-time known)
+            return false;
+        }
+        
+        case ASTKind::IdentifierExpr: {
+            // Identifiers don't panic
+            return false;
+        }
+        
+        case ASTKind::LiteralExpr: {
+            // Literals don't panic
+            return false;
+        }
+        
+        default:
+            return false;
+    }
+}
+
 TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    if (!expr) return ctx.getUnknownType();
+
     // ─── Step 1: Resolve LHS ────────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->value, ctx);
     if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
@@ -2154,62 +2286,136 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    if (!isNullableType(lhsType) && !isFallibleType(lhsType)) {
+    // ─── Step 2: Determine if LHS is valid for ?? ──────────────────────────
+    bool lhsIsTagged = isNullableType(lhsType) || isFallibleType(lhsType);
+    bool lhsCanPanic = isPanicProneExpression(expr->value, ctx);
+
+    if (!lhsIsTagged && !lhsCanPanic) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->value,
-                              "?? requires nullable or fallible LHS (T?, T!, or T?!)");
+                              "?? requires nullable/fallible LHS (T?, T!, or T?!) "
+                              "or an expression that can panic (division, indexing, arena::alloc)");
+        ctx.diagnostics.note(expr->value,
+                             "Use a nullable/fallible value, or ensure the expression can fail");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Unwrap LHS type ────────────────────────────────────────────
-    TypeAST* lhsInner = lhsType;
-    if (isNullableType(lhsInner)) {
-        lhsInner = unwrapNullable(lhsInner);
-    }
-    if (isFallibleType(lhsInner)) {
-        lhsInner = unwrapFallible(lhsInner);
+    // ─── Step 3: Determine the inner/result type ────────────────────────────
+    TypeAST* innerType = lhsType;
+    bool resultIsNullable = false;
+    bool resultIsFallible = false;
+
+    if (lhsIsTagged) {
+        // ─── Unwrap tagged LHS ──────────────────────────────────────────────
+        if (isNullableType(innerType)) {
+            innerType = unwrapNullable(innerType);
+        }
+        if (isFallibleType(innerType)) {
+            innerType = unwrapFallible(innerType);
+        }
+        // ?? removes nullability/fallibility
+    } else {
+        // ─── Plain panic-prone LHS ──────────────────────────────────────────
+        // The result type is the same as LHS (int from 10/d)
+        innerType = lhsType;
     }
 
-    if (!lhsInner) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
-                              "cannot unwrap LHS type");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
+    // ─── Step 4: Determine the expected RHS type ────────────────────────────
+    // RHS must be assignable to innerType
+    TypeAST* expectedRhsType = innerType;
 
-    // ─── Step 3: Resolve RHS against LHS inner type ────────────────────────
-    TypeAST* rhsType = resolveExprWithTarget(expr->fallback, lhsInner, ctx);
+    // ─── Step 5: Resolve RHS against expected type ──────────────────────────
+    TypeAST* rhsType = resolveExprWithTarget(expr->fallback, expectedRhsType, ctx);
     if (!rhsType || rhsType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExprWithTarget
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Propagate value state ─────────────────────────────────────
+    // ─── Step 6: Determine the final result type ────────────────────────────
+    TypeAST* resultType = innerType;
+
+    // If target type is provided and is tagged, we may need to wrap the result
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (isNullableType(targetType) || isFallibleType(targetType)) {
+            // Target is tagged: result should match target's structure
+            TypeAST* targetInner = targetType;
+            bool targetIsNullable = false;
+            bool targetIsFallible = false;
+            
+            if (isNullableType(targetInner)) {
+                targetInner = unwrapNullable(targetInner);
+                targetIsNullable = true;
+            }
+            if (isFallibleType(targetInner)) {
+                targetInner = unwrapFallible(targetInner);
+                targetIsFallible = true;
+            }
+            
+            if (typesEqual(innerType, targetInner)) {
+                // Result should be wrapped to match target
+                TypeAST* wrappedResult = innerType;
+                if (targetIsNullable) {
+                    wrappedResult = ctx.arena.make<NullableTypeAST>(wrappedResult);
+                }
+                if (targetIsFallible) {
+                    wrappedResult = ctx.arena.make<FallibleTypeAST>(wrappedResult);
+                }
+                resultType = wrappedResult;
+                resultIsNullable = targetIsNullable;
+                resultIsFallible = targetIsFallible;
+            } else {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                      "?? result type mismatch: expected ",
+                                      typeToString(targetType, ctx.pool),
+                                      " but inner type is ",
+                                      typeToString(innerType, ctx.pool));
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+        } else {
+            // Target is non-tagged: result must be assignable
+            if (!isAssignable(targetType, innerType, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                      "?? result type mismatch: expected ",
+                                      typeToString(targetType, ctx.pool),
+                                      ", got ", typeToString(innerType, ctx.pool));
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+            resultType = targetType;
+        }
+    } else {
+        // No target type: result is the inner type (unwrapped)
+        resultType = innerType;
+    }
+
+    // ─── Step 7: Propagate value state ──────────────────────────────────────
     ValueState lhsState = expr->value->valueState;
     ValueState rhsState = expr->fallback->valueState;
-
+    
     ValueState state;
-    if (lhsState == ValueState::Nil || lhsState == ValueState::Err) {
+    if (lhsIsTagged && (lhsState == ValueState::Nil || lhsState == ValueState::Err)) {
         state = rhsState;
-    } else if (lhsState == ValueState::Definite) {
+    } else if (lhsState == ValueState::Definite && rhsState == ValueState::Definite) {
         state = ValueState::Definite;
+    } else if (lhsState == ValueState::Definite) {
+        state = rhsState;
+    } else if (rhsState == ValueState::Definite) {
+        state = lhsState;
     } else {
         state = ValueState::Unknown;
     }
 
-    expr->resolvedType = rhsType;
+    expr->resolvedType = resultType;
     expr->valueState = state;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    // Null coalesce expressions are never l-values
     expr->isLValue = false;
     expr->isConst = false;
     
-    return rhsType;
+    return resultType;
 }
 
 // =============================================================================

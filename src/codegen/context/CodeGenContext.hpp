@@ -115,11 +115,10 @@ struct CodeGenContext {
     /// @brief Context for each active `??` expression.
     /// Each entry represents a `??` whose LHS is currently being lowered.
     struct NullCoalesceContext {
-        llvm::BasicBlock* fallbackBlock;  ///< Where to jump on failure
-        bool fallbackTaken;               ///< Whether the fallback was taken
-        bool isActive;                    ///< Whether this context is active
+        llvm::BasicBlock* fallbackBlock = nullptr;  ///< Where to jump on failure
+        bool fallbackTaken = false;               ///< Whether the fallback was taken
+        bool isActive = false;                    ///< Whether this context is active
     };
-    
     std::vector<NullCoalesceContext> nullCoalesceStack;
 
     // ─── Null Coalesce Helpers ────────────────────────────────────────────
@@ -164,7 +163,7 @@ struct CodeGenContext {
         if (nullCoalesceStack.empty()) return false;
         return nullCoalesceStack.back().fallbackTaken;
     }
-    
+
     // ─── Function Helpers ──────────────────────────────────────────────────
     
     void storeFunction(FuncDeclAST* decl, llvm::Function* func) {
