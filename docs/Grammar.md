@@ -997,48 +997,17 @@ if e2.target != nil {
 }
 ```
 
-### Object Slicing
+### Trait-Typed Values Do Not Exist
 
-A struct implementing a trait can be assigned to a variable **declared with
-the trait's type** — a struct's value is always a superset of what the trait
-requires, so nothing is missing. But the reverse is not just narrower, it is
-genuinely **impossible to fill in**: a trait only carries the fields it
-declares, so a value that only knows it is "some `Person`" has no other
-fields for the compiler to read out of it, even if the concrete struct
-behind it happens to have more.
-
-```lucid
-trait Person {
-    name string;
-}
-
-struct Staff : Person {
-    name   string;    -- satisfies Person
-    salary float = 0.0;
-}
-
-let s Staff  = Staff { name = "Amy", salary = 50000.0 };
-let p Person = s;    -- OK: Staff has everything Person requires
-
-p.name;              -- OK: name is part of the Person contract
-p.salary;             -- ERROR: salary isn't part of Person — this is
-                       -- Object Slicing, `p`'s static type only exposes
-                       -- Person's fields, `salary` is gone from view
-
-let s2 Staff = p;    -- ERROR: cannot assign a Person to a Staff — the
-                      -- compiler has no `salary` to read from `p` and no
-                      -- rule for inventing one, so the assignment is
-                      -- rejected outright rather than fabricating a value
-```
-
-`p = s` is called Object Slicing because assigning a wider struct into a
-narrower trait-typed variable keeps only the fields the trait declares —
-`salary` still exists in memory as part of `s`, but `p`'s type means the
-extra field is no longer reachable through `p`. Going the other direction —
-`Staff = Person` — isn't a narrowing at all, it would require *inventing*
-data the right-hand side never had, so the compiler rejects it at the
-assignment site rather than guessing a default.
-
+An earlier design allowed a variable to be declared with a trait's type
+(`let p Person = s;`, called **Object Slicing**) and later a borrowed-view
+form (`&Person`). Both are removed. See **Trait Declaration** for the
+current design and the reasoning: a trait name is valid in exactly one
+place, a generic constraint (`<T : Trait>`) — never as a struct field's
+type, a function parameter or return type, or an array/slice element type.
+`T` is always a real, fully-known concrete type at every point it's used;
+nothing is ever erased, and there is no runtime representation of "a trait"
+to define in the first place.
 
 
 A field declared with `const` cannot be reassigned through `field_expr`, even
@@ -1120,6 +1089,83 @@ struct Logger {
 let log Logger = Logger { };
 log.sink = (msg string) -> () { system:writeToFile("app.log", msg) };    -- OK
 ```
+
+### Implicit `self` for Field Defaults Referencing Sibling Fields
+
+A function-typed field's default value, when written **inline** at the
+struct declaration, may reference the struct's own other fields unqualified
+— no `self.` prefix needed:
+
+```lucid
+struct Point = {
+    x float;
+    y float;
+    const str () -> string = { return "(" ++ #tostr(x) ++ ", " ++ #tostr(y) ++ ")" };
+}
+```
+
+`x` and `y` here resolve to `Point`'s own fields because every field name is
+registered before any field's type or default is resolved — the same
+mechanism that lets a recursive field reference its own struct's name lets a
+sibling field's default reference another sibling by name, regardless of
+declaration order. That accounts for *which* field `x` means. It does not by
+itself account for *which instance's* `x` — a name resolving to "the `x`
+field of `Point`" still needs a concrete `Point` value to read that `x`
+*from* once this code actually runs.
+
+**The compiler supplies that instance by synthesizing an implicit `self
+&StructName` parameter**, prepended to the field's real signature, whenever
+a block-body default is written with zero declared parameters. This is
+invisible in the source shown above — the user never writes `self` for the
+inline case — but it is real: it is what the generated code actually uses to
+resolve `x`/`y` at the point they're read, and it is why the field's *true*
+type, used for every override compatibility check from here on, is
+`(&Point) -> string`, not `() -> string`.
+
+- **An override supplied from outside the struct must spell `self` out
+  explicitly**, since it isn't written inside the struct's own declaration
+  and doesn't get the sibling-field visibility that relies on being there:
+
+  ```lucid
+  const customStr (self &Point) -> string = { return "Point!"; };
+  const p Point = Point{ x = 1.5, y = 3.0, str = customStr };
+  ```
+
+  Both the inline default and an external override are checked against the
+  same self-inclusive signature, so this is ordinary function-type
+  compatibility — no special-casing beyond computing that signature once.
+
+- **`self` is passed, at every call, from whatever instance the field is
+  accessed through — never captured once and reused.** `instance.field(args)`
+  implicitly supplies `&instance` as the hidden first argument, resolved at
+  the call site by ordinary name and type resolution. This is what makes a
+  struct copy behave correctly with no extra work: `let q = p; q.str()`
+  naturally threads `&q`, not a stale `&p`, because nothing about `self` was
+  ever captured in the first place — it's re-supplied fresh from whichever
+  value you called through.
+
+- **`self` is passed, never captured — but the field's representation stays
+  the general closure fat pointer already documented above** (see
+  **Security Considerations for Function-Typed Fields**, next), because
+  nothing about `self` changes whether a *different* override could
+  legitimately capture its own external state (a genuine closure, unrelated
+  to `self`) — that possibility already exists for function-typed fields in
+  general and isn't something this mechanism removes. What `self` being
+  passed rather than captured actually buys you is narrower but just as
+  important: in the common case (an inline default with no other captured
+  state), the environment pointer is simply null — no heap allocation, no
+  refcount — and correctness after a copy doesn't depend on that pointer at
+  all, because `self` was never stored in it to begin with. The cost
+  reduction is in the *common case's actual behavior*, not in a smaller
+  declared type for the field.
+
+- **This is not a method in the class-based sense.** The field can still be
+  freely reassigned or overridden per instance (subject to the ordinary
+  `let`/`const` rules above) — it's a plain data field that happens to hold a
+  callable, with a sane default and per-instance override, closer to a
+  delegate/callback field than to fixed, type-level dispatch. The behavior
+  travels with the specific value, not with the type — composition, not
+  inheritance.
 
 ### Security Considerations for Function-Typed Fields
 
@@ -1342,8 +1388,9 @@ struct Node<T> {
 
 A trait is a pure **field contract** — a named set of fields (name and type
 only) that a struct promises to contain. Traits have no methods, no behavior,
-and no default values. They exist solely to express structural requirements 
-for data polymorphism.
+and no default values. They exist solely to express structural requirements
+for **compile-time** generic constraints — a trait is never itself a value
+at runtime; see **Rules** below.
 
 ```ebnf
 trait_decl  = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
@@ -1382,12 +1429,81 @@ trait Container<T> {
 - Two traits requiring the same field name with **different types** is a
   **compile error** at the struct declaration — there is no silent merging.
   Same name, same type across two traits is fine — satisfied once.
-- Traits may be used as **field types** in structs — a field typed as a trait
-  accepts any struct implementing that trait.
-- Traits may be used as **parameter types** in functions — inside the function
-  body only the trait's fields are accessible on that parameter.
-- Traits may be used as **generic constraints** — `<T : Trait>` means T must
-  implement Trait. See **Generic Constraints**.
+- **A trait name is valid in exactly one place: a generic constraint,
+  `<T : Trait>`.** This means T must implement Trait. See **Generic
+  Constraints**. A trait is **never** valid as a struct field's type, a
+  function parameter or return type (bare or behind `&`), or an array/slice
+  element type — anywhere one of those would require a trait to exist as a
+  value in its own right, independent of any one concrete struct.
+
+> [!NOTE]
+> An earlier design allowed a trait to be used directly as a field or
+> parameter type, either as an owned value (**Object Slicing** — assigning a
+> struct into a trait-typed variable, keeping only the trait's fields) or as
+> a borrowed view (`&Trait`). Both are removed, for two separate reasons
+> that reinforce each other:
+>
+> - **Object Slicing silently, permanently discards data with no way back.**
+>   A trait-typed value reads as "any `Person`-shaped thing, dynamically" to
+>   anyone with an interface/OOP background — while it actually behaves
+>   nothing like that: the moment a `Staff` is assigned into a `Person`, its
+>   `salary` is gone from that value forever, with no supported way to
+>   recover it, downcast, or query what the original concrete type was.
+> - **A borrowed `&Trait` doesn't actually solve the problem it looks like
+>   it solves.** It avoids the data loss, but as a Borrowed view it inherits
+>   the Downward Flow Rule — which means it cannot be stored in a struct
+>   field, and specifically **cannot be an array or slice element**. The one
+>   use case that motivates wanting a "trait value" in the first place —
+>   holding several different concrete types in one collection, unified by
+>   shared fields — is exactly the use case `&Trait` structurally cannot
+>   provide. It only moves the compile error from the assignment site to the
+>   array-insertion site.
+> - **A bare trait-typed parameter isn't a safe middle ground, even if
+>   arrays are the only thing actually banned.** Since a trait has no
+>   runtime representation, `const greet (p Person) = { ... }` can only ever
+>   mean "the compiler silently treats this exactly like
+>   `const greet<T : Person> (p T) = { ... }`" — there's no third
+>   possibility. That makes it pure sugar for the generic form, not a second
+>   capability, and it's worse than not having the sugar: it resurrects the
+>   exact "trait looks like a real parameter type" impression that made
+>   Object Slicing dangerous in the first place, and it requires an
+>   invisible desugaring pass — noticing a trait name in bare parameter
+>   position and silently rewriting the function as generic — which is
+>   exactly the kind of implicit compiler magic this design has avoided
+>   everywhere else. One spelling, always explicit, costs a few extra
+>   characters at the signature and removes the ambiguity entirely.
+>
+> **What remains — `<T : Trait>` — covers the common case with none of the
+> above problems, at zero runtime cost:** any function or struct that needs
+> to work generically over "anything with these fields" can already say so,
+> with the concrete type fully preserved (never erased) at every call site.
+> What it does *not* provide, on purpose: one array or one non-generic
+> function spanning genuinely different concrete types at once. There is no
+> partial version of that capability available without reintroducing one of
+> the two problems above — either accept silent data loss (Object Slicing)
+> or accept that the result still can't go in a collection (`&Trait`). The
+> correct way to store several different concrete types together is several
+> separate, concretely-typed collections — `staffList [*]Staff` and
+> `studentList [*]Student` side by side — passed individually to the same
+> `<T : Trait>`-constrained function as needed:
+>
+> ```lucid
+> const printName<T : Person> (items [_]T) = {
+>     for item in items { io:printl(item.name); }
+> };
+>
+> let staffList   [*]Staff   = [...];
+> let studentList [*]Student = [...];
+>
+> printName(staffList);      -- T = Staff, resolved here, zero cost
+> printName(studentList);    -- T = Student, resolved here, zero cost
+> ```
+>
+> No casting, no shared collection, no runtime type check. If a genuine need
+> for one collection holding several concrete types together later shows up,
+> that calls for a different, deliberately-designed feature — most likely a
+> closed-set tagged/payload type built on enums — not a reason to bring
+> Object Slicing or `&Trait` back.
 
 ```lucid
 -- name conflict: same field, different types — compile error
@@ -5047,21 +5163,23 @@ Available everywhere — these are read-only observations and carry no safety
 concern. They do not manipulate memory, dereference pointers, or escape any
 safety boundary.
 
-| Intrinsic     | Returns  | Notes                                                                                                                                                                          |
-| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `#tostr(x)`   | `string` | Human-readable value. Primitives and enums by value; structs as `Name{ field: value, ... }`; functions as their declared name. Calls the `str` field if the struct defines one |
-| `#typeof(x)`  | `string` | For any value: its type name. For function types: full signature e.g. `(int, string) -> bool`                                                                                  |
-| `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                                                     |
-| `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                                                    |
-| `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                                                   |
-| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant                                                                                                                                  |
-| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant                                                                                                                           |
+| Intrinsic     | Returns  | Notes                                                                                                                                                |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#tostr(x)`   | `string` | Human-readable value of a **fully concrete type only** — see **`#tostr` — Detailed Behavior** below. Calls the `str` field if the struct defines one |
+| `#typeof(x)`  | `string` | For any value: its type name. For function types: full signature e.g. `(int, string) -> bool`                                                        |
+| `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                           |
+| `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                          |
+| `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                         |
+| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant                                                                                                        |
+| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant                                                                                                 |
 
 ```lucid
--- Generic logger: works on any type T
-const Log<T> (prefix string, values ...T) = {
+-- Generic logger: works on any type T, given a formatter for it
+-- (calling #tostr(v) directly here would be a compile error — v's type
+--  T is generic, and #tostr requires a fully concrete type; see below)
+const Log<T> (prefix string, values ...T)(toStr (T) -> string) = {
     for v in values {
-        io:printl(prefix ++ ": " ++ #tostr(v));
+        io:printl(prefix ++ ": " ++ toStr(v));
     }
 };
 
@@ -5089,6 +5207,67 @@ io:printl(#nameof(p));    -- "p"
 > `#nameof` reads the source name at the call site, never the runtime value.
 > `#addrof` returns a `*T` — the pointer is inert on its own. To act on it you
 > must pass it to a pointer intrinsic, which is where the safety boundary sits.
+
+#### `#tostr` — Detailed Behavior
+
+`#tostr` requires a **fully concrete type**. Generic parameters (`T`) and any
+type containing one (`Box<T>`, `[*]T` where `T` is generic) are rejected at
+compile time. Under the default type-erasure strategy (see `@[specialize]`
+under **Compiler Directives**), a generic function body only has a tagged
+runtime slot to work with — not a known field layout — and `#tostr` needs
+the layout at compile time to emit the right sequence of per-field
+formatting calls:
+
+```lucid
+-- ❌ Generic parameter
+const logGeneric<T> (v T) -> string = {
+    return #tostr(v);    -- ERROR: T is not concrete
+};
+
+-- ❌ Generic struct
+const logBox<T> (b Box<T>) -> string = {
+    return #tostr(b);    -- ERROR: Box<T> contains generic parameter T
+};
+
+-- ❌ Array with generic element
+const logArray<T> (arr [*]T) -> string = {
+    return #tostr(arr);  -- ERROR: [*]T contains generic parameter T
+};
+```
+
+To format a generic value, take a formatter as a parameter and let the
+caller supply the concrete conversion — the pattern the `Log<T>` example
+above already uses:
+
+```lucid
+const logGeneric<T> (v T)(toStr (T) -> string) -> string = {
+    return toStr(v);    -- caller provides the conversion for its concrete T
+};
+```
+
+**Behavior by type:**
+
+| Type                                                                                     | Behavior                                         | Example                                          |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ |
+| `int` / `float`                                                                          | Decimal value                                    | `#tostr(42)` → `"42"`, `#tostr(3.14)` → `"3.14"` |
+| `bool`                                                                                   | `"true"` / `"false"`                             | `#tostr(true)` → `"true"`                        |
+| `string`                                                                                 | Identity — returned unchanged                    | `#tostr("hi")` → `"hi"`                          |
+| `char`                                                                                   | Single character                                 | `#tostr('a')` → `"a"`                            |
+| `enum`                                                                                   | `EnumName.VariantName`                           | `#tostr(Direction.North)` → `"Direction.North"`  |
+| `struct`                                                                                 | `Name{ field: value, ... }`, recursive per field | `#tostr(p)` → `"Point{ x: 1.5, y: 3.0 }"`        |
+| named function                                                                           | Declared name                                    | `#tostr(add)` → `"add"`                          |
+| module function                                                                          | `module:function`                                | `#tostr(math:sqrt)` → `"math:sqrt"`              |
+| struct-field function                                                                    | `var.field`                                      | `#tostr(logger.sink)` → `"logger.sink"`          |
+| closure                                                                                  | `<closure>`                                      | `#tostr(() -> () { ... })` → `"<closure>"`       |
+| function value with no known declared name (arrived via `*T`, selected dynamically, ...) | `<function>`                                     | —                                                |
+| `[N]T` / `[*]T` (concrete `T`)                                                           | `[elem1, elem2, ...]`, recursive per element     | `#tostr([1, 2, 3])` → `"[1, 2, 3]"`              |
+
+> [!NOTE]
+> There is no `trait` row above, and none is needed: a trait name is valid
+> only inside a generic constraint (`<T : Trait>`), never as the type of an
+> actual value (see **Trait Declaration**). `#tostr` only ever sees `T`
+> itself — a real, fully-known concrete type at every call site — never a
+> "trait value," because no such thing exists at runtime to hand it.
 
 ---
 
