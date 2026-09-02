@@ -3152,27 +3152,24 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     // 2. Store the resolved type
     expr->resolvedType = funcType;
 
-    // 3. Push scope for the parameters of THIS group
-    ctx.pushScope();
+    // ─── 3. Push function scopes using RAII guard ──────────────────────────
+    ScopedFunction funcScope(ctx, expr, funcType->returnType);
+
+    // ─── 4. Resolve parameters ─────────────────────────────────────────────
     for (ParamAST* param : funcType->params) {
         resolveParam(param, ctx);
     }
 
-    // 4. Validate body exists
+    // 5. Validate body exists
     if (!expr->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function has no body");
-        ctx.popScope();
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // 5. Push function context with expected return type
-    TypeAST* expectedReturn = funcType->returnType;
-    ctx.stack.pushAnonFunction(expr, expectedReturn);
-
-    // 6. Resolve the body (which may be a ReturnStmtAST returning another AnonFuncExprAST)
+    // 6. Resolve the body
     bool bodyReturns = false;
     if (expr->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(expr->body->as<BlockStmtAST>(), ctx);
@@ -3181,31 +3178,26 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     } else {
         ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
                               "anonymous function has invalid body type");
-        ctx.stack.pop();
-        ctx.popScope();
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // 7. Verify return paths
+    TypeAST* expectedReturn = funcType->returnType;
     if (expectedReturn && !bodyReturns) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function does not return a value on all paths");
     }
 
-    // 8. Pop function context
-    ctx.stack.pop();
-
-    // 9. Capture analysis
+    // 8. Capture analysis
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(expr, ctx);
     }
 
-    // 10. Pop parameter scope
-    ctx.popScope();
+    // ─── 9. ScopedFunction destructor automatically pops scopes ────────────
 
-    // 11. Determine value state
+    // 10. Determine value state
     ValueState state = ValueState::Definite;
     if (expectedReturn) {
         if (isNullableType(expectedReturn)) state = ValueState::Unknown;
@@ -3218,7 +3210,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     expr->isLValue = false;
     expr->isConst = false;
 
-    // 12. Validate against target type if provided
+    // 11. Validate against target type if provided
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, funcType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,

@@ -83,12 +83,13 @@ namespace sema {
 
 /// @brief Types of semantic contexts.
 enum class ContextKind : uint8_t {
-    TopLevel,      ///< Module-level declarations
-    FuncBody,      ///< Inside a function body (return allowed)
-    LoopBody,      ///< Inside a loop body (break/continue allowed)
-    SwitchBody,    ///< Inside a switch body (case/default allowed)
-    IfStmt,        ///< Inside an if statement (for type narrowing)
-    Block          ///< Inside a block statement (for pending inverse narrowing)
+    TopLevel,           ///< Module-level declarations
+    FuncBody,           ///< Inside a function body (return allowed)
+    LoopBody,           ///< Inside a loop body (break/continue allowed)
+    SwitchBody,         ///< Inside a switch body (case/default allowed)
+    IfStmt,             ///< Inside an if statement (for type narrowing)
+    Block,              ///< Inside a block statement (for pending inverse narrowing)
+    GenericConstraint   ///< Inside a generic constraint list (<T : Trait>)
 };
 
 // ─── NarrowingInfo ──────────────────────────────────────────────────────

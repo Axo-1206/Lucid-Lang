@@ -302,4 +302,19 @@ private:
     SemaContext& ctx_;
 };
 
+struct ScopedFunction {
+    ScopedFunction(SemaContext& ctx, FuncDeclAST* decl, TypeAST* returnType);
+    ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType);
+    
+    ~ScopedFunction();
+    
+    ScopedFunction(const ScopedFunction&) = delete;
+    ScopedFunction& operator=(const ScopedFunction&) = delete;
+
+private:
+    SemaContext& ctx_;
+    SymbolScope paramScope_;
+};
+
+
 } // namespace sema

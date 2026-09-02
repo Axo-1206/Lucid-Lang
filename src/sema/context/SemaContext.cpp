@@ -695,6 +695,8 @@ ScopedSemanticContext::~ScopedSemanticContext() {
     ctx_.stack.pop();
 }
 
+
+
 ScopedIfCondition::ScopedIfCondition(SemaContext& ctx, bool hasElse)
     : ctx_(ctx) {
     ctx_.stack.setIfConditionCtx(true);
@@ -706,6 +708,8 @@ ScopedIfCondition::~ScopedIfCondition() {
     ctx_.stack.setIfConditionCtx(false);
 }
 
+
+
 SymbolScope::SymbolScope(SemaContext& ctx)
     : ctx_(ctx) {
     ctx_.pushScope();
@@ -714,6 +718,8 @@ SymbolScope::SymbolScope(SemaContext& ctx)
 SymbolScope::~SymbolScope() {
     ctx_.popScope();
 }
+
+
 
 ScopedNarrowing::ScopedNarrowing(SemaContext& ctx, InternedString varName, 
                                  TypeAST* narrowedType, bool isInverse)
@@ -736,6 +742,8 @@ ScopedNarrowing::~ScopedNarrowing() {
     ctx_.stack.popNarrowingLevel();
 }
 
+
+
 ScopedTypeDefinition::ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
     : ctx_(ctx) {
     ctx_.pushDefiningType(decl);
@@ -743,6 +751,43 @@ ScopedTypeDefinition::ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
 
 ScopedTypeDefinition::~ScopedTypeDefinition() {
     ctx_.popDefiningType();
+}
+
+
+// ─── ScopedFunction Implementation ────────────────────────────────────────
+
+ScopedFunction::ScopedFunction(SemaContext& ctx, FuncDeclAST* decl, TypeAST* returnType)
+    : ctx_(ctx)
+    , paramScope_(ctx) {  // SymbolScope is constructed FIRST (pushes parameter scope)
+    // ─── Then push the function context ─────────────────────────────────────
+    ctx_.stack.pushFunction(decl, returnType);
+}
+
+ScopedFunction::ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType)
+    : ctx_(ctx)
+    , paramScope_(ctx) {  // SymbolScope is constructed FIRST (pushes parameter scope)
+    // ─── Then push the anonymous function context ───────────────────────────
+    ctx_.stack.pushAnonFunction(expr, returnType);
+}
+
+ScopedFunction::~ScopedFunction() {
+    // ─── Destructor order is REVERSE of construction order ─────────────────
+    // 1. paramScope_ destructor runs LAST? No, member destructors run in
+    //    REVERSE order of construction.
+    // 
+    // Construction order:
+    //   1. ctx_ (reference, no destructor)
+    //   2. paramScope_ (SymbolScope) → pushes parameter scope
+    //   3. Function context push happens in constructor body
+    // 
+    // Destruction order:
+    //   1. Function context pop happens in destructor body (explicit)
+    //   2. paramScope_ destructor → pops parameter scope
+    // 
+    // So the function context is popped BEFORE the parameter scope,
+    // which is correct because the function context depends on the parameters.
+    ctx_.stack.pop();  // ← Pop function context first (explicit)
+    // ─── paramScope_ destructor automatically pops the parameter scope ────
 }
 
 } // namespace sema
