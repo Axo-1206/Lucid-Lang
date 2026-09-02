@@ -79,6 +79,23 @@ struct CodeGenContext;
 ///   3. Add calls to the function in CodeGen/*.cpp
 ///
 /// Without step 2, the linker will fail with "undefined symbol".
+///
+/// ─── Concurrency ABI ──────────────────────────────────────────────────────────
+/// The concurrency functions use a "handle storage" pattern:
+///
+///   CodeGen creates an alloca: %handle = alloca i8*
+///   CodeGen passes the alloca to: __lucid_async(callable, args, %handle)
+///   Runtime writes the handle into: *((void**)%handle) = actual_handle
+///   CodeGen later reads: %handle_val = load i8*, i8** %handle
+///   CodeGen passes to: __lucid_await(%handle_val)
+///
+/// This is why the third parameter is `void* future_handle_ptr` (a pointer
+/// to the storage location where the handle should be written), NOT the
+/// handle itself. The function returns the handle as the return value
+/// for convenience, but the primary mechanism is the pointer parameter.
+///
+/// @see CodeGenStmt.cpp - lowerAsyncStmt(), lowerAwaitStmt()
+/// @see CodeGenStmt.cpp - lowerSpawnStmt(), lowerJoinStmt()
 enum class RuntimeFn {
     // ─── Closures ───────────────────────────────────────────────────────
     AllocEnv,           // void* __lucid_alloc_env(uint64_t size)
@@ -116,12 +133,58 @@ enum class RuntimeFn {
     // ─── Panics ─────────────────────────────────────────────────────────
     Panic,              // void __lucid_panic(char* message)
 
-    // ─── Concurrency (Async/Spawn) ──────────────────────────────────────
-    Async,              // void* __lucid_async(void* callable, void* args, void* future_handle)
+    /// ─── Concurrency ──────────────────────────────────────────────────────
+    /// ─── IMPORTANT: Handle Storage Pattern ──────────────────────────────
+    // 
+    // Async/Spawn functions follow this pattern:
+    //   1. CodeGen allocates storage: alloca i8*
+    //   2. CodeGen passes the storage pointer as the 3rd argument
+    //   3. Runtime writes the handle into the storage: *(void**)arg3 = handle
+    //   4. Runtime returns the handle as the function result
+    //   5. CodeGen loads the handle from storage for await/join
+    //
+    // This is why the 3rd parameter is a pointer-to-pointer, not a pointer.
+    //
+    // ─── Example IR ──────────────────────────────────────────────────────
+    //   %handle_storage = alloca i8*
+    //   %result = call i8* @__lucid_async(i8* %callable, i8* %args, i8* %handle_storage)
+    //   ; Runtime writes to %handle_storage
+    //   %handle = load i8*, i8** %handle_storage
+    //   call void @__lucid_await(i8* %handle)
+    //
+    // @see ConcurrencyRuntime.cpp - __lucid_async()
+    // @see ConcurrencyRuntime.cpp - __lucid_spawn()
+    Async,              // void* __lucid_async(void* callable, void* args, void* future_handle_ptr)
+                        //   - callable: function to execute (i8*)
+                        //   - args: arguments for the callable (i8*)
+                        //   - future_handle_ptr: pointer to storage where handle is written (void**)
+                        //   - returns: the FutureHandle* (same as stored)
+                        // @note: future_handle_ptr is a void**, NOT a void*
+                        // @note: CodeGen must pass an alloca i8* as the 3rd argument
+    
     Await,              // void __lucid_await(void* future_handle)
-    Spawn,              // void* __lucid_spawn(void* callable, void* args, void* thread_handle)
+                        //   - future_handle: the FutureHandle* to wait for (i8*)
+                        //   - blocks until the future is ready
+                        //   - consumes the future (linear type)
+    
+    Spawn,              // void* __lucid_spawn(void* callable, void* args, void* thread_handle_ptr)
+                        //   - callable: function to execute (i8*)
+                        //   - args: arguments for the callable (i8*)
+                        //   - thread_handle_ptr: pointer to storage where handle is written (void**)
+                        //   - returns: the ThreadHandle* (same as stored)
+                        // @note: thread_handle_ptr is a void**, NOT a void*
+                        // @note: CodeGen must pass an alloca i8* as the 3rd argument
+    
     Join,               // void __lucid_join(void* thread_handle)
+                        //   - thread_handle: the ThreadHandle* to wait for (i8*)
+                        //   - blocks until the thread completes
+                        //   - consumes the thread (linear type)
+    
     Shutdown,           // void __lucid_shutdown()
+                        //   - signals all threads to stop
+                        //   - waits for all threads to finish
+                        //   - cleans up all pending futures/threads
+                        //   - called automatically when main returns
 };
 
 /// @brief One registry entry: the linker symbol name, plus a builder that

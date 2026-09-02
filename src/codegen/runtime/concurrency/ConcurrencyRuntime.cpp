@@ -1,5 +1,18 @@
-/// @file ConcurrencyRuntime.cpp
-/// @brief Implementation of the concurrency runtime.
+/// @file runtime/RuntimeFunctionRegistry.cpp
+/// @brief Implementation of the runtime function registry.
+///
+/// ─── Concurrency ABI Note ──────────────────────────────────────────────────────
+/// The async and spawn functions have a 3rd parameter that is a pointer to
+/// storage (void**), NOT a pointer to the handle itself. This is because the
+/// runtime needs to write the handle back into the binding's alloca.
+///
+/// The registry entry for Async and Spawn reflects this:
+///   - 3rd parameter type: getPtrType(ctx.llvmCtx)  (i8*)
+///   - At runtime, this is treated as a void** (pointer to storage)
+///   - The runtime writes the handle into *((void**)arg3)
+///
+/// @see CodeGenStmt.cpp - lowerAsyncStmt(), lowerSpawnStmt()
+/// @see ConcurrencyRuntime.cpp - __lucid_async(), __lucid_spawn()
 
 #include "ConcurrencyRuntime.hpp"
 #include <cassert>

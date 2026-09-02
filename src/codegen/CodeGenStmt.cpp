@@ -756,6 +756,49 @@ void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx) {
 
 // ─── Async Statement ──────────────────────────────────────────────────────
 
+/// @brief Lower an async statement.
+///
+/// ─── ABI Pattern ──────────────────────────────────────────────────────────────
+/// The async runtime function uses a "handle storage" pattern:
+///
+///   1. CodeGen allocates storage for the future handle:
+///        %future_storage = alloca i8*
+///
+///   2. CodeGen calls __lucid_async with the storage pointer:
+///        call i8* @__lucid_async(i8* %callable, i8* %args, i8* %future_storage)
+///
+///   3. Runtime writes the actual FutureHandle* into the storage:
+///        *((void**)future_storage) = handle
+///
+///   4. Runtime returns the handle as the function result
+///
+///   5. The binding holds the handle value (loaded from storage)
+///
+/// ─── Why a Pointer-to-Pointer? ──────────────────────────────────────────────
+/// The runtime needs to store the handle in the binding's storage location.
+/// Since the binding is an alloca i8*, the runtime needs a void** to write to
+/// that alloca. The 3rd parameter is therefore a void** (pointer to the
+/// storage), NOT a void* (the handle itself).
+///
+/// ─── Example IR ──────────────────────────────────────────────────────────────
+///   ; Create storage for the future handle
+///   %future_storage = alloca i8*
+///
+///   ; Pack arguments (if any) into an array
+///   ; ... build args array ...
+///
+///   ; Call async - note the 3rd argument is the storage pointer
+///   %result = call i8* @__lucid_async(i8* %callable, i8* %args, i8* %future_storage)
+///
+///   ; The runtime has written the handle into %future_storage
+///   ; Load the handle for later use
+///   %handle = load i8*, i8** %future_storage
+///
+///   ; Later, await the handle
+///   call void @__lucid_await(i8* %handle)
+///
+/// @see RuntimeFn::Async for the function signature
+/// @see ConcurrencyRuntime.cpp - __lucid_async() for the implementation
 void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
@@ -883,6 +926,19 @@ void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
 
 // ─── Await Statement ──────────────────────────────────────────────────────
 
+/// @brief Lower an await statement.
+///
+/// ─── ABI Pattern ──────────────────────────────────────────────────────────────
+/// The await function takes the FutureHandle* and blocks until it's ready:
+///
+///   call void @__lucid_await(i8* %future_handle)
+///
+/// ─── Memory Model ─────────────────────────────────────────────────────────────
+/// await consumes the future (linear type). After await, the binding is
+/// narrowed from Future<T> to T. The handle is no longer valid.
+///
+/// @see RuntimeFn::Await for the function signature
+/// @see ConcurrencyRuntime.cpp - __lucid_await() for the implementation
 void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
@@ -934,6 +990,25 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
 
 // ─── Spawn Statement ──────────────────────────────────────────────────────
 
+/// @brief Lower a spawn statement.
+///
+/// ─── ABI Pattern ──────────────────────────────────────────────────────────────
+/// Same handle storage pattern as async:
+///
+///   1. CodeGen allocates storage: %thread_storage = alloca i8*
+///   2. CodeGen calls __lucid_spawn with the storage pointer
+///   3. Runtime writes the ThreadHandle* into the storage
+///   4. Runtime returns the handle as the function result
+///   5. The binding holds the handle value
+///
+/// ─── Discard Pattern (_) ──────────────────────────────────────────────────────
+/// For spawn _ = fn(), no binding is created. CodeGen passes null as the
+/// storage pointer. The runtime still spawns the thread but discards the handle.
+///
+///   call i8* @__lucid_spawn(i8* %callable, i8* %args, i8* null)
+///
+/// @see RuntimeFn::Spawn for the function signature
+/// @see ConcurrencyRuntime.cpp - __lucid_spawn() for the implementation
 void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
@@ -1078,6 +1153,19 @@ void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
 
 // ─── Join Statement ──────────────────────────────────────────────────────
 
+/// @brief Lower a join statement.
+///
+/// ─── ABI Pattern ──────────────────────────────────────────────────────────────
+/// The join function takes the ThreadHandle* and blocks until it completes:
+///
+///   call void @__lucid_join(i8* %thread_handle)
+///
+/// ─── Memory Model ─────────────────────────────────────────────────────────────
+/// join consumes the thread (linear type). After join, the binding is
+/// narrowed from Thread<T> to T. The handle is no longer valid.
+///
+/// @see RuntimeFn::Join for the function signature
+/// @see ConcurrencyRuntime.cpp - __lucid_join() for the implementation
 void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
