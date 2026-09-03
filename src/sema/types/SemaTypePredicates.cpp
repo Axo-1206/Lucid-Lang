@@ -2,7 +2,6 @@
 /// @brief Implementation of type predicates.
 
 #include "SemaType.hpp"
-#include "core/builtins/BuiltinTypes.hpp"
 #include "core/ASTStrings.hpp"
 #include "../context/SemaContext.hpp"
 
@@ -150,19 +149,34 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx) {
 // ─── Built-in Type Predicates ────────────────────────────────────────────
 
 bool isArenaType(TypeAST* type) {
-    return builtins::isArenaType(const_cast<TypeAST*>(type));
+    if (!type) return false;
+    if (auto* named = type->as<NamedTypeAST>()) {
+        return isArenaNamedType(named);
+    }
+    if (auto* fallible = type->as<FallibleTypeAST>()) {
+        return isArenaType(fallible->inner);
+    }
+    return false;
 }
 
 bool isArenaDescriptorType(TypeAST* type) {
-    return builtins::isArenaDescriptorType(const_cast<TypeAST*>(type));
+    if (!type) return false;
+    if (auto* named = type->as<NamedTypeAST>()) {
+        return isArenaDescriptorNamedType(named);
+    }
+    return false;
 }
 
 bool isArenaNamedType(NamedTypeAST* named) {
-    return builtins::isArenaNamedType(named);
+    if (!named) return false;
+    if (!named->genericArgs.empty()) return false;
+    return lookupStringView(named->name) == "Arena";
 }
 
 bool isArenaDescriptorNamedType(NamedTypeAST* named) {
-    return builtins::isArenaDescriptorNamedType(named);
+    if (!named) return false;
+    if (!named->genericArgs.empty()) return false;
+    return lookupStringView(named->name) == "ArenaDescriptor";
 }
 
 bool isArenaBinding(VarDeclAST* decl) {
@@ -303,7 +317,7 @@ bool isSwitchCaseCompatible(ExprAST* value,
 
 // ─── FFI Compatibility ──────────────────────────────────────────────────
 
-bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
+bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
     if (!type) return true;
 
     if (type->isa<PrimitiveTypeAST>()) return true;

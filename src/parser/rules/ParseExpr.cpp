@@ -1271,11 +1271,21 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
 /// @param ctx The parsing context
 /// @param lhs The left-hand side expression
 /// @return ArenaAccessExprAST* The parsed arena access expression
-ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx, bool isStatic) {
+ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx, 
+                                         ExprAST* lhs, bool isStatic) {
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. If static form, consume "Arena" ──────────────────────────────
-    ExprAST* lhs = nullptr;
+    // ─── 1. Validate LHS for instance form ──────────────────────────────
+    if (!isStatic && !lhs) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
+                                "instance arena access requires an Arena expression before '::'");
+        ctx.diagnostics.noteAt(loc,
+                               "Use 'arena::method(...)' where 'arena' is an Arena value");
+        // Return nullptr - error recovery
+        return nullptr;
+    }
+    
+    // ─── 2. If static form, consume "Arena" ──────────────────────────────
     if (isStatic) {
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
@@ -1289,22 +1299,16 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
                                     "expected 'Arena', got '", nameTok.value, "'");
             return nullptr;
         }
-        // lhs remains nullptr for static form
-    } else {
-        // Instance form: the LHS is already parsed and passed via the context
-        // We need to store it. The parser calls this from parsePostfixExpr
-        // with the lhs expression, but we don't have it here.
-        // We need to change the signature or store it differently.
     }
     
-    // ─── 2. Consume '::' ───────────────────────────────────────────────────
+    // ─── 3. Consume '::' ───────────────────────────────────────────────────
     if (!stream.match(TokenType::COLON_COLON)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '::', got '", stream.peekValue(), "'");
         return nullptr;
     }
     
-    // ─── 3. Parse method name ─────────────────────────────────────────────
+    // ─── 4. Parse method name ─────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected method name, got '", stream.peekValue(), "'");
@@ -1314,13 +1318,13 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
     Token methodTok = stream.consume();
     InternedString methodName = ctx.pool.intern(methodTok.value);
     
-    // ─── 4. Check for generic arguments ──────────────────────────────────
+    // ─── 5. Check for generic arguments ──────────────────────────────────
     ArenaSpan<TypeAST*> genericArgs;
     if (stream.check(TokenType::LESS)) {
         genericArgs = parseGenericArgs(stream, ctx);
     }
     
-    // ─── 5. Expect '(' and parse arguments ───────────────────────────────
+    // ─── 6. Expect '(' and parse arguments ───────────────────────────────
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '(', got '", stream.peekValue(), "'");
@@ -1329,10 +1333,7 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
     
     ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
     
-    // ─── 6. Build the AST node ──────────────────────────────────────────
-    // For instance form, we need the LHS. The caller (parsePostfixExpr)
-    // has it, so we need to pass it through.
-    // We'll change the signature to take ExprAST* lhs.
+    // ─── 7. Build the AST node ──────────────────────────────────────────
     auto* access = ctx.arena.make<ArenaAccessExprAST>(methodName, isStatic, lhs);
     access->loc = loc;
     access->genericArgs = genericArgs;

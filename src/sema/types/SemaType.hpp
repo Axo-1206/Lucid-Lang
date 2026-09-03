@@ -100,54 +100,54 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx);
 
 // ─── Primitive Type Predicates ──────────────────────────────────────────
 
-bool isBoolType(const TypeAST* type);
-bool isIntegerType(const TypeAST* type);
-bool isFloatType(const TypeAST* type);
-bool isNumericType(const TypeAST* type);
-bool isStringType(const TypeAST* type);
-bool isCharType(const TypeAST* type);
-bool isPrimitiveType(const TypeAST* type);
+bool isBoolType(TypeAST* type);
+bool isIntegerType(TypeAST* type);
+bool isFloatType(TypeAST* type);
+bool isNumericType(TypeAST* type);
+bool isStringType(TypeAST* type);
+bool isCharType(TypeAST* type);
+bool isPrimitiveType(TypeAST* type);
 
 // ─── Wrapper Type Predicates ────────────────────────────────────────────
 
-bool isNullableType(const TypeAST* type);
-bool isFallibleType(const TypeAST* type);
-bool isReferenceType(const TypeAST* type);
-bool isPointerType(const TypeAST* type);
-bool isBorrowedType(const TypeAST* type);
+bool isNullableType(TypeAST* type);
+bool isFallibleType(TypeAST* type);
+bool isReferenceType(TypeAST* type);
+bool isPointerType(TypeAST* type);
+bool isBorrowedType(TypeAST* type);
 
 // ─── Named Type Predicates ──────────────────────────────────────────────
 
-bool isStructType(const TypeAST* type, SemaContext& ctx);
-bool isEnumType(const TypeAST* type, SemaContext& ctx);
-bool isTraitType(const TypeAST* type, SemaContext& ctx);
-bool isGenericParamType(const TypeAST* type, SemaContext& ctx);
+bool isStructType(TypeAST* type, SemaContext& ctx);
+bool isEnumType(TypeAST* type, SemaContext& ctx);
+bool isTraitType(TypeAST* type, SemaContext& ctx);
+bool isGenericParamType(TypeAST* type, SemaContext& ctx);
 
 // ─── Built-in Type Predicates ────────────────────────────────────────────
 
-bool isArenaType(const TypeAST* type);
-bool isArenaDescriptorType(const TypeAST* type);
-bool isArenaNamedType(const NamedTypeAST* named);
-bool isArenaDescriptorNamedType(const NamedTypeAST* named);
-bool isArenaBinding(const VarDeclAST* decl);
+bool isArenaType(TypeAST* type);
+bool isArenaDescriptorType(TypeAST* type);
+bool isArenaNamedType(NamedTypeAST* named);
+bool isArenaDescriptorNamedType(NamedTypeAST* named);
+bool isArenaBinding(VarDeclAST* decl);
 
 // ─── Switch Type Checks ──────────────────────────────────────────────────
 
-bool isValidSwitchType(const TypeAST* type, SemaContext& ctx);
-EnumDeclAST* getEnumDeclFromType(const TypeAST* type, SemaContext& ctx);
-bool isSwitchCaseCompatible(const ExprAST* value, 
-                             const TypeAST* subjectType, 
+bool isValidSwitchType(TypeAST* type, SemaContext& ctx);
+EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx);
+bool isSwitchCaseCompatible(ExprAST* value, 
+                             TypeAST* subjectType, 
                              SemaContext& ctx);
 
 // ─── FFI Compatibility ──────────────────────────────────────────────────
 
-bool isValidFFIType(const TypeAST* type, SemaContext& ctx);
+bool isValidFFIType(TypeAST* type, SemaContext& ctx);
 
 // ─── Numeric Helpers ─────────────────────────────────────────────────────
 
-size_t getIntegerBitWidth(const TypeAST* type);
+size_t getIntegerBitWidth(TypeAST* type);
 TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx);
-bool isIntegerPromotionSafe(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
+bool isIntegerPromotionSafe(TypeAST* target, TypeAST* source, SemaContext& ctx);
 
 // ─── Type Unwrapping ─────────────────────────────────────────────────────
 

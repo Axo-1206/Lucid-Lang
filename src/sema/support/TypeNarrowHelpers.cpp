@@ -3,8 +3,7 @@
 
 #include "TypeNarrowHelpers.hpp"
 #include "../Sema.hpp"
-#include "../types/SemaCompare.hpp"
-#include "../types/SemaResolve.hpp"
+#include "../types/SemaType.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"

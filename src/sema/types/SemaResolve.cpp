@@ -3,7 +3,6 @@
 
 #include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
-#include "core/builtins/BuiltinTypes.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
@@ -55,11 +54,11 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     // ─── 0. Check if this is a built-in type ───────────────────────────────
-    if (builtins::isArenaDescriptorNamedType(type)) {
+    if (isArenaDescriptorNamedType(type)) {
         return ctx.getArenaDescriptorType();
     }
     
-    if (builtins::isArenaNamedType(type)) {
+    if (isArenaNamedType(type)) {
         return ctx.getArenaType();
     }
 
