@@ -216,6 +216,7 @@ llvm::Value* lowerLiteralExpr(LiteralExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
+    // ─── Special case: `_` is the discard placeholder ──────────────────────
     if (ctx.pool.lookupView(expr->name) == "_") {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
                                 "cannot use '_' as a value");
@@ -230,24 +231,36 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
     }
 
     // ─── Handle implicit field access through self ─────────────────────
-    // If this identifier was resolved as a field access through self,
-    // generate it as: selfObject.field
-    if (expr->isImplicitFieldAccess && expr->selfObject) {
-        // ─── First, lower the self object ───────────────────────────────────
-        llvm::Value* selfVal = lowerExpression(expr->selfObject, ctx);
-        if (!selfVal) return nullptr;
-        
-        // ─── Get the field declaration ──────────────────────────────────────
-        if (!decl->isa<FieldDeclAST>()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
-                                    "implicit field access resolved to non-field declaration");
+    // Sema sets isImplicitFieldAccess when an identifier resolves to a field
+    // and 'self' is in scope. CodeGen transforms this to self.field.
+    if (expr->isImplicitFieldAccess) {
+        // ─── Guard: selfObject must be set ──────────────────────────────────
+        // This should never happen if Sema is correct. If it does, it's a
+        // bug in Sema that needs to be fixed, not silently ignored.
+        if (!expr->selfObject) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "implicit field access for '", ctx.pool.lookup(expr->name),
+                                    "' has no self object - Sema bug");
             return nullptr;
         }
-        
+
+        // ─── Guard: decl must be a FieldDeclAST ─────────────────────────────
+        if (!decl->isa<FieldDeclAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "implicit field access resolved to non-field declaration '",
+                                    ctx.pool.lookup(decl->name), "' - Sema bug");
+            return nullptr;
+        }
+
+        // ─── Lower the self object ──────────────────────────────────────────
+        llvm::Value* selfVal = lowerExpression(expr->selfObject, ctx);
+        if (!selfVal) return nullptr;
+
+        // ─── Get the field declaration ──────────────────────────────────────
         FieldDeclAST* fieldDecl = decl->as<FieldDeclAST>();
-        StructDeclAST* structDecl = nullptr;
-        
+
         // ─── Find the parent struct from self's type ───────────────────────
+        StructDeclAST* structDecl = nullptr;
         TypeAST* selfType = expr->selfObject->resolvedType;
         if (selfType && selfType->isa<RefTypeAST>()) {
             RefTypeAST* refType = selfType->as<RefTypeAST>();
@@ -258,55 +271,60 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
                 }
             }
         }
-        
+
+        // ─── Guard: structDecl must be found ────────────────────────────────
         if (!structDecl) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
-                                    "could not determine struct for implicit field access");
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "could not determine struct for implicit field access '",
+                                    ctx.pool.lookup(expr->name), "' - Sema bug");
             return nullptr;
         }
-        
+
         // ─── Get the LLVM struct type ───────────────────────────────────────
         llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
         if (!llvmStructType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                    "struct '", ctx.pool.lookup(structDecl->name), 
-                                    "' has no LLVM type");
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "struct '", ctx.pool.lookup(structDecl->name),
+                                    "' has no LLVM type - Sema bug");
             return nullptr;
         }
-        
+
         // ─── Get the field index ─────────────────────────────────────────────
         size_t fieldIndex = expr->fieldIndex;
         if (fieldIndex == SIZE_MAX) {
             fieldIndex = structDecl->indexOfField(fieldDecl->name);
             if (fieldIndex == SIZE_MAX) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, expr->loc,
-                                        "field '", ctx.pool.lookup(fieldDecl->name), 
-                                        "' not found in struct");
+                                        "field '", ctx.pool.lookup(fieldDecl->name),
+                                        "' not found in struct '",
+                                        ctx.pool.lookup(structDecl->name), "'");
                 return nullptr;
             }
+            // Cache the field index for future use
+            expr->fieldIndex = fieldIndex;
         }
-        
+
         // ─── GEP to the field ────────────────────────────────────────────────
         // selfVal is a pointer to the struct (from &self)
         std::vector<llvm::Value*> indices = {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
-            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx),
                                     static_cast<uint32_t>(fieldIndex))
         };
-        
+
         llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
             llvmStructType,
             selfVal,
             indices,
             "implicit_field_ptr_" + ctx.pool.lookup(fieldDecl->name)
         );
-        
+
         // ─── If this is an l-value, return the pointer ──────────────────────
         if (expr->isLValue) {
             expr->llvmValue = fieldPtr;
             return fieldPtr;
         }
-        
+
         // ─── Otherwise, load the field value ────────────────────────────────
         llvm::Type* fieldType = llvmStructType->getElementType(fieldIndex);
         llvm::Value* fieldVal = ctx.builder.CreateLoad(
@@ -314,7 +332,7 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
             fieldPtr,
             "implicit_field_load_" + ctx.pool.lookup(fieldDecl->name)
         );
-        
+
         expr->llvmValue = fieldVal;
         return fieldVal;
     }
@@ -730,7 +748,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
                     ctx.builder.CreateCondBr(isZero, panicBlock, continueBlock);
                     
                     ctx.builder.SetInsertPoint(panicBlock);
-                    emitPanic(kind, ctx, getRuntimeErrorMessage(kind));
+                    emitPanic(kind, ctx, getRuntimeErrorMessage(kind), expr);
                     ctx.builder.CreateUnreachable();
                 }
                 
@@ -1055,7 +1073,7 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         
         ctx.builder.SetInsertPoint(panicBlock);
         emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx, 
-                  "array index out of bounds");
+                  "array index out of bounds", expr);
         ctx.builder.CreateUnreachable();
     }
 
@@ -1162,7 +1180,7 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
         
         ctx.builder.SetInsertPoint(panicBlock);
         emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx, 
-                  "slice bounds out of range");
+                  "slice bounds out of range", expr);
         ctx.builder.CreateUnreachable();
     }
 
@@ -1704,7 +1722,7 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             
             ctx.builder.SetInsertPoint(panicBlock);
             emitPanic(RuntimeErrorKind::ArenaOutOfCapacity, ctx, 
-                      "arena out of capacity");
+                      "arena out of capacity", expr);
             ctx.builder.CreateUnreachable();
         }
         

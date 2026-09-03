@@ -13,26 +13,88 @@
 
 namespace codegen {
 
-// ─── Helper: Build panic message ───────────────────────────────────────────
+// ─── Helper: Build panic message with file name from context ──────────────
 
-static std::string buildPanicMessageFull(RuntimeErrorKind kind, SourceLocation loc) {
-    return getRuntimeErrorMessage(kind) + " at " + loc.toString();
+std::string buildPanicMessage(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    const SourceLocation& loc,
+    const std::string& additionalMessage
+) {
+    std::string baseMsg = additionalMessage.empty() 
+        ? getRuntimeErrorMessage(kind) 
+        : additionalMessage;
+
+    if (loc.isKnown()) {
+        // ─── Get the file name from CodeGenContext ─────────────────────────
+        // This is set by CodeGen when processing each module.
+        std::string fileName;
+        if (ctx.currentFile.isValid()) {
+            fileName = ctx.pool.lookup(ctx.currentFile);
+        } else {
+            fileName = "<unknown file>";
+        }
+        return fileName + ":" + loc.toString() + ": " + baseMsg;
+    }
+    return baseMsg;
 }
 
-// ─── emitPanic ─────────────────────────────────────────────────────────────
+// ─── emitPanic Overloads ────────────────────────────────────────────────────
 
-void emitPanic(RuntimeErrorKind kind, CodeGenContext& ctx, const std::string& message) {
+/// @brief Core implementation - all other overloads delegate here.
+static void emitPanicImpl(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    const std::string& message,
+    const SourceLocation& loc
+) {
     llvm::Function* panicFn = ctx.getRuntimeFn(RuntimeFn::Panic);
     if (!panicFn) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, SourceLocation(),
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
                                 "panic function not found");
         return;
     }
 
-    std::string fullMsg = message.empty() ? getRuntimeErrorMessage(kind) : message;
+    std::string fullMsg = buildPanicMessage(kind, ctx, loc, message);
     llvm::Value* msgVal = ctx.createStringLiteral(fullMsg);
     ctx.builder.CreateCall(panicFn, {msgVal});
     ctx.builder.CreateUnreachable();
+}
+
+void emitPanic(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    const std::string& message,
+    const SourceLocation& loc
+) {
+    emitPanicImpl(kind, ctx, message, loc);
+}
+
+void emitPanic(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    BaseAST* node
+) {
+    SourceLocation loc = node ? node->loc : SourceLocation();
+    emitPanicImpl(kind, ctx, "", loc);
+}
+
+void emitPanic(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    const std::string& message,
+    BaseAST* node
+) {
+    SourceLocation loc = node ? node->loc : SourceLocation();
+    emitPanicImpl(kind, ctx, message, loc);
+}
+
+void emitPanic(
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    const std::string& message
+) {
+    emitPanicImpl(kind, ctx, message, SourceLocation());
 }
 
 // ─── emitZeroCheck ─────────────────────────────────────────────────────────
@@ -41,7 +103,8 @@ llvm::Value* emitZeroCheck(
     llvm::Value* val,
     RuntimeErrorKind kind,
     CodeGenContext& ctx,
-    llvm::BasicBlock* fallbackBlock
+    llvm::BasicBlock* fallbackBlock,
+    const SourceLocation& loc
 ) {
     if (!val) return nullptr;
 
@@ -82,13 +145,23 @@ llvm::Value* emitZeroCheck(
 
         // ─── Panic block ─────────────────────────────────────────────────────
         ctx.builder.SetInsertPoint(panicBlock);
-        std::string msg = getRuntimeErrorMessage(kind);
-        emitPanic(kind, ctx, msg);
+        emitPanic(kind, ctx, getRuntimeErrorMessage(kind), loc);
         ctx.builder.CreateUnreachable();
 
         ctx.builder.SetInsertPoint(continueBlock);
         return checkedVal;
     }
+}
+
+llvm::Value* emitZeroCheck(
+    llvm::Value* val,
+    RuntimeErrorKind kind,
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock,
+    BaseAST* node
+) {
+    SourceLocation loc = node ? node->loc : SourceLocation();
+    return emitZeroCheck(val, kind, ctx, fallbackBlock, loc);
 }
 
 // ─── emitBoundsCheck ──────────────────────────────────────────────────────
@@ -97,7 +170,8 @@ llvm::Value* emitBoundsCheck(
     llvm::Value* index,
     llvm::Value* length,
     CodeGenContext& ctx,
-    llvm::BasicBlock* fallbackBlock
+    llvm::BasicBlock* fallbackBlock,
+    const SourceLocation& loc
 ) {
     if (!index || !length) return nullptr;
 
@@ -139,13 +213,23 @@ llvm::Value* emitBoundsCheck(
 
         // ─── Panic block ─────────────────────────────────────────────────────
         ctx.builder.SetInsertPoint(panicBlock);
-        std::string msg = getRuntimeErrorMessage(RuntimeErrorKind::ArrayIndexOutOfBounds);
-        emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx, msg);
+        emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx, "", loc);
         ctx.builder.CreateUnreachable();
 
         ctx.builder.SetInsertPoint(continueBlock);
         return index;
     }
+}
+
+llvm::Value* emitBoundsCheck(
+    llvm::Value* index,
+    llvm::Value* length,
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock,
+    BaseAST* node
+) {
+    SourceLocation loc = node ? node->loc : SourceLocation();
+    return emitBoundsCheck(index, length, ctx, fallbackBlock, loc);
 }
 
 // ─── emitSliceBoundsCheck ─────────────────────────────────────────────────
@@ -155,7 +239,8 @@ std::pair<llvm::Value*, llvm::Value*> emitSliceBoundsCheck(
     llvm::Value* end,
     llvm::Value* length,
     CodeGenContext& ctx,
-    llvm::BasicBlock* fallbackBlock
+    llvm::BasicBlock* fallbackBlock,
+    const SourceLocation& loc
 ) {
     if (!start || !end || !length) {
         return {nullptr, nullptr};
@@ -206,13 +291,24 @@ std::pair<llvm::Value*, llvm::Value*> emitSliceBoundsCheck(
 
         // ─── Panic block ─────────────────────────────────────────────────────
         ctx.builder.SetInsertPoint(panicBlock);
-        std::string msg = getRuntimeErrorMessage(RuntimeErrorKind::SliceBoundsOutOfRange);
-        emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx, msg);
+        emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx, "", loc);
         ctx.builder.CreateUnreachable();
 
         ctx.builder.SetInsertPoint(continueBlock);
         return {start, end};
     }
+}
+
+std::pair<llvm::Value*, llvm::Value*> emitSliceBoundsCheck(
+    llvm::Value* start,
+    llvm::Value* end,
+    llvm::Value* length,
+    CodeGenContext& ctx,
+    llvm::BasicBlock* fallbackBlock,
+    BaseAST* node
+) {
+    SourceLocation loc = node ? node->loc : SourceLocation();
+    return emitSliceBoundsCheck(start, end, length, ctx, fallbackBlock, loc);
 }
 
 } // namespace codegen

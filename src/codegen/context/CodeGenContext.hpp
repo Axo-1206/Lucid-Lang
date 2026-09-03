@@ -36,6 +36,16 @@ struct CodeGenContext {
     StringPool& pool;
     DiagnosticEngine& diagnostics;
     llvm::LLVMContext& llvmCtx;
+
+    // ─── Current Source File ───────────────────────────────────────────
+    /// @brief The file path of the module currently being generated.
+    /// 
+    /// This is set by generateModule() before lowering begins.
+    /// Used by panic messages to include file location.
+    /// 
+    /// @see generateModule() in CodeGen.cpp
+    /// @see buildPanicMessage() in CodeGenPanic.cpp
+    InternedString currentFile;
     
     // ─── LLVM Module and Builder ────────────────────────────────────────
     
