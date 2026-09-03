@@ -26,8 +26,6 @@ std::string buildPanicMessage(
         : additionalMessage;
 
     if (loc.isKnown()) {
-        // ─── Get the file name from CodeGenContext ─────────────────────────
-        // This is set by CodeGen when processing each module.
         std::string fileName;
         if (ctx.currentFile.isValid()) {
             fileName = ctx.pool.lookup(ctx.currentFile);
@@ -52,12 +50,20 @@ static void emitPanicImpl(
     if (!panicFn) {
         ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
                                 "panic function not found");
+        // ─── Bug 2 fix: Add terminator on early-return path ────────────────
+        ctx.builder.CreateUnreachable();
         return;
     }
 
     std::string fullMsg = buildPanicMessage(kind, ctx, loc, message);
-    llvm::Value* msgVal = ctx.createStringLiteral(fullMsg);
-    ctx.builder.CreateCall(panicFn, {msgVal});
+    
+    // ─── Bug 1 fix: Extract pointer from string struct ─────────────────────
+    // createStringLiteral returns { ptr, len, cap }, but __lucid_panic
+    // expects a raw char* (i8*). Extract the pointer field.
+    llvm::Value* strVal = ctx.createStringLiteral(fullMsg);
+    llvm::Value* msgPtr = ctx.builder.CreateExtractValue(strVal, 0, "panic_msg_ptr");
+    
+    ctx.builder.CreateCall(panicFn, {msgPtr});
     ctx.builder.CreateUnreachable();
 }
 
@@ -130,12 +136,10 @@ llvm::Value* emitZeroCheck(
     );
 
     if (fallbackBlock) {
-        // ─── Fallback mode: branch to fallback on zero ──────────────────────
         ctx.builder.CreateCondBr(isZero, fallbackBlock, continueBlock);
         ctx.builder.SetInsertPoint(continueBlock);
         return checkedVal;
     } else {
-        // ─── Panic mode: call __lucid_panic on zero ─────────────────────────
         llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
             ctx.llvmCtx,
             "zero_check_panic",
@@ -143,10 +147,9 @@ llvm::Value* emitZeroCheck(
         );
         ctx.builder.CreateCondBr(isZero, panicBlock, continueBlock);
 
-        // ─── Panic block ─────────────────────────────────────────────────────
         ctx.builder.SetInsertPoint(panicBlock);
+        // emitPanic already emits CreateUnreachable() - no redundant call here
         emitPanic(kind, ctx, getRuntimeErrorMessage(kind), loc);
-        ctx.builder.CreateUnreachable();
 
         ctx.builder.SetInsertPoint(continueBlock);
         return checkedVal;

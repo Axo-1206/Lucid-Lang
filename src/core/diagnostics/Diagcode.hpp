@@ -338,6 +338,7 @@ enum class DiagCode : uint32_t {
     Sem_RuntimePanic           = 6519,  // Generic/uncategorized runtime panic
     Sem_AssertionFailed        = 6520,  // #assert failed at runtime
     Sem_UnsupportedOperation   = 6521,  // Unsupported operation at runtime
+    Sem_Unreachable            = 6422,
 
     // ──────────────────────────────────────────────────────────────────────────
     // BACKEND & LINKING ERRORS (7000-7999)

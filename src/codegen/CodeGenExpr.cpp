@@ -748,7 +748,6 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
                     
                     ctx.builder.SetInsertPoint(panicBlock);
                     emitPanic(kind, ctx, getRuntimeErrorMessage(kind), expr);
-                    ctx.builder.CreateUnreachable();
                 }
                 
                 ctx.builder.SetInsertPoint(continueBlock);
@@ -1072,7 +1071,6 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         ctx.builder.SetInsertPoint(panicBlock);
         emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx, 
                   "array index out of bounds", expr);
-        ctx.builder.CreateUnreachable();
     }
 
     ctx.builder.SetInsertPoint(continueBlock);
@@ -1178,7 +1176,6 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
         ctx.builder.SetInsertPoint(panicBlock);
         emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, ctx, 
                   "slice bounds out of range", expr);
-        ctx.builder.CreateUnreachable();
     }
 
     ctx.builder.SetInsertPoint(continueBlock);
@@ -1719,7 +1716,6 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
             ctx.builder.SetInsertPoint(panicBlock);
             emitPanic(RuntimeErrorKind::ArenaOutOfCapacity, ctx, 
                       "arena out of capacity", expr);
-            ctx.builder.CreateUnreachable();
         }
         
         ctx.builder.SetInsertPoint(continueBlock);

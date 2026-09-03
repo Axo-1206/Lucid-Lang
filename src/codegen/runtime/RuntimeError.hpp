@@ -38,7 +38,7 @@ enum class RuntimeErrorKind {
     AllocationFailed,        ///< Memory allocation failure
     ArenaAllocationFailed,   ///< Arena allocation failure
     ArenaInvalidDescriptor,  ///< Invalid arena descriptor
-    ArenaOutOfCapacity,      ///< Arena out of remaining capacity (NEW)
+    ArenaOutOfCapacity,      ///< Arena out of remaining capacity
     
     // ─── Type System Errors ──────────────────────────────────────────────
     UnwrappedNil,            ///< Using nil value without narrowing
@@ -58,11 +58,15 @@ enum class RuntimeErrorKind {
     // ─── Runtime Library Errors ──────────────────────────────────────────
     RuntimePanic,            ///< Generic runtime panic
     AssertionFailed,         ///< Assertion failed
-    Unreachable,             ///< Reached unreachable code (NEW)
-    UnsupportedOperation,    ///< Unsupported operation (NEW)
+    Unreachable,             ///< Reached unreachable code
+    UnsupportedOperation,    ///< Unsupported operation
 };
 
 /// @brief Get the error message for a runtime error kind.
+///
+/// ─── Important ──────────────────────────────────────────────────────────────
+/// NO DEFAULT CASE — compiler will warn if any enum value is unhandled.
+/// This ensures every new RuntimeErrorKind gets added here.
 inline const std::string getRuntimeErrorMessage(RuntimeErrorKind kind) {
     switch (kind) {
         // ─── Arithmetic Errors ────────────────────────────────────────────
@@ -90,7 +94,7 @@ inline const std::string getRuntimeErrorMessage(RuntimeErrorKind kind) {
         
         // ─── Type System Errors ───────────────────────────────────────────
         case RuntimeErrorKind::UnwrappedNil:            return "unwrapped nil value";
-        case RuntimeErrorKind::UnwrappedErr:             return "unwrapped err value";
+        case RuntimeErrorKind::UnwrappedErr:            return "unwrapped err value";
         case RuntimeErrorKind::TagMismatch:             return "tagged slot tag mismatch";
         
         // ─── Foreign Function Errors ──────────────────────────────────────
@@ -109,8 +113,10 @@ inline const std::string getRuntimeErrorMessage(RuntimeErrorKind kind) {
         case RuntimeErrorKind::Unreachable:             return "reached unreachable code";
         case RuntimeErrorKind::UnsupportedOperation:    return "unsupported operation";
         
-        default:                                        return "unknown runtime error";
+        // ─── NO DEFAULT - compiler will warn if any enum value is missing ──
     }
+    // Unreachable - return a fallback for release builds
+    return "unknown runtime error";
 }
 
 } // namespace codegen
@@ -123,18 +129,11 @@ namespace codegen {
 ///
 /// This is what lets a *runtime* panic (emitted by CodeGenPanic.cpp into the
 /// compiled program) carry the same code a *compile-time* diagnostic for the
-/// identical error would use - e.g. a literal `x / 0` caught during const
-/// evaluation reports `DiagCode::Sem_DivisionByZero`, and a runtime `x / y`
-/// check that fires at runtime embeds that exact same code into the panic
-/// message via this mapping. Several codes below (see DiagCode.hpp's
-/// "Added for RuntimeErrorKind" comments) exist purely to give a runtime-only
-/// error - one with no compile-time equivalent, like a failed heap
-/// allocation - a stable code of its own, per the "represents WHAT the error
-/// is, not WHEN it occurs" design decision in DiagCode.hpp.
+/// identical error would use.
 ///
-/// Several kinds intentionally share one DiagCode (e.g. DivisionByZero and
-/// ModuloByZero both map to Sem_DivisionByZero) where the existing
-/// compile-time code was already documented as covering both.
+/// ─── Important ──────────────────────────────────────────────────────────────
+/// NO DEFAULT CASE — compiler will warn if any enum value is unhandled.
+/// This ensures every new RuntimeErrorKind gets added here.
 inline DiagCode toDiagCode(RuntimeErrorKind kind) {
     switch (kind) {
         // ─── Arithmetic Errors ────────────────────────────────────────────
@@ -162,7 +161,7 @@ inline DiagCode toDiagCode(RuntimeErrorKind kind) {
 
         // ─── Type System Errors ───────────────────────────────────────────
         case RuntimeErrorKind::UnwrappedNil:            return DiagCode::Sem_UnhandledNil;
-        case RuntimeErrorKind::UnwrappedErr:             return DiagCode::Sem_UnhandledErr;
+        case RuntimeErrorKind::UnwrappedErr:            return DiagCode::Sem_UnhandledErr;
         case RuntimeErrorKind::TagMismatch:             return DiagCode::Sem_TagMismatch;
 
         // ─── Foreign Function Errors ──────────────────────────────────────
@@ -178,10 +177,13 @@ inline DiagCode toDiagCode(RuntimeErrorKind kind) {
         // ─── Runtime Library Errors ───────────────────────────────────────
         case RuntimeErrorKind::RuntimePanic:            return DiagCode::Sem_RuntimePanic;
         case RuntimeErrorKind::AssertionFailed:         return DiagCode::Sem_AssertionFailed;
+        case RuntimeErrorKind::Unreachable:             return DiagCode::Sem_Unreachable;
         case RuntimeErrorKind::UnsupportedOperation:    return DiagCode::Sem_UnsupportedOperation;
 
-        default:                                        return DiagCode::Sem_RuntimePanic;
+        // ─── NO DEFAULT - compiler will warn if any enum value is missing ──
     }
+    // Unreachable - return a fallback for release builds
+    return DiagCode::Sem_RuntimePanic;
 }
 
 } // namespace codegen
