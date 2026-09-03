@@ -22,14 +22,17 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
     std::vector<std::unique_ptr<llvm::Module>> result;
     result.reserve(modules.size());
 
+    CodeGenContext ctx(p, d, context);
+
     for (ModuleAST* module : modules) {
         if (!module) continue;
-
-        CodeGenContext ctx(p, d, context);
-        
         // ─── Create LLVM module ──────────────────────────────────────────
         std::string name = StringPool::instance().lookup(module->filePath);
         ctx.module = new llvm::Module(name, context);
+
+        // ─── Set the current file for this module ──────────────────────
+        // This is used by CodeGenPanic to include file names in panic messages.
+        ctx.currentFile = module->filePath;
         
         // ─── Generate IR for the module ────────────────────────────────
         auto irModule = generateModule(module, ctx);
