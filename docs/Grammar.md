@@ -1128,7 +1128,7 @@ type, used for every override compatibility check from here on, is
 
   ```lucid
   const customStr (self &Point) -> string = { return "Point!"; };
-  const p Point = Point{ x = 1.5, y = 3.0, str = customStr };
+  const p Point = Point{ x: 1.5, y: 3.0, str: customStr };
   ```
 
   Both the inline default and an external override are checked against the
@@ -5435,6 +5435,25 @@ at compile time the same way a literal `8 / 0` already resolves to the
 error state directly for a fallible binding (see **`err` — Failure**),
 without waiting for a runtime check.
 
+**`Arena::create(size)` may allocate more than `size` bytes.** The
+underlying allocator rounds a request up to its own allocation granularity
+(implementation-defined — the reference implementation rounds up to a 4KB
+page) before asking the system for memory. `capacity()` reports what was
+actually obtained, not the literal argument you passed:
+
+```lucid
+const arena Arena = Arena::create(100) ?? Arena::empty();
+arena::capacity();    -- 4096, not 100 — see arena::capacity() below
+```
+
+This is not a bug to route around — it falls out of choosing a real
+allocation granularity at all, the same way any allocator with a minimum
+block size does. Don't rely on `capacity()` to echo back your original
+argument; if you need to remember the size you asked for, keep it in a
+variable of your own. `remaining()`, `space<T>()`, and `canFit<T>()` are
+all still exactly accurate for what they measure — the extra room from
+rounding is real, usable capacity, not a discrepancy to account for.
+
 **`Arena::empty()` — the one sanctioned way to get a zero-capacity arena.**
 Some call sites want to *choose* an empty, always-usable-but-inert arena on
 purpose — most commonly as the fallback half of a `??` after a failed
@@ -5630,7 +5649,8 @@ caller check first instead, without adding any state the arena doesn't
 already track internally:
 
 ```lucid
-arena::capacity()    -> uint64   -- total bytes, fixed at Arena::create/empty
+arena::capacity()    -> uint64   -- actual bytes obtained, fixed at Arena::create/empty —
+                                  -- may exceed the size you requested; see above
 arena::remaining()   -> uint64   -- bytes left right now
 arena::isEmpty()     -> bool     -- arena::remaining() == 0
 arena::space<T>()    -> uint64   -- arena::remaining() / #sizeof(T) — how many T fit
@@ -5743,7 +5763,7 @@ internal to the compiler; C never needs it, only the boundaries.
 | `arena::alloc<T>(count)`  | type param, `uint64` | `[_]T`            | Bounds-checked; panics on overflow, or `??` for a fallback |
 | `arena::reset()`          | —                    | —                 | O(1); see the `reset()` hazard warning above               |
 | `arena::descriptor()`     | —                    | `ArenaDescriptor` | Read-only `{base, size}` for the FFI boundary              |
-| `arena::capacity()`       | —                    | `uint64`          | Total bytes, fixed at `create`/`empty`                     |
+| `arena::capacity()`       | —                    | `uint64`          | Actual bytes obtained — may exceed the requested size      |
 | `arena::remaining()`      | —                    | `uint64`          | Bytes left right now                                       |
 | `arena::isEmpty()`        | —                    | `bool`            | `arena::remaining() == 0`                                  |
 | `arena::space<T>()`       | type param           | `uint64`          | `arena::remaining() / #sizeof(T)`                          |
