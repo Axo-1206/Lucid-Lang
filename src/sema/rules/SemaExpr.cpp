@@ -13,7 +13,8 @@
 #include "../registry/IntrinsicValidator.hpp"
 #include "../support/CaptureAnalysis.hpp"
 #include "core/ASTStrings.hpp"
-#include "core/builtins/BuiltinTypes.hpp"
+#include "core/builtins/ArenaMethod.hpp"
+#include "../const_eval/ConstEvaluator.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -850,12 +851,137 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
 // resolveArenaAccess
 // =============================================================================
 
+/// @brief Helper to get a constant integer value from an expression.
+static std::optional<int64_t> getConstantIntValue(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return std::nullopt;
+    
+    ConstantValue val = ConstEvaluator::getConstValue(ctx, expr);
+    if (val.isInt()) {
+        return val.asInt();
+    }
+    return std::nullopt;
+}
+
+/// @brief Helper to validate Arena method argument count.
+static bool validateArenaMethodArgCount(
+    builtins::ArenaMethodKind method,
+    size_t argCount,
+    BaseAST* node,
+    SemaContext& ctx
+) {
+    switch (method) {
+        case builtins::ArenaMethodKind::Create:
+            if (argCount != 1) {
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "Arena::create expects exactly 1 argument (size), got ", argCount);
+                return false;
+            }
+            break;
+            
+        case builtins::ArenaMethodKind::Empty:
+            if (argCount != 0) {
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "Arena::empty takes no arguments");
+                return false;
+            }
+            break;
+            
+        case builtins::ArenaMethodKind::Alloc:
+            if (argCount != 1) {
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "arena::alloc<T> expects exactly 1 argument (count), got ", argCount);
+                return false;
+            }
+            break;
+            
+        case builtins::ArenaMethodKind::Reset:
+        case builtins::ArenaMethodKind::Descriptor:
+        case builtins::ArenaMethodKind::Capacity:
+        case builtins::ArenaMethodKind::Remaining:
+        case builtins::ArenaMethodKind::IsEmpty:
+            if (argCount != 0) {
+                std::string name;
+                switch (method) {
+                    case builtins::ArenaMethodKind::Reset:      name = "reset"; break;
+                    case builtins::ArenaMethodKind::Descriptor: name = "descriptor"; break;
+                    case builtins::ArenaMethodKind::Capacity:   name = "capacity"; break;
+                    case builtins::ArenaMethodKind::Remaining:  name = "remaining"; break;
+                    case builtins::ArenaMethodKind::IsEmpty:    name = "isEmpty"; break;
+                    default: break;
+                }
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "arena::", name, " takes no arguments");
+                return false;
+            }
+            break;
+            
+        case builtins::ArenaMethodKind::Space:
+            if (argCount != 0) {
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "arena::space<T> takes no arguments (type argument only)");
+                return false;
+            }
+            break;
+            
+        case builtins::ArenaMethodKind::CanFit:
+            if (argCount != 1) {
+                ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, node,
+                                      "arena::canFit<T> expects exactly 1 argument (count), got ", argCount);
+                return false;
+            }
+            break;
+    }
+    
+    return true;
+}
+
+/// @brief Helper to get the return type for an Arena method.
+static TypeAST* getArenaMethodReturnType(
+    builtins::ArenaMethodKind method,
+    TypeAST* genericArg,
+    SemaContext& ctx
+) {
+    switch (method) {
+        case builtins::ArenaMethodKind::Create:
+        case builtins::ArenaMethodKind::Empty:
+            return ctx.getArenaType();
+            
+        case builtins::ArenaMethodKind::Alloc:
+            if (genericArg) {
+                return ctx.getArrayType(ArrayKind::Slice, 0, genericArg);
+            }
+            return nullptr;
+            
+        case builtins::ArenaMethodKind::Reset:
+            return nullptr;
+            
+        case builtins::ArenaMethodKind::Descriptor:
+            return ctx.getArenaDescriptorType();
+            
+        case builtins::ArenaMethodKind::Capacity:
+        case builtins::ArenaMethodKind::Remaining:
+        case builtins::ArenaMethodKind::Space:
+            return ctx.getUint64Type();
+            
+        case builtins::ArenaMethodKind::IsEmpty:
+        case builtins::ArenaMethodKind::CanFit:
+            return ctx.getBoolType();
+    }
+    
+    return nullptr;
+}
+
 TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
     if (!expr) return nullptr;
     
-    // ─── Step 1: Validate the access using the pure validator ──────────────
-    auto methodOpt = builtins::validateArenaAccess(expr, ctx.pool, ctx.diagnostics);
+    // ─── Step 1: Parse method name ──────────────────────────────────────
+    auto methodOpt = builtins::parseArenaMethod(expr->methodName, ctx.pool);
     if (!methodOpt) {
+        ctx.diagnostics.error(DiagCode::Sem_UnknownMethod, expr,
+                              "unknown arena method '", ctx.pool.lookup(expr->methodName), "'");
+        ctx.diagnostics.note(expr,
+                             "Available arena methods: create, empty, alloc, reset, "
+                             "descriptor, capacity, remaining, isEmpty, space, canFit");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
@@ -864,11 +990,83 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
     }
     builtins::ArenaMethodKind method = *methodOpt;
     
-    // ─── Step 2: For instance methods, validate the LHS ────────────────────
+    // ─── Step 2: Validate static/instance form ─────────────────────────
+    bool isStaticMethod = builtins::isArenaMethodStatic(method);
+    
+    if (expr->isStatic && !isStaticMethod) {
+        ctx.diagnostics.error(DiagCode::Sem_ArenaMethodStatic, expr,
+                              "Arena::", ctx.pool.lookup(expr->methodName),
+                              " is not a static method");
+        ctx.diagnostics.note(expr,
+                             "Only Arena::create and Arena::empty are static methods");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    if (!expr->isStatic && isStaticMethod) {
+        ctx.diagnostics.error(DiagCode::Sem_ArenaMethodStatic, expr,
+                              "arena::", ctx.pool.lookup(expr->methodName),
+                              " is a static method (use Arena::", 
+                              ctx.pool.lookup(expr->methodName), " instead)");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    // ─── Step 3: Validate generic arguments ────────────────────────────
+    bool requiresGenericArg = builtins::arenaMethodRequiresGenericArg(method);
+    bool hasGenericArgs = !expr->genericArgs.empty();
+    
+    if (requiresGenericArg && !hasGenericArgs) {
+        ctx.diagnostics.error(DiagCode::Sem_ArenaMethodGenericArg, expr,
+                              "arena::", ctx.pool.lookup(expr->methodName),
+                              "<T> requires a type argument");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    if (!requiresGenericArg && hasGenericArgs) {
+        ctx.diagnostics.error(DiagCode::Sem_ArenaMethodGenericArg, expr,
+                              "arena::", ctx.pool.lookup(expr->methodName),
+                              " does not take generic arguments");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    if (requiresGenericArg && expr->genericArgs.size() != 1) {
+        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+                              "arena::", ctx.pool.lookup(expr->methodName),
+                              "<T> expects exactly 1 generic argument, got ",
+                              expr->genericArgs.size());
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    // ─── Step 4: Validate argument count ──────────────────────────────
+    if (!validateArenaMethodArgCount(method, expr->args.size(), expr, ctx)) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+    
+    // ─── Step 5: For instance methods, validate LHS ────────────────────
     if (!expr->isStatic) {
-        // Instance form: arena::method()
-        
-        // ─── 2a: LHS must exist ──────────────────────────────────────────
         if (!expr->arenaExpr) {
             ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidLHS, expr,
                                   "instance arena access requires an Arena expression");
@@ -879,7 +1077,6 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
             return ctx.getUnknownType();
         }
         
-        // ─── 2b: LHS must be Arena type ──────────────────────────────────
         TypeAST* arenaType = expr->arenaExpr->resolvedType;
         if (!arenaType || !isArenaType(arenaType)) {
             ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidLHS, expr,
@@ -892,7 +1089,6 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
             return ctx.getUnknownType();
         }
         
-        // ─── 2c: LHS must be a const binding ──────────────────────────────
         if (expr->arenaExpr->isa<IdentifierExprAST>()) {
             IdentifierExprAST* id = expr->arenaExpr->as<IdentifierExprAST>();
             ValueDeclAST* decl = id->resolvedDecl;
@@ -913,22 +1109,75 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
         }
     }
     
-    // ─── Step 3: Build the return type ─────────────────────────────────────
-    TypeAST* returnType = nullptr;
-    TypeAST* genericArg = nullptr;
+    // ─── Step 6: VALUE VALIDATION for Arena::create(size) ─────────────
+    if (method == builtins::ArenaMethodKind::Create && !expr->args.empty()) {
+        ExprAST* sizeArg = expr->args[0];
+        
+        // ─── Resolve the argument to get its type ──────────────────────
+        TypeAST* sizeType = resolveExpr(sizeArg, ctx);
+        if (!sizeType || sizeType->isa<UnknownTypeAST>()) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+        
+        // ─── Check: size must be integer type ──────────────────────────
+        if (!isIntegerType(sizeType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, sizeArg,
+                                  "Arena::create size must be an integer, got ",
+                                  typeToString(sizeType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+        
+        // ─── Try to evaluate as constant ───────────────────────────────
+        // If not constant, do nothing - runtime will handle it.
+        if (sizeArg->isConst) {
+            auto constVal = getConstantIntValue(sizeArg, ctx);
+            if (constVal.has_value()) {
+                int64_t size = constVal.value();
+                
+                // ─── Check: size must be > 0 ──────────────────────────────
+                if (size <= 0) {
+                    ctx.diagnostics.error(DiagCode::Sem_ArenaEmptyCapacity, sizeArg,
+                                          "Arena::create size must be positive (got ", size, ")");
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
+                    expr->isLValue = false;
+                    expr->isConst = false;
+                    return ctx.getUnknownType();
+                }
+                
+                // ─── Warn: size < 4096 (page size) ──────────────────────────
+                const uint64_t PAGE_SIZE = 4096;
+                if (static_cast<uint64_t>(size) < PAGE_SIZE) {
+                    ctx.diagnostics.warning(DiagCode::Warn_ArenaSmallCapacity, sizeArg,
+                                            "Arena::create(", size, 
+                                            ") will be rounded up to page size (",
+                                            PAGE_SIZE, " bytes)");
+                    ctx.diagnostics.note(sizeArg,
+                                         "Arena allocations are page-aligned for performance. "
+                                         "Consider using Arena::create(", PAGE_SIZE, ") "
+                                         "or larger.");
+                }
+            }
+        }
+    }
     
+    // ─── Step 7: Build return type ─────────────────────────────────────
+    TypeAST* genericArg = nullptr;
     if (!expr->genericArgs.empty() && expr->genericArgs[0]) {
         genericArg = expr->genericArgs[0];
     }
     
-    returnType = builtins::getArenaMethodReturnType(
-        method, 
-        genericArg,
-        ctx.pool,
-        ctx.arena
-    );
+    TypeAST* returnType = getArenaMethodReturnType(method, genericArg, ctx);
     
-    // ─── Step 4: Determine value state based on method ─────────────────────
+    // ─── Step 8: Determine value state ──────────────────────────────────
     ValueState state = ValueState::Definite;
     
     switch (method) {
@@ -942,29 +1191,23 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
         }
         
         case builtins::ArenaMethodKind::Empty: {
-            // Arena::empty() -> Arena
             returnType = ctx.getArenaType();
             state = ValueState::Definite;
             break;
         }
         
         case builtins::ArenaMethodKind::Alloc: {
-            // arena::alloc<T>(count) -> [_]T
-            // Return type is already ArrayTypeAST with Slice kind
-            // The slice is a borrowed view - state is unknown (bounds check at runtime)
-            state = ValueState::Unknown;
+            state = ValueState::Unknown;  // Bounds check at runtime
             break;
         }
         
         case builtins::ArenaMethodKind::Reset: {
-            // arena::reset() -> ()
             returnType = nullptr;
             state = ValueState::None;
             break;
         }
         
         case builtins::ArenaMethodKind::Descriptor: {
-            // arena::descriptor() -> ArenaDescriptor
             returnType = ctx.getArenaDescriptorType();
             state = ValueState::Definite;
             break;
@@ -973,22 +1216,18 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
         case builtins::ArenaMethodKind::Capacity:
         case builtins::ArenaMethodKind::Remaining:
         case builtins::ArenaMethodKind::Space: {
-            // capacity() -> uint64, remaining() -> uint64, space<T>() -> uint64
-            // Return type is already PrimitiveTypeAST (Uint64)
             state = ValueState::Definite;
             break;
         }
         
         case builtins::ArenaMethodKind::IsEmpty:
         case builtins::ArenaMethodKind::CanFit: {
-            // isEmpty() -> bool, canFit<T>() -> bool
-            // Return type is already PrimitiveTypeAST (Bool)
             state = ValueState::Definite;
             break;
         }
     }
     
-    // ─── Step 5: Store results ─────────────────────────────────────────────
+    // ─── Step 9: Store results ──────────────────────────────────────────
     expr->resolvedType = returnType;
     expr->valueState = state;
     expr->isLValue = false;

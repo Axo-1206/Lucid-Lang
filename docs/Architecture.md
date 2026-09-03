@@ -531,7 +531,7 @@ lucid/
     │   │   ├── ExprAST.hpp                 # expression nodes
     │   │   └── TypeAST.hpp                 # type annotation nodes
     │   ├── builtins/
-    │   │   └── BuiltinTypes.hpp/cpp        # Arena and ArenaDescriptor
+    │   │   └── ArenaMethod.hpp             # only method enum + parsing
     │   ├── registry/
     │   │   ├── AttributeRegistry.hpp/cpp
     │   │   └── IntrinsicRegistry.hpp/cpp

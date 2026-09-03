@@ -379,6 +379,7 @@ enum class DiagCode : uint32_t {
     Warn_UnsafeFFI         = 8018,  // Unsafe FFI usage
     Warn_ForeignBody       = 8019,  // Foreign function has a body
     Warn_ForeignInline     = 8020,  // Cannot inline foreign function
+    Warn_ArenaSmallCapacity = 8021,
 };
 
 

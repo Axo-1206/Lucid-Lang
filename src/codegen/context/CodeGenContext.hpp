@@ -154,19 +154,6 @@ struct CodeGenContext {
         return nullCoalesceStack.back().fallbackBlock;
     }
 
-    // /// @brief Mark that the fallback block was taken for the current `??`.
-    // void markNullCoalesceFallbackTaken() {
-    //     if (!nullCoalesceStack.empty()) {
-    //         nullCoalesceStack.back().fallbackTaken = true;
-    //     }
-    // }
-
-    // /// @brief Check if the fallback was taken for the current `??`.
-    // bool wasNullCoalesceFallbackTaken() const {
-    //     if (nullCoalesceStack.empty()) return false;
-    //     return nullCoalesceStack.back().fallbackTaken;
-    // }
-
     // ─── Function Helpers ──────────────────────────────────────────────────
     
     void storeFunction(FuncDeclAST* decl, llvm::Function* func) {

@@ -5,7 +5,6 @@
 /// keeping the header clean and focused on declarations.
 
 #include "SemaContext.hpp"
-#include "core/builtins/BuiltinTypes.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
@@ -551,6 +550,14 @@ PrimitiveTypeAST* SemaContext::getCharType() {
     return typeCache.charType;
 }
 
+PrimitiveTypeAST* SemaContext::getUint64Type() {
+    // Check cache first
+    if (!typeCache.uint64Type) {
+        typeCache.uint64Type = arena.make<PrimitiveTypeAST>(PrimitiveKind::Uint64);
+    }
+    return typeCache.uint64Type;
+}
+
 UnknownTypeAST* SemaContext::getUnknownType() {
     if (!typeCache.unknownType) {
         typeCache.unknownType = arena.make<UnknownTypeAST>();
@@ -623,7 +630,7 @@ NamedTypeAST* SemaContext::getArenaType() {
     }
     
     // Create and cache the Arena type using the pure factory
-    NamedTypeAST* type = builtins::createArenaType(pool, arena);
+    NamedTypeAST* type = getArenaType();
     typeCache.namedTypes[key] = type;
     return type;
 }
@@ -638,7 +645,7 @@ NamedTypeAST* SemaContext::getArenaDescriptorType() {
     }
     
     // Create and cache the ArenaDescriptor type using the pure factory
-    NamedTypeAST* type = builtins::createArenaDescriptorType(pool, arena);
+    NamedTypeAST* type = getArenaDescriptorType();
     typeCache.namedTypes[key] = type;
     return type;
 }
