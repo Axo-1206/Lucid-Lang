@@ -93,8 +93,7 @@ struct CodeGenContext {
 
     // ─── Null Coalesce Context Stack ──────────────────────────────────
     struct NullCoalesceContext {
-        llvm::BasicBlock* fallbackBlock = nullptr;
-        bool fallbackTaken = false;
+        llvm::BasicBlock* fallbackBlock = nullptr;\
         bool isActive = false;
     };
     std::vector<NullCoalesceContext> nullCoalesceStack;
@@ -129,7 +128,7 @@ struct CodeGenContext {
 
     /// @brief Enter a `??` expression context.
     void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
-        nullCoalesceStack.push_back({fallbackBlock, false, true});
+        nullCoalesceStack.push_back({fallbackBlock, true});
     }
 
     /// @brief Exit the current `??` expression context.
@@ -155,18 +154,18 @@ struct CodeGenContext {
         return nullCoalesceStack.back().fallbackBlock;
     }
 
-    /// @brief Mark that the fallback block was taken for the current `??`.
-    void markNullCoalesceFallbackTaken() {
-        if (!nullCoalesceStack.empty()) {
-            nullCoalesceStack.back().fallbackTaken = true;
-        }
-    }
+    // /// @brief Mark that the fallback block was taken for the current `??`.
+    // void markNullCoalesceFallbackTaken() {
+    //     if (!nullCoalesceStack.empty()) {
+    //         nullCoalesceStack.back().fallbackTaken = true;
+    //     }
+    // }
 
-    /// @brief Check if the fallback was taken for the current `??`.
-    bool wasNullCoalesceFallbackTaken() const {
-        if (nullCoalesceStack.empty()) return false;
-        return nullCoalesceStack.back().fallbackTaken;
-    }
+    // /// @brief Check if the fallback was taken for the current `??`.
+    // bool wasNullCoalesceFallbackTaken() const {
+    //     if (nullCoalesceStack.empty()) return false;
+    //     return nullCoalesceStack.back().fallbackTaken;
+    // }
 
     // ─── Function Helpers ──────────────────────────────────────────────────
     

@@ -740,7 +740,6 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
                     // ─── In ?? context: branch to fallback on zero ──────────────────
                     llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
                     ctx.builder.CreateCondBr(isZero, fallbackBlock, continueBlock);
-                    ctx.markNullCoalesceFallbackTaken();
                 } else {
                     // ─── Normal context: panic on zero ──────────────────────────────
                     llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
@@ -1064,7 +1063,6 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         // ─── In ?? context: branch to fallback on out-of-bounds ─────────────
         llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
         ctx.builder.CreateCondBr(inBounds, continueBlock, fallbackBlock);
-        ctx.markNullCoalesceFallbackTaken();
     } else {
         // ─── Normal context: panic on out-of-bounds ─────────────────────────
         llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
@@ -1171,7 +1169,6 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
         // ─── In ?? context: branch to fallback on out-of-bounds ─────────────
         llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
         ctx.builder.CreateCondBr(inBounds, continueBlock, fallbackBlock);
-        ctx.markNullCoalesceFallbackTaken();
     } else {
         // ─── Normal context: panic on out-of-bounds ─────────────────────────
         llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
@@ -1714,7 +1711,6 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
         if (ctx.isInsideNullCoalesce()) {
             llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
             ctx.builder.CreateCondBr(isNull, fallbackBlock, continueBlock);
-            ctx.markNullCoalesceFallbackTaken();
         } else {
             llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
                 ctx.llvmCtx, "arena_alloc_panic", func);
@@ -1856,7 +1852,10 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
     llvm::Function* func = ctx.getCurrentFunction();
     assert(func && "Null coalesce expression outside of function");
 
-    // ─── CASE 1: LHS is already nullable/fallible (tagged type) ─────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // CASE 1: LHS is already nullable/fallible (tagged type)
+    // ──────────────────────────────────────────────────────────────────────────
+
     if (sema::isNullableType(lhsType) || sema::isFallibleType(lhsType)) {
         // ─── Lower the LHS ──────────────────────────────────────────────────
         llvm::Value* lhs = lowerExpression(expr->value, ctx);
@@ -1903,6 +1902,7 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         ctx.builder.SetInsertPoint(successBlock);
         llvm::Value* lhsValid = ctx.builder.CreateExtractValue(lhs, 1, "coalesce_value");
         ctx.builder.CreateBr(mergeBlock);
+        llvm::BasicBlock* actualSuccessBlock = ctx.builder.GetInsertBlock();
 
         // ─── Fallback block: lower the RHS ──────────────────────────────────
         ctx.builder.SetInsertPoint(fallbackBlock);
@@ -1915,6 +1915,7 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
             }
         }
         ctx.builder.CreateBr(mergeBlock);
+        llvm::BasicBlock* actualFallbackBlock = ctx.builder.GetInsertBlock();
 
         // ─── Merge block: PHI selects the correct value ─────────────────────
         ctx.builder.SetInsertPoint(mergeBlock);
@@ -1923,104 +1924,62 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
             2,
             "coalesce_result"
         );
-        phi->addIncoming(lhsValid, successBlock);
-        phi->addIncoming(rhsValue, fallbackBlock);
+        phi->addIncoming(lhsValid, actualSuccessBlock);
+        phi->addIncoming(rhsValue, actualFallbackBlock);
 
         expr->llvmValue = phi;
         return phi;
     }
 
-    // ─── CASE 2: LHS is a plain risky operation ─────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // CASE 2: LHS is a plain risky operation
+    // ──────────────────────────────────────────────────────────────────────────
+
     // ─── Create basic blocks ─────────────────────────────────────────────────
-    llvm::BasicBlock* successBlock = llvm::BasicBlock::Create(
-        ctx.llvmCtx, "coalesce_risky_success", func);
     llvm::BasicBlock* fallbackBlock = llvm::BasicBlock::Create(
         ctx.llvmCtx, "coalesce_risky_fallback", func);
     llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
         ctx.llvmCtx, "coalesce_risky_merge", func);
 
-    // ─── Push the new `??` context ──────────────────────────────────────────
-    ctx.pushNullCoalesce(fallbackBlock);
-
-    // ─── Lower the LHS in `??` context ──────────────────────────────────────
+    // ─── Push the ?? context ─────────────────────────────────────────────────
     // Risky operations (division, index, arena::alloc) will check
     // ctx.isInsideNullCoalesce() and branch to fallbackBlock on failure.
+    ctx.pushNullCoalesce(fallbackBlock);
+
+    // ─── Lower the LHS in ?? context ──────────────────────────────────────
+    // If a risky operation fails, it branches to fallbackBlock and leaves
+    // the builder in its own "continue" block (the success path).
+    // If no risky operation participates, the builder is just wherever it was.
+    // Either way, the builder's current position IS the success continuation.
     llvm::Value* lhs = lowerExpression(expr->value, ctx);
 
-    // ─── Check if the fallback was taken ─────────────────────────────────────
-    if (ctx.wasNullCoalesceFallbackTaken()) {
-        // The LHS branched to fallbackBlock. We're now in the fallback block.
-        // Lower the RHS there.
-        ctx.popNullCoalesce();  // Remove current context before lowering RHS
-        
-        llvm::Value* rhsValue = lowerExpression(expr->fallback, ctx);
-        if (!rhsValue) return nullptr;
-        if (expr->fallback->isLValue) {
-            llvm::Type* elemType = getType(ctx, expr->fallback->resolvedType);
-            if (elemType) {
-                rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
-            }
-        }
-        ctx.builder.CreateBr(mergeBlock);
-        
-        // ─── Set up merge block ──────────────────────────────────────────────
-        // The LHS's success path should have branched to successBlock.
-        // We need to ensure the success block branches to mergeBlock with the
-        // LHS value. The LHS lowering should have already done this.
-        // We just need to create the PHI and add the incoming values.
-        
-        llvm::Type* lhsResultType = getType(ctx, expr->value->resolvedType);
-        if (!lhsResultType) return nullptr;
-        
-        ctx.builder.SetInsertPoint(mergeBlock);
-        llvm::PHINode* phi = ctx.builder.CreatePHI(
-            lhsResultType,
-            2,
-            "coalesce_risky_result"
-        );
-        
-        // Add incoming from fallback block
-        phi->addIncoming(rhsValue, fallbackBlock);
-        
-        // The success block should already have a terminator that branches
-        // to mergeBlock. But if it doesn't, we need to add one.
-        if (successBlock->getTerminator() == nullptr) {
-            // This shouldn't happen if the LHS lowering set up the success path
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->value->loc,
-                                    "LHS expression did not set up success path");
-            return nullptr;
-        }
-        
-        // Note: The PHI's incoming from successBlock should have been added
-        // by the LHS lowering when it created the PHI. We're just adding the
-        // fallback incoming value.
-        
-        expr->llvmValue = phi;
-        return phi;
-    }
+    // ─── Pop the ?? context ─────────────────────────────────────────────────
+    // We popped it early so the fallback expression itself is NOT in the
+    // ?? context. If the fallback contains another ??, it starts its own
+    // fresh context.
+    ctx.popNullCoalesce();
 
-    // ─── LHS succeeded ─────────────────────────────────────────────────────────
-    // We're still in the LHS's code path. The LHS lowering should NOT have
-    // emitted any branches. It just returned the value.
-    
-    // ─── Branch to success block ──────────────────────────────────────────────
-    ctx.builder.CreateBr(successBlock);
+    if (!lhs) return nullptr;
 
-    // ─── Success block ────────────────────────────────────────────────────────
-    ctx.builder.SetInsertPoint(successBlock);
+    // ─── Load if the LHS is an l-value ─────────────────────────────────────
     llvm::Value* lhsValid = lhs;
     if (expr->value->isLValue) {
         llvm::Type* elemType = getType(ctx, expr->value->resolvedType);
         if (elemType) {
             lhsValid = loadIfNeeded(lhsValid, elemType, ctx);
         }
+        if (!lhsValid) return nullptr;
     }
-    ctx.builder.CreateBr(mergeBlock);
 
-    // ─── Fallback block ──────────────────────────────────────────────────────
+    // ─── Success path ──────────────────────────────────────────────────────
+    // Wherever the builder is right now IS the success continuation.
+    // The risky operation (if any) already left the builder in its own
+    // "continue" block after branching failures away.
+    ctx.builder.CreateBr(mergeBlock);
+    llvm::BasicBlock* successBlock = ctx.builder.GetInsertBlock();
+
+    // ─── Fallback path ─────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(fallbackBlock);
-    ctx.popNullCoalesce();  // Remove current context before lowering RHS
-    
     llvm::Value* rhsValue = lowerExpression(expr->fallback, ctx);
     if (!rhsValue) return nullptr;
     if (expr->fallback->isLValue) {
@@ -2028,10 +1987,12 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         if (elemType) {
             rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
         }
+        if (!rhsValue) return nullptr;
     }
     ctx.builder.CreateBr(mergeBlock);
+    llvm::BasicBlock* actualFallbackBlock = ctx.builder.GetInsertBlock();
 
-    // ─── Merge block ──────────────────────────────────────────────────────────
+    // ─── Merge block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(mergeBlock);
     llvm::PHINode* phi = ctx.builder.CreatePHI(
         lhsValid->getType(),
@@ -2039,12 +2000,7 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         "coalesce_risky_result"
     );
     phi->addIncoming(lhsValid, successBlock);
-    phi->addIncoming(rhsValue, fallbackBlock);
-
-    // ─── Pop the context if still active ─────────────────────────────────────
-    if (ctx.isInsideNullCoalesce()) {
-        ctx.popNullCoalesce();
-    }
+    phi->addIncoming(rhsValue, actualFallbackBlock);
 
     expr->llvmValue = phi;
     return phi;
