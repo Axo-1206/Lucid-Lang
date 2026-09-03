@@ -164,8 +164,9 @@ llvm::Value* emitIntrinsicFromAST(
         return argVal;
     }
 
-    // ─── Special-case: #toRef(ptr) ────────────────────────────────────────
-    // toRef(ptr) - do NOT load, but add null check
+    // ─── #toRef(ptr) ────────────────────────────────────────────────────────
+    // Null check with fallback/panic support. No flag needed - the builder's
+    // position tells us the success path.
     if (info->kind == IntrinsicKind::ToRef) {
         if (expr->args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -174,132 +175,40 @@ llvm::Value* emitIntrinsicFromAST(
         }
         llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
         if (!argVal) return nullptr;
-        return emitNullCheck(argVal, ctx);
-    }
 
-    // ─── Special-case: #ptrstr(x) ─────────────────────────────────────────
-    // ptrstr(x) formats x's memory address - needs the raw address
-    if (info->kind == IntrinsicKind::Ptrstr) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#ptrstr' requires an argument");
-            return nullptr;
+        // ─── Null check ──────────────────────────────────────────────────
+        llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+        llvm::Value* checkedPtr = argVal;
+        if (checkedPtr->getType() != i8Ptr) {
+            checkedPtr = ctx.builder.CreatePointerCast(checkedPtr, i8Ptr, "toRef_ptr_cast");
         }
-        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-        if (!argVal) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-    }
 
-    // ─── Special-case: #bitcast(T, x) ─────────────────────────────────────
-    // #bitcast takes a type argument T (compile-time) and a value x (runtime)
-    // The type T comes from expr->resolvedType, not from the arguments.
-    if (info->kind == IntrinsicKind::Bitcast) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#bitcast' requires an argument");
-            return nullptr;
-        }
-        // Lower the value argument (the type T is from resolvedType)
-        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-        if (!argVal) return nullptr;
-        if (expr->args[0]->isLValue) {
-            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
-            if (elemType) {
-                argVal = loadIfNeeded(argVal, elemType, ctx);
-            }
-            if (!argVal) return nullptr;
-        }
-        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-    }
+        llvm::Value* isNull = ctx.builder.CreateIsNull(checkedPtr, "toRef_null_check");
+        llvm::Function* func = ctx.getCurrentFunction();
 
-    // ─── Special-case: #alloc(T, count) ──────────────────────────────────
-    // #alloc takes a type argument T (compile-time) and a count (runtime)
-    // The type T comes from expr->resolvedType (*T), count is the argument.
-    if (info->kind == IntrinsicKind::Alloc) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#alloc' requires an argument (count)");
-            return nullptr;
-        }
-        // Lower the count argument - it should be loaded
-        llvm::Value* count = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!count) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {count}, expr, ctx);
-    }
+        // ─── Create continue block (success path) ──────────────────────
+        llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "toRef_continue", func);
 
-    // ─── Special-case: #tostr(x) ──────────────────────────────────────────
-    // #tostr can take ANY type - load the value normally
-    if (info->kind == IntrinsicKind::Tostr) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#tostr' requires an argument");
-            return nullptr;
-        }
-        llvm::Value* argVal = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!argVal) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-    }
+        if (ctx.isInsideNullCoalesce()) {
+            // ─── In ?? context: branch to fallback on null ──────────────
+            llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
+            ctx.builder.CreateCondBr(isNull, fallbackBlock, continueBlock);
+            // No flag needed - the builder is now in continueBlock
+        } else {
+            // ─── Normal context: panic on null ──────────────────────────
+            llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "toRef_panic", func);
+            ctx.builder.CreateCondBr(isNull, panicBlock, continueBlock);
 
-    // ─── Special-case: #type_of(x) / #name_of(x) ─────────────────────────
-    // These intrinsics operate on expressions - they need the AST info
-    if (info->kind == IntrinsicKind::Typeof || info->kind == IntrinsicKind::Nameof) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#'", ctx.pool.lookup(expr->intrinsicName), 
-                                   "' requires an argument");
-            return nullptr;
+            ctx.builder.SetInsertPoint(panicBlock);
+            emitPanic(RuntimeErrorKind::NullPointerDereference, ctx, expr->args[0]);
+            // emitPanic already emits CreateUnreachable()
         }
-        // For #typeof and #nameof, we actually DON'T need to lower the argument
-        // - we just need its type/name from the AST. But we still need to
-        // pass something to the emitter (it will ignore the value and use
-        // the AST).
-        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
-        if (!argVal) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-    }
 
-    // ─── Special-case: #simd_splat(x) ─────────────────────────────────────
-    // #simd_splat takes a scalar value and returns a vector - load normally
-    if (info->kind == IntrinsicKind::SimdSplat) {
-        if (expr->args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_splat' requires an argument");
-            return nullptr;
-        }
-        llvm::Value* argVal = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!argVal) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
-    }
-
-    // ─── Special-case: #simd_extract(vec, index) ─────────────────────────
-    // #simd_extract takes a vector and an index - index must be constant
-    if (info->kind == IntrinsicKind::SimdExtract) {
-        if (expr->args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_extract' requires 2 arguments");
-            return nullptr;
-        }
-        llvm::Value* vec = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!vec) return nullptr;
-        llvm::Value* idx = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
-        if (!idx) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {vec, idx}, expr, ctx);
-    }
-
-    // ─── Special-case: #simd_insert(vec, index, value) ───────────────────
-    if (info->kind == IntrinsicKind::SimdInsert) {
-        if (expr->args.size() < 3) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_insert' requires 3 arguments");
-            return nullptr;
-        }
-        llvm::Value* vec = lowerIntrinsicArg(expr->args[0], info->kind, 0, ctx);
-        if (!vec) return nullptr;
-        llvm::Value* idx = lowerIntrinsicArg(expr->args[1], info->kind, 1, ctx);
-        if (!idx) return nullptr;
-        llvm::Value* val = lowerIntrinsicArg(expr->args[2], info->kind, 2, ctx);
-        if (!val) return nullptr;
-        return emitIntrinsic(expr->intrinsicName, {vec, idx, val}, expr, ctx);
+        // ─── Success path ────────────────────────────────────────────────
+        ctx.builder.SetInsertPoint(continueBlock);
+        return argVal;
     }
 
     // ─── General case: Lower all arguments with the appropriate rules ────
