@@ -5942,6 +5942,7 @@ modern ISAs). Faster and more precise than a software implementation.
 | Intrinsic         | Args         | Returns | Notes                                 |
 | ----------------- | ------------ | ------- | ------------------------------------- |
 | `#sqrt(x)`        | float/double | same    | Hardware square root                  |
+| `#trunc(x)`       | float/double | same    | Round toward zero (truncate)          |
 | `#floor(x)`       | float/double | same    | Round toward −∞                       |
 | `#ceil(x)`        | float/double | same    | Round toward +∞                       |
 | `#round(x)`       | float/double | same    | Round to nearest, half away from zero |
