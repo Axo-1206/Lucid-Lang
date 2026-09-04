@@ -93,7 +93,7 @@ void registerStructName(StructDeclAST* decl, SemaContext& ctx) {
 }
 
 // =============================================================================
-// PHASE 2: Type Resolution
+// PHASE 2: Declaration Resolution
 // =============================================================================
 
 void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx) {
@@ -102,53 +102,6 @@ void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, decl,
                               "undefined module '", ctx.pool.lookup(decl->path), "'");
     }
-}
-
-// ─── isArenaConstructionCall ──────────────────────────────────────────────
-
-/// @brief Check if an expression is a valid Arena construction call.
-/// 
-/// Valid Arena construction calls are:
-///   - Arena::create(size)   (static method call)
-///   - Arena::empty()        (static method call)
-/// 
-/// This rejects:
-///   - IdentifierExprAST (copying an existing Arena binding)
-///   - Any other expression that evaluates to Arena
-/// 
-/// @param expr The expression to check.
-/// @param ctx The semantic context.
-/// @return True if the expression is an Arena::create or Arena::empty call.
-static bool isArenaConstructionCall(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return false;
-    
-    // ─── Check if it's an ArenaAccessExprAST ──────────────────────────────
-    if (expr->isa<ArenaAccessExprAST>()) {
-        ArenaAccessExprAST* arenaAccess = expr->as<ArenaAccessExprAST>();
-        
-        // Must be a static call (Arena::create or Arena::empty)
-        if (!arenaAccess->isStatic) {
-            return false;
-        }
-        
-        InternedString createName = ctx.pool.intern("create");
-        InternedString emptyName = ctx.pool.intern("empty");
-        
-        return (arenaAccess->methodName == createName ||
-                arenaAccess->methodName == emptyName);
-    }
-    
-    // ─── Also check if it's a call that resolves to Arena::create/empty ──
-    // For example, a module alias: myArena::create(4096) should also be valid
-    // But this is handled by the ArenaAccessExprAST case above, since
-    // module:arena::create would be parsed as a ModuleAccessExprAST containing
-    // an ArenaAccessExprAST? Actually, the parser should produce an
-    // ArenaAccessExprAST directly for Arena::create.
-    // 
-    // The parser recognizes Arena::create via the :: operator, not module::
-    // So this case should be sufficient.
-    
-    return false;
 }
 
 // ─── resolveVarDecl ──────────────────────────────────────────────────────────
@@ -207,36 +160,12 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         // This rejects:
         //   - const b Arena = a;               (copy of existing arena)
         //   - const b Arena = someFunction();  (any other expression)
-        //   - const b Arena = Arena{};         (struct literal - already rejected elsewhere)
+        //   - const b Arena = Arena{};         already rejected by type system
         if (!validateArenaInitializer(decl->init, ctx)) {
             return;
         }
         
-        // ─── 3e. Additional check: RHS must be an Arena static call ────────
-        // This is a stronger check than validateArenaInitializer - we ensure
-        // the RHS is literally Arena::create or Arena::empty, not just any
-        // expression that happens to produce an Arena.
-        if (!isArenaConstructionCall(decl->init, ctx)) {
-            ctx.diagnostics.error(DiagCode::Sem_ArenaInvalidInit, decl,
-                                "Arena binding must be initialized with "
-                                "Arena::create(size) or Arena::empty()");
-            ctx.diagnostics.note(decl,
-                                "Copying an existing Arena is not allowed. "
-                                "Use 'const ref &Arena = existing' to borrow "
-                                "a reference to an existing Arena.");
-            
-            // Try to provide a helpful suggestion
-            if (decl->init->isa<IdentifierExprAST>()) {
-                IdentifierExprAST* id = decl->init->as<IdentifierExprAST>();
-                ctx.diagnostics.note(decl,
-                                    "If you want to borrow an existing Arena, "
-                                    "use 'const ref &Arena = ", 
-                                    ctx.pool.lookup(id->name), "'");
-            }
-            return;
-        }
-        
-        // ─── 3f. Mark the binding as the owner of the Arena ─────────────────
+        // ─── 3e. Mark the binding as the owner of the Arena ─────────────────
         // This flag can be used by other passes to know this binding owns the
         // Arena and should be freed at scope exit. (Not needed for CodeGen
         // since the LiveVariableTracker handles this, but useful for clarity.)

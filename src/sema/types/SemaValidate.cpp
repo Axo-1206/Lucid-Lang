@@ -604,9 +604,9 @@ bool validateArenaInitializer(ExprAST* init, SemaContext& ctx) {
                               "Arena binding must be initialized with "
                               "Arena::create(size) or Arena::empty()");
         ctx.diagnostics.note(init,
-                              "Found: ", init->resolvedType 
-                              ? typeToString(init->resolvedType, ctx.pool) 
-                              : "unknown");
+                              "Copying an existing Arena is not allowed. "
+                              "Use 'const ref &Arena = existing' to borrow "
+                              "a reference to an existing Arena.");
         return false;
     }
     

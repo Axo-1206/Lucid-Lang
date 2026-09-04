@@ -125,7 +125,7 @@ void registerDeclName(DeclAST* decl, SemaContext& ctx) {
 }
 
 // =============================================================================
-// PHASE 2: Type Resolution
+// PHASE 2: Declaration Resolution
 // =============================================================================
 
 /// @brief Resolve all declarations in a module.
