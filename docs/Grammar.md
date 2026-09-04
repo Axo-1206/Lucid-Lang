@@ -1128,7 +1128,7 @@ type, used for every override compatibility check from here on, is
 
   ```lucid
   const customStr (self &Point) -> string = { return "Point!"; };
-  const p Point = Point{ x: 1.5, y: 3.0, str: customStr };
+  const p Point = Point{ x = 1.5, y = 3.0, str = customStr };
   ```
 
   Both the inline default and an external override are checked against the
