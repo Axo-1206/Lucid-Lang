@@ -51,6 +51,7 @@ struct TypeCache {
     PrimitiveTypeAST* stringType = nullptr;
     PrimitiveTypeAST* charType = nullptr;
     PrimitiveTypeAST* uint64Type = nullptr;
+    PrimitiveTypeAST* uint8Type = nullptr;
     UnknownTypeAST* unknownType = nullptr;
     
     // ─── Named Type Cache ──────────────────────────────────────────────────
@@ -213,6 +214,7 @@ struct SemaContext {
     PrimitiveTypeAST* getStringType();
     PrimitiveTypeAST* getCharType();
     PrimitiveTypeAST* getUint64Type();
+    PrimitiveTypeAST* getUint8Type();
     UnknownTypeAST* getUnknownType();
     NamedTypeAST* getNamedType(InternedString name, const ArenaSpan<TypeAST*>& genericArgs = {});
     ArrayTypeAST* getArrayType(ArrayKind kind, uint64_t size, TypeAST* element);

@@ -558,6 +558,13 @@ PrimitiveTypeAST* SemaContext::getUint64Type() {
     return typeCache.uint64Type;
 }
 
+PrimitiveTypeAST* SemaContext::getUint8Type() {
+    if (!typeCache.uint8Type) {
+        typeCache.uint8Type = arena.make<PrimitiveTypeAST>(PrimitiveKind::Uint8);
+    }
+    return typeCache.uint8Type;
+}
+
 UnknownTypeAST* SemaContext::getUnknownType() {
     if (!typeCache.unknownType) {
         typeCache.unknownType = arena.make<UnknownTypeAST>();

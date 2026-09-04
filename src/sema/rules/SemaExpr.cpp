@@ -493,6 +493,36 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
+    // ─── Handle ArenaDescriptor built-in type ────────────────────────────────
+    // ArenaDescriptor has two read-only fields: base (*uint8) and size (uint64)
+    if (isArenaDescriptorType(objectType)) {
+        InternedString baseName = ctx.pool.intern("base");
+        InternedString sizeName = ctx.pool.intern("size");
+        
+        if (expr->fieldName == baseName) {
+            expr->resolvedType = ctx.getPtrType(ctx.getUint8Type());
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;   // Field is read-only
+            expr->isConst = true;     // Field is always read-only
+            return expr->resolvedType;
+        } else if (expr->fieldName == sizeName) {
+            expr->resolvedType = ctx.getUint64Type();  // uint64
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;   // Field is read-only
+            expr->isConst = true;     // Field is always read-only
+            return expr->resolvedType;
+        } else {
+            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                "ArenaDescriptor has no field named '", 
+                                ctx.pool.lookup(expr->fieldName), "'");
+            ctx.diagnostics.note(expr,
+                                "ArenaDescriptor has only two read-only fields: base (*uint8) and size (uint64)");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+    }
+
     // ─── Step 3: Handle generic type parameter ────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
         NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
@@ -631,6 +661,13 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
                 expr->resolvedType = fieldType;
                 expr->valueState = state;
                 
+                // ─── Determine mutability ──────────────────────────────────
+                // For struct fields, mutability depends on:
+                // 1. The object must be an l-value (e.g., a `let` binding)
+                // 2. The field itself must not be `const`
+                // 
+                // NOTE: ArenaDescriptor fields are handled earlier (Step 2)
+                // and are always read-only, so they don't reach this point.
                 if (expr->object->isLValue) {
                     expr->isLValue = !field->isConst();
                     expr->isConst = field->isConst();
