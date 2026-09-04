@@ -652,16 +652,6 @@ NamedTypeAST* SemaContext::getArenaDescriptorType() {
 
 // ─── Self-Reference Helpers ──────────────────────────────────────────────
 
-void SemaContext::pushDefiningType(TypeDeclAST* decl) {
-    definingTypes.push_back(decl);
-}
-
-void SemaContext::popDefiningType() {
-    if (!definingTypes.empty()) {
-        definingTypes.pop_back();
-    }
-}
-
 bool SemaContext::isDefiningType(TypeDeclAST* decl) const {
     for (TypeDeclAST* d : definingTypes) {
         if (d == decl) return true;
@@ -753,13 +743,14 @@ ScopedNarrowing::~ScopedNarrowing() {
 
 ScopedTypeDefinition::ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
     : ctx_(ctx) {
-    ctx_.pushDefiningType(decl);
+    ctx_.definingTypes.push_back(decl);
 }
 
 ScopedTypeDefinition::~ScopedTypeDefinition() {
-    ctx_.popDefiningType();
+    if (!ctx_.definingTypes.empty()) {
+        ctx_.definingTypes.pop_back();
+    }
 }
-
 
 // ─── ScopedFunction Implementation ────────────────────────────────────────
 

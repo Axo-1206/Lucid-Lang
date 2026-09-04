@@ -5946,6 +5946,7 @@ modern ISAs). Faster and more precise than a software implementation.
 | `#floor(x)`       | float/double | same    | Round toward −∞                       |
 | `#ceil(x)`        | float/double | same    | Round toward +∞                       |
 | `#round(x)`       | float/double | same    | Round to nearest, half away from zero |
+| `#trunc(x)`       | float/double | same    | Round toward zero (truncate)          |
 | `#abs(x)`         | numeric      | same    | Absolute value                        |
 | `#pow(base, exp)` | float/double | same    | Exponentiation                        |
 | `#fma(a, b, c)`   | float/double | same    | Fused multiply-add: `(a*b)+c`         |

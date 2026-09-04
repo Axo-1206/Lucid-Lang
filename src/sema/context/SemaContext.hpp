@@ -229,8 +229,6 @@ struct SemaContext {
     NamedTypeAST* getArenaDescriptorType();
     
     // ─── Self-Reference Helpers ──────────────────────────────────────
-    void pushDefiningType(TypeDeclAST* decl);
-    void popDefiningType();
     bool isDefiningType(TypeDeclAST* decl) const;
     TypeDeclAST* currentDefiningType() const;
     
