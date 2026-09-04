@@ -212,7 +212,10 @@ TypeAST* resolveBuiltinType(TypeAST* type, SemaContext& ctx) {
         case ASTKind::SimdType: {
             SimdTypeAST* simd = type->as<SimdTypeAST>();
             
-            // Resolve the element type
+            // ─── Resolve the element type ──────────────────────────────────────
+            // If the element type is a generic parameter, resolveNamedType will
+            // return a NamedTypeAST with isGenericParam = true.
+            // validateSimdType will then reject it.
             if (simd->elementType) {
                 simd->elementType = resolveType(simd->elementType, ctx);
                 if (!simd->elementType) {
@@ -220,7 +223,12 @@ TypeAST* resolveBuiltinType(TypeAST* type, SemaContext& ctx) {
                 }
             }
             
-            // Validate the Simd type
+            // ─── Validate the Simd type ──────────────────────────────────────
+            // This will check that:
+            //   1. elementType is not a generic parameter
+            //   2. elementType is not another Simd type
+            //   3. elementType is a numeric primitive
+            //   4. laneCount > 0
             if (!validateSimdType(simd, ctx)) {
                 return nullptr;
             }

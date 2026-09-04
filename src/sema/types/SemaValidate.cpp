@@ -660,25 +660,61 @@ bool validateArenaInitializer(ExprAST* init, SemaContext& ctx) {
 bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx) {
     if (!simdType) return true;
     
-    // Validate lane count
+    // ─── Validate lane count ──────────────────────────────────────────────────
     if (simdType->laneCount == 0) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, simdType,
                               "Simd lane count must be > 0");
         return false;
     }
     
-    // Validate element type is a numeric primitive
+    // ─── Validate element type ───────────────────────────────────────────────
     if (!simdType->elementType) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
                               "Simd element type is missing");
         return false;
     }
     
-    if (!isValidSimdElementType(simdType->elementType)) {
+    TypeAST* elemType = simdType->elementType;
+    
+    // ─── Check if element type is a generic parameter ─────────────
+    // Simd<T,N> requires T to be a CONCRETE numeric primitive.
+    // Generic parameters (e.g., T in struct Wrapper<T> { vec Simd<T, 4> })
+    // are not allowed because the concrete type is unknown until instantiation.
+    if (elemType->isa<NamedTypeAST>()) {
+        NamedTypeAST* named = elemType->as<NamedTypeAST>();
+        if (ctx.isGenericParam(named->name)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
+                                  "Simd element type cannot be a generic parameter '",
+                                  ctx.pool.lookup(named->name),
+                                  "' - Simd requires a concrete numeric primitive type");
+            ctx.diagnostics.note(simdType,
+                                 "Simd<T,N> requires T to be a concrete type. "
+                                 "Consider using a concrete numeric primitive like int32, "
+                                 "or add a numeric constraint to the generic parameter "
+                                 "(not yet supported)");
+            return false;
+        }
+    }
+    
+    // ─── Check if element type is another Simd type (nested Simd) ──────────
+    if (elemType->isa<SimdTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
+                              "Simd element type cannot be another Simd type - "
+                              "Simd requires a numeric primitive element type");
+        ctx.diagnostics.note(simdType,
+                             "Simd<T,N> requires T to be a numeric primitive, "
+                             "not a vector type");
+        return false;
+    }
+    
+    // ─── Validate element type is a numeric primitive ───────────────────────
+    if (!isValidSimdElementType(elemType)) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType->elementType,
                               "Simd element type must be a numeric primitive "
                               "(int8, int16, int32, int64, uint8, uint16, uint32, "
                               "uint64, float32, or float64)");
+        ctx.diagnostics.note(simdType,
+                             "Got: ", typeToString(elemType, ctx.pool));
         return false;
     }
     
