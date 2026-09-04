@@ -6,16 +6,23 @@
  * - Module path resolution cache
  * - Parsed module cache
  * - Circular import detection stack
+ * - Dependency order computation
  * 
  * @design_decision Single Responsibility
- *   ModuleResolver handles three things: path resolution, module caching,
- *   and circular import detection. These are all related to "finding and
+ *   ModuleResolver handles module discovery, caching, import resolution,
+ *   and dependency ordering. These are all related to "finding and
  *   tracking modules" and belong together.
  * 
- * @design_decision ParserContext holds reference, not ownership
- *   ModuleResolver is owned by the driver (parse session). ParserContext
- *   holds a raw pointer for access. This allows the resolver to outlive
- *   any individual parse call.
+ * @design_decision Resolved Imports Stored on ModuleAST
+ *   After parsing, ModuleResolver populates ModuleAST::resolvedImports
+ *   with the actual resolved module ASTs. This makes the AST self-contained
+ *   and allows CodeGen to access imports without holding a reference to
+ *   the resolver.
+ * 
+ * @design_decision Dependency Order Computed After All Modules Parsed
+ *   The topological order is computed once after all modules are parsed,
+ *   and stored in ModuleAST::dependencyOrder. This allows CodeGen to
+ *   initialize globals in the correct order.
  * 
  * Each parse session should have its own ModuleResolver
  * to keep state isolated and allow parallel compilation.
@@ -29,6 +36,7 @@
 
 #include <unordered_map>
 #include <vector>
+#include <queue>
 #include <filesystem>
 #include <string>
 
@@ -41,6 +49,8 @@ namespace parser {
  * - Converting import paths to file paths (e.g., "std.io" → "std/io.luc")
  * - Caching parsed modules to avoid re-parsing
  * - Detecting circular imports
+ * - Computing dependency order for global initialization
+ * - Populating ModuleAST with resolved imports
  * 
  * ## Path Resolution
  * 
@@ -54,13 +64,21 @@ namespace parser {
  * ```cpp
  * ModuleResolver resolver(packageRoot, pool);
  * 
- * // Resolve import
- * InternedString filePath = resolver.resolveImportPath("std.io");
+ * // Parse a module (resolver caches it)
+ * ModuleAST* ast = parseModule("main.luc", resolver);
  * 
  * // Check cache
  * if (resolver.isModuleParsed(filePath)) {
  *     ModuleAST* ast = resolver.getParsedModule(filePath);
  * }
+ * 
+ * // Get dependency order
+ * for (ModuleAST* module : resolver.getModulesInOrder()) {
+ *     // Initialize globals in this order
+ * }
+ * 
+ * // Cross-module access
+ * ModuleAST* target = resolver.findModuleByAlias(currentModule, "math");
  * 
  * // Track circular imports
  * ScopedParsingGuard guard(&resolver, filePath);
@@ -128,19 +146,42 @@ public:
     /**
      * @brief Store a parsed module AST.
      * 
+     * This also resolves and stores imports on the module, and updates
+     * the module order list for dependency tracking.
+     * 
      * @param modulePath The resolved module path (e.g., "std/io.luc")
      * @param ast The parsed AST (owned by the session's arena)
      */
     void cacheModule(InternedString modulePath, ModuleAST* ast);
     
+    // ─── Dependency Order ──────────────────────────────────────────────────
+    
     /**
-     * @brief Get all modules in dependency order (post-order).
+     * @brief Get the topological order of a module.
      * 
-     * A module's path is appended when it finishes parsing, after all
-     * its dependencies. This means the order is safe for single-pass
-     * semantic analysis.
+     * @param modulePath The module path
+     * @return int The order (0 = first, higher = later), or -1 if not set
      */
-    const std::vector<InternedString>& getModuleOrder() const { return moduleOrder_; }
+    int getModuleOrder(InternedString modulePath) const;
+    
+    /**
+     * @brief Get all modules sorted by dependency order (topological).
+     * 
+     * The order is computed once after all modules are parsed.
+     * Modules that import others appear after their dependencies.
+     * 
+     * @return const std::vector<ModuleAST*>& Modules in dependency order
+     */
+    const std::vector<ModuleAST*>& getModulesInOrder() const;
+    
+    /**
+     * @brief Find a module by alias from another module's context.
+     * 
+     * @param fromModule The module that contains the import
+     * @param alias The import alias
+     * @return ModuleAST* The resolved module, or nullptr if not found
+     */
+    ModuleAST* findModuleByAlias(ModuleAST* fromModule, InternedString alias) const;
     
     // ─── Circular Import Detection ───────────────────────────────────────
     
@@ -185,6 +226,20 @@ public:
      * @return true if the file exists
      */
     bool moduleFileExists(InternedString filePath) const;
+
+    // ─── Module Enumeration ──────────────────────────────────────────────────
+    
+    /**
+     * @brief Get all parsed modules.
+     * 
+     * @return std::vector<ModuleAST*> All parsed modules (unordered)
+     */
+    std::vector<ModuleAST*> getAllModules() const;
+    
+    /**
+     * @brief Get the number of parsed modules.
+     */
+    size_t getModuleCount() const;
     
 private:
     std::filesystem::path packageRoot_;
@@ -198,8 +253,11 @@ private:
     // Map from resolved file path to parsed AST
     std::unordered_map<InternedString, ModuleAST*> parsedModules_;
     
-    // Paths in order they were parsed (post-order / dependency order)
-    std::vector<InternedString> moduleOrder_;
+    // Modules in dependency order (topological)
+    std::vector<ModuleAST*> moduleOrderList_;
+    
+    // Map from module path to dependency order
+    std::unordered_map<InternedString, int> moduleOrderMap_;
     
     // Stack of modules currently being parsed (for circular detection)
     std::vector<InternedString> parsingStack_;
@@ -232,6 +290,44 @@ private:
      * @return true if the file exists and is readable
      */
     bool fileExists(const std::filesystem::path& fullPath) const;
+    
+    /**
+     * @brief Resolve and store imports on a ModuleAST.
+     * 
+     * Populates ModuleAST::resolvedImports with the actual resolved modules.
+     * 
+     * @param module The module to resolve imports for
+     */
+    void resolveAndStoreImports(ModuleAST* module);
+    
+    /**
+     * @brief Compute the topological order of all parsed modules.
+     * 
+     * Uses Kahn's algorithm on the import dependency graph.
+     * Results are stored in moduleOrderMap_ and moduleOrderList_,
+     * and on each ModuleAST::dependencyOrder.
+     */
+    void computeTopologicalOrder();
+    
+    /**
+     * @brief Build the import dependency graph.
+     * 
+     * @param graph Output: adjacency list (dependency → dependent)
+     * @param indegree Output: indegree count for each module
+     */
+    void buildDependencyGraph(
+        std::unordered_map<InternedString, std::vector<InternedString>>& graph,
+        std::unordered_map<InternedString, int>& indegree
+    ) const;
+    
+    /**
+     * @brief Find a module by its alias from another module's context.
+     * 
+     * @param fromModule The module that contains the import
+     * @param alias The import alias
+     * @return ModuleAST* The resolved module, or nullptr if not found
+     */
+    ModuleAST* findModuleByAliasInternal(ModuleAST* fromModule, InternedString alias) const;
 };
 
 /**

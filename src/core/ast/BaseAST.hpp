@@ -333,6 +333,10 @@ struct DeclAST : BaseAST {
     ArenaSpan<AttributeAST*>  attributes;
     const InternedString      name;
 
+    // ─── Module Tracking ──────────────────────────────────────────────
+    ModuleAST* module = nullptr;      // Which module this declaration belongs to
+    int orderInModule = 0;             // Declaration order within module
+
     explicit DeclAST(ASTKind k, InternedString n) : BaseAST(k), name(n) {}
     bool hasDoc() const { return doc.has_value(); }
 };
@@ -637,19 +641,30 @@ struct ModuleAST : BaseAST {
     ArenaSpan<DeclAST*> decls;      ///< Top-level declarations
     bool hasErrors = false;
 
-    /// @brief Resolved import paths of this module.
-    /// 
-    /// These are the resolved file paths (e.g., "io/math.luc", "std/array.luc")
-    /// NOT the user‑written import paths (e.g., "io.math", "std.array").
-    /// 
-    /// Why this is important:
-    ///   - The user‑written path is ambiguous (dots vs slashes, no extension)
-    ///   - The resolved path is concrete (direct file system mapping)
-    ///   - Resolved paths are stable keys across the entire toolchain
-    /// 
-    /// Populated by: Parser (via ModuleResolver::resolveImportPath())
-    /// Used by:      CLI, Interpreter, LSP
+    // ─── Imports ──────────────────────────────────────────────────────────
+    
+    /// @brief Resolved import paths of this module (legacy, for backward compatibility).
     std::vector<InternedString> imports;
+    
+    /// @brief Resolved imports mapping alias → module AST.
+    /// 
+    /// Each entry maps an import alias (e.g., "math", "io") to the actual
+    /// parsed module AST. This is populated during parsing by ModuleResolver
+    /// and used by CodeGen for cross-module symbol resolution.
+    /// 
+    /// @example
+    ///   import std.math as math   → "math" → ModuleAST for std/math.luc
+    ///   import std.io as io       → "io"   → ModuleAST for std/io.luc
+    std::unordered_map<InternedString, ModuleAST*> resolvedImports;
+    
+    // ─── Dependency Order ──────────────────────────────────────────────────
+    
+    /// @brief Topological order of this module (0 = first, higher = later).
+    /// 
+    /// Set by ModuleResolver after parsing all modules and computing the
+    /// dependency graph. Used by CodeGen to initialize globals in the
+    /// correct order.
+    int dependencyOrder = -1;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };

@@ -51,6 +51,41 @@ struct CodeGenContext {
     
     llvm::Module* module = nullptr;
     llvm::IRBuilder<> builder;
+
+    // ─── Module Tracking ────────────────────────────────────────────────
+    
+    /// @brief All modules being generated.
+    std::vector<ModuleAST*> modules;
+    
+    /// @brief AST → LLVM module mapping.
+    std::unordered_map<ModuleAST*, llvm::Module*> llvmModules;
+    
+    /// @brief Current module being generated.
+    ModuleAST* currentModule = nullptr;
+    
+    // ─── Global Initialization ──────────────────────────────────────────
+    
+    /// @brief Information about a global variable that needs runtime initialization.
+    struct GlobalInitInfo {
+        VarDeclAST* decl;
+        ExprAST* init;
+        llvm::GlobalVariable* global;
+        ModuleAST* module;
+        int orderInModule;
+    };
+    
+    /// @brief Pending globals that need runtime initialization.
+    std::vector<GlobalInitInfo> pendingGlobals;
+    
+    /// @brief The global initializer function.
+    llvm::Function* initFunction = nullptr;
+
+    // ─── Module Helpers ──────────────────────────────────────────────────
+    
+    llvm::Module* getLLVMModule(ModuleAST* module) const {
+        auto it = llvmModules.find(module);
+        return it != llvmModules.end() ? it->second : nullptr;
+    }
     
     // ─── Type Cache ─────────────────────────────────────────────────────
     
@@ -93,7 +128,7 @@ struct CodeGenContext {
 
     // ─── Null Coalesce Context Stack ──────────────────────────────────
     struct NullCoalesceContext {
-        llvm::BasicBlock* fallbackBlock = nullptr;\
+        llvm::BasicBlock* fallbackBlock = nullptr;
         bool isActive = false;
     };
     std::vector<NullCoalesceContext> nullCoalesceStack;

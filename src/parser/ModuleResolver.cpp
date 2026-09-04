@@ -4,6 +4,7 @@
  */
 
 #include "parser/ModuleResolver.hpp"
+#include "core/ast/DeclAST.hpp"
 
 #include <fstream>
 #include <sstream>
@@ -118,10 +119,35 @@ ModuleAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
 }
 
 void ModuleResolver::cacheModule(InternedString modulePath, ModuleAST* ast) {
-    if (parsedModules_.find(modulePath) == parsedModules_.end()) {
-        parsedModules_[modulePath] = ast;
-        moduleOrder_.push_back(modulePath);
+    if (parsedModules_.find(modulePath) != parsedModules_.end()) {
+        return;  // Already cached
     }
+    
+    parsedModules_[modulePath] = ast;
+    
+    // ─── Resolve and store imports on the module ──────────────────────────
+    resolveAndStoreImports(ast);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dependency Order
+// ─────────────────────────────────────────────────────────────────────────────
+
+int ModuleResolver::getModuleOrder(InternedString modulePath) const {
+    auto it = moduleOrderMap_.find(modulePath);
+    return it != moduleOrderMap_.end() ? it->second : -1;
+}
+
+const std::vector<ModuleAST*>& ModuleResolver::getModulesInOrder() const {
+    // If module order hasn't been computed yet, compute it now
+    if (moduleOrderList_.empty() && !parsedModules_.empty()) {
+        const_cast<ModuleResolver*>(this)->computeTopologicalOrder();
+    }
+    return moduleOrderList_;
+}
+
+ModuleAST* ModuleResolver::findModuleByAlias(ModuleAST* fromModule, InternedString alias) const {
+    return findModuleByAliasInternal(fromModule, alias);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +200,23 @@ bool ModuleResolver::moduleFileExists(InternedString filePath) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module Enumeration
+// ─────────────────────────────────────────────────────────────────────────────
+
+ std::vector<ModuleAST*> ModuleResolver::getAllModules() const {
+    std::vector<ModuleAST*> result;
+    result.reserve(parsedModules_.size());
+    for (const auto& [path, module] : parsedModules_) {
+        result.push_back(module);
+    }
+    return result;
+} 
+    
+size_t ModuleResolver::getModuleCount() const {
+    return parsedModules_.size();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Private Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -205,6 +248,135 @@ std::filesystem::path ModuleResolver::resolveRelativePath(const std::string& rel
 
 bool ModuleResolver::fileExists(const std::filesystem::path& fullPath) const {
     return std::filesystem::exists(fullPath) && std::filesystem::is_regular_file(fullPath);
+}
+
+void ModuleResolver::resolveAndStoreImports(ModuleAST* module) {
+    if (!module) return;
+    
+    // Clear existing resolved imports
+    module->resolvedImports.clear();
+    
+    // For each import declaration in the module
+    for (DeclAST* decl : module->decls) {
+        if (decl->isa<ImportDeclAST>()) {
+            ImportDeclAST* import = decl->as<ImportDeclAST>();
+            
+            // Resolve the import path
+            InternedString resolvedPath = resolveImportPath(import->path);
+            if (!resolvedPath.isValid()) {
+                // Error will be reported by Sema
+                continue;
+            }
+            
+            // Get the parsed module
+            ModuleAST* targetModule = getParsedModule(resolvedPath);
+            if (!targetModule) {
+                // Module not parsed yet - this is a forward reference
+                // The module will be parsed later, so we skip for now
+                // The import will be resolved when all modules are parsed
+                continue;
+            }
+            
+            // Store the resolved import mapping alias → module
+            module->resolvedImports[import->alias] = targetModule;
+        }
+    }
+    
+    // Update the legacy imports vector for backward compatibility
+    module->imports.clear();
+    for (const auto& [alias, mod] : module->resolvedImports) {
+        module->imports.push_back(mod->filePath);
+    }
+}
+
+void ModuleResolver::buildDependencyGraph(
+    std::unordered_map<InternedString, std::vector<InternedString>>& graph,
+    std::unordered_map<InternedString, int>& indegree
+) const {
+    // Initialize graph and indegree for all modules
+    for (const auto& [path, module] : parsedModules_) {
+        graph[path] = {};
+        indegree[path] = 0;
+    }
+    
+    // Build edges: dependency → dependent
+    for (const auto& [path, module] : parsedModules_) {
+        for (const auto& [alias, targetModule] : module->resolvedImports) {
+            InternedString targetPath = targetModule->filePath;
+            if (parsedModules_.find(targetPath) != parsedModules_.end()) {
+                graph[targetPath].push_back(path);  // dependency → dependent
+                indegree[path]++;
+            }
+        }
+    }
+}
+
+void ModuleResolver::computeTopologicalOrder() {
+    if (parsedModules_.empty()) return;
+    
+    // ─── Build dependency graph ────────────────────────────────────────────
+    std::unordered_map<InternedString, std::vector<InternedString>> graph;
+    std::unordered_map<InternedString, int> indegree;
+    buildDependencyGraph(graph, indegree);
+    
+    // ─── Kahn's algorithm ──────────────────────────────────────────────────
+    std::queue<InternedString> queue;
+    for (const auto& [path, count] : indegree) {
+        if (count == 0) queue.push(path);
+    }
+    
+    moduleOrderList_.clear();
+    moduleOrderMap_.clear();
+    
+    int order = 0;
+    while (!queue.empty()) {
+        InternedString path = queue.front();
+        queue.pop();
+        
+        moduleOrderMap_[path] = order++;
+        
+        // Get the module AST and add to ordered list
+        auto it = parsedModules_.find(path);
+        if (it != parsedModules_.end()) {
+            moduleOrderList_.push_back(it->second);
+        }
+        
+        for (InternedString dependent : graph[path]) {
+            if (--indegree[dependent] == 0) {
+                queue.push(dependent);
+            }
+        }
+    }
+    
+    // ─── Check for cycles ──────────────────────────────────────────────────
+    if (moduleOrderList_.size() != parsedModules_.size()) {
+        // Some modules weren't processed - there's a cycle
+        // We'll let Sema report the error
+        // For now, assign remaining modules a high order
+        for (const auto& [path, module] : parsedModules_) {
+            if (moduleOrderMap_.find(path) == moduleOrderMap_.end()) {
+                moduleOrderMap_[path] = order++;
+                moduleOrderList_.push_back(module);
+            }
+        }
+    }
+    
+    // ─── Update ModuleAST with order ──────────────────────────────────────
+    for (const auto& [path, module] : parsedModules_) {
+        auto it = moduleOrderMap_.find(path);
+        module->dependencyOrder = (it != moduleOrderMap_.end()) ? it->second : -1;
+    }
+}
+
+ModuleAST* ModuleResolver::findModuleByAliasInternal(ModuleAST* fromModule, InternedString alias) const {
+    if (!fromModule) return nullptr;
+    
+    auto it = fromModule->resolvedImports.find(alias);
+    if (it != fromModule->resolvedImports.end()) {
+        return it->second;
+    }
+    
+    return nullptr;
 }
 
 } // namespace parser

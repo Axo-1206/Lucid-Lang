@@ -593,32 +593,43 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
         bool isConst = decl->isConst();
 
+        // ─── Create global with null initializer ──────────────────────────
         llvm::GlobalVariable* global = new llvm::GlobalVariable(
             *ctx.module,
             varType,
             isConst,
             llvm::GlobalValue::ExternalLinkage,
-            nullptr,
+            llvm::Constant::getNullValue(varType),
             varName
         );
 
-        if (decl->init) {
-            llvm::Value* initValue = lowerExpression(decl->init, ctx);
-            if (initValue) {
-                if (llvm::Constant* constInit = llvm::dyn_cast<llvm::Constant>(initValue)) {
-                    global->setInitializer(constInit);
-                } else {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, decl->init->loc,
-                                            "global variable '", varName,
-                                            "' has non-constant initializer");
-                }
-            }
-        } else {
-            global->setInitializer(llvm::Constant::getNullValue(varType));
-        }
-
         ctx.storeValue(decl, global);
         decl->llvmGlobal = global;
+
+        // ─── Handle initialization ──────────────────────────────────────
+        if (decl->init) {
+            if (decl->init->isConst) {
+                // Constant initializer - set now
+                llvm::Value* initValue = lowerExpression(decl->init, ctx);
+                if (initValue) {
+                    if (llvm::Constant* constInit = llvm::dyn_cast<llvm::Constant>(initValue)) {
+                        global->setInitializer(constInit);
+                    }
+                }
+            } else {
+                // ─── Non-constant - defer to __init_globals ────────────
+                ctx.pendingGlobals.push_back({
+                    decl,
+                    decl->init,
+                    global,
+                    ctx.currentModule,
+                    decl->orderInModule
+                });
+                
+                Trace::detail("Deferred runtime init for global: ", varName);
+            }
+        }
+
         return;
     }
 

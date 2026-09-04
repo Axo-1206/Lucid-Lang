@@ -94,6 +94,9 @@ void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx);
 /// declaration and generates IR for its body.
 void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx);
 
+void generateGlobalInitializer(CodeGenContext& ctx);
+void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx);
+
 // =============================================================================
 // Declaration Lowering
 // =============================================================================

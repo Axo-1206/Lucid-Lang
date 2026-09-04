@@ -36,13 +36,14 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
         return { root };
     }
 
-    const auto& order = ctx.resolver->getModuleOrder();
-    std::vector<ModuleAST*> modules;
-    modules.reserve(order.size());
-    for (InternedString path : order) {
-        if (ModuleAST* mod = ctx.resolver->getParsedModule(path)) {
-            modules.push_back(mod);
-        }
+    // ─── Get modules in dependency order ──────────────────────────────────
+    // This triggers computeTopologicalOrder() if not already computed.
+    const std::vector<ModuleAST*>& orderedModules = ctx.resolver->getModulesInOrder();
+    
+    // If the resolver returned an empty list, fall back to collecting from root
+    std::vector<ModuleAST*> modules = orderedModules;
+    if (modules.empty() && root) {
+        modules.push_back(root);
     }
 
     Trace::info("Total modules in program: ", modules.size());
