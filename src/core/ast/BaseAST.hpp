@@ -85,6 +85,9 @@ struct CombinedTypeAST;
 struct RefTypeAST;
 struct PtrTypeAST;
 struct FuncTypeAST;
+struct ArenaTypeAST;
+struct ArenaDescriptorTypeAST;
+struct SimdTypeAST;
 
 // DeclAST.hpp
 struct ImportDeclAST;
@@ -199,6 +202,11 @@ enum class ASTKind : uint16_t {
     FuncType,
     FutureType,        // Future<T> — result of `async`, consumed exactly once by `await`
     ThreadType,        // Thread<T> — result of `spawn`, consumed exactly once by `join`
+
+    // Built-in type nodes
+    SimdType,            // Simd<T, N>
+    ArenaType,           // Arena
+    ArenaDescriptorType, // ArenaDescriptor
 
     // Declaration nodes
     ImportDecl,

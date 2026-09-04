@@ -597,3 +597,91 @@ struct ModuleTypeAccessAST : TypeAST {
 
     ModuleTypeAccessAST() : TypeAST(ASTKind::ModuleTypeAccess) {}
 };
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIMD TYPE NODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The SIMD vector type - compiler-builtin for hardware vector operations.
+/// 
+/// @example
+///   Simd<float32, 4>      → elementType = float32, laneCount = 4
+///   Simd<int32, 8>        → elementType = int32, laneCount = 8
+/// 
+/// ─── Validation Rules (enforced in parser) ────────────────────────────────
+/// 1. elementType must be a numeric primitive:
+///    - Signed: int8, int16, int32, int64
+///    - Unsigned: uint8, uint16, uint32, uint64
+///    - Floating: float32, float64 (aka float, double)
+/// 2. laneCount must be > 0
+/// 3. No nullable/fallible modifiers: Simd<T, N>? is NOT allowed
+/// 
+/// ─── Ownership ──────────────────────────────────────────────────────────────
+/// Simd<T,N> is an Owned value - cheap to copy (a handful of machine words),
+/// no heap allocation, can be stored in structs, returned from functions, etc.
+/// 
+/// @note This is a compiler-builtin type, not a user-defined generic.
+///       It has special lowering to LLVM vector types `<N x T>`.
+struct SimdTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::SimdType;
+
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    TypeAST* elementType = nullptr;
+    uint64_t laneCount = 0;
+
+    // ─── Constructor ─────────────────────────────────────────────────────
+    SimdTypeAST(TypeAST* elem, uint64_t lanes)
+        : TypeAST(ASTKind::SimdType), elementType(elem), laneCount(lanes) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARENA TYPE NODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The Arena type - compiler-builtin bump allocator.
+/// 
+/// @example
+///   const arena Arena = Arena::create(4096) ?? Arena::empty();
+///   let nodes [_]Node = arena::alloc<Node>(128);
+/// 
+/// ─── Validation Rules (enforced in parser) ────────────────────────────────
+/// 1. Arena has NO generic arguments - writing `Arena<int>` is a syntax error
+/// 2. Cannot be nullable/fallible - `Arena?` is rejected by the parser
+/// 3. Must be declared `const` (enforced in Sema)
+/// 
+/// ─── Ownership ──────────────────────────────────────────────────────────────
+/// Arena is Owned, scope-confined - cannot be copied, must be passed by
+/// reference (`&Arena`) to other functions.
+struct ArenaTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ArenaType;
+
+    ArenaTypeAST() : TypeAST(ASTKind::ArenaType) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARENA DESCRIPTOR TYPE NODE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The ArenaDescriptor type - POD struct for FFI boundary.
+/// 
+/// @example
+///   const desc ArenaDescriptor = arena::descriptor();
+///   c_build_graph(nodes, edges, #addrof(desc));
+/// 
+/// ─── Validation Rules (enforced in parser) ────────────────────────────────
+/// 1. ArenaDescriptor has NO generic arguments
+/// 2. Cannot be nullable/fallible
+/// 3. NOT literal-constructible by users (only `arena::descriptor()` produces it)
+/// 
+/// ─── C Layout ──────────────────────────────────────────────────────────────
+/// The C side sees this as:
+///   typedef struct {
+///       uint8_t* base;   // start of the arena region
+///       uint64_t size;   // total byte capacity
+///   } LGE_ArenaDescriptor;
+struct ArenaDescriptorTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ArenaDescriptorType;
+
+    ArenaDescriptorTypeAST() : TypeAST(ASTKind::ArenaDescriptorType) {}
+};

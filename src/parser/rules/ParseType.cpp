@@ -137,15 +137,58 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
 // parseNamedType
 // =============================================================================
 
-/// @brief Parse a type reference (named or module-qualified).
+/// @brief Check if a type is a valid Simd element type.
+/// 
+/// Valid types are numeric primitives only:
+///   - Signed: int8, int16, int32, int64
+///   - Unsigned: uint8, uint16, uint32, uint64
+///   - Floating: float32, float64
+static bool isValidSimdElementType(TypeAST* type) {
+    if (!type) return false;
+    
+    // Must be a primitive type
+    if (type->kind != ASTKind::PrimitiveType) {
+        return false;
+    }
+    
+    auto* prim = static_cast<PrimitiveTypeAST*>(type);
+    PrimitiveKind kind = prim->primitiveKind;
+    
+    // Check against the allowed set
+    switch (kind) {
+        // Signed integers
+        case PrimitiveKind::Int8:
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Int64:
+        // Unsigned integers
+        case PrimitiveKind::Uint8:
+        case PrimitiveKind::Uint16:
+        case PrimitiveKind::Uint32:
+        case PrimitiveKind::Uint64:
+        // Floating point
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Parse a type reference (named, module-qualified, or built-in).
 /// 
 /// Grammar:
 ///   type_reference = IDENTIFIER [ '<' type_arg_list '>' ]           (* unqualified *)
 ///                   | IDENTIFIER ':' IDENTIFIER [ '<' type_arg_list '>' ]   (* qualified *)
 /// 
+/// Built-in types are handled specially:
+///   - Simd<T, N>  → SimdTypeAST with element type and lane count
+///   - Arena       → ArenaTypeAST (no generic args allowed)
+///   - ArenaDescriptor → ArenaDescriptorTypeAST (no generic args allowed)
+/// 
 /// @param stream The token stream
 /// @param ctx The parsing context
-/// @return TypeAST* - NamedTypeAST or ModuleTypeAccessAST
+/// @return TypeAST* - NamedTypeAST, ModuleTypeAccessAST, or built-in type node
 TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -155,7 +198,111 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     }
     
     Token firstTok = stream.consume();
+    SourceLocation firstLoc = stream.currentLoc();
     InternedString firstName = ctx.pool.intern(firstTok.value);
+    
+    // ─── Check for built-in types FIRST ────────────────────────────────
+    // These are special types that have their own AST nodes.
+    // They must be checked before module qualification because they are
+    // always unqualified (you can't write "mymod:Arena").
+    
+    // ─── Simd<T, N> ─────────────────────────────────────────────────────
+    if (firstName == ctx.pool.intern("Simd")) {
+        // Must have generic arguments
+        if (!stream.check(TokenType::LESS)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected '<' after 'Simd'");
+            return nullptr;
+        }
+        
+        stream.consume(); // Consume '<'
+        
+        // ─── Parse element type ──────────────────────────────────────────
+        TypeAST* elementType = parseType(stream, ctx);
+        if (!elementType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected Simd element type");
+            return nullptr;
+        }
+        
+        // ─── Parse comma ─────────────────────────────────────────────────
+        if (!stream.match(TokenType::COMMA)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' between Simd arguments");
+            return nullptr;
+        }
+        
+        // ─── Parse lane count (must be integer literal) ─────────────────
+        if (!stream.check(TokenType::INT_LITERAL)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, stream.currentLoc(),
+                                    "Simd lane count must be an integer literal");
+            return nullptr;
+        }
+        
+        Token laneTok = stream.consume();
+        uint64_t laneCount;
+        try {
+            laneCount = std::stoull(laneTok.value);
+        } catch (const std::exception&) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidSimdLaneCount, stream.currentLoc(),
+                                    "invalid integer literal for Simd lane count: '", laneTok.value, "'");
+            return nullptr;
+        }
+        
+        // ─── Parse closing '>' ───────────────────────────────────────────
+        if (!stream.match(TokenType::GREATER)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected '>' after Simd arguments");
+            return nullptr;
+        }
+        
+        // ─── Create the Simd node ────────────────────────────────────────
+        auto* simdType = ctx.arena.make<SimdTypeAST>(elementType, laneCount);
+        simdType->loc = firstLoc;
+        return simdType;
+    }
+    
+    // ─── Arena ──────────────────────────────────────────────────────────
+    if (firstName == ctx.pool.intern("Arena")) {
+        // Arena has no generic arguments
+        if (stream.check(TokenType::LESS)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "unexpected '<' after 'Arena'");
+            // Skip to matching '>' for error recovery
+            int depth = 1;
+            while (!stream.isAtEnd() && depth > 0) {
+                if (stream.match(TokenType::LESS)) depth++;
+                else if (stream.match(TokenType::GREATER)) depth--;
+                else stream.consume();
+            }
+            return nullptr;
+        }
+        
+        auto* arenaType = ctx.arena.make<ArenaTypeAST>();
+        arenaType->loc = firstLoc;
+        return arenaType;
+    }
+    
+    // ─── ArenaDescriptor ────────────────────────────────────────────────
+    if (firstName == ctx.pool.intern("ArenaDescriptor")) {
+        // ArenaDescriptor has no generic arguments
+        if (stream.check(TokenType::LESS)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "unexpected '<' after 'ArenaDescriptor'");
+            // Skip to matching '>' for error recovery
+            int depth = 1;
+            while (!stream.isAtEnd() && depth > 0) {
+                if (stream.match(TokenType::LESS)) depth++;
+                else if (stream.match(TokenType::GREATER)) depth--;
+                else stream.consume();
+            }
+            return nullptr;
+        }
+        
+        auto* descType = ctx.arena.make<ArenaDescriptorTypeAST>();
+        descType->loc = firstLoc;
+        return descType;
+    }
     
     // ─── Check for module qualification: IDENTIFIER ':' IDENTIFIER ────
     if (stream.check(TokenType::COLON)) {
@@ -179,6 +326,7 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         moduleType->moduleName = firstName;
         moduleType->typeName = typeName;
         moduleType->genericArgs = genericArgs;
+        moduleType->loc = firstLoc;
         
         return moduleType;
     }
@@ -191,6 +339,7 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     
     auto* namedType = ctx.arena.make<NamedTypeAST>(firstName);
     namedType->genericArgs = genericArgs;
+    namedType->loc = firstLoc;
     
     return namedType;
 }
