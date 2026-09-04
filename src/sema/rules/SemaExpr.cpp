@@ -15,6 +15,7 @@
 #include "core/ASTStrings.hpp"
 #include "core/builtins/ArenaMethod.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
+#include "sema/types/SemaType.hpp"
 
 #include <unordered_set>
 #include <optional>

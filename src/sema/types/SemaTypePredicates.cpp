@@ -120,38 +120,12 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx) {
 
 bool isArenaType(TypeAST* type) {
     if (!type) return false;
-    
-    if (type->isa<ArenaTypeAST>()) return true;
-    
-    if (auto* named = type->as<NamedTypeAST>()) {
-        return isArenaNamedType(named);
-    }
-    
-    return false;
+    return type->isa<ArenaTypeAST>();
 }
 
 bool isArenaDescriptorType(TypeAST* type) {
     if (!type) return false;
-    
-    if (type->isa<ArenaDescriptorTypeAST>()) return true;
-    
-    if (auto* named = type->as<NamedTypeAST>()) {
-        return isArenaDescriptorNamedType(named);
-    }
-    
-    return false;
-}
-
-bool isArenaNamedType(NamedTypeAST* named) {
-    if (!named) return false;
-    if (!named->genericArgs.empty()) return false;
-    return lookupStringView(named->name) == "Arena";
-}
-
-bool isArenaDescriptorNamedType(NamedTypeAST* named) {
-    if (!named) return false;
-    if (!named->genericArgs.empty()) return false;
-    return lookupStringView(named->name) == "ArenaDescriptor";
+    return type->isa<ArenaDescriptorTypeAST>();
 }
 
 bool isArenaBinding(VarDeclAST* decl) {
@@ -161,22 +135,10 @@ bool isArenaBinding(VarDeclAST* decl) {
 
 bool isSimdType(TypeAST* type) {
     if (!type) return false;
-    
-    if (type->isa<SimdTypeAST>()) return true;
-    
-    if (auto* named = type->as<NamedTypeAST>()) {
-        return isSimdNamedType(named);
-    }
-    
-    return false;
+    return type->isa<SimdTypeAST>();
 }
 
-bool isSimdNamedType(NamedTypeAST* named) {
-    if (!named) return false;
-    if (named->genericArgs.size() != 2) return false;
-    return lookupStringView(named->name) == "Simd";
-}
-
+/// Valid element types for Simd are numeric primitives.
 bool isValidSimdElementType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     
@@ -201,29 +163,13 @@ bool isValidSimdElementType(TypeAST* type) {
 }
 
 TypeAST* getSimdElementType(TypeAST* simdType) {
-    if (!simdType) return nullptr;
-    
-    if (auto* simdNode = simdType->as<SimdTypeAST>()) {
-        return simdNode->elementType;
-    }
-    
-    if (auto* named = simdType->as<NamedTypeAST>()) {
-        if (isSimdNamedType(named) && named->genericArgs.size() == 2) {
-            return named->genericArgs[0];
-        }
-    }
-    
-    return nullptr;
+    if (!simdType || !simdType->isa<SimdTypeAST>()) return nullptr;
+    return simdType->as<SimdTypeAST>()->elementType;
 }
 
 uint64_t getSimdLaneCount(TypeAST* simdType) {
-    if (!simdType) return 0;
-    
-    if (auto* simdNode = simdType->as<SimdTypeAST>()) {
-        return simdNode->laneCount;
-    }
-    
-    return 0;
+    if (!simdType || !simdType->isa<SimdTypeAST>()) return 0;
+    return simdType->as<SimdTypeAST>()->laneCount;
 }
 
 // ─── Type Unwrapping ─────────────────────────────────────────────────────
@@ -386,10 +332,10 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
     if (type->isa<NamedTypeAST>()) {
         NamedTypeAST* named = const_cast<NamedTypeAST*>(type->as<NamedTypeAST>());
         
-        if (isArenaDescriptorNamedType(named)) {
+        if (isArenaDescriptorType(named)) {
             return true;
         }
-        if (isArenaNamedType(named)) {
+        if (isArenaType(named)) {
             return false;
         }
         

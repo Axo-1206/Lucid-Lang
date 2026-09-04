@@ -130,15 +130,12 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx);
 
 bool isArenaType(TypeAST* type); // Arena? type is not allowed, use Arena::empty()
 bool isArenaDescriptorType(TypeAST* type);
-bool isArenaNamedType(NamedTypeAST* named);
-bool isArenaDescriptorNamedType(NamedTypeAST* named);
 bool isArenaBinding(VarDeclAST* decl);
 
 /// Does NOT accept:
 ///   - Simd<T, N>? (nullable Simd is not allowed)
 ///   - Simd<T, N>! (fallible Simd is not allowed)
 bool isSimdType(TypeAST* type);
-bool isSimdNamedType(NamedTypeAST* named);
 
 /// Valid element types are:
 ///   - Signed integers: int8, int16, int32, int64
