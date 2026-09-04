@@ -5741,6 +5741,17 @@ c_build_graph(nodes, edges, #addrof(desc));
 answer "did this pointer come from this arena?" The allocation cursor stays
 internal to the compiler; C never needs it, only the boundaries.
 
+`ArenaDescriptor`'s fields are ordinary, readable, **read-only** struct
+fields once you have one — only construction is restricted, not access:
+
+```lucid
+const desc ArenaDescriptor = arena::descriptor();
+io:printl(#tostr(desc.size));    -- read a field like any other struct
+desc.size = 8192;                -- ERROR: ArenaDescriptor's fields are read-only —
+                                  -- base and size are fixed at Arena::create/empty,
+                                  -- nothing may change them afterward
+```
+
 ---
 
 **Ownership at a Glance**
@@ -6039,25 +6050,94 @@ honestly provide:
   ordinary `let`/`const` construction from arbitrary values.
 - **No `::` operations.** Unlike `Arena`, `Simd<T,N>` has nothing resembling
   `arena::reset()` — every operation on it is one of the `#simd_*`
-  intrinsics below, kept in the plain-leading-argument `#`-intrinsic style
-  (`#simd_splat(T, N, scalar)`) rather than `<T>`-bracket generic syntax,
-  for consistency with `#sizeof(T)`/`#alloc(T, count)` — that bracket form
-  stays reserved for ordinary Lucid declarations and `Arena::alloc<T>`.
+  intrinsics below.
+- **`Simd<T,N>` has no runtime-readable fields**, unlike `ArenaDescriptor`.
+  `T` and `N` are entirely static — properties of the *type*, never stored
+  as data inside the value — so there's nothing analogous to
+  `ArenaDescriptor.base`/`.size` to read back out at runtime. The
+  compile-time equivalent already exists: `#typeof(v)` on a `Simd<T,N>`
+  value reports its concrete type as a string (e.g. `"Simd<float32,4>"`),
+  the same as it would for any other value — nothing new needed there.
 
-| Intrinsic                   | Args                  | Returns     | Notes                                                                                                                                                              |
-| --------------------------- | --------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `#simd_load(ptr, N)`        | `*T`, `int`           | `Simd<T,N>` | `T` inferred from `ptr`'s pointee type; `N` a compile-time constant                                                                                                |
-| `#simd_store(ptr, v)`       | `*T`, `Simd<T,N>`     | —           | `ptr`'s `T` must match `v`'s `T` exactly — no implicit conversion                                                                                                  |
-| `#simd_add(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise addition; both args must share the identical `T` and `N`                                                                                                 |
-| `#simd_sub(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise subtraction; both args must share the identical `T` and `N`                                                                                              |
-| `#simd_mul(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise multiplication; both args must share the identical `T` and `N`                                                                                           |
-| `#simd_div(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise division; both args must share the identical `T` and `N`                                                                                                 |
-| `#simd_fma(a, b, c)`        | `Simd<T,N>` × 3       | `Simd<T,N>` | Lane-wise fused multiply-add; all three args must share the identical `T` and `N`                                                                                  |
-| `#simd_min(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise minimum; both args must share the identical `T` and `N`                                                                                                  |
-| `#simd_max(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise maximum; both args must share the identical `T` and `N`                                                                                                  |
-| `#simd_splat(T, N, scalar)` | type, int, `T`        | `Simd<T,N>` | Broadcast scalar to all lanes; `T` restricted to the numeric allowlist above; `scalar` must be exactly type `T`                                                    |
-| `#simd_extract(v, i)`       | `Simd<T,N>`, int      | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing       |
-| `#simd_insert(v, i, x)`     | `Simd<T,N>`, int, `T` | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T` |
+**`T` and `N` can't be written as `#simd_splat(float32, 4, scalar)`.** A
+bare type name like `float32` is only valid Lucid syntax in a *type*
+position (a declared type, a generic argument between `<...>`) — the
+`#simd_*` intrinsics' argument list is an ordinary *value* expression list,
+the same grammatical position any other intrinsic or function call's
+arguments occupy, and a type name is not a valid expression there. This
+isn't a restriction specific to SIMD — it's the same rule that makes
+`let x = int;` meaningless — SIMD is just the first place in the language
+that needs to pass "which primitive kind" and "how many" as ordinary
+*values* rather than as generic type arguments.
+
+The fix: two dedicated stdlib enums stand in for `T` and `N` wherever a
+`#simd_*` intrinsic needs them as arguments. Enum variants are ordinary
+compile-time integer constants (see **Enum Declaration**), so this costs
+nothing new — it reuses a mechanism the language already has instead of
+inventing a special "type-as-value" exception to the grammar:
+
+```lucid
+-- std/simd.luc
+
+@[export]
+enum SimdType {
+    Int8    = 1;
+    Int16   = 2;
+    Int32   = 3;
+    Int64   = 4;
+    Uint8   = 5;
+    Uint16  = 6;
+    Uint32  = 7;
+    Uint64  = 8;
+    Float32 = 9;
+    Float64 = 10;
+}
+
+@[export]
+enum SimdLanes {
+    Lanes1  = 1;
+    Lanes2  = 2;
+    Lanes4  = 4;
+    Lanes8  = 8;
+    Lanes16 = 16;
+    Lanes32 = 32;
+    Lanes64 = 64;
+}
+```
+
+`SimdType`'s variants map to the same closed primitive-kind allowlist listed
+above — the compiler hardcodes that mapping the same way it hardcodes
+`Arena`'s internal layout, nothing for the user to define or extend.
+`SimdLanes`'s variants are deliberately assigned their own numeric value as
+`N` directly (`Lanes4 = 4`), so no separate mapping is needed there at all —
+the variant *is* the lane count. `SimdLanes` is a fixed, curated set rather
+than "any `int`" specifically so an invalid lane count is a compile error at
+the call site (unresolved enum member) rather than a runtime-discovered one;
+widths beyond `64` can be added here later if a real use case needs them,
+the same way the primitive-kind list could grow.
+
+**Both arguments must be compile-time-constant enum members — a variable
+holding a runtime-computed `SimdType`/`SimdLanes` value is not accepted.**
+This isn't an arbitrary extra rule: the compiler needs `T` and `N` to
+determine the concrete `Simd<T,N>` return type at the call site, the exact
+same requirement `Arena::alloc<T>` already has for its own type argument —
+the difference is only that `Simd`'s type argument is spelled as an enum
+member instead of a generic `<T>`, for the parsing reason above.
+
+| Intrinsic                          | Args                         | Returns     | Notes                                                                                                                                                              |
+| ---------------------------------- | ---------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `#simd_load(ptr, lanes)`           | `*T`, `SimdLanes`            | `Simd<T,N>` | `T` inferred from `ptr`'s pointee type; `lanes` a compile-time-constant `SimdLanes` member                                                                         |
+| `#simd_store(ptr, v)`              | `*T`, `Simd<T,N>`            | —           | `ptr`'s `T` must match `v`'s `T` exactly — no implicit conversion                                                                                                  |
+| `#simd_add(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise addition; both args must share the identical `T` and `N`                                                                                                 |
+| `#simd_sub(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise subtraction; both args must share the identical `T` and `N`                                                                                              |
+| `#simd_mul(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise multiplication; both args must share the identical `T` and `N`                                                                                           |
+| `#simd_div(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise division; both args must share the identical `T` and `N`                                                                                                 |
+| `#simd_fma(a, b, c)`               | `Simd<T,N>` × 3              | `Simd<T,N>` | Lane-wise fused multiply-add; all three args must share the identical `T` and `N`                                                                                  |
+| `#simd_min(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise minimum; both args must share the identical `T` and `N`                                                                                                  |
+| `#simd_max(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise maximum; both args must share the identical `T` and `N`                                                                                                  |
+| `#simd_splat(type, lanes, scalar)` | `SimdType`, `SimdLanes`, `T` | `Simd<T,N>` | Broadcast scalar to all lanes; `type`/`lanes` compile-time-constant enum members; `scalar` must be exactly type `T`                                                |
+| `#simd_extract(v, i)`              | `Simd<T,N>`, `int`           | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing       |
+| `#simd_insert(v, i, x)`            | `Simd<T,N>`, `int`, `T`      | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T` |
 
 Mixing `T` or `N` between arguments — `Simd<float32,4>` with `Simd<float32,8>`,
 or `Simd<int32,4>` with `Simd<float32,4>` — is a compile error, never an
@@ -6066,11 +6146,11 @@ implicit widen or convert.
 ```lucid
 -- Sum an array of floats using 4-wide SIMD
 const sumFloats (data *float32, len uint64) -> float32 = {
-    let acc Simd<float32, 4> = #simd_splat(float32, 4, 0.0);
+    let acc Simd<float32, 4> = #simd_splat(SimdType.Float32, SimdLanes.Lanes4, 0.0);
     let i   uint64          = 0;
 
     while i + 4 <= len {
-        const chunk Simd<float32, 4> = #simd_load(#ptrOffset(data, i), 4);
+        const chunk Simd<float32, 4> = #simd_load(#ptrOffset(data, i), SimdLanes.Lanes4);
         acc = #simd_add(acc, chunk);
         i = i + 4;
     }
