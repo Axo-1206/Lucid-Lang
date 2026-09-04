@@ -387,11 +387,6 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
 ///
 /// This is called when @[specialize] is used and a concrete instantiation
 /// is needed. It clones the generic function body with type substitutions.
-///
-/// @param funcDecl The generic function declaration.
-/// @param typeArgs The concrete type arguments for this instantiation.
-/// @param specializedFunc The specialized LLVM function to generate the body for.
-/// @param ctx The code generation context.
 void lowerSpecializedFunctionBody(
     FuncDeclAST* funcDecl,
     const std::vector<TypeAST*>& typeArgs,

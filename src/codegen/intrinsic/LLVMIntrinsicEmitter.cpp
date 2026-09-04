@@ -414,7 +414,45 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
 
+    // ─── Helper: Get the vector type from the expression's resolved type ──
+    auto getVectorType = [&]() -> llvm::VectorType* {
+        if (!expr || !expr->resolvedType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "intrinsic '#", name, "' has no resolved type");
+            return nullptr;
+        }
+        llvm::Type* llvmType = getType(ctx, expr->resolvedType);
+        if (!llvmType || !llvmType->isVectorTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "intrinsic '#", name, "' requires a vector return type");
+            return nullptr;
+        }
+        return llvm::cast<llvm::VectorType>(llvmType);
+    };
+
+    // ─── Helper: Get constant integer value ──────────────────────────────
+    auto getConstantIntValue = [](llvm::Value* val) -> uint64_t {
+        if (auto* cint = llvm::dyn_cast<llvm::ConstantInt>(val)) {
+            return cint->getZExtValue();
+        }
+        return 0;
+    };
+
+    // ─── Helper: Perform bounds check and emit panic if out of bounds ────
+    auto checkIndexBounds = [&](uint64_t index, uint64_t laneCount, 
+                                const std::string& operation) -> bool {
+        if (index >= laneCount) {
+            emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx,
+                      "SIMD " + operation + " index " + std::to_string(index) + 
+                      " out of bounds for vector of length " + std::to_string(laneCount),
+                      loc);
+            return false;
+        }
+        return true;
+    };
+
     // ─── SIMD Arithmetic (lane-wise) ──────────────────────────────────────
+    // #simd_add, #simd_sub, #simd_mul, #simd_div
     if (kind == IntrinsicKind::SimdAdd || kind == IntrinsicKind::SimdSub ||
         kind == IntrinsicKind::SimdMul || kind == IntrinsicKind::SimdDiv) {
         if (args.size() < 2) {
@@ -455,6 +493,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD FMA ──────────────────────────────────────────────────────────
+    // #simd_fma(a, b, c)
     if (kind == IntrinsicKind::SimdFma) {
         if (args.size() < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -490,6 +529,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Min/Max ──────────────────────────────────────────────────────
+    // #simd_min, #simd_max
     if (kind == IntrinsicKind::SimdMin || kind == IntrinsicKind::SimdMax) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -524,6 +564,9 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Splat ────────────────────────────────────────────────────────
+    // #simd_splat(scalar)
+    // Note: type_enum and lanes_enum are compile-time constants consumed by Sema.
+    // The resolved type is Simd<T,N> which maps to the vector type.
     if (kind == IntrinsicKind::SimdSplat) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -531,21 +574,87 @@ llvm::Value* emitLLVMSIMDIntrinsic(
             return nullptr;
         }
 
-        llvm::Type* vecType = getType(ctx, expr->resolvedType);
-        if (!vecType || !vecType->isVectorTy()) {
+        llvm::VectorType* vecType = getVectorType();
+        if (!vecType) return nullptr;
+
+        llvm::Value* scalar = args[0];
+        
+        // Validate scalar type matches vector element type
+        llvm::Type* scalarType = scalar->getType();
+        llvm::Type* elemType = vecType->getElementType();
+        if (scalarType != elemType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "'#simd_splat' requires a vector return type");
+                                   "scalar type does not match vector element type");
             return nullptr;
         }
 
-        llvm::Value* scalar = args[0];
         return ctx.builder.CreateVectorSplat(
-            llvm::cast<llvm::VectorType>(vecType)->getElementCount(),
+            vecType->getElementCount(),
             scalar
         );
     }
 
+    // ─── SIMD Load ────────────────────────────────────────────────────────
+    // #simd_load(ptr)
+    // Note: lanes_enum is a compile-time constant consumed by Sema.
+    // The resolved type is Simd<T,N> which maps to the vector type.
+    if (kind == IntrinsicKind::SimdLoad) {
+        if (args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_load' requires a pointer argument");
+            return nullptr;
+        }
+
+        llvm::VectorType* vecType = getVectorType();
+        if (!vecType) return nullptr;
+
+        llvm::Value* ptr = args[0];
+
+        // Validate pointer type - should be a pointer
+        if (!ptr->getType()->isPointerTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "argument to '#simd_load' must be a pointer");
+            return nullptr;
+        }
+
+        // With opaque pointers, we can't check the pointee type directly.
+        // Sema already validated this, so we trust it.
+
+        return ctx.builder.CreateLoad(vecType, ptr);
+    }
+
+    // ─── SIMD Store ────────────────────────────────────────────────────────
+    // #simd_store(ptr, simd_value)
+    if (kind == IntrinsicKind::SimdStore) {
+        if (args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_store' requires 2 arguments");
+            return nullptr;
+        }
+
+        llvm::Value* ptr = args[0];
+        llvm::Value* val = args[1];
+
+        if (!ptr->getType()->isPointerTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "first argument to '#simd_store' must be a pointer");
+            return nullptr;
+        }
+
+        if (!val->getType()->isVectorTy()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "second argument to '#simd_store' must be a vector type");
+            return nullptr;
+        }
+
+        // Sema validated element type match, so we trust it.
+
+        ctx.builder.CreateStore(val, ptr);
+        return nullptr;
+    }
+
     // ─── SIMD Extract ──────────────────────────────────────────────────────
+    // #simd_extract(v, index)
     if (kind == IntrinsicKind::SimdExtract) {
         if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -562,17 +671,28 @@ llvm::Value* emitLLVMSIMDIntrinsic(
             return nullptr;
         }
 
-        if (llvm::ConstantInt* cidx = llvm::dyn_cast<llvm::ConstantInt>(idx)) {
-            uint64_t index = cidx->getZExtValue();
-            return ctx.builder.CreateExtractElement(vec, index);
-        } else {
+        llvm::VectorType* vecType = llvm::cast<llvm::VectorType>(vec->getType());
+        uint64_t laneCount = vecType->getElementCount().getKnownMinValue();
+
+        // Index must be a compile-time constant (Sema already validates this)
+        if (!isConstantInt(idx)) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
                                    "index to '#simd_extract' must be a compile-time constant");
             return nullptr;
         }
+
+        uint64_t index = getConstantIntValue(idx);
+        
+        // ─── Bounds check ──────────────────────────────────────────────────
+        if (!checkIndexBounds(index, laneCount, "extract")) {
+            return nullptr;
+        }
+        
+        return ctx.builder.CreateExtractElement(vec, index);
     }
 
     // ─── SIMD Insert ──────────────────────────────────────────────────────
+    // #simd_insert(v, index, value)
     if (kind == IntrinsicKind::SimdInsert) {
         if (args.size() < 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -590,55 +710,35 @@ llvm::Value* emitLLVMSIMDIntrinsic(
             return nullptr;
         }
 
-        if (llvm::ConstantInt* cidx = llvm::dyn_cast<llvm::ConstantInt>(idx)) {
-            uint64_t index = cidx->getZExtValue();
-            return ctx.builder.CreateInsertElement(vec, val, index);
-        } else {
+        // Validate value type matches vector element type
+        llvm::VectorType* vecType = llvm::cast<llvm::VectorType>(vec->getType());
+        llvm::Type* elemType = vecType->getElementType();
+        if (val->getType() != elemType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                   "value type does not match vector element type");
+            return nullptr;
+        }
+
+        uint64_t laneCount = vecType->getElementCount().getKnownMinValue();
+
+        // Index must be a compile-time constant (Sema already validates this)
+        if (!isConstantInt(idx)) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
                                    "index to '#simd_insert' must be a compile-time constant");
             return nullptr;
         }
+
+        uint64_t index = getConstantIntValue(idx);
+        
+        // ─── Bounds check ──────────────────────────────────────────────────
+        if (!checkIndexBounds(index, laneCount, "insert")) {
+            return nullptr;
+        }
+        
+        return ctx.builder.CreateInsertElement(vec, val, index);
     }
 
-    // ─── SIMD Load/Store ──────────────────────────────────────────────────
-    if (kind == IntrinsicKind::SimdLoad) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_load' requires a pointer argument");
-            return nullptr;
-        }
-
-        llvm::Value* ptr = args[0];
-        llvm::Type* vecType = getType(ctx, expr->resolvedType);
-        if (!vecType || !vecType->isVectorTy()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "'#simd_load' requires a vector return type");
-            return nullptr;
-        }
-
-        return ctx.builder.CreateLoad(vecType, ptr);
-    }
-
-    if (kind == IntrinsicKind::SimdStore) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_store' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Value* ptr = args[0];
-        llvm::Value* val = args[1];
-
-        if (!val->getType()->isVectorTy()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "second argument to '#simd_store' must be a vector type");
-            return nullptr;
-        }
-
-        ctx.builder.CreateStore(val, ptr);
-        return nullptr;
-    }
-
+    // ─── Unknown SIMD intrinsic ──────────────────────────────────────────
     ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
                             "unknown SIMD intrinsic '#", name, "'");
     return nullptr;

@@ -189,6 +189,14 @@ inline bool isConstantInt(llvm::Value* value) {
     return value && llvm::isa<llvm::ConstantInt>(value);
 }
 
+/// @brief Get the integer value from a constant integer.
+inline uint64_t getConstantIntValue(llvm::Value* value) {
+    if (auto* cint = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+        return cint->getZExtValue();
+    }
+    return 0;
+}
+
 /// @brief Check if an LLVM value is a constant floating-point.
 inline bool isConstantFP(llvm::Value* value) {
     return value && llvm::isa<llvm::ConstantFP>(value);
@@ -301,6 +309,18 @@ inline llvm::Type* getElementType(llvm::Type* type) {
         }
     }
     return nullptr;
+}
+
+/// @brief Get the lane count from a vector type.
+inline uint64_t getLaneCount(llvm::Type* type) {
+    if (!type || !type->isVectorTy()) return 0;
+    return llvm::cast<llvm::VectorType>(type)->getElementCount().getKnownMinValue();
+}
+
+/// @brief Get the element type from a vector type.
+inline llvm::Type* getVectorElementType(llvm::Type* type) {
+    if (!type || !type->isVectorTy()) return nullptr;
+    return llvm::cast<llvm::VectorType>(type)->getElementType();
 }
 
 /// @brief Get the number of elements in an array or vector.
