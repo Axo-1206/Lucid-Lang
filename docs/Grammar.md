@@ -1128,7 +1128,7 @@ type, used for every override compatibility check from here on, is
 
   ```lucid
   const customStr (self &Point) -> string = { return "Point!"; };
-  const p Point = Point{ x = 1.5, y = 3.0, str = customStr };
+  const p Point = Point{ x: 1.5, y: 3.0, str: customStr };
   ```
 
   Both the inline default and an external override are checked against the
@@ -4322,6 +4322,7 @@ virtue of being copyable — and `Arena` isn't.
 | `Shared<T>` *(stdlib, planned)* | Shared, refcounted             | copies handle, retains                                                                        | heap, automatic — freed when refcount hits 0                                                                    | yes                                                                                                                   |
 | `Weak<T>` *(stdlib, planned)*   | Shared, refcounted, non-owning | copies handle, does not retain                                                                | rides on the `Shared<T>` it observes; auto-nulls                                                                | yes, but never keeps its target alive                                                                                 |
 | **`Arena`**                     | Owned, scope-confined          | **none — not copyable**; only the original `const` binding is ever valid                      | scope arena, automatic — same compiler-inserted call as `[*]T`/`string`, never manual                           | **no — no user function may return it, take it by value, store it in a struct, or capture it; pass `&Arena` instead** |
+| `Simd<T,N>`                     | Owned value                    | full copy — a handful of machine words, no heap allocation, no aliasing risk                  | scope arena, automatic                                                                                          | irrelevant — same as `[N]T`, not `Arena`'s special case                                                               |
 
 ### Owned Types — Copied on Assignment
 
@@ -5942,7 +5943,6 @@ modern ISAs). Faster and more precise than a software implementation.
 | Intrinsic         | Args         | Returns | Notes                                 |
 | ----------------- | ------------ | ------- | ------------------------------------- |
 | `#sqrt(x)`        | float/double | same    | Hardware square root                  |
-| `#trunc(x)`       | float/double | same    | Round toward zero (truncate)          |
 | `#floor(x)`       | float/double | same    | Round toward −∞                       |
 | `#ceil(x)`        | float/double | same    | Round toward +∞                       |
 | `#round(x)`       | float/double | same    | Round to nearest, half away from zero |
@@ -5985,31 +5985,91 @@ const swapped  uint32 = #bswap(networkOrder);
 
 Operate on fixed-width vector registers (e.g. SSE/AVX on x86-64, NEON on ARM).
 Write scalar Lucid logic for clarity; drop to SIMD explicitly in hot loops for
-throughput. The type `vec<T, N>` represents an N-wide vector of element type `T`.
+throughput.
 
-| Intrinsic                   | Args                 | Returns    | Notes                              |
-| --------------------------- | -------------------- | ---------- | ---------------------------------- |
-| `#simd_load(ptr)`           | `*T`                 | `vec<T,N>` | Load N elements from memory        |
-| `#simd_store(ptr, v)`       | `*T`, `vec<T,N>`     | —          | Store N elements to memory         |
-| `#simd_add(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise addition                 |
-| `#simd_sub(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise subtraction              |
-| `#simd_mul(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise multiplication           |
-| `#simd_div(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise division                 |
-| `#simd_fma(a, b, c)`        | `vec<T,N>` × 3       | `vec<T,N>` | Lane-wise fused multiply-add       |
-| `#simd_min(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise minimum                  |
-| `#simd_max(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise maximum                  |
-| `#simd_splat(T, N, scalar)` | type, int, `T`       | `vec<T,N>` | Broadcast scalar to all lanes      |
-| `#simd_extract(v, i)`       | `vec<T,N>`, int      | `T`        | Extract lane i                     |
-| `#simd_insert(v, i, x)`     | `vec<T,N>`, int, `T` | `vec<T,N>` | Return v with lane i replaced by x |
+**`Simd<T, N>` is a third compiler-builtin type**, alongside `Arena` and
+`ArenaDescriptor` — not an ordinary generic struct, and not `[N]T` in
+disguise. It needs restrictions and a representation neither of those can
+honestly provide:
+
+- **`T` is restricted to a closed set of primitive kinds** — the sized
+  integer kinds (`int8`/`16`/`32`/`64` and their unsigned counterparts) and
+  the float kinds (`float32`/`64`). Not `bool` (mask registers are a
+  distinct concept from a data vector, deliberately not folded in here),
+  not `char`, not `string`, not structs, not pointers — SIMD instructions
+  operate on fixed-width lanes of integers or floats, full stop, and the
+  type needs to say so rather than silently accept anything with a
+  compile-time-known size the way `[N]T` already does. Enforced the same
+  way `Arena::create(0)` rejection is: a hardcoded check at the handful of
+  construction points (`#simd_splat`, `#simd_load`), not a general-purpose
+  constraint mechanism — this was never a job for traits (a field-shape
+  contract) or for a new kind of generic bound.
+- **`N` must be a compile-time constant**, the same existing rule `[N]T`'s
+  own size already follows — it's part of the static type, so it has to be
+  known statically. Unlike `[N]T`, there is deliberately **no power-of-two
+  or native-register-width restriction** on `N`. LLVM's own vector
+  legalization already splits or pads a non-native width (`<7 x float>`)
+  onto whatever the target's real registers look like; requiring `N` to be
+  4/8/16 here would just be Lucid re-implementing a job LLVM already does
+  correctly. A non-native width is still allowed to compile — the compiler
+  may emit a performance *warning*, never an error, when `N * #sizeof(T)`
+  doesn't cleanly match a common register width.
+- **Lowers to a genuine LLVM vector type (`<N x T>`), always, consistently**
+  — never the `[N x T]` array representation `[N]T` uses. This is the
+  representation gap array reuse would otherwise hide: reusing `[N]T` for
+  SIMD would force either a silent, context-dependent exception in specific
+  intrinsics' codegen (the same Lucid type meaning two different LLVM
+  shapes depending on invisible context) or a real conversion cost at every
+  SIMD call boundary. `Simd<T,N>` avoids both by being its own type with
+  exactly one representation, and leaves `[N]T` completely untouched — none
+  of its existing rules or copy semantics change.
+- **Ownership category: `Owned value`** — not `Arena`'s "Owned,
+  scope-confined" category. Arena needed that restriction because
+  deep-copying its backing buffer would be expensive and aliasing it would
+  reopen real hazards; `Simd<T,N>` is a handful of machine words with no heap
+  allocation and no aliasing risk, exactly as cheap and exactly as safe to
+  copy as `[N]T` of primitives already is. It can be freely passed by
+  value, returned from functions, and stored as a struct field like any
+  other `Owned value` — genuinely simpler than `Arena` here, not a variant
+  of it.
+- **Constructed only through the `#simd_*` intrinsics** — `#simd_splat` and
+  `#simd_load` are the only sanctioned producers, the same role
+  `Arena::create`/`Arena::empty()` play for `Arena`. No struct literal, no
+  ordinary `let`/`const` construction from arbitrary values.
+- **No `::` operations.** Unlike `Arena`, `Simd<T,N>` has nothing resembling
+  `arena::reset()` — every operation on it is one of the `#simd_*`
+  intrinsics below, kept in the plain-leading-argument `#`-intrinsic style
+  (`#simd_splat(T, N, scalar)`) rather than `<T>`-bracket generic syntax,
+  for consistency with `#sizeof(T)`/`#alloc(T, count)` — that bracket form
+  stays reserved for ordinary Lucid declarations and `Arena::alloc<T>`.
+
+| Intrinsic                   | Args                  | Returns     | Notes                                                                                                                                                              |
+| --------------------------- | --------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `#simd_load(ptr, N)`        | `*T`, `int`           | `Simd<T,N>` | `T` inferred from `ptr`'s pointee type; `N` a compile-time constant                                                                                                |
+| `#simd_store(ptr, v)`       | `*T`, `Simd<T,N>`     | —           | `ptr`'s `T` must match `v`'s `T` exactly — no implicit conversion                                                                                                  |
+| `#simd_add(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise addition; both args must share the identical `T` and `N`                                                                                                 |
+| `#simd_sub(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise subtraction; both args must share the identical `T` and `N`                                                                                              |
+| `#simd_mul(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise multiplication; both args must share the identical `T` and `N`                                                                                           |
+| `#simd_div(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise division; both args must share the identical `T` and `N`                                                                                                 |
+| `#simd_fma(a, b, c)`        | `Simd<T,N>` × 3       | `Simd<T,N>` | Lane-wise fused multiply-add; all three args must share the identical `T` and `N`                                                                                  |
+| `#simd_min(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise minimum; both args must share the identical `T` and `N`                                                                                                  |
+| `#simd_max(a, b)`           | `Simd<T,N>` × 2       | `Simd<T,N>` | Lane-wise maximum; both args must share the identical `T` and `N`                                                                                                  |
+| `#simd_splat(T, N, scalar)` | type, int, `T`        | `Simd<T,N>` | Broadcast scalar to all lanes; `T` restricted to the numeric allowlist above; `scalar` must be exactly type `T`                                                    |
+| `#simd_extract(v, i)`       | `Simd<T,N>`, int      | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing       |
+| `#simd_insert(v, i, x)`     | `Simd<T,N>`, int, `T` | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T` |
+
+Mixing `T` or `N` between arguments — `Simd<float32,4>` with `Simd<float32,8>`,
+or `Simd<int32,4>` with `Simd<float32,4>` — is a compile error, never an
+implicit widen or convert.
 
 ```lucid
 -- Sum an array of floats using 4-wide SIMD
 const sumFloats (data *float32, len uint64) -> float32 = {
-    let acc vec<float32, 4> = #simd_splat(float32, 4, 0.0);
+    let acc Simd<float32, 4> = #simd_splat(float32, 4, 0.0);
     let i   uint64          = 0;
 
     while i + 4 <= len {
-        const chunk vec<float32, 4> = #simd_load(#ptrOffset(data, i));
+        const chunk Simd<float32, 4> = #simd_load(#ptrOffset(data, i), 4);
         acc = #simd_add(acc, chunk);
         i = i + 4;
     }
