@@ -8,44 +8,164 @@
 
 namespace sema {
 
+// ─── Helper: Resolve declaration for a named type ──────────────────────
+
+static TypeDeclAST* resolveTypeDecl(NamedTypeAST* type, SemaContext& ctx) {
+    // If already resolved, return it
+    if (type->resolvedDecl) {
+        return type->resolvedDecl;
+    }
+    
+    // Look up the declaration
+    TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
+    if (!decl) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
+                              "undefined type '", ctx.pool.lookup(type->name), "'");
+        return nullptr;
+    }
+    
+    // Check if it's a generic parameter
+    if (decl->isa<GenericParamDeclAST>()) {
+        type->resolvedDecl = decl;
+        return decl;
+    }
+    
+    // Check if this is a trait being used in an invalid context
+    if (decl->isa<TraitDeclAST>()) {
+        // Traits are only valid as generic constraints
+        if (!ctx.stack.isInside(ContextKind::GenericConstraint)) {
+            ctx.diagnostics.error(DiagCode::Sem_TraitInvalidContext, type,
+                                  "trait '", ctx.pool.lookup(type->name), 
+                                  "' can only be used as a generic constraint");
+            return nullptr;
+        }
+        type->resolvedDecl = decl;
+        return decl;
+    }
+    
+    // Store the resolved declaration
+    type->resolvedDecl = decl;
+    return decl;
+}
+
+// ─── Helper: Validate generic instantiation ────────────────────────────
+
+static bool validateGenericInstantiation(NamedTypeAST* type, SemaContext& ctx) {
+    if (!type->resolvedDecl) return false;
+    TypeDeclAST* decl = type->resolvedDecl;
+    
+    // Generic parameters are handled elsewhere
+    if (decl->isa<GenericParamDeclAST>()) {
+        if (!type->genericArgs.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "generic parameter '", ctx.pool.lookup(type->name),
+                                  "' cannot have generic arguments");
+            return false;
+        }
+        return true;
+    }
+    
+    // Get expected parameter count
+    size_t expectedParams = 0;
+    ArenaSpan<GenericParamDeclAST*> genericParams;
+    
+    if (auto* structDecl = decl->as<StructDeclAST>()) {
+        genericParams = structDecl->genericParams;
+        expectedParams = genericParams.size();
+    } else if (auto* traitDecl = decl->as<TraitDeclAST>()) {
+        genericParams = traitDecl->genericParams;
+        expectedParams = genericParams.size();
+    } else if (decl->isa<EnumDeclAST>()) {
+        // Enums are not generic
+        if (!type->genericArgs.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "enum '", ctx.pool.lookup(type->name), "' is not generic");
+            return false;
+        }
+        return true;
+    } else {
+        ctx.diagnostics.error(DiagCode::Sem_UnknownType, type, "unknown type declaration kind");
+        return false;
+    }
+    
+    // Check if generic arguments are required but missing
+    bool requiresGeneric = expectedParams > 0;
+    if (requiresGeneric && type->genericArgs.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, type,
+                              "type '", ctx.pool.lookup(type->name),
+                              "' requires ", expectedParams, " generic arguments");
+        return false;
+    }
+    
+    // Check arity
+    if (type->genericArgs.size() != expectedParams) {
+        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
+                              "type '", ctx.pool.lookup(type->name),
+                              "' expected ", expectedParams,
+                              " generic arguments, got ", type->genericArgs.size());
+        return false;
+    }
+    
+    // Resolve each argument
+    for (TypeAST* arg : type->genericArgs) {
+        if (!resolveType(arg, ctx)) {
+            return false;
+        }
+    }
+    
+    // Validate constraints
+    if (!validateGenericArguments(type->genericArgs, genericParams, type, ctx)) {
+        return false;
+    }
+    
+    return true;
+}
+
 // ─── Main Resolution Entry Point ─────────────────────────────────────────
 
 TypeAST* resolveType(TypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     switch (type->kind) {
-        case ASTKind::PrimitiveType: 
-            return resolvePrimitiveType(type->as<PrimitiveTypeAST>(), ctx);
-        case ASTKind::NamedType:     
+        case ASTKind::PrimitiveType:     
+            return type;  // Already resolved
+            
+        case ASTKind::NamedType:         
             return resolveNamedType(type->as<NamedTypeAST>(), ctx);
+            
+        case ASTKind::SimdType:
+        case ASTKind::ArenaType:
+        case ASTKind::ArenaDescriptorType:
+            return resolveBuiltinType(type, ctx);
+            
         case ASTKind::ModuleTypeAccess:
             return resolveModuleTypeAccess(type->as<ModuleTypeAccessAST>(), ctx);
+            
         case ASTKind::ArrayType:     
             return resolveArrayType(type->as<ArrayTypeAST>(), ctx);
+            
         case ASTKind::NullableType:  
             return resolveNullableType(type->as<NullableTypeAST>(), ctx);
+            
         case ASTKind::FallibleType:  
             return resolveFallibleType(type->as<FallibleTypeAST>(), ctx);
+            
         case ASTKind::CombinedType:  
             return resolveCombinedType(type->as<CombinedTypeAST>(), ctx);
+            
         case ASTKind::RefType:       
             return resolveRefType(type->as<RefTypeAST>(), ctx);
+            
         case ASTKind::PtrType:       
             return resolvePtrType(type->as<PtrTypeAST>(), ctx);
+            
         case ASTKind::FuncType:      
             return resolveFuncType(type->as<FuncTypeAST>(), ctx);
+            
         default:
-            ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
-                                  "unknown type");
+            ctx.diagnostics.error(DiagCode::Sem_UnknownType, type, "unknown type");
             return nullptr;
     }
-}
-
-// ─── Primitive Type ──────────────────────────────────────────────────────
-
-TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
-    (void)ctx;
-    return type;
 }
 
 // ─── Named Type ──────────────────────────────────────────────────────────
@@ -53,50 +173,13 @@ TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── 0. Check if this is a built-in type ───────────────────────────────
-    if (isArenaDescriptorNamedType(type)) {
-        return ctx.getArenaDescriptorType();
+    // ─── Step 1: Resolve the declaration ─────────────────────────────────────
+    TypeDeclAST* decl = resolveTypeDecl(type, ctx);
+    if (!decl) {
+        return nullptr;
     }
     
-    if (isArenaNamedType(type)) {
-        return ctx.getArenaType();
-    }
-
-    // ─── 1. Resolve the declaration if not already set ─────────────────────
-    if (!type->resolvedDecl) {
-        TypeDeclAST* decl = ctx.lookupTypeDecl(type->name);
-        if (!decl) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
-                                  "undefined type '", ctx.pool.lookup(type->name), "'");
-            return nullptr;
-        }
-        type->resolvedDecl = decl;
-    }
-
-    if (type->resolvedDecl && type->resolvedDecl->hasSyntaxError) {
-        return ctx.getUnknownType();
-    }
-
-    // ─── 2. Check if this resolves to a trait ──────────────────────────────
-    TypeDeclAST* decl = type->resolvedDecl;
-    if (decl->isa<TraitDeclAST>()) {
-        // ─── Trait is only valid as a generic constraint ───────────────────
-        if (!ctx.stack.isInside(ContextKind::GenericConstraint)) {
-            ctx.diagnostics.error(DiagCode::Sem_TraitInvalidContext, type,
-                                  "trait '", ctx.pool.lookup(type->name), 
-                                  "' can only be used as a generic constraint "
-                                  "(e.g., '<T : ", ctx.pool.lookup(type->name), ">')");
-            ctx.diagnostics.note(type,
-                                 "Traits are field contracts, not concrete types. "
-                                 "They cannot be used as field types, parameter types, "
-                                 "return types, or variable types.");
-            return nullptr;
-        }
-        // ─── In constraint context, return the trait type ──────────────────
-        return type;
-    }
-
-    // ─── 3. Generic parameters can't have generic arguments ───────────────
+    // If it's a generic parameter, no further validation needed
     if (decl->isa<GenericParamDeclAST>()) {
         if (!type->genericArgs.empty()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
@@ -106,93 +189,61 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         }
         return type;
     }
+    
+    // If it's a trait, we already validated context in resolveTypeDecl
+    if (decl->isa<TraitDeclAST>()) {
+        return type;
+    }
 
-    // ─── 4. Resolve generic arguments if present ─────────────────────────
-    if (!type->genericArgs.empty()) {
-        // Check which kind of declaration we have
-        size_t expectedParams = 0;
-        bool isGeneric = false;
-
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            expectedParams = structDecl->genericParams.size();
-            isGeneric = !structDecl->genericParams.empty();
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            expectedParams = traitDecl->genericParams.size();
-            isGeneric = !traitDecl->genericParams.empty();
-        } else if (decl->isa<EnumDeclAST>()) {
-            // Enums cannot be generic
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                  "enum '", ctx.pool.lookup(type->name), "' is not generic");
-            return nullptr;
-        } else {
-            ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
-                                  "unknown type declaration kind");
-            return nullptr;
-        }
-
-        if (!isGeneric) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                  "type '", ctx.pool.lookup(type->name), "' is not generic");
-            return nullptr;
-        }
-
-        if (type->genericArgs.size() != expectedParams) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
-                                  "type '", ctx.pool.lookup(type->name),
-                                  "' expected ", expectedParams,
-                                  " generic arguments, got ", 
-                                  type->genericArgs.size());
-            return nullptr;
-        }
-
-        // Resolve each generic argument type
-        // NOTE: type->genericArgs is an ArenaSpan<TypeAST*>, so we iterate
-        // over it directly. The elements are already TypeAST* and we need
-        // to resolve them.
-        for (TypeAST* arg : type->genericArgs) {
-            if (!resolveType(arg, ctx)) {
-                return nullptr;
-            }
-        }
-
-        // Validate constraints for generic arguments
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
-                return nullptr;
-            }
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
-                return nullptr;
-            }
-        }
-    } else {
-        // Check if the type requires generic arguments
-        bool requiresGeneric = false;
-        if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            if (!structDecl->genericParams.empty()) {
-                requiresGeneric = true;
-            }
-        } else if (decl->isa<TraitDeclAST>()) {
-            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
-            if (!traitDecl->genericParams.empty()) {
-                requiresGeneric = true;
-            }
-        }
-
-        if (requiresGeneric) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, type,
-                                  "type '", ctx.pool.lookup(type->name),
-                                  "' requires generic arguments");
-            return nullptr;
-        }
+    // ─── Step 2: Validate generic arguments ──────────────────────────────────
+    if (!validateGenericInstantiation(type, ctx)) {
+        return nullptr;
     }
 
     return type;
+}
+
+// ─── Built-in Type Resolution ────────────────────────────────────────────
+
+TypeAST* resolveBuiltinType(TypeAST* type, SemaContext& ctx) {
+    if (!type) return nullptr;
+
+    switch (type->kind) {
+        case ASTKind::SimdType: {
+            SimdTypeAST* simd = type->as<SimdTypeAST>();
+            
+            // Resolve the element type
+            if (simd->elementType) {
+                simd->elementType = resolveType(simd->elementType, ctx);
+                if (!simd->elementType) {
+                    return nullptr;
+                }
+            }
+            
+            // Validate the Simd type
+            if (!validateSimdType(simd, ctx)) {
+                return nullptr;
+            }
+            
+            return simd;
+        }
+        
+        case ASTKind::ArenaType: {
+            // Arena is already resolved - just return it
+            // resolveVarDecl in SemaDecl.cpp will resolve it
+            return type;
+        }
+        
+        case ASTKind::ArenaDescriptorType: {
+            // ArenaDescriptor is already resolved - just return it
+            return type;
+        }
+        
+        default:
+            ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
+                                  "unknown built-in type");
+            return nullptr;
+    }
 }
 
 // ─── Module Type Access ──────────────────────────────────────────────────
@@ -200,40 +251,26 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── Step 1: Look up the type in the module by alias ──────────────────
+    // Look up the type in the module by alias
     TypeDeclAST* decl = ctx.lookupTypeByAlias(type->moduleName, type->typeName);
     if (!decl) {
-        // The helper already reported the error (module not found or member not found)
-        return nullptr;
+        return nullptr;  // Error already reported
     }
 
-    // ─── Step 2: Check if the type is exported ─────────────────────────────
+    // Check if the type is exported
     if (!ctx.isTypeExported(decl)) {
         ctx.diagnostics.error(DiagCode::Sem_PrivateMember, type,
                               "type '", ctx.pool.lookup(type->typeName), "' in module '",
                               ctx.pool.lookup(type->moduleName), "' is not exported");
-        ctx.diagnostics.note(type, "Add @[export] to the type declaration to make it accessible");
         return nullptr;
     }
 
-    // ─── Step 3: Get the canonical NamedTypeAST with generic args ─────────
-    // The cache key includes genericArgs, so Vec2<int> and Vec2<float>
-    // are stored separately. This prevents type corruption across different
-    // instantiations of the same generic type name.
+    // Get the canonical NamedTypeAST
     NamedTypeAST* resolvedType = ctx.getNamedType(type->typeName, type->genericArgs);
-    
-    // ─── Step 4: Transfer semantic data ────────────────────────────────────
-    // The resolvedDecl is set here, not in the cache key, because it's a
-    // semantic property (the declaration we resolved to), not a syntactic
-    // property of the type name. This is safe because the cache key only
-    // includes the name and generic args - the resolvedDecl is set once
-    // and never changes for a given instantiation.
     resolvedType->resolvedDecl = decl;
     resolvedType->loc = type->loc;
 
-    // ─── Step 5: Delegate to resolveNamedType for validation ──────────────
-    // Since resolvedDecl is already set, this skips the lookup phase and
-    // only validates generic arguments, arity, and constraints.
+    // Delegate to resolveNamedType for validation
     return resolveNamedType(resolvedType, ctx);
 }
 
@@ -249,42 +286,30 @@ TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Arena validation: Cannot store Arena in arrays ──────────────────
+    // Arena cannot be stored in arrays
     if (isArenaType(element)) {
         ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
                               "array element cannot be of type Arena");
-        ctx.diagnostics.note(type,
-                             "Arena is scope-confined and cannot be stored in arrays");
         return nullptr;
     }
 
-    // ─── Check: Array element cannot be a reference type ──────────────────
+    // Reference types cannot be stored in arrays
     if (element->isa<RefTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
                               "reference type (&T) cannot be stored in an array");
         return nullptr;
     }
 
-    // ─── Check: Array element cannot be a slice type ──────────────────────
-    // Rule 2: No Array/Slice Storage - an array cannot store [_]T as element
-    if (element->isa<ArrayTypeAST>()) {
-        ArrayTypeAST* innerArray = element->as<ArrayTypeAST>();
-        if (innerArray->isSlice()) {
-            ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
-                                  "slice type ([_]T) cannot be stored in an array element");
-            return nullptr;
-        }
+    // Slice types cannot be stored in arrays
+    if (element->isa<ArrayTypeAST>() && element->as<ArrayTypeAST>()->isSlice()) {
+        ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
+                              "slice type ([_]T) cannot be stored in an array element");
+        return nullptr;
     }
 
-    // ─── Apply Downward Flow Rule to slices ──────────────────────────────
-    // A slice ([_]T) is a borrowed type, so it must follow the Downward Flow Rule
-    // This is checked in validateBorrowedContext, but we also need to check
-    // if the array itself is a slice being used in an invalid context
-    if (type->isSlice()) {
-        // Check if the slice is being used as a function return, struct field, etc.
-        if (!validateBorrowedContext(type, ctx)) {
-            return nullptr;
-        }
+    // Apply Downward Flow Rule to slices
+    if (type->isSlice() && !validateBorrowedContext(type, ctx)) {
+        return nullptr;
     }
 
     return type;
@@ -296,11 +321,7 @@ TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
-    if (!inner) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
-                              "invalid nullable inner type");
-        return nullptr;
-    }
+    if (!inner) return nullptr;
 
     if (inner->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
@@ -308,7 +329,6 @@ TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // This should not be ran, the parser should create an array with nullable elements
     if (inner->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
                               "array types cannot be nullable (use empty array instead)");
@@ -324,11 +344,7 @@ TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
-    if (!inner) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
-                              "invalid fallible inner type");
-        return nullptr;
-    }
+    if (!inner) return nullptr;
 
     if (inner->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
@@ -336,7 +352,6 @@ TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // This should not be ran, the parser should create an array with fallible elements
     if (inner->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
                               "array types cannot be fallible");
@@ -352,11 +367,7 @@ TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
-    if (!inner) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
-                              "invalid combined inner type");
-        return nullptr;
-    }
+    if (!inner) return nullptr;
 
     if (inner->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
@@ -385,9 +396,6 @@ TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Apply Downward Flow Rule ──────────────────────────────────────────
-    // References (&T) are strictly scoped. They are allowed to flow downward
-    // (into nested calls), but never upward or sideways.
     if (!validateBorrowedContext(type, ctx)) {
         return nullptr;
     }
@@ -407,8 +415,6 @@ TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // Raw pointers are sealed conduits - they are always valid structurally
-    // FFI compatibility is checked separately in isValidFFIType
     return type;
 }
 
@@ -417,7 +423,7 @@ TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── Validate parameter types ──────────────────────────────────────────
+    // Validate parameter types
     for (ParamAST* param : type->params) {
         if (!resolveType(param->type, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
@@ -425,18 +431,15 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        // ─── Arena validation: Cannot pass Arena by value ────────────────
         if (isArenaType(param->type)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
                                   "parameter '", ctx.pool.lookup(param->name),
-                                  "' cannot be of type Arena (use &Arena to pass by reference)");
-            ctx.diagnostics.note(param,
-                                 "Arena is scope-confined and cannot be passed by value");
+                                  "' cannot be of type Arena (use &Arena)");
             return nullptr;
         }
     }
 
-    // ─── Validate return type ──────────────────────────────────────────────
+    // Validate return type
     if (type->returnType) {
         TypeAST* returnType = resolveType(type->returnType, ctx);
         if (!returnType) {
@@ -445,25 +448,19 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        // ─── Arena validation: Cannot return Arena by value ──────────────
         if (isArenaType(returnType)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, type,
                                   "function cannot return Arena by value");
-            ctx.diagnostics.note(type,
-                                 "Arena is scope-confined. Use &Arena to return a reference, "
-                                 "or use Arena::create()/Arena::empty() to construct a new arena.");
             return nullptr;
         }
 
-        // ─── Check: Function cannot return a borrowed type ────────────────
         if (isBorrowedType(returnType)) {
             ctx.diagnostics.error(DiagCode::Sem_ReturnRef, type,
-                                  "function cannot return borrowed type (",
-                                  typeToString(returnType, ctx.pool),
-                                  ") — &T and [_]T cannot escape upward");
+                                  "function cannot return borrowed type");
             return nullptr;
         }
 
+        // Recursively resolve curried return types
         if (returnType->isa<FuncTypeAST>()) {
             if (!resolveFuncType(returnType->as<FuncTypeAST>(), ctx)) {
                 return nullptr;
@@ -479,20 +476,13 @@ TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
 TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
-    // ─── Step 1: Resolve the named type ────────────────────────────────────
-    // This will check that we're in a generic constraint context
+    // Resolve the named type
     TypeAST* resolved = resolveNamedType(ref, ctx);
     if (!resolved) return nullptr;
 
-    // ─── Step 2: Check if it's a trait ─────────────────────────────────────
+    // Check if it's a trait
     TypeDeclAST* decl = ref->resolvedDecl;
-    if (!decl) return nullptr;
-
-    if (decl->name.isEmpty()) {
-        return nullptr;
-    }
-
-    if (!decl->isa<TraitDeclAST>()) {
+    if (!decl || !decl->isa<TraitDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotATrait, ref,
                               "'", ctx.pool.lookup(ref->name), "' is not a trait");
         return nullptr;
@@ -506,13 +496,13 @@ TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
 FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     if (!callee) return nullptr;
 
-    // ─── Case 1: Plain identifier call: `foo(...)` ──────────────────────
+    // Plain identifier call: `foo(...)`
     if (callee->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = callee->as<IdentifierExprAST>();
         
         if (ctx.isGenericParam(id->name)) {
             ctx.diagnostics.error(DiagCode::Sem_GenericParamNotCallable, callee,
-                                  "'", ctx.pool.lookup(id->name), "' is a generic type parameter, not a function");
+                                  "'", ctx.pool.lookup(id->name), "' is a type parameter");
             return nullptr;
         }
 
@@ -532,15 +522,12 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
         return value->as<FuncDeclAST>();
     }
 
-    // ─── Case 2: Cross-module call: `module:member(...)` ────────────────
+    // Cross-module call: `module:member(...)`
     if (callee->isa<ModuleAccessExprAST>()) {
         ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
         
         ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
-        if (!decl) {
-            // The helper already reported the error (module not found or member not found)
-            return nullptr;
-        }
+        if (!decl) return nullptr;
 
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
@@ -552,14 +539,13 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
         return decl->as<FuncDeclAST>();
     }
 
-    // ─── Case 3: Field access call: `obj.method(...)` ────────────────────
+    // Field access call: `obj.method(...)` - not allowed
     if (callee->isa<FieldAccessExprAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
                               "field access is not callable (Lucid has no methods)");
         return nullptr;
     }
 
-    // ─── Case 4: Any other callee shape ──────────────────────────────────
     return nullptr;
 }
 

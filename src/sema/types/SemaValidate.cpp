@@ -655,4 +655,34 @@ bool validateArenaInitializer(ExprAST* init, SemaContext& ctx) {
     return true;
 }
 
+// ─── Simd Validation ────────────────────────────────────────────────────
+
+bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx) {
+    if (!simdType) return true;
+    
+    // Validate lane count
+    if (simdType->laneCount == 0) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, simdType,
+                              "Simd lane count must be > 0");
+        return false;
+    }
+    
+    // Validate element type is a numeric primitive
+    if (!simdType->elementType) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
+                              "Simd element type is missing");
+        return false;
+    }
+    
+    if (!isValidSimdElementType(simdType->elementType)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType->elementType,
+                              "Simd element type must be a numeric primitive "
+                              "(int8, int16, int32, int64, uint8, uint16, uint32, "
+                              "uint64, float32, or float64)");
+        return false;
+    }
+    
+    return true;
+}
+
 } // namespace sema

@@ -237,7 +237,12 @@ enum class DiagCode : uint32_t {
     Sem_BuiltinFieldNotFound      = 4453,  // Field not found on built-in type
     Sem_BuiltinMethodNotFound     = 4454,  // Method not found on built-in type
     Sem_BuiltinTypeMismatch       = 4455,  // Expected built-in type, got something else
-
+    Sem_InvalidSimdElementType    = 4456,  // Simd element type must be numeric primitive
+    Sem_InvalidSimdLaneCount      = 4457,  // Simd lane count must be > 0
+    Sem_SimdNoGenericArgs         = 4458,  // Simd requires generic arguments <T, N>
+    Sem_ArenaNoGenericArgs        = 4459,  // Arena does not take generic arguments
+    Sem_ArenaDescriptorNoGenericArgs = 4460,  // ArenaDescriptor does not take generic arguments
+    
     // ──────────────────────────────────────────────────────────────────────────
     // FFI/FOREIGN ERRORS (5000-5499)
     // These can happen at compile-time OR runtime.

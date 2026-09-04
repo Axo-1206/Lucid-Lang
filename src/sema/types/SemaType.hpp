@@ -64,6 +64,9 @@ TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx);
 /// @brief Resolve a named type (including built-ins like Arena/ArenaDescriptor).
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
 
+/// @brief Resolve built-in types (Arena, ArenaDescriptor, Simd).
+TypeAST* resolveBuiltinType(TypeAST* type, SemaContext& ctx);
+
 /// @brief Resolve a qualified type access: module:Type.
 TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx);
 
@@ -125,11 +128,25 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx);
 
 // ─── Built-in Type Predicates ────────────────────────────────────────────
 
-bool isArenaType(TypeAST* type);
+bool isArenaType(TypeAST* type); // Arena? type is not allowed, use Arena::empty()
 bool isArenaDescriptorType(TypeAST* type);
 bool isArenaNamedType(NamedTypeAST* named);
 bool isArenaDescriptorNamedType(NamedTypeAST* named);
 bool isArenaBinding(VarDeclAST* decl);
+
+/// Does NOT accept:
+///   - Simd<T, N>? (nullable Simd is not allowed)
+///   - Simd<T, N>! (fallible Simd is not allowed)
+bool isSimdType(TypeAST* type);
+bool isSimdNamedType(NamedTypeAST* named);
+
+/// Valid element types are:
+///   - Signed integers: int8, int16, int32, int64
+///   - Unsigned integers: uint8, uint16, uint32, uint64
+///   - Floating point: float32, float64
+bool isValidSimdElementType(TypeAST* type);
+TypeAST* getSimdElementType(TypeAST* simdType);
+uint64_t getSimdLaneCount(TypeAST* simdType);
 
 // ─── Switch Type Checks ──────────────────────────────────────────────────
 
@@ -235,5 +252,9 @@ bool validateForeignFunction(FuncDeclAST* decl,
 // ─── Arena Validation ────────────────────────────────────────────────────
 
 bool validateArenaInitializer(ExprAST* init, SemaContext& ctx);
+
+// ─── Simd Validation ────────────────────────────────────────────────────
+
+bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx);
 
 } // namespace sema

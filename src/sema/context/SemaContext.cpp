@@ -621,7 +621,6 @@ RefTypeAST* SemaContext::getRefType(TypeAST* inner) {
 // ─── Built-in Type Accessors ─────────────────────────────────────────────
 
 NamedTypeAST* SemaContext::getArenaType() {
-    // Check cache first - look for existing Arena type
     InternedString name = pool.intern("Arena");
     TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
     auto it = typeCache.namedTypes.find(key);
@@ -629,14 +628,15 @@ NamedTypeAST* SemaContext::getArenaType() {
         return it->second;
     }
     
-    // Create and cache the Arena type using the pure factory
-    NamedTypeAST* type = getArenaType();
+    // Create the type directly, don't call getArenaType() again
+    NamedTypeAST* type = arena.make<NamedTypeAST>(name);
+    type->genericArgs = arena.makeBuilder<TypeAST*>().build();
+    
     typeCache.namedTypes[key] = type;
     return type;
 }
 
 NamedTypeAST* SemaContext::getArenaDescriptorType() {
-    // Check cache first - look for existing ArenaDescriptor type
     InternedString name = pool.intern("ArenaDescriptor");
     TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
     auto it = typeCache.namedTypes.find(key);
@@ -644,8 +644,10 @@ NamedTypeAST* SemaContext::getArenaDescriptorType() {
         return it->second;
     }
     
-    // Create and cache the ArenaDescriptor type using the pure factory
-    NamedTypeAST* type = getArenaDescriptorType();
+    // Create the type directly
+    NamedTypeAST* type = arena.make<NamedTypeAST>(name);
+    type->genericArgs = arena.makeBuilder<TypeAST*>().build();
+    
     typeCache.namedTypes[key] = type;
     return type;
 }

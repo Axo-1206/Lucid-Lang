@@ -110,6 +110,124 @@ static bool isInsideSpecializedFunction(SemaContext& ctx) {
     return func && func->shouldSpecialize;
 }
 
+// ─── Simd Helpers ────────────────────────────────────────────────────────
+
+static std::optional<PrimitiveKind> validateSimdTypeEnum(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return std::nullopt;
+
+    // Resolve the expression first
+    TypeAST* exprType = resolveExpr(expr, ctx);
+    if (!exprType || exprType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdType argument has unknown type");
+        return std::nullopt;
+    }
+
+    // Must be an enum type
+    if (!expr->isa<FieldAccessExprAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdType must be an enum value (e.g., SimdType.Float32)");
+        return std::nullopt;
+    }
+
+    FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+    ValueDeclAST* decl = field->resolvedDecl;
+    if (!decl || !decl->isa<EnumVariantAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdType must be an enum variant");
+        return std::nullopt;
+    }
+
+    EnumVariantAST* variant = decl->as<EnumVariantAST>();
+    if (variant->name.isEmpty()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "Invalid SimdType variant");
+        return std::nullopt;
+    }
+
+    // Map the enum variant name to PrimitiveKind
+    std::string_view name = ctx.pool.lookupView(variant->name);
+    
+    // SimdType enum variants
+    if (name == "Int8")   return PrimitiveKind::Int8;
+    if (name == "Int16")  return PrimitiveKind::Int16;
+    if (name == "Int32")  return PrimitiveKind::Int32;
+    if (name == "Int64")  return PrimitiveKind::Int64;
+    if (name == "Uint8")  return PrimitiveKind::Uint8;
+    if (name == "Uint16") return PrimitiveKind::Uint16;
+    if (name == "Uint32") return PrimitiveKind::Uint32;
+    if (name == "Uint64") return PrimitiveKind::Uint64;
+    if (name == "Float32") return PrimitiveKind::Float;
+    if (name == "Float64") return PrimitiveKind::Double;
+
+    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                          "Invalid SimdType enum value: ", name,
+                          " (expected Int8, Int16, Int32, Int64, "
+                          "Uint8, Uint16, Uint32, Uint64, Float32, Float64)");
+    return std::nullopt;
+}
+
+static std::optional<uint64_t> validateSimdLanesEnum(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return std::nullopt;
+
+    TypeAST* exprType = resolveExpr(expr, ctx);
+    if (!exprType || exprType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdLanes argument has unknown type");
+        return std::nullopt;
+    }
+
+    if (!expr->isa<FieldAccessExprAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdLanes must be an enum value (e.g., SimdLanes.Lanes4)");
+        return std::nullopt;
+    }
+
+    FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+    ValueDeclAST* decl = field->resolvedDecl;
+    if (!decl || !decl->isa<EnumVariantAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "SimdLanes must be an enum variant");
+        return std::nullopt;
+    }
+
+    EnumVariantAST* variant = decl->as<EnumVariantAST>();
+    if (variant->name.isEmpty()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "Invalid SimdLanes variant");
+        return std::nullopt;
+    }
+
+    // SimdLanes enum variants: Lanes1, Lanes2, Lanes4, Lanes8, Lanes16, Lanes32, Lanes64
+    std::string_view name = ctx.pool.lookupView(variant->name);
+    
+    if (name == "Lanes1")  return 1;
+    if (name == "Lanes2")  return 2;
+    if (name == "Lanes4")  return 4;
+    if (name == "Lanes8")  return 8;
+    if (name == "Lanes16") return 16;
+    if (name == "Lanes32") return 32;
+    if (name == "Lanes64") return 64;
+
+    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                          "Invalid SimdLanes enum value: ", name,
+                          " (expected Lanes1, Lanes2, Lanes4, Lanes8, "
+                          "Lanes16, Lanes32, Lanes64)");
+    return std::nullopt;
+}
+
+/// @brief Parse a compile-time integer constant.
+static int64_t parseConstantInt(ExprAST* expr, SemaContext& ctx) {
+    if (!expr->isa<LiteralExprAST>()) return 0;
+    LiteralExprAST* lit = expr->as<LiteralExprAST>();
+    try {
+        std::string valStr = ctx.pool.lookup(lit->value);
+        return std::stoll(valStr, nullptr, 0);
+    } catch (const std::exception& e) {
+        return 0;
+    }
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -873,60 +991,331 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
-    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
-    if (!info) return false;
-
-    switch (info->kind) {
-        case IntrinsicKind::SimdSplat: {
-            // simd_splat(N, scalar) - N must be a compile-time integer constant
-            if (expr->args.size() >= 2) {
-                TypeAST* nType = resolveExprWithTarget(
-                    expr->args[1], ctx.getIntType(), ctx
-                );
-                if (!nType || nType->isa<UnknownTypeAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
-                                          "argument 'N' must be a compile-time integer constant");
-                    return false;
-                }
-
-                if (!expr->args[1]->isa<LiteralExprAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
-                                          "argument 'N' must be a compile-time integer constant");
-                    return false;
-                }
-            }
-            if (expr->args.size() >= 3 && !validateNumericArg(expr->args[2], "scalar", ctx)) {
-                return false;
-            }
-            return true;
+    if (!expr) return false;
+    
+    std::string_view name = lookupStringView(expr->intrinsicName);
+    
+    // ─── #simd_splat(type_enum, lanes_enum, scalar) ──────────────────────
+    //
+    // Grammar (using enums from std library):
+    //   #simd_splat(SimdType.Float32, SimdLanes.Lanes4, 3.14)
+    //
+    //   where:
+    //     type_enum is a SimdType enum variant (Int8, Int16, ..., Float64)
+    //     lanes_enum is a SimdLanes enum variant (Lanes1, Lanes2, ..., Lanes64)
+    //     scalar is a value of the type specified by type_enum
+    //
+    if (name == "simd_splat") {
+        if (expr->args.size() != 3) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_splat expects 3 arguments: (type_enum, lanes_enum, scalar)");
+            return false;
         }
-
-        case IntrinsicKind::SimdLoad:
-            if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-            return true;
-
-        case IntrinsicKind::SimdStore:
-            if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
-            // val is the second argument - any type
-            return true;
-
-        case IntrinsicKind::SimdExtract:
-        case IntrinsicKind::SimdInsert:
-            // Index must be compile-time constant
-            // Validate that the index is a constant integer
-            if (expr->args.size() >= 2 && !expr->args[1]->isa<LiteralExprAST>()) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[1],
-                                      "index must be a compile-time integer constant");
-                return false;
-            }
-            return true;
-
-        default:
-            // simd_add, simd_sub, simd_mul, simd_div, simd_fma, simd_min, simd_max
-            // These just need numeric arguments - validated elsewhere
-            return true;
+        
+        // ─── 1. Validate first argument is a SimdType enum ──────────────
+        ExprAST* typeArg = expr->args[0];
+        auto elementKindOpt = validateSimdTypeEnum(typeArg, ctx);
+        if (!elementKindOpt.has_value()) {
+            // Error already reported by validateSimdTypeEnum
+            return false;
+        }
+        PrimitiveKind elementKind = elementKindOpt.value();
+        
+        // ─── 2. Validate second argument is a SimdLanes enum ─────────────
+        ExprAST* lanesArg = expr->args[1];
+        auto laneCountOpt = validateSimdLanesEnum(lanesArg, ctx);
+        if (!laneCountOpt.has_value()) {
+            // Error already reported by validateSimdLanesEnum
+            return false;
+        }
+        uint64_t laneCount = laneCountOpt.value();
+        
+        // ─── 3. Validate lane count > 0 ──────────────────────────────────
+        if (laneCount == 0) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
+                                  "Simd lane count must be > 0");
+            return false;
+        }
+        
+        // ─── 4. Validate scalar matches the specified type ────────────────
+        ExprAST* scalar = expr->args[2];
+        if (!scalar || !scalar->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_splat: scalar argument has no type");
+            return false;
+        }
+        
+        TypeAST* scalarType = scalar->resolvedType;
+        if (!scalarType->isa<PrimitiveTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
+                                  "#simd_splat: scalar must be a primitive type");
+            return false;
+        }
+        
+        PrimitiveTypeAST* scalarPrim = scalarType->as<PrimitiveTypeAST>();
+        PrimitiveKind scalarKind = scalarPrim->primitiveKind;
+        
+        // Check that the scalar's type matches the enum-specified type
+        if (scalarKind != elementKind) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
+                                  "#simd_splat: scalar type (", 
+                                  primitiveKindToString(scalarKind), 
+                                  ") does not match specified type (",
+                                  primitiveKindToString(elementKind), ")");
+            return false;
+        }
+        
+        // ─── 5. Also verify the enum type is a valid SIMD element type ───
+        // This is redundant but safe - validateSimdTypeEnum already does this
+        if (!isValidSimdElementType(scalarType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, scalar,
+                                  "#simd_splat: scalar type must be a numeric primitive "
+                                  "(int8, int16, int32, int64, uint8, uint16, uint32, "
+                                  "uint64, float32, or float64)");
+            return false;
+        }
+        
+        return true;
     }
+    
+    // ─── #simd_load(ptr, lanes_enum) ─────────────────────────────────────
+    if (name == "simd_load") {
+        if (expr->args.size() != 2) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_load expects 2 arguments: (ptr, lanes_enum)");
+            return false;
+        }
+        
+        ExprAST* ptr = expr->args[0];
+        if (!ptr || !ptr->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_load: pointer argument has no type");
+            return false;
+        }
+        
+        if (!ptr->resolvedType->isa<PtrTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, ptr,
+                                  "#simd_load: first argument must be a pointer");
+            return false;
+        }
+        
+        PtrTypeAST* ptrInner = ptr->resolvedType->as<PtrTypeAST>();
+        if (!isValidSimdElementType(ptrInner->inner)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, ptr,
+                                  "#simd_load: pointer must point to a numeric primitive");
+            return false;
+        }
+        
+        // Validate lanes enum (second argument)
+        ExprAST* lanesArg = expr->args[1];
+        auto laneCountOpt = validateSimdLanesEnum(lanesArg, ctx);
+        if (!laneCountOpt.has_value()) {
+            return false;
+        }
+        uint64_t laneCount = laneCountOpt.value();
+        
+        if (laneCount == 0) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
+                                  "Simd lane count must be > 0");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ─── #simd_store(ptr, simd_value) ────────────────────────────────────
+    if (name == "simd_store") {
+        if (expr->args.size() != 2) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_store expects 2 arguments: (ptr, simd_value)");
+            return false;
+        }
+        
+        ExprAST* ptr = expr->args[0];
+        ExprAST* vec = expr->args[1];
+        
+        if (!ptr || !ptr->resolvedType || !vec || !vec->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_store: arguments must have types");
+            return false;
+        }
+        
+        if (!ptr->resolvedType->isa<PtrTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, ptr,
+                                  "#simd_store: first argument must be a pointer");
+            return false;
+        }
+        
+        if (!isSimdType(vec->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, vec,
+                                  "#simd_store: second argument must be a Simd type");
+            return false;
+        }
+        
+        TypeAST* ptrElem = ptr->resolvedType->as<PtrTypeAST>()->inner;
+        TypeAST* simdElem = getSimdElementType(vec->resolvedType);
+        if (!typesEqual(ptrElem, simdElem)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_store: pointer element type and Simd element type must match");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ─── Binary SIMD ops: #simd_add, #simd_sub, #simd_mul, #simd_div ────
+    if (name == "simd_add" || name == "simd_sub" || 
+        name == "simd_mul" || name == "simd_div" ||
+        name == "simd_min" || name == "simd_max") {
+        
+        if (expr->args.size() != 2) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#", name, " expects 2 arguments");
+            return false;
+        }
+        
+        ExprAST* a = expr->args[0];
+        ExprAST* b = expr->args[1];
+        
+        if (!a || !a->resolvedType || !b || !b->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#", name, ": arguments must have types");
+            return false;
+        }
+        
+        if (!isSimdType(a->resolvedType) || !isSimdType(b->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#", name, ": both arguments must be Simd types");
+            return false;
+        }
+        
+        if (!typesEqual(a->resolvedType, b->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#", name, ": both Simd arguments must have identical types");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ─── #simd_fma(a, b, c) ────────────────────────────────────────────────
+    if (name == "simd_fma") {
+        if (expr->args.size() != 3) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_fma expects 3 arguments");
+            return false;
+        }
+        
+        ExprAST* a = expr->args[0];
+        ExprAST* b = expr->args[1];
+        ExprAST* c = expr->args[2];
+        
+        if (!a || !a->resolvedType || !b || !b->resolvedType || !c || !c->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_fma: arguments must have types");
+            return false;
+        }
+        
+        if (!isSimdType(a->resolvedType) || !isSimdType(b->resolvedType) || !isSimdType(c->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_fma: all arguments must be Simd types");
+            return false;
+        }
+        
+        if (!typesEqual(a->resolvedType, b->resolvedType) || !typesEqual(b->resolvedType, c->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_fma: all arguments must have identical Simd types");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ─── #simd_extract(v, index) ──────────────────────────────────────────
+    if (name == "simd_extract") {
+        if (expr->args.size() != 2) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_extract expects 2 arguments: (v, index)");
+            return false;
+        }
+        
+        ExprAST* vec = expr->args[0];
+        if (!vec || !vec->resolvedType || !isSimdType(vec->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, vec,
+                                  "#simd_extract: first argument must be a Simd type");
+            return false;
+        }
+        
+        ExprAST* idx = expr->args[1];
+        if (!idx || !idx->isa<LiteralExprAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_extract: index must be an integer literal");
+            return false;
+        }
+        
+        LiteralExprAST* lit = idx->as<LiteralExprAST>();
+        if (lit->kind != LiteralKind::Int) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_extract: index must be an integer literal");
+            return false;
+        }
+        
+        int64_t index = parseConstantInt(idx, ctx);
+        if (index < 0) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
+                                  "#simd_extract: index must be >= 0");
+            return false;
+        }
+        
+        // Validate index < lane count (requires const eval of lane count)
+        // This would be done in a separate const evaluation pass
+        return true;
+    }
+    
+    // ─── #simd_insert(v, index, value) ────────────────────────────────────
+    if (name == "simd_insert") {
+        if (expr->args.size() != 3) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "#simd_insert expects 3 arguments: (v, index, value)");
+            return false;
+        }
+        
+        ExprAST* vec = expr->args[0];
+        ExprAST* val = expr->args[2];
+        
+        if (!vec || !vec->resolvedType || !isSimdType(vec->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, vec,
+                                  "#simd_insert: first argument must be a Simd type");
+            return false;
+        }
+        
+        if (!val || !val->resolvedType) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_insert: value argument must have a type");
+            return false;
+        }
+        
+        TypeAST* simdElem = getSimdElementType(vec->resolvedType);
+        if (!typesEqual(simdElem, val->resolvedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#simd_insert: value type must match Simd element type");
+            return false;
+        }
+        
+        ExprAST* idx = expr->args[1];
+        if (!idx || !idx->isa<LiteralExprAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "#simd_insert: index must be an integer literal");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // Unknown SIMD intrinsic
+    ctx.diagnostics.error(DiagCode::Sem_UnknownIntrinsic, expr,
+                          "unknown SIMD intrinsic '#", name, "'");
+    return false;
 }
 
 bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {

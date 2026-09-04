@@ -1,0 +1,26 @@
+-- std/simd.luc
+
+@[export]
+enum SimdType {
+    Int8   = 1;
+    Int16  = 2;
+    Int32  = 3;
+    Int64  = 4;
+    Uint8  = 5;
+    Uint16 = 6;
+    Uint32 = 7;
+    Uint64 = 8;
+    Float32 = 9;
+    Float64 = 10;
+}
+
+@[export]
+enum SimdLanes {
+    Lanes1  = 1;
+    Lanes2  = 2;
+    Lanes4  = 4;
+    Lanes8  = 8;
+    Lanes16 = 16;
+    Lanes32 = 32;
+    Lanes64 = 64;
+}
