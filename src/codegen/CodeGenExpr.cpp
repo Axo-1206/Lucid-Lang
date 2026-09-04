@@ -1439,7 +1439,6 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
 llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    // ─── 1. Get the resolved declaration ───────────────────────────────────
     ValueDeclAST* resolvedDecl = expr->resolvedDecl;
     if (!resolvedDecl) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
@@ -1449,7 +1448,36 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    // ─── 2. Find the target module ─────────────────────────────────────────
+    // ─── Get the mangled name ──────────────────────────────────────────────
+    std::string mangledName;
+    if (resolvedDecl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
+        if (funcDecl->mangledName.isValid()) {
+            mangledName = ctx.pool.lookup(funcDecl->mangledName);
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "function '", ctx.pool.lookup(funcDecl->name),
+                                    "' has no mangled name");
+            return nullptr;
+        }
+    } else if (resolvedDecl->isa<VarDeclAST>()) {
+        VarDeclAST* varDecl = resolvedDecl->as<VarDeclAST>();
+        if (varDecl->mangledName.isValid()) {
+            mangledName = ctx.pool.lookup(varDecl->mangledName);
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                    "variable '", ctx.pool.lookup(varDecl->name),
+                                    "' has no mangled name");
+            return nullptr;
+        }
+    } else {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                                "module member '", ctx.pool.lookup(expr->memberName),
+                                "' has unknown declaration type");
+        return nullptr;
+    }
+
+    // ─── Find the target module ────────────────────────────────────────────
     ModuleAST* targetModule = expr->resolvedModule;
     if (!targetModule && ctx.currentModule) {
         auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
@@ -1458,187 +1486,76 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         }
     }
 
-    // ─── 3. Handle function access ──────────────────────────────────────────
+    if (!targetModule) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
+                                "module '", ctx.pool.lookup(expr->moduleName),
+                                "' not found");
+        return nullptr;
+    }
+
+    // ─── Get the LLVM module ──────────────────────────────────────────────
+    llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
+    if (!targetLLVMModule) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
+                                "module '", ctx.pool.lookup(expr->moduleName),
+                                "' not generated");
+        return nullptr;
+    }
+
+    // ─── Look up by mangled name ──────────────────────────────────────────
+    llvm::Value* symbol = nullptr;
+    
     if (resolvedDecl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
-        
-        if (!funcDecl->genericParams.empty() && !expr->genericArgs.empty()) {
-            std::vector<TypeAST*> typeArgs;
-            typeArgs.reserve(expr->genericArgs.size());
-            for (TypeAST* arg : expr->genericArgs) {
-                typeArgs.push_back(arg);
-            }
-            
-            llvm::Function* specializedFunc = getOrCreateSpecializedFunction(
-                funcDecl, 
-                typeArgs, 
-                ctx
-            );
-            
-            if (!specializedFunc) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
-                                        "failed to instantiate generic function '",
-                                        ctx.pool.lookup(funcDecl->name), "'");
-                return nullptr;
-            }
-            
-            expr->llvmValue = specializedFunc;
-            return specializedFunc;
+        symbol = targetLLVMModule->getFunction(mangledName);
+        if (symbol) {
+            ctx.storeFunction(resolvedDecl->as<FuncDeclAST>(), 
+                              llvm::cast<llvm::Function>(symbol));
         }
-        
-        llvm::Function* func = ctx.lookupFunction(funcDecl);
-        if (!func && targetModule) {
-            llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
-            if (targetLLVMModule) {
-                std::string funcName;
-                if (funcDecl->mangledName.isValid()) {
-                    funcName = ctx.pool.lookup(funcDecl->mangledName);
-                } else {
-                    funcName = ctx.pool.lookup(funcDecl->name);
-                }
-                func = targetLLVMModule->getFunction(funcName);
-                if (func) {
-                    ctx.storeFunction(funcDecl, func);
-                }
-            }
+    } else if (resolvedDecl->isa<VarDeclAST>()) {
+        symbol = targetLLVMModule->getGlobalVariable(mangledName);
+        if (symbol) {
+            ctx.storeValue(resolvedDecl, symbol);
         }
-        
-        if (!func) {
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
-                                    "function '", ctx.pool.lookup(funcDecl->name), 
-                                    "' not found in codegen cache");
-            return nullptr;
-        }
-        
-        expr->llvmValue = func;
-        return func;
     }
 
-    // ─── 4. Handle variable/constant access ─────────────────────────────────
-    if (resolvedDecl->isa<VarDeclAST>()) {
-        VarDeclAST* varDecl = resolvedDecl->as<VarDeclAST>();
-        
-        llvm::Value* global = ctx.lookupValue(varDecl);
-        if (!global && targetModule) {
-            llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
-            if (targetLLVMModule) {
-                std::string varName;
-                if (varDecl->mangledName.isValid()) {
-                    varName = ctx.pool.lookup(varDecl->mangledName);
-                } else {
-                    varName = ctx.pool.lookup(varDecl->name);
-                }
-                global = targetLLVMModule->getGlobalVariable(varName);
-                if (global) {
-                    ctx.storeValue(varDecl, global);
-                }
-            }
-        }
-        
-        if (!global) {
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
-                                    "global variable '", ctx.pool.lookup(varDecl->name), 
-                                    "' not found in codegen cache");
-            return nullptr;
-        }
-        
-        // ─── If this is an l-value (for assignment), return the pointer ──
-        if (expr->isLValue) {
-            expr->llvmValue = global;
-            return global;
-        }
-        
-        // ─── Otherwise, load the value ────────────────────────────────────
-        // Get the LLVM type from the AST (preferred)
-        llvm::Type* varType = nullptr;
-        if (varDecl->type) {
-            varType = getType(ctx, varDecl->type);
-        }
-        
-        // ─── If no AST type, try to get it from the global variable ──────
-        if (!varType) {
-            // Cast to GlobalVariable to access getValueType()
-            if (auto* globalVar = llvm::dyn_cast<llvm::GlobalVariable>(global)) {
-                // getValueType() returns the type of the variable, not the pointer
-                varType = globalVar->getValueType();
-            }
-        }
-        
-        // ─── If still no type, try to get it from the initializer ──────
-        if (!varType) {
-            if (auto* globalVar = llvm::dyn_cast<llvm::GlobalVariable>(global)) {
-                if (globalVar->hasInitializer()) {
-                    varType = globalVar->getInitializer()->getType();
-                }
-            }
-        }
-        
-        if (!varType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                    "variable '", ctx.pool.lookup(varDecl->name), 
-                                    "' has no type information");
-            return nullptr;
-        }
-        
-        // ─── Load the value ────────────────────────────────────────────────
-        llvm::Value* loaded = ctx.builder.CreateLoad(
-            varType, 
-            global, 
-            "module_load_" + ctx.pool.lookup(varDecl->name)
-        );
-        expr->llvmValue = loaded;
-        return loaded;
+    if (!symbol) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedMember, expr->loc,
+                                "symbol '", mangledName, 
+                                "' not found in module '",
+                                ctx.pool.lookup(expr->moduleName), "'");
+        return nullptr;
     }
 
-    // ─── 5. Handle enum variant access ──────────────────────────────────────
-    if (resolvedDecl->isa<EnumVariantAST>()) {
-        EnumVariantAST* variant = resolvedDecl->as<EnumVariantAST>();
-        
-        if (variant->llvmValue) {
-            expr->llvmValue = variant->llvmValue;
-            return variant->llvmValue;
-        }
-        
-        llvm::Type* enumType = getType(ctx, expr->resolvedType);
-        if (!enumType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                    "enum variant '", ctx.pool.lookup(variant->name), 
-                                    "' has invalid type");
-            return nullptr;
-        }
-        
-        if (!enumType->isIntegerTy() && expr->resolvedType && expr->resolvedType->isa<NamedTypeAST>()) {
-            NamedTypeAST* named = expr->resolvedType->as<NamedTypeAST>();
-            if (named->resolvedDecl && named->resolvedDecl->isa<EnumDeclAST>()) {
-                EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();
-                enumType = getEnumType(ctx, enumDecl);
-            }
-        }
-        
-        if (!enumType || !enumType->isIntegerTy()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                    "enum variant '", ctx.pool.lookup(variant->name), 
-                                    "' has invalid type (not integer)");
-            return nullptr;
-        }
-        
-        llvm::Constant* constVal = llvm::ConstantInt::get(
-            enumType, 
-            static_cast<uint64_t>(variant->value), 
-            true
-        );
-        
-        variant->llvmValue = llvm::cast<llvm::ConstantInt>(constVal);
-        expr->llvmValue = variant->llvmValue;
-        return variant->llvmValue;
+    // ─── Return the symbol (or load it if it's a variable) ──────────────
+    if (resolvedDecl->isa<FuncDeclAST>()) {
+        expr->llvmValue = symbol;
+        return symbol;
     }
 
-    // ─── 6. Unknown declaration type ───────────────────────────────────────
-    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                            "module member '", ctx.pool.lookup(expr->moduleName),
-                            ":", ctx.pool.lookup(expr->memberName), 
-                            "' has unknown declaration type");
-    return nullptr;
+    if (expr->isLValue) {
+        expr->llvmValue = symbol;
+        return symbol;
+    }
+
+    // Load the variable value
+    llvm::Type* varType = getType(ctx, resolvedDecl->type);
+    if (!varType) {
+        if (auto* globalVar = llvm::dyn_cast<llvm::GlobalVariable>(symbol)) {
+            varType = globalVar->getValueType();
+        }
+    }
+
+    if (!varType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "variable '", ctx.pool.lookup(expr->memberName),
+                                "' has no type information");
+        return nullptr;
+    }
+
+    llvm::Value* loaded = ctx.builder.CreateLoad(varType, symbol, 
+        "module_load_" + ctx.pool.lookup(expr->memberName));
+    expr->llvmValue = loaded;
+    return loaded;
 }
 
 llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx) {

@@ -28,7 +28,7 @@
 #include <string>
 
 namespace codegen {
-    
+
 /// @brief Code generation context - LLVM state only.
 struct CodeGenContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -38,21 +38,14 @@ struct CodeGenContext {
     llvm::LLVMContext& llvmCtx;
 
     // ─── Current Source File ───────────────────────────────────────────
-    /// @brief The file path of the module currently being generated.
-    /// 
-    /// This is set by generateModule() before lowering begins.
-    /// Used by panic messages to include file location.
-    /// 
-    /// @see generateModule() in CodeGen.cpp
-    /// @see buildPanicMessage() in CodeGenPanic.cpp
     InternedString currentFile;
     
     // ─── LLVM Module and Builder ────────────────────────────────────────
     
     llvm::Module* module = nullptr;
     llvm::IRBuilder<> builder;
-
-    // ─── Module Tracking ────────────────────────────────────────────────
+    
+    // ─── Module Tracking ──────────────────────────────────────────────────
     
     /// @brief All modules being generated.
     std::vector<ModuleAST*> modules;
@@ -67,25 +60,15 @@ struct CodeGenContext {
     
     /// @brief Information about a global variable that needs runtime initialization.
     struct GlobalInitInfo {
-        VarDeclAST* decl;
-        ExprAST* init;
-        llvm::GlobalVariable* global;
-        ModuleAST* module;
-        int orderInModule;
+        VarDeclAST* decl;                    // The variable declaration
+        ExprAST* init;                       // The initializer expression
+        llvm::GlobalVariable* global;        // The LLVM global variable
+        ModuleAST* module;                   // Which module this global belongs to
+        int orderInModule;                   // Declaration order within module
     };
     
     /// @brief Pending globals that need runtime initialization.
     std::vector<GlobalInitInfo> pendingGlobals;
-    
-    /// @brief The global initializer function.
-    llvm::Function* initFunction = nullptr;
-
-    // ─── Module Helpers ──────────────────────────────────────────────────
-    
-    llvm::Module* getLLVMModule(ModuleAST* module) const {
-        auto it = llvmModules.find(module);
-        return it != llvmModules.end() ? it->second : nullptr;
-    }
     
     // ─── Type Cache ─────────────────────────────────────────────────────
     
@@ -111,18 +94,15 @@ struct CodeGenContext {
     GenericRegistry genericRegistry;
     
     // ─── Loop Info (for break/continue) ─────────────────────────────────
-    
     struct LoopInfo {
         llvm::BasicBlock* header         = nullptr;
         llvm::BasicBlock* exit           = nullptr;
         llvm::BasicBlock* continueTarget = nullptr;
-        size_t scopeDepth = 0;   // liveTrackers.size() at loop entry,
-                                 // BEFORE the loop body's own pushLiveScope()
+        size_t scopeDepth = 0;
     };
     std::vector<LoopInfo> loops;
     
     // ─── Current Function ───────────────────────────────────────────────
-    
     llvm::Function* currentFunction = nullptr;
     llvm::BasicBlock* returnBlock = nullptr;
 
@@ -144,7 +124,14 @@ struct CodeGenContext {
     CodeGenContext(const CodeGenContext&) = delete;
     CodeGenContext& operator=(const CodeGenContext&) = delete;
     
-    // ─── Value Helpers ──────────────────────────────────────────────────
+    // ─── Module Helpers ──────────────────────────────────────────────────
+    
+    llvm::Module* getLLVMModule(ModuleAST* module) const {
+        auto it = llvmModules.find(module);
+        return it != llvmModules.end() ? it->second : nullptr;
+    }
+    
+    // ─── Symbol Helpers ──────────────────────────────────────────────────
     
     void storeValue(ValueDeclAST* decl, llvm::Value* value) {
         values[decl] = value;
@@ -159,38 +146,6 @@ struct CodeGenContext {
         return values.find(decl) != values.end();
     }
 
-    // ─── Null Coalesce Helpers ──────────────────────────────────────────
-
-    /// @brief Enter a `??` expression context.
-    void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
-        nullCoalesceStack.push_back({fallbackBlock, true});
-    }
-
-    /// @brief Exit the current `??` expression context.
-    void popNullCoalesce() {
-        if (!nullCoalesceStack.empty()) {
-            nullCoalesceStack.pop_back();
-        }
-    }
-
-    /// @brief Get the current `??` context (top of stack).
-    NullCoalesceContext* currentNullCoalesce() {
-        return nullCoalesceStack.empty() ? nullptr : &nullCoalesceStack.back();
-    }
-
-    /// @brief Check if we're inside a `??` expression.
-    bool isInsideNullCoalesce() const {
-        return !nullCoalesceStack.empty() && nullCoalesceStack.back().isActive;
-    }
-
-    /// @brief Get the fallback block for the current `??` expression.
-    llvm::BasicBlock* getNullCoalesceFallbackBlock() const {
-        if (nullCoalesceStack.empty()) return nullptr;
-        return nullCoalesceStack.back().fallbackBlock;
-    }
-
-    // ─── Function Helpers ──────────────────────────────────────────────────
-    
     void storeFunction(FuncDeclAST* decl, llvm::Function* func) {
         functions[decl] = func;
     }
@@ -199,8 +154,6 @@ struct CodeGenContext {
         auto it = functions.find(decl);
         return it != functions.end() ? it->second : nullptr;
     }
-    
-    // ─── Current Function Helpers ──────────────────────────────────────
     
     void setCurrentFunction(llvm::Function* func) {
         currentFunction = func;
@@ -252,6 +205,31 @@ struct CodeGenContext {
         return !loops.empty();
     }
 
+    // ─── Null Coalesce Helpers ──────────────────────────────────────────
+
+    void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
+        nullCoalesceStack.push_back({fallbackBlock, true});
+    }
+
+    void popNullCoalesce() {
+        if (!nullCoalesceStack.empty()) {
+            nullCoalesceStack.pop_back();
+        }
+    }
+
+    NullCoalesceContext* currentNullCoalesce() {
+        return nullCoalesceStack.empty() ? nullptr : &nullCoalesceStack.back();
+    }
+
+    bool isInsideNullCoalesce() const {
+        return !nullCoalesceStack.empty() && nullCoalesceStack.back().isActive;
+    }
+
+    llvm::BasicBlock* getNullCoalesceFallbackBlock() const {
+        if (nullCoalesceStack.empty()) return nullptr;
+        return nullCoalesceStack.back().fallbackBlock;
+    }
+
     // ─── Live Variable Helpers ──────────────────────────────────────────
     
     void pushLiveScope(BlockStmtAST* block = nullptr) {
@@ -262,19 +240,8 @@ struct CodeGenContext {
     /// Emit cleanup for exactly one tracker, in two ordered phases:
     ///   1. User #scope_exit callbacks (BEFORE implicit cleanup)
     ///   2. Implicit cleanup (closure releases, array frees, string frees)
-    /// Does NOT touch liveTrackers - callers decide whether to pop.
     void emitCleanupForTracker(LiveVariableTracker& tracker);
 
-    /// Non-destructive: emit cleanup for every tracker from current top
-    /// down to (but not including) index `targetDepth`. Never pops.
-    void emitUnwindTo(size_t targetDepth) {
-        for (size_t i = liveTrackers.size(); i > targetDepth; --i) {
-            emitCleanupForTracker(liveTrackers[i - 1]);
-        }
-    }
-
-    /// Fall-through exit: the only place that actually pops,
-    /// in strict AST-structural order.
     void popLiveScope() {
         if (!liveTrackers.empty()) {
             emitCleanupForTracker(liveTrackers.back());
@@ -325,8 +292,7 @@ struct CodeGenContext {
     }
 
     // ─── Fat Pointer Type Helpers ──────────────────────────────────────
-    // These delegate to LLVMTypeHelpers - NO DUPLICATION
-
+    
     llvm::StructType* getSliceType() const {
         return codegen::getSliceType(module);
     }

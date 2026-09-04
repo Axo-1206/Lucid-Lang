@@ -333,9 +333,9 @@ struct DeclAST : BaseAST {
     ArenaSpan<AttributeAST*>  attributes;
     const InternedString      name;
 
-    // ─── Module Tracking ──────────────────────────────────────────────
-    ModuleAST* module = nullptr;      // Which module this declaration belongs to
-    int orderInModule = 0;             // Declaration order within module
+    // ─── We only need orderInModule for deterministic initialization ──────
+    // The module information is already encoded in the mangled name.
+    int orderInModule = 0;  // Declaration order within module
 
     explicit DeclAST(ASTKind k, InternedString n) : BaseAST(k), name(n) {}
     bool hasDoc() const { return doc.has_value(); }
@@ -637,34 +637,18 @@ struct TypeDeclAST : DeclAST {
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString filePath;        ///< Resolved file path of this module
-    ArenaSpan<DeclAST*> decls;      ///< Top-level declarations
+    InternedString filePath;
+    ArenaSpan<DeclAST*> decls;
     bool hasErrors = false;
 
-    // ─── Imports ──────────────────────────────────────────────────────────
-    
-    /// @brief Resolved import paths of this module (legacy, for backward compatibility).
-    std::vector<InternedString> imports;
-    
-    /// @brief Resolved imports mapping alias → module AST.
-    /// 
-    /// Each entry maps an import alias (e.g., "math", "io") to the actual
-    /// parsed module AST. This is populated during parsing by ModuleResolver
-    /// and used by CodeGen for cross-module symbol resolution.
-    /// 
-    /// @example
-    ///   import std.math as math   → "math" → ModuleAST for std/math.luc
-    ///   import std.io as io       → "io"   → ModuleAST for std/io.luc
+    // ─── Resolved imports (still needed for cross-module access) ──────────
     std::unordered_map<InternedString, ModuleAST*> resolvedImports;
-    
-    // ─── Dependency Order ──────────────────────────────────────────────────
-    
-    /// @brief Topological order of this module (0 = first, higher = later).
-    /// 
-    /// Set by ModuleResolver after parsing all modules and computing the
-    /// dependency graph. Used by CodeGen to initialize globals in the
-    /// correct order.
+
+    // ─── Dependency order (still needed for initialization ordering) ──────
     int dependencyOrder = -1;
+
+    // ─── Legacy imports vector ──────────────────────────────────────────────
+    std::vector<InternedString> imports;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };

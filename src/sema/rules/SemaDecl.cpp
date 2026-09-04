@@ -164,12 +164,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         if (!validateArenaInitializer(decl->init, ctx)) {
             return;
         }
-        
-        // ─── 3e. Mark the binding as the owner of the Arena ─────────────────
-        // This flag can be used by other passes to know this binding owns the
-        // Arena and should be freed at scope exit. (Not needed for CodeGen
-        // since the LiveVariableTracker handles this, but useful for clarity.)
-        decl->isArenaOwner = true;
     }
 
     // ─── 4. Check initializer ──────────────────────────────────────────────

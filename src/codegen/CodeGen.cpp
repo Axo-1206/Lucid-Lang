@@ -36,7 +36,7 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
         ctx.currentFile = module->filePath;
         ctx.currentModule = module;
         
-        // Store mapping
+        // Store mapping for cross-module access
         ctx.llvmModules[module] = ctx.module;
         
         // Generate the module (declarations + bodies)
@@ -116,7 +116,9 @@ void generateGlobalInitializer(CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Sort by dependency order using ModuleAST's dependencyOrder ──────
+    // ─── Sort by module dependency order ──────────────────────────────────
+    // ModuleAST::dependencyOrder is set by ModuleResolver.
+    // This ensures globals are initialized in the correct order across modules.
     std::sort(ctx.pendingGlobals.begin(), ctx.pendingGlobals.end(),
         [&](const CodeGenContext::GlobalInitInfo& a,
             const CodeGenContext::GlobalInitInfo& b) {
@@ -177,7 +179,7 @@ void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx) {
     // __init_globals has type void(), but global constructors expect i8*()
     llvm::FunctionType* ctorFuncType = llvm::FunctionType::get(
         llvm::Type::getVoidTy(C),
-        {i8Ptr},
+        {i8Ptr},  // takes a void* data pointer
         false
     );
     llvm::Constant* ctorFuncPtr = llvm::ConstantExpr::getBitCast(
@@ -193,9 +195,9 @@ void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx) {
     
     llvm::Constant* ctorEntry = llvm::ConstantStruct::get(
         ctorStructType,
-        llvm::ConstantInt::get(i32, 65535),
-        ctorFuncPtr,
-        llvm::Constant::getNullValue(llvm::PointerType::get(C, 0))
+        llvm::ConstantInt::get(i32, 65535),  // priority (default)
+        ctorFuncPtr,                          // function
+        llvm::Constant::getNullValue(llvm::PointerType::get(C, 0))  // data
     );
     
     // Append to the global constructor list

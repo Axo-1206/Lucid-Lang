@@ -115,24 +115,13 @@ void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
 void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
-    // ─── Skip if already lowered ──────────────────────────────────────────
     if (ctx.lookupFunction(decl)) {
         return;
     }
 
-    // ─── Check if this is a foreign function ──────────────────────────────
     if (decl->isForeignFunction) {
-        // Foreign functions are declared but not defined.
-        // They will be resolved by the JIT or linker.
         llvm::FunctionType* funcType = getFunctionType(ctx, decl->funcType, decl->hasClosure);
-        if (!funcType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, decl->loc,
-                                    "function '", ctx.pool.lookup(decl->name),
-                                    "' has invalid function type");
-            return;
-        }
-
-        // Foreign functions use their original name as the symbol
+        // Foreign functions use the raw name, not mangled
         std::string funcName = ctx.pool.lookup(decl->name);
         llvm::Function* func = llvm::Function::Create(
             funcType,
@@ -140,53 +129,20 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
             funcName,
             ctx.module
         );
-
         ctx.storeFunction(decl, func);
-        decl->llvmFunction = func;
-
-        Trace::info("Lowered foreign function declaration: ", funcName);
-        return;
-    }
-
-    // ─── Generic function handling ────────────────────────────────────────
-    if (isGenericFunction(decl)) {
-        if (shouldSpecialize(decl)) {
-            // ─── @[specialize]: Register as template for lazy generation ──
-            // The actual specialized functions are generated on-demand
-            // when getOrCreateSpecializedFunction() is called in Phase 2.
-            Trace::detail("Registered generic function template: ",
-                       ctx.pool.lookup(decl->name));
-            return;
-        } else {
-            // ─── Default: Generate type-erased version ────────────────────
-            // One function with opaque pointers and tagged slots.
-            // Works for all type instantiations with runtime tag checks.
-            llvm::Function* erasedFunc = generateErasedGenericFunction(decl, ctx);
-            if (erasedFunc) {
-                ctx.storeFunction(decl, erasedFunc);
-                decl->llvmFunction = erasedFunc;
-                Trace::detail("Lowered type-erased generic function: ",
-                           ctx.pool.lookup(decl->name));
-            }
-            return;
-        }
-    }
-
-    // ─── Non-generic function - normal lowering ───────────────────────────
-    llvm::FunctionType* funcType = getFunctionType(ctx, decl->funcType, decl->hasClosure);
-    if (!funcType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, decl->loc,
-                                "function '", ctx.pool.lookup(decl->name),
-                                "' has invalid function type");
         return;
     }
 
     // ─── Use the mangled name from Sema ──────────────────────────────────
     if (!decl->mangledName.isValid()) {
-        llvm_unreachable("Function has no mangled name - Sema bug");
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, decl->loc,
+                                "function '", ctx.pool.lookup(decl->name),
+                                "' has no mangled name");
+        return;
     }
     std::string funcName = ctx.pool.lookup(decl->mangledName);
 
+    llvm::FunctionType* funcType = getFunctionType(ctx, decl->funcType, decl->hasClosure);
     llvm::Function* func = llvm::Function::Create(
         funcType,
         llvm::Function::ExternalLinkage,
@@ -570,7 +526,6 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx) {
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return;
 
-    // ─── Get LLVM type ────────────────────────────────────────────────────
     llvm::Type* varType = getType(ctx, decl->type);
     if (!varType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, decl->loc,
@@ -579,25 +534,25 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Check if this is a module-level variable ────────────────────────
     bool isModuleLevel = ctx.module && ctx.getCurrentFunction() == nullptr;
 
     if (isModuleLevel) {
-        // ─── Module-level global variable ──────────────────────────────────
+        // ─── Use the mangled name from Sema ──────────────────────────────
         std::string varName;
         if (decl->mangledName.isValid()) {
             varName = ctx.pool.lookup(decl->mangledName);
         } else {
+            ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, decl->loc,
+                                      "variable '", ctx.pool.lookup(decl->name),
+                                      "' has no mangled name - using raw name");
             varName = ctx.pool.lookup(decl->name);
         }
 
-        bool isConst = decl->isConst();
-
-        // ─── Create global with null initializer ──────────────────────────
+        // ─── Create global with the mangled name ──────────────────────────
         llvm::GlobalVariable* global = new llvm::GlobalVariable(
             *ctx.module,
             varType,
-            isConst,
+            decl->isConst(),
             llvm::GlobalValue::ExternalLinkage,
             llvm::Constant::getNullValue(varType),
             varName
@@ -609,7 +564,6 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         // ─── Handle initialization ──────────────────────────────────────
         if (decl->init) {
             if (decl->init->isConst) {
-                // Constant initializer - set now
                 llvm::Value* initValue = lowerExpression(decl->init, ctx);
                 if (initValue) {
                     if (llvm::Constant* constInit = llvm::dyn_cast<llvm::Constant>(initValue)) {
@@ -623,10 +577,8 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
                     decl->init,
                     global,
                     ctx.currentModule,
-                    decl->orderInModule
+                    decl->orderInModule  // Only need order within module
                 });
-                
-                Trace::detail("Deferred runtime init for global: ", varName);
             }
         }
 
