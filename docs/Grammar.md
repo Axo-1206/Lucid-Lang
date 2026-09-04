@@ -6160,6 +6160,26 @@ const sumFloats (data *float32, len uint64) -> float32 = {
 };
 ```
 
+> [!NOTE]
+> Simd<T, N> is a compiler-builtin type with strict restrictions:
+> 
+> - T must be a concrete numeric primitive type:
+> Signed integers: int8, int16, int32, int64
+> Unsigned integers: uint8, uint16, uint32, uint64
+> Floating point: float32, float64
+> 
+> - T cannot be a generic parameter (e.g., Simd<T, 4> inside a generic function is an error)
+> - T cannot be a user-defined struct or enum
+> - T cannot be another Simd type (nested Simd is not allowed)
+> - N must be a compile-time integer constant > 0
+> 
+> The parser parses Simd<T,N> as a SimdTypeAST node with elementType and laneCount fields.
+> The semantic pass validates that T is a concrete numeric primitive at the point of use.
+> 
+> This restriction exists because Simd<T,N> lowers directly to LLVM vector types (<N x T>),
+> which require a known, fixed element type at compile time. Generic parameters are not
+> known until instantiation, and allowing them would break this invariant.
+
 ---
 
 #### Atomics
