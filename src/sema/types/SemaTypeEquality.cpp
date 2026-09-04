@@ -3,6 +3,7 @@
 
 #include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/ast/TypeAST.hpp"
 
 namespace sema {
@@ -125,7 +126,8 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
     if (typesEqual(target, source)) return true;
 
     // ─── 2. Numeric conversions ──────────────────────────────────────────
-    // 2a. Integer → Float (safe, always allowed)
+    
+    // 2a. Integer → Float (safe, always allowed - IMPLICIT WIDENING)
     if (isFloatType(target) && isIntegerType(source)) {
         return true;
     }
@@ -135,9 +137,16 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
         return isIntegerPromotionSafe(target, source, ctx);
     }
     
-    // 2c. Float → Integer (unsafe, reject)
+    // 2c. Float → Integer (unsafe, REJECT - EXPLICIT NARROWING REQUIRED)
     if (isIntegerType(target) && isFloatType(source)) {
-        return false;  // Requires explicit conversion
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, target,
+                              "cannot implicitly convert float to int");
+        ctx.diagnostics.note(target, "Use one of these explicit conversion intrinsics:");
+        ctx.diagnostics.note(target, "  #trunc(x) - truncate toward zero (C-style)");
+        ctx.diagnostics.note(target, "  #floor(x) - round toward -∞");
+        ctx.diagnostics.note(target, "  #ceil(x)  - round toward +∞");
+        ctx.diagnostics.note(target, "  #round(x) - round to nearest, half away from zero");
+        return false;
     }
 
     // ─── 3. T → T? (widening to nullable) ──────────────────────────────
@@ -161,6 +170,69 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
         if (source->isa<FallibleTypeAST>() &&
             isAssignable(inner, source->as<FallibleTypeAST>()->inner, ctx)) return true;
         return false;
+    }
+
+    // ─── 6. T? → T (narrowing from nullable) ────────────────────────────
+    // A nullable value cannot be used as plain T without narrowing
+    if (source->isa<NullableTypeAST>()) {
+        TypeAST* sourceInner = source->as<NullableTypeAST>()->inner;
+        if (typesEqual(target, sourceInner)) {
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, target,
+                                  "cannot use nullable value '", 
+                                  typeToString(source, ctx.pool), 
+                                  "' as plain '", 
+                                  typeToString(target, ctx.pool), 
+                                  "'");
+            ctx.diagnostics.note(target,
+                                 "Narrow the value first using 'if x != nil' or 'x ?? default'");
+            return false;
+        }
+        // Try to assign the inner type to the target (e.g., T? → U where U != T)
+        return isAssignable(target, sourceInner, ctx);
+    }
+
+    // ─── 7. T! → T (narrowing from fallible) ────────────────────────────
+    if (source->isa<FallibleTypeAST>()) {
+        TypeAST* sourceInner = source->as<FallibleTypeAST>()->inner;
+        if (typesEqual(target, sourceInner)) {
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, target,
+                                  "cannot use fallible value '", 
+                                  typeToString(source, ctx.pool), 
+                                  "' as plain '", 
+                                  typeToString(target, ctx.pool), 
+                                  "'");
+            ctx.diagnostics.note(target,
+                                 "Narrow the value first using 'if x != err' or 'x ?? default'");
+            return false;
+        }
+        return isAssignable(target, sourceInner, ctx);
+    }
+
+    // ─── 8. T?! → T (narrowing from combined) ────────────────────────────
+    if (source->isa<CombinedTypeAST>()) {
+        TypeAST* sourceInner = source->as<CombinedTypeAST>()->inner;
+        if (typesEqual(target, sourceInner)) {
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, target,
+                                  "cannot use combined value '", 
+                                  typeToString(source, ctx.pool), 
+                                  "' as plain '", 
+                                  typeToString(target, ctx.pool), 
+                                  "'");
+            ctx.diagnostics.note(target,
+                                 "Narrow the value first using 'if x != nil and x != err'");
+            return false;
+        }
+        return isAssignable(target, sourceInner, ctx);
+    }
+
+    // ─── 9. Trait conformance ─────────────────────────────────────────────
+    if (target->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
+        TypeDeclAST* targetDecl = namedTarget->resolvedDecl;
+        if (targetDecl && targetDecl->isa<TraitDeclAST>()) {
+            TraitDeclAST* traitDecl = targetDecl->as<TraitDeclAST>();
+            return isTraitConformant(source, traitDecl, ctx);
+        }
     }
 
     return false;

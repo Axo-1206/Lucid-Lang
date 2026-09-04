@@ -19,7 +19,7 @@
 /// not) at every dispatch layer.
 enum class IntrinsicKind {
     // ─── Floating-Point Math ────────────────────────────────────────────
-    Sqrt, Abs, Fma, Ceil, Floor, Round, Pow, Min, Max,
+    Sqrt, Abs, Fma, Ceil, Floor, Round, Trunc, Pow, Min, Max,
     // ─── Memory Operations ───────────────────────────────────────────────
     Memcpy, Memmove, Memset,
     // ─── Bit Manipulation ────────────────────────────────────────────────

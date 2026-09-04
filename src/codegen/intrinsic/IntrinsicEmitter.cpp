@@ -273,6 +273,7 @@ llvm::Value* emitIntrinsic(
                 case IntrinsicKind::Ceil:
                 case IntrinsicKind::Floor:
                 case IntrinsicKind::Round:
+                case IntrinsicKind::Trunc:
                 case IntrinsicKind::Pow:
                 case IntrinsicKind::Min:
                 case IntrinsicKind::Max: {

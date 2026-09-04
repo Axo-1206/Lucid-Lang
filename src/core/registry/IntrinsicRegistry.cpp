@@ -33,6 +33,7 @@ static const IntrinsicEntry INTRINSIC_TABLE[] = {
     {"ceil",      IntrinsicKind::Ceil,  IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::ceil,   1, 1, false, false, false},
     {"floor",     IntrinsicKind::Floor, IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::floor,  1, 1, false, false, false},
     {"round",     IntrinsicKind::Round, IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::round,  1, 1, false, false, false},
+    {"trunc",     IntrinsicKind::Trunc, IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::trunc,  1, 1, false, false, false},
     {"pow",       IntrinsicKind::Pow,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::pow,    2, 2, false, false, false},
     {"min",       IntrinsicKind::Min,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
     {"max",       IntrinsicKind::Max,   IntrinsicEmitterKind::LLVM,  llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},

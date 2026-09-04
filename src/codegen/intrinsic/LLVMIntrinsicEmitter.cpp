@@ -133,7 +133,7 @@ llvm::Value* emitLLVMMathIntrinsic(
         return nullptr;
     }
 
-    // ─── sqrt / fma / ceil / floor / round / pow ──────────────────────────
+    // ─── sqrt / fma / ceil / floor / round / trunc / pow ──────────────────────────
     // pow needs its integer-argument promotion handled before it can join
     // the shared llvm::Intrinsic dispatch below (llvm.pow has no integer
     // overload) - everything else here already arrives as the right type.
@@ -161,6 +161,7 @@ llvm::Value* emitLLVMMathIntrinsic(
         case IntrinsicKind::Ceil:  id = llvm::Intrinsic::ceil;  break;
         case IntrinsicKind::Floor: id = llvm::Intrinsic::floor; break;
         case IntrinsicKind::Round: id = llvm::Intrinsic::round; break;
+        case IntrinsicKind::Trunc: id = llvm::Intrinsic::trunc; break;
         case IntrinsicKind::Pow:   id = llvm::Intrinsic::pow;   break;
         default: break;
     }
