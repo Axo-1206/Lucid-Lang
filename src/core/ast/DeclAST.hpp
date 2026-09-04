@@ -175,8 +175,6 @@ struct ParamAST : ValueDeclAST {
     llvm::Value* llvmValue = nullptr;          // The LLVM argument value
     llvm::AllocaInst* llvmAlloca = nullptr;    // The alloca for the param
     llvm::Type* llvmType = nullptr;            // LLVM type (may differ from AST type)
-    size_t abiRegisterIndex = 0;               // Register index for ABI
-    bool isByVal = false;                      // If passed by value (structs)
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, TypeAST* t, bool variadic = false, bool isConstParam = false)
@@ -234,9 +232,6 @@ struct FuncDeclAST : ValueDeclAST {
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
     llvm::Function* llvmFunction = nullptr;
-    
-    /// The LLVM struct type for the closure environment (if this is a closure).
-    llvm::StructType* environmentType = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
