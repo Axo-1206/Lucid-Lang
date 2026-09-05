@@ -4128,8 +4128,30 @@ there is no `.push`, `.sort`, `.map`, `.filter`, or similar attached to the
 array type. This is consistent with Lucid's design: **behavior comes from
 functions, not from types**.
 
-All array manipulation is done through the standard library, which provides
-plain functions that accept the array and a user callback where needed:
+**`.length` is the one exception, and it isn't really an exception** —
+it's a plain field read, not a method call, so it doesn't fall under
+"behavior" at all. `[*]T` and `[_]T` already carry their length as part of
+the value's own runtime representation (see the view header `(ptr, len,
+cap)` under **Value and Reference Semantics**), so `items.length` is
+exactly the same kind of access as `player.health` on any other struct —
+no function call, no callback, nothing to import from the stdlib:
+
+```lucid
+const nums  [*]int  = [3, 1, 4, 1, 5, 9, 2, 6];
+const count uint64  = nums.length;
+
+const view  [_]int  = nums[1..4];
+const n     uint64  = view.length;
+```
+
+`.length` works identically on `[*]T` and `[_]T` for any `T`, since reading
+it never inspects `T`'s shape — it only reads the header. Fixed arrays
+(`[N]T`) don't need it at all: their length is the compile-time literal `N`
+already written in the type, not a runtime property.
+
+All other array manipulation is done through the standard library, which
+provides plain functions that accept the array and a user callback where
+needed:
 
 ```lucid
 import std.array as arr
@@ -5171,8 +5193,8 @@ safety boundary.
 | `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                           |
 | `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                          |
 | `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                         |
-| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant                                                                                                        |
-| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant                                                                                                 |
+| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant when `T` is concrete; see **`#sizeof` / `#alignof` — Generic Behavior** below for `T` generic          |
+| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant when `T` is concrete; same generic-`T` behavior as `#sizeof`                                    |
 
 ```lucid
 -- Generic logger: works on any type T, given a formatter for it
@@ -5269,6 +5291,45 @@ const logGeneric<T> (v T)(toStr (T) -> string) -> string = {
 > actual value (see **Trait Declaration**). `#tostr` only ever sees `T`
 > itself — a real, fully-known concrete type at every call site — never a
 > "trait value," because no such thing exists at runtime to hand it.
+
+---
+
+#### `#sizeof` / `#alignof` — Generic Behavior
+
+Unlike `#tostr`, `#sizeof(T)` and `#alignof(T)` are **permitted on a generic
+`T`** — including under the default type-erasure strategy. The restriction
+that blocks `#tostr` doesn't apply here, because the two intrinsics need
+fundamentally different things from `T`: `#tostr` needs `T`'s full field
+layout to emit a *different sequence of formatting instructions* per type,
+which a single erased function body cannot do; `#sizeof`/`#alignof` only
+ever produce **one number**, which doesn't require knowing `T`'s shape at
+all — just its size.
+
+How that number is produced depends on what's known about `T` at the call
+site:
+
+| `T` at the call site                             | Lowering                                                                                                                                                                                 |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concrete (`#sizeof(Particle)`, `#sizeof(int)`)   | Resolved to a literal at Sema time — `CompileTimeConst`, same as today, zero runtime cost                                                                                                |
+| `@[specialize]`d generic parameter               | Each monomorphized copy has a concrete `T` substituted before lowering, so it's still a literal per copy                                                                                 |
+| Type-erased generic parameter (default strategy) | Not a literal — instead a small runtime lookup against the tag the erased value already carries (`tag → {size, align}`), a `RuntimeCall`-style resolution rather than `CompileTimeConst` |
+
+The third row costs a single table lookup, not a general reflection
+mechanism — it reuses the same runtime tag a type-erased value already
+carries for its ordinary tag-checking, and it's the reason
+`arena::space<T>()` (`arena::remaining() / #sizeof(T)`, see **Arena**) is
+able to call `#sizeof(T)` directly on its own generic parameter without
+requiring `@[specialize]`.
+
+`#alloc(T, count)` resolves `T` the same way — it only ever needs `T`'s
+byte size to allocate, and returns a plain `*T` whose representation
+doesn't depend on `T`'s shape, so the same three-case table applies to it.
+
+`#simd_splat`'s `type` argument is the one exception: even though it also
+only needs a byte size, its return type `Simd<T,N>` must lower to a
+genuinely fixed-shape LLVM vector type with no erased or boxed fallback
+representation, so `type` must always be concrete — see **SIMD /
+Vector**.
 
 ---
 
@@ -5763,10 +5824,10 @@ desc.size = 8192;                -- ERROR: ArenaDescriptor's fields are read-onl
 | `Arena`                         | Yes — compiler        | Scope exit — automatic, no user call | Yes — via `::descriptor()` (Rule 4) |
 | C `malloc` / foreign library    | No                    | Matching C free function             | N/A — C owns it entirely            |
 
-| Intrinsic          | Args           | Returns | Notes                             |
-| ------------------ | -------------- | ------- | --------------------------------- |
-| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation     |
-| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free |
+| Intrinsic          | Args           | Returns | Notes                                                                                                 |
+| ------------------ | -------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation; `T` may be generic — see **`#sizeof` / `#alignof` — Generic Behavior** |
+| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free                                                                     |
 
 | `Arena` operation         | Args                 | Returns           | Notes                                                      |
 | ------------------------- | -------------------- | ----------------- | ---------------------------------------------------------- |
@@ -6059,85 +6120,61 @@ honestly provide:
   value reports its concrete type as a string (e.g. `"Simd<float,4>"`),
   the same as it would for any other value — nothing new needed there.
 
-**`T` and `N` can't be written as `#simd_splat(float, 4, scalar)`.** A
-bare type name like `float` is only valid Lucid syntax in a *type*
-position (a declared type, a generic argument between `<...>`) — the
-`#simd_*` intrinsics' argument list is an ordinary *value* expression list,
-the same grammatical position any other intrinsic or function call's
-arguments occupy, and a type name is not a valid expression there. This
-isn't a restriction specific to SIMD — it's the same rule that makes
-`let x = int;` meaningless — SIMD is just the first place in the language
-that needs to pass "which primitive kind" and "how many" as ordinary
-*values* rather than as generic type arguments.
-
-The fix: two dedicated stdlib enums stand in for `T` and `N` wherever a
-`#simd_*` intrinsic needs them as arguments. Enum variants are ordinary
-compile-time integer constants (see **Enum Declaration**), so this costs
-nothing new — it reuses a mechanism the language already has instead of
-inventing a special "type-as-value" exception to the grammar:
+**`T` and `N` are written directly — `#simd_splat(float, 4, scalar)`.**
+The `#simd_*` intrinsics' `type` and `lanes` arguments are a special
+compiler-recognized position, not an ordinary value expression: the
+compiler resolves `type` against a bare type name (`float`, `int32`, ...)
+and `lanes` against a compile-time integer constant, the same way
+`#sizeof(T)` and `#alignof(T)` already accept a bare type name where an
+ordinary function call would expect a value. No stdlib enum stands in for
+either argument — `type` is a compile-time type, and `lanes` is a
+compile-time integer, full stop.
 
 ```lucid
--- std/simd.luc
+-- Direct types + integer literals
+#simd_splat(float, 4, 3.14)     -- Creates Simd<float, 4>
+#simd_splat(int32, 8, 0)        -- Creates Simd<int32, 8>
 
-@[export]
-enum SimdType {
-    Int8    = 1;
-    Int16   = 2;
-    Int32   = 3;
-    Int64   = 4;
-    Uint8   = 5;
-    Uint16  = 6;
-    Uint32  = 7;
-    Uint64  = 8;
-    Float = 9;
-    Double = 10;
-}
-
-@[export]
-enum SimdLanes {
-    Lanes1  = 1;
-    Lanes2  = 2;
-    Lanes4  = 4;
-    Lanes8  = 8;
-    Lanes16 = 16;
-    Lanes32 = 32;
-    Lanes64 = 64;
-}
+#simd_load(ptr, 4)              -- Loads Simd<float, 4> from ptr
+#simd_load(ptr, 8)              -- Loads Simd<int32, 8> from ptr
 ```
 
-`SimdType`'s variants map to the same closed primitive-kind allowlist listed
-above — the compiler hardcodes that mapping the same way it hardcodes
-`Arena`'s internal layout, nothing for the user to define or extend.
-`SimdLanes`'s variants are deliberately assigned their own numeric value as
-`N` directly (`Lanes4 = 4`), so no separate mapping is needed there at all —
-the variant *is* the lane count. `SimdLanes` is a fixed, curated set rather
-than "any `int`" specifically so an invalid lane count is a compile error at
-the call site (unresolved enum member) rather than a runtime-discovered one;
-widths beyond `64` can be added here later if a real use case needs them,
-the same way the primitive-kind list could grow.
+`type` is checked against the same closed primitive-kind allowlist listed
+above — the compiler hardcodes that check the same way it hardcodes
+`Arena`'s internal layout, nothing for the user to define or extend. There
+is no curated set of lane counts analogous to the old `SimdLanes`; any
+positive compile-time integer constant is accepted for `lanes`, and an
+invalid or non-constant value is a compile error at the call site.
 
-**Both arguments must be compile-time-constant enum members — a variable
-holding a runtime-computed `SimdType`/`SimdLanes` value is not accepted.**
-This isn't an arbitrary extra rule: the compiler needs `T` and `N` to
-determine the concrete `Simd<T,N>` return type at the call site, the exact
-same requirement `Arena::alloc<T>` already has for its own type argument —
-the difference is only that `Simd`'s type argument is spelled as an enum
-member instead of a generic `<T>`, for the parsing reason above.
+**Both `type` and `lanes` must be compile-time constants — a variable
+holding a runtime-computed type or lane count is not accepted.** This
+isn't an arbitrary extra rule: the compiler needs `T` and `N` to determine
+the concrete `Simd<T,N>` return type at the call site, the exact same
+requirement `Arena::alloc<T>` already has for its own type argument — the
+difference is only that `Simd`'s type argument is resolved the same way
+`#sizeof(T)` resolves `T`, rather than through a generic `<T>`. **Unlike
+`#sizeof(T)`, `type` must be genuinely concrete — never a generic
+parameter** (see **`T` cannot be a generic parameter** above): `#sizeof(T)`
+only ever produces a number, which a type-erased `T` can still supply via a
+runtime tag lookup, but `#simd_splat`'s return type `Simd<T,N>` must lower
+to an actual fixed-shape LLVM vector type, and there is no erased or boxed
+representation for `Simd<T,N>` to fall back on if `T` isn't known at
+compile time.
 
-| Intrinsic                          | Args                         | Returns     | Notes                                                                                                                                                              |
-| ---------------------------------- | ---------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `#simd_load(ptr, lanes)`           | `*T`, `SimdLanes`            | `Simd<T,N>` | `T` inferred from `ptr`'s pointee type; `lanes` a compile-time-constant `SimdLanes` member                                                                         |
-| `#simd_store(ptr, v)`              | `*T`, `Simd<T,N>`            | —           | `ptr`'s `T` must match `v`'s `T` exactly — no implicit conversion                                                                                                  |
-| `#simd_add(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise addition; both args must share the identical `T` and `N`                                                                                                 |
-| `#simd_sub(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise subtraction; both args must share the identical `T` and `N`                                                                                              |
-| `#simd_mul(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise multiplication; both args must share the identical `T` and `N`                                                                                           |
-| `#simd_div(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise division; both args must share the identical `T` and `N`                                                                                                 |
-| `#simd_fma(a, b, c)`               | `Simd<T,N>` × 3              | `Simd<T,N>` | Lane-wise fused multiply-add; all three args must share the identical `T` and `N`                                                                                  |
-| `#simd_min(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise minimum; both args must share the identical `T` and `N`                                                                                                  |
-| `#simd_max(a, b)`                  | `Simd<T,N>` × 2              | `Simd<T,N>` | Lane-wise maximum; both args must share the identical `T` and `N`                                                                                                  |
-| `#simd_splat(type, lanes, scalar)` | `SimdType`, `SimdLanes`, `T` | `Simd<T,N>` | Broadcast scalar to all lanes; `type`/`lanes` compile-time-constant enum members; `scalar` must be exactly type `T`                                                |
-| `#simd_extract(v, i)`              | `Simd<T,N>`, `int`           | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing       |
-| `#simd_insert(v, i, x)`            | `Simd<T,N>`, `int`, `T`      | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T` |
+| Intrinsic                          | Args                      | Returns     | Notes                                                                                                                                                                |
+| ---------------------------------- | ------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#simd_load(ptr, lanes)`           | `*T`, `lanes`             | `Simd<T,N>` | `T` inferred from `ptr`'s pointee type; `lanes` is a compile-time integer constant                                                                                   |
+| `#simd_store(ptr, v)`              | `*T`, `Simd<T,N>`         | —           | `ptr`'s `T` must match `v`'s `T` exactly — no implicit conversion                                                                                                    |
+| `#simd_add(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise addition; both args must share the identical `T` and `N`                                                                                                   |
+| `#simd_sub(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise subtraction; both args must share the identical `T` and `N`                                                                                                |
+| `#simd_mul(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise multiplication; both args must share the identical `T` and `N`                                                                                             |
+| `#simd_div(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise division; both args must share the identical `T` and `N`                                                                                                   |
+| `#simd_fma(a, b, c)`               | `Simd<T,N>` × 3           | `Simd<T,N>` | Lane-wise fused multiply-add; all three args must share the identical `T` and `N`                                                                                    |
+| `#simd_min(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise minimum; both args must share the identical `T` and `N`                                                                                                    |
+| `#simd_max(a, b)`                  | `Simd<T,N>` × 2           | `Simd<T,N>` | Lane-wise maximum; both args must share the identical `T` and `N`                                                                                                    |
+| `#simd_splat(type, lanes, scalar)` | `type`, `lanes`, `scalar` | `Simd<T,N>` | Broadcast scalar to all lanes; `type` is a compile-time type (e.g., `float`, `int32`); `lanes` is a compile-time integer constant; `scalar` must be exactly type `T` |
+| `#simd_extract(v, i)`              | `Simd<T,N>`, `int`        | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing         |
+| `#simd_insert(v, i, x)`            | `Simd<T,N>`, `int`, `T`   | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T`   |
 
 Mixing `T` or `N` between arguments — `Simd<float,4>` with `Simd<float,8>`,
 or `Simd<int32,4>` with `Simd<float,4>` — is a compile error, never an
@@ -6146,11 +6183,11 @@ implicit widen or convert.
 ```lucid
 -- Sum an array of floats using 4-wide SIMD
 const sumFloats (data *float, len uint64) -> float = {
-    let acc Simd<float, 4> = #simd_splat(SimdType.Float, SimdLanes.Lanes4, 0.0);
+    let acc Simd<float, 4> = #simd_splat(float, 4, 0.0);
     let i   uint64          = 0;
 
     while i + 4 <= len {
-        const chunk Simd<float, 4> = #simd_load(#ptrOffset(data, i), SimdLanes.Lanes4);
+        const chunk Simd<float, 4> = #simd_load(#ptrOffset(data, i), 4);
         acc = #simd_add(acc, chunk);
         i = i + 4;
     }
@@ -6175,6 +6212,9 @@ const sumFloats (data *float, len uint64) -> float = {
 > 
 > The parser parses Simd<T,N> as a SimdTypeAST node with elementType and laneCount fields.
 > The semantic pass validates that T is a concrete numeric primitive at the point of use.
+> 
+> **SIMD intrinsics use direct type arguments** — `#simd_splat(float, 4, 3.14)`
+> passes `float` as a type directly, consistent with `#sizeof(T)`.
 > 
 > This restriction exists because Simd<T,N> lowers directly to LLVM vector types (<N x T>),
 > which require a known, fixed element type at compile time. Generic parameters are not
