@@ -6006,7 +6006,7 @@ honestly provide:
 
 - **`T` is restricted to a closed set of primitive kinds** — the sized
   integer kinds (`int8`/`16`/`32`/`64` and their unsigned counterparts) and
-  the float kinds (`float32`/`64`). Not `bool` (mask registers are a
+  the float kinds (`float`/`double`). Not `bool` (mask registers are a
   distinct concept from a data vector, deliberately not folded in here),
   not `char`, not `string`, not structs, not pointers — SIMD instructions
   operate on fixed-width lanes of integers or floats, full stop, and the
@@ -6056,11 +6056,11 @@ honestly provide:
   as data inside the value — so there's nothing analogous to
   `ArenaDescriptor.base`/`.size` to read back out at runtime. The
   compile-time equivalent already exists: `#typeof(v)` on a `Simd<T,N>`
-  value reports its concrete type as a string (e.g. `"Simd<float32,4>"`),
+  value reports its concrete type as a string (e.g. `"Simd<float,4>"`),
   the same as it would for any other value — nothing new needed there.
 
-**`T` and `N` can't be written as `#simd_splat(float32, 4, scalar)`.** A
-bare type name like `float32` is only valid Lucid syntax in a *type*
+**`T` and `N` can't be written as `#simd_splat(float, 4, scalar)`.** A
+bare type name like `float` is only valid Lucid syntax in a *type*
 position (a declared type, a generic argument between `<...>`) — the
 `#simd_*` intrinsics' argument list is an ordinary *value* expression list,
 the same grammatical position any other intrinsic or function call's
@@ -6089,8 +6089,8 @@ enum SimdType {
     Uint16  = 6;
     Uint32  = 7;
     Uint64  = 8;
-    Float32 = 9;
-    Float64 = 10;
+    Float = 9;
+    Double = 10;
 }
 
 @[export]
@@ -6139,18 +6139,18 @@ member instead of a generic `<T>`, for the parsing reason above.
 | `#simd_extract(v, i)`              | `Simd<T,N>`, `int`           | `T`         | Extract lane `i`; `i` need not be a compile-time constant — runtime-bounds-checked against `[0, N)`, panics unless guarded with `??`, same as array indexing       |
 | `#simd_insert(v, i, x)`            | `Simd<T,N>`, `int`, `T`      | `Simd<T,N>` | Return a new `Simd<T,N>` with lane `i` replaced by `x` — does not mutate `v`; `i` runtime-bounds-checked the same as `#simd_extract`; `x` must be exactly type `T` |
 
-Mixing `T` or `N` between arguments — `Simd<float32,4>` with `Simd<float32,8>`,
-or `Simd<int32,4>` with `Simd<float32,4>` — is a compile error, never an
+Mixing `T` or `N` between arguments — `Simd<float,4>` with `Simd<float,8>`,
+or `Simd<int32,4>` with `Simd<float,4>` — is a compile error, never an
 implicit widen or convert.
 
 ```lucid
 -- Sum an array of floats using 4-wide SIMD
-const sumFloats (data *float32, len uint64) -> float32 = {
-    let acc Simd<float32, 4> = #simd_splat(SimdType.Float32, SimdLanes.Lanes4, 0.0);
+const sumFloats (data *float, len uint64) -> float = {
+    let acc Simd<float, 4> = #simd_splat(SimdType.Float, SimdLanes.Lanes4, 0.0);
     let i   uint64          = 0;
 
     while i + 4 <= len {
-        const chunk Simd<float32, 4> = #simd_load(#ptrOffset(data, i), SimdLanes.Lanes4);
+        const chunk Simd<float, 4> = #simd_load(#ptrOffset(data, i), SimdLanes.Lanes4);
         acc = #simd_add(acc, chunk);
         i = i + 4;
     }
@@ -6166,7 +6166,7 @@ const sumFloats (data *float32, len uint64) -> float32 = {
 > - T must be a concrete numeric primitive type:
 > Signed integers: int8, int16, int32, int64
 > Unsigned integers: uint8, uint16, uint32, uint64
-> Floating point: float32, float64
+> Floating point: float, double
 > 
 > - T cannot be a generic parameter (e.g., Simd<T, 4> inside a generic function is an error)
 > - T cannot be a user-defined struct or enum
@@ -6312,7 +6312,7 @@ const distance int64  = #ptrDiff(next, buf);    -- 1
 
 ```lucid
 const bits uint32  = 0x3F800000;
-const f    float32 = #bitcast(float32, bits);    -- 1.0
+const f    float = #bitcast(float, bits);    -- 1.0
 ```
 
 ---
@@ -6402,7 +6402,7 @@ const findNode (id int32) -> *Node? = {};
 
 -- multiple link targets: paths and library names can be mixed
 @[foreign("C"), link("vendor/math/fast_math.c", "vendor/math/lut.c", "m")]
-const fastSin (x float32) -> float32 = {};
+const fastSin (x float) -> float = {};
 ```
 
 **Type mapping — C to Lucid:**
@@ -6413,8 +6413,8 @@ const fastSin (x float32) -> float32 = {};
 | `unsigned int`  | `uint32`   |                                                       |
 | `long`          | `int64`    | platform-dependent in C; treat as 64-bit              |
 | `size_t`        | `uint64`   |                                                       |
-| `float`         | `float32`  |                                                       |
-| `double`        | `float64`  |                                                       |
+| `float`         | `float`    |                                                       |
+| `double`        | `double`   |                                                       |
 | `char *`        | `*uint8`   | not a Lucid `string` — use `#str_from_ptr` to convert |
 | `void *`        | `*uint8`   | conventional untyped byte pointer                     |
 | `T *`           | `*T`       | raw pointer; nullable if C may return `NULL` → `*T?`  |
@@ -6483,7 +6483,7 @@ const kernel_create  (config int32) -> *uint8? = {};
 const kernel_destroy (self *uint8) = {};
 
 @[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-const kernel_run     (self *uint8, data *float32, len int32) -> int32 = {};
+const kernel_run     (self *uint8, data *float, len int32) -> int32 = {};
 
 -- usage: the C++ object is an opaque handle on the Lucid side
 const k *uint8? = kernel_create(42);
