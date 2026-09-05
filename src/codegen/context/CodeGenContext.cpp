@@ -183,6 +183,28 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
     }
 }
 
+void CodeGenContext::emitUnwindTo(size_t targetDepth) {
+    if (!getCurrentFunction()) {
+        return;
+    }
+    
+    // ─── Guard against invalid target depth ──────────────────────────────
+    if (targetDepth >= liveTrackers.size()) {
+        return;
+    }
+    
+    // ─── Unwind scopes ────────────────────────────────────────────────────
+    while (liveTrackers.size() > targetDepth) {
+        LiveVariableTracker& tracker = liveTrackers.back();
+        
+        // Emit cleanup (scope_exit callbacks + implicit cleanup)
+        emitCleanupForTracker(tracker);
+        
+        // Pop the scope
+        liveTrackers.pop_back();
+    }
+}
+
 // ─── String Literal Helper ───────────────────────────────────────────────
 
 llvm::Value* CodeGenContext::createStringLiteral(const std::string& str) {

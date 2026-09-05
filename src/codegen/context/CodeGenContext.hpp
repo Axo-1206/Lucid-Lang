@@ -232,16 +232,18 @@ struct CodeGenContext {
 
     // ─── Live Variable Helpers ──────────────────────────────────────────
     
+    /// @brief Push a new live scope.
     void pushLiveScope(BlockStmtAST* block = nullptr) {
         liveTrackers.emplace_back();
         liveTrackers.back().block = block;
     }
 
-    /// Emit cleanup for exactly one tracker, in two ordered phases:
+    /// @brief Emit cleanup for exactly one tracker, in two ordered phases:
     ///   1. User #scope_exit callbacks (BEFORE implicit cleanup)
     ///   2. Implicit cleanup (closure releases, array frees, string frees)
     void emitCleanupForTracker(LiveVariableTracker& tracker);
 
+    /// @brief Pop the current live scope and emit cleanup.
     void popLiveScope() {
         if (!liveTrackers.empty()) {
             emitCleanupForTracker(liveTrackers.back());
@@ -249,14 +251,18 @@ struct CodeGenContext {
         }
     }
 
+    /// @brief Mark a variable as alive in the current scope.
     void markAlive(ValueDeclAST* decl) {
         if (!liveTrackers.empty()) liveTrackers.back().markAlive(decl);
     }
 
+    /// @brief Mark a variable as consumed (handle transferred to runtime).
+    /// @note This removes the variable from the alive list.
     void markConsumed(ValueDeclAST* decl) {
         if (!liveTrackers.empty()) liveTrackers.back().markConsumed(decl);
     }
 
+    /// @brief Check if a variable is alive in any scope.
     bool isAlive(ValueDeclAST* decl) const {
         for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
             if (it->isAlive(decl)) return true;
@@ -264,12 +270,58 @@ struct CodeGenContext {
         return false;
     }
 
+    /// @brief Check if a variable is consumed in any scope.
     bool isConsumed(ValueDeclAST* decl) const {
         for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
             if (it->isConsumed(decl)) return true;
         }
         return false;
     }
+
+    // ─── Scope Unwind Helper ──────────────────────────────────────────────
+
+    /// @brief Emit cleanup for scopes from current depth down to target depth.
+    /// @param targetDepth The scope depth to unwind to (0 = function scope).
+    /// 
+    /// This is used when:
+    ///   - `break` exits a loop (unwind to the loop's scope depth)
+    ///   - `continue` jumps to next iteration (unwind to loop body's scope depth)
+    ///   - `return` exits the function (unwind to scope 0)
+    void emitUnwindTo(size_t targetDepth);
+    
+    // ─── Resource Reassignment Helper ─────────────────────────────────────
+
+    /// @brief Reassign a variable (clean up old resource, keep alive with new value).
+    /// 
+    /// ─── When to Use ──────────────────────────────────────────────────────────
+    /// Call this in `lowerAssignExpr` BEFORE storing the new value:
+    /// ```cpp
+    /// llvm::Value* oldValue = loadOldValue(lhs);
+    /// llvm::Value* newValue = lowerExpression(rhs);
+    /// ctx.reassign(decl, oldValue, newValue);  // Clean up old resource
+    /// ctx.builder.CreateStore(newValue, lhsPtr);
+    /// ```
+    /// 
+    /// ─── What It Does ──────────────────────────────────────────────────────────
+    /// 1. Checks if the variable is alive (owns a resource)
+    /// 2. If alive, determines the resource type (closure/array/string)
+    /// 3. Generates LLVM IR to release the old resource
+    /// 4. Keeps the variable alive (unlike markConsumed)
+    /// 
+    /// ─── Why Not markConsumed? ─────────────────────────────────────────────────
+    /// - `markConsumed` makes the variable DEAD (removes from alive list)
+    /// - Reassignment keeps the variable ALIVE (just with a new value)
+    /// - We need to clean up the old resource but keep the variable alive
+    /// 
+    /// ─── Resource Types Handled ─────────────────────────────────────────────────
+    /// - Closures (FuncTypeAST with environment) → __lucid_release_env
+    /// - Dynamic arrays ([*]T) → __lucid_free
+    /// - Strings (string) → __lucid_free
+    /// 
+    /// ─── Error Cases ──────────────────────────────────────────────────────────
+    /// - Future<T>: Cannot be reassigned while pending (linear type)
+    /// - Thread<T>: Cannot be reassigned while running (linear type)
+    void reassign(ValueDeclAST* decl, llvm::Value* oldValue, llvm::Value* newValue);
     
     // ─── Type Cache Helpers ──────────────────────────────────────────────
     

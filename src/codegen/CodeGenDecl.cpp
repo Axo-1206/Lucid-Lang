@@ -136,7 +136,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── Use the mangled name from Sema ──────────────────────────────────
     if (!decl->mangledName.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, decl->loc,
-                                "function '", ctx.pool.lookup(decl->name),
+                                "INTERNAL ERROR: function '", ctx.pool.lookup(decl->name),
                                 "' has no mangled name");
         return;
     }

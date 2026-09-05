@@ -1996,11 +1996,27 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
 // Assignment Expression
 // =============================================================================
 
+/// @brief Lower an assignment expression (plain or compound).
+///
+/// ─── Resource Management ──────────────────────────────────────────────────────
+/// When reassigning a `let` variable that owns resources (closure, array, string),
+/// we MUST:
+///   1. Load the old value BEFORE evaluating RHS (to avoid self-reference issues)
+///   2. Evaluate the RHS
+///   3. Release the old resource
+///   4. Store the new value
+///   5. Retain the new resource if it's a closure (ownership transfer)
+///
+/// ─── Compound Assignment ────────────────────────────────────────────────────
+/// Compound assignments (x += y) desugar to: x = x + y.
+/// The same resource management rules apply - the old value is read, the
+/// operation produces a new value, and the old resource is released.
 llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    llvm::Value* lhs = lowerExpression(expr->lhs, ctx);
-    if (!lhs) {
+    // ─── Step 1: Get LHS as an l-value (must be a pointer) ──────────────────
+    llvm::Value* lhsPtr = lowerExpression(expr->lhs, ctx);
+    if (!lhsPtr) {
         return nullptr;
     }
 
@@ -2010,125 +2026,203 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Handle reassignment of mutable functions ──────────────────────────
-    // If the LHS is a `let` function that holds a closure, we need to:
-    //   1. Release the old closure's environment
-    //   2. Store the new value
-    //   3. Retain the new closure's environment if it's a closure
-    bool isLetFunctionReassignment = false;
-    FuncDeclAST* targetFuncDecl = nullptr;
+    // ─── Step 2: Get the declaration from LHS ────────────────────────────────
+    ValueDeclAST* decl = nullptr;
+    bool isFieldAssignment = false;
     
     if (expr->lhs->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = expr->lhs->as<IdentifierExprAST>();
-        if (id->resolvedDecl && id->resolvedDecl->isa<FuncDeclAST>()) {
-            FuncDeclAST* funcDecl = id->resolvedDecl->as<FuncDeclAST>();
-            if (funcDecl->keyword == DeclKeyword::Let && funcDecl->hasClosure) {
-                isLetFunctionReassignment = true;
-                targetFuncDecl = funcDecl;
-            }
-        }
+        decl = id->resolvedDecl;
+    } else if (expr->lhs->isa<FieldAccessExprAST>()) {
+        // Field assignment: resources are owned by the struct, not the field
+        // The struct's cleanup handles releasing resources
+        FieldAccessExprAST* field = expr->lhs->as<FieldAccessExprAST>();
+        decl = field->resolvedDecl;
+        isFieldAssignment = true;
     }
 
-    // If reassigning a mutable closure function, release the old environment
-    if (isLetFunctionReassignment && targetFuncDecl) {
-        llvm::Value* oldValue = ctx.lookupValue(targetFuncDecl);
-        if (oldValue) {
-            // Load the current closure value from the alloca
-            llvm::Value* loadedOld = ctx.builder.CreateLoad(
-                ctx.getClosureType(),
-                oldValue,
-                "old_closure_load"
-            );
-            
-            // Check if it has a non-null environment
-            llvm::Value* oldEnvPtr = ctx.builder.CreateExtractValue(loadedOld, 1);
-            llvm::Value* isNull = ctx.builder.CreateIsNull(oldEnvPtr, "old_env_is_null");
-            
-            llvm::Function* func = ctx.getCurrentFunction();
-            llvm::BasicBlock* releaseBlock = llvm::BasicBlock::Create(
-                ctx.llvmCtx, "release_old_env", func);
-            llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
-                ctx.llvmCtx, "release_continue", func);
-            
-            ctx.builder.CreateCondBr(isNull, continueBlock, releaseBlock);
-            
-            ctx.builder.SetInsertPoint(releaseBlock);
-            llvm::Function* releaseFn = ctx.getRuntimeFn(RuntimeFn::ReleaseEnv);
-            ctx.builder.CreateCall(releaseFn, {oldEnvPtr});
-            ctx.builder.CreateBr(continueBlock);
-            
-            ctx.builder.SetInsertPoint(continueBlock);
-        }
-    }
-
-    llvm::Value* rhs = lowerExpression(expr->rhs, ctx);
-    if (!rhs) {
+    // ─── Step 3: Get the value type ──────────────────────────────────────────
+    llvm::Type* valueType = getType(ctx, expr->lhs->resolvedType);
+    if (!valueType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "assignment target has no type");
         return nullptr;
     }
 
-    if (expr->rhs->isLValue) {
-        llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
-        if (elemType) {
-            rhs = loadIfNeeded(rhs, elemType, ctx);
+    // ─── Step 4: Load old value BEFORE evaluating RHS ────────────────────────
+    // This is critical for cases like: x = x + 1 (we need the old value)
+    // and for resource cleanup (we need to release the old resource)
+    llvm::Value* oldValue = nullptr;
+    bool isAlive = false;
+
+    if (decl && !isFieldAssignment) {
+        isAlive = ctx.isAlive(decl);
+        if (isAlive) {
+            oldValue = ctx.builder.CreateLoad(valueType, lhsPtr, "old_value_load");
         }
-        if (!rhs) return nullptr;
     }
 
-    // ─── Handle compound assignment ──────────────────────────────────────
+    // ─── Step 5: Handle compound assignment ──────────────────────────────────
+    // Compound assignments desugar to: lhs = lhs op rhs
+    // The old value is needed as the left operand of the operation.
+    llvm::Value* rhsValue = nullptr;
+
     if (expr->op != AssignOp::Assign) {
-        llvm::Type* elemType = getType(ctx, expr->lhs->resolvedType);
-        llvm::Value* lhsValue = loadIfNeeded(lhs, elemType, ctx);
-        if (!lhsValue) {
+        // ─── 5a. Lower the RHS (the right operand of the operation) ─────────
+        rhsValue = lowerExpression(expr->rhs, ctx);
+        if (!rhsValue) {
             return nullptr;
         }
 
+        if (expr->rhs->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
+            if (elemType) {
+                rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
+            }
+            if (!rhsValue) return nullptr;
+        }
+
+        // ─── 5b. If the old value wasn't loaded (not alive or field), load it now ──
+        if (!oldValue) {
+            oldValue = ctx.builder.CreateLoad(valueType, lhsPtr, "old_value_compound_load");
+        }
+
+        // ─── 5c. Perform the compound operation ─────────────────────────────
+        llvm::Value* result = nullptr;
+
         switch (expr->op) {
             case AssignOp::AddAssign:
-                if (isIntegerType(lhsValue->getType())) {
-                    rhs = ctx.builder.CreateAdd(lhsValue, rhs, "add");
+                if (isIntegerType(oldValue->getType())) {
+                    result = ctx.builder.CreateAdd(oldValue, rhsValue, "add_assign");
                 } else {
-                    rhs = ctx.builder.CreateFAdd(lhsValue, rhs, "fadd");
+                    result = ctx.builder.CreateFAdd(oldValue, rhsValue, "fadd_assign");
                 }
                 break;
+
             case AssignOp::SubAssign:
-                if (isIntegerType(lhsValue->getType())) {
-                    rhs = ctx.builder.CreateSub(lhsValue, rhs, "sub");
+                if (isIntegerType(oldValue->getType())) {
+                    result = ctx.builder.CreateSub(oldValue, rhsValue, "sub_assign");
                 } else {
-                    rhs = ctx.builder.CreateFSub(lhsValue, rhs, "fsub");
+                    result = ctx.builder.CreateFSub(oldValue, rhsValue, "fsub_assign");
                 }
                 break;
+
             case AssignOp::MulAssign:
-                if (isIntegerType(lhsValue->getType())) {
-                    rhs = ctx.builder.CreateMul(lhsValue, rhs, "mul");
+                if (isIntegerType(oldValue->getType())) {
+                    result = ctx.builder.CreateMul(oldValue, rhsValue, "mul_assign");
                 } else {
-                    rhs = ctx.builder.CreateFMul(lhsValue, rhs, "fmul");
+                    result = ctx.builder.CreateFMul(oldValue, rhsValue, "fmul_assign");
                 }
                 break;
+
             case AssignOp::DivAssign:
-                if (isIntegerType(lhsValue->getType())) {
+                if (isIntegerType(oldValue->getType())) {
                     // Check for division by zero
                     RuntimeErrorKind kind = RuntimeErrorKind::DivisionByZero;
-                    llvm::Value* checkedDivisor = emitZeroCheck(rhs, kind, ctx);
+                    llvm::Value* checkedDivisor = emitZeroCheck(rhsValue, kind, ctx);
                     if (!checkedDivisor) return nullptr;
-                    rhs = ctx.builder.CreateSDiv(lhsValue, checkedDivisor, "sdiv");
+                    result = ctx.builder.CreateSDiv(oldValue, checkedDivisor, "sdiv_assign");
                 } else {
-                    rhs = ctx.builder.CreateFDiv(lhsValue, rhs, "fdiv");
+                    result = ctx.builder.CreateFDiv(oldValue, rhsValue, "fdiv_assign");
                 }
                 break;
+
+            case AssignOp::ModAssign:
+                if (isIntegerType(oldValue->getType())) {
+                    // Check for modulo by zero
+                    RuntimeErrorKind kind = RuntimeErrorKind::ModuloByZero;
+                    llvm::Value* checkedDivisor = emitZeroCheck(rhsValue, kind, ctx);
+                    if (!checkedDivisor) return nullptr;
+                    result = ctx.builder.CreateSRem(oldValue, checkedDivisor, "srem_assign");
+                } else {
+                    result = ctx.builder.CreateFRem(oldValue, rhsValue, "frem_assign");
+                }
+                break;
+
+            case AssignOp::PowAssign: {
+                llvm::Type* oldType = oldValue->getType();
+                if (isIntegerType(oldType) && isIntegerType(rhsValue->getType())) {
+                    oldValue = ctx.builder.CreateSIToFP(oldValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
+                    rhsValue = ctx.builder.CreateSIToFP(rhsValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
+                }
+                result = emitIntrinsic(ctx.pool.intern("pow"), {oldValue, rhsValue}, nullptr, ctx);
+                break;
+            }
+
+            case AssignOp::BitAndAssign:
+                result = ctx.builder.CreateAnd(oldValue, rhsValue, "band_assign");
+                break;
+
+            case AssignOp::BitOrAssign:
+                result = ctx.builder.CreateOr(oldValue, rhsValue, "bor_assign");
+                break;
+
+            case AssignOp::BitXorAssign:
+                result = ctx.builder.CreateXor(oldValue, rhsValue, "bxor_assign");
+                break;
+
+            case AssignOp::ShlAssign:
+                result = ctx.builder.CreateShl(oldValue, rhsValue, "shl_assign");
+                break;
+
+            case AssignOp::ShrAssign:
+                result = ctx.builder.CreateAShr(oldValue, rhsValue, "ashr_assign");
+                break;
+
             default:
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, expr->loc,
-                                        "unsupported compound assignment");
+                                        "unsupported compound assignment operator");
                 return nullptr;
+        }
+
+        // ─── 5d. The result of the compound operation is the new value ──────
+        rhsValue = result;
+    } else {
+        // ─── Plain assignment: lower the RHS ──────────────────────────────────
+        rhsValue = lowerExpression(expr->rhs, ctx);
+        if (!rhsValue) {
+            return nullptr;
+        }
+
+        if (expr->rhs->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
+            if (elemType) {
+                rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
+            }
+            if (!rhsValue) return nullptr;
         }
     }
 
-    ctx.builder.CreateStore(rhs, lhs);
+    // ─── Step 6: Clean up the old resource (if any) ──────────────────────────
+    // If the variable owns a resource (closure env, array data, string data),
+    // we must release it BEFORE storing the new value.
+    if (decl && isAlive && !isFieldAssignment && oldValue) {
+        // Use the reassign helper to clean up the old resource
+        // The variable remains alive with the new value
+        ctx.reassign(decl, oldValue, rhsValue);
+    }
 
-    // ─── If assigning a closure to a let function, retain the environment ──
-    if (isLetFunctionReassignment && targetFuncDecl) {
-        if (expr->rhs->resolvedType && expr->rhs->resolvedType->isa<FuncTypeAST>()) {
-            if (rhs->getType()->isStructTy() && rhs->getType()->getStructNumElements() == 2) {
-                llvm::Value* newEnvPtr = ctx.builder.CreateExtractValue(rhs, 1);
+    // ─── Step 7: Store the new value ─────────────────────────────────────────
+    ctx.builder.CreateStore(rhsValue, lhsPtr);
+
+    // ─── Step 8: If the variable wasn't alive before, mark it now ────────────
+    if (decl && !isFieldAssignment && !isAlive) {
+        // This can happen for variables that were declared but not initialized
+        // and now being assigned for the first time
+        ctx.markAlive(decl);
+    }
+
+    // ─── Step 9: Retain new closure environment (if assigning to a let function) ──
+    // When assigning a closure to a `let` function slot, the new environment
+    // needs to be retained because the slot now owns it.
+    if (decl && !isFieldAssignment && decl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        if (funcDecl->keyword == DeclKeyword::Let && funcDecl->hasClosure) {
+            // Check if the RHS is a closure (fat pointer {ptr, ptr})
+            if (rhsValue->getType()->isStructTy() &&
+                rhsValue->getType()->getStructNumElements() == 2) {
+                
+                llvm::Value* newEnvPtr = ctx.builder.CreateExtractValue(rhsValue, 1, "new_env");
                 llvm::Value* isNull = ctx.builder.CreateIsNull(newEnvPtr, "new_env_is_null");
                 
                 llvm::Function* func = ctx.getCurrentFunction();
@@ -2149,8 +2243,9 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
-    expr->llvmValue = rhs;
-    return rhs;
+    // ─── Step 10: Return the new value ──────────────────────────────────────
+    expr->llvmValue = rhsValue;
+    return rhsValue;
 }
 
 // =============================================================================
