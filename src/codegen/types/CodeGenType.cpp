@@ -277,21 +277,75 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named, const Generic
 
 // ─── Struct Type ──────────────────────────────────────────────────────────
 
+/// @brief Get the LLVM struct type for a Lucid struct declaration.
+///
+/// ─── Self-Reference Handling ─────────────────────────────────────────────
+/// This function handles self-referential structs using the opaque type pattern:
+///   1. Create an OPAQUE (incomplete) struct type FIRST
+///   2. Cache the opaque type
+///   3. Build field types (self-references return pointers to the opaque type)
+///   4. Set the struct body with all field types
+///
+/// The key insight is that the opaque type breaks the infinite recursion.
 llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
     if (!decl) return nullptr;
 
+    // ─── 1. Check cache ─────────────────────────────────────────────────────
     auto it = ctx.structCache.find(decl);
     if (it != ctx.structCache.end()) {
         return it->second;
     }
 
+    // ─── 2. Get the mangled name ───────────────────────────────────────────
+    std::string structName;
+    if (decl->mangledName.isValid()) {
+        structName = ctx.pool.lookup(decl->mangledName);
+    } else {
+        structName = ctx.pool.lookup(decl->name);
+    }
+
+    // ─── 3. Check if the struct type already exists by name ──────────────
+    llvm::StructType* structType = llvm::StructType::getTypeByName(
+        ctx.llvmCtx,
+        structName
+    );
+
+    // ─── 4. Create OPAQUE type FIRST (critical for self-reference) ──────
+    // This must happen BEFORE building field types!
+    // The opaque type serves as a forward declaration that self-referential
+    // fields can reference.
+    if (!structType) {
+        structType = llvm::StructType::create(ctx.llvmCtx, structName);
+    }
+
+    // ─── 5. Cache the opaque type BEFORE building fields ──────────────────
+    // This is critical - self-referential fields need to find the struct
+    // in the cache when getType() is called recursively.
+    ctx.cacheStruct(decl, structType);
+
+    // ─── 6. Build field types ──────────────────────────────────────────────
     std::vector<llvm::Type*> fieldTypes;
-    std::string structName = ctx.pool.lookup(decl->name);
+    fieldTypes.reserve(decl->fields.size());
 
     for (FieldDeclAST* field : decl->fields) {
-        llvm::Type* fieldType = field->type && field->type->isa<FuncTypeAST>()
-            ? getFunctionRuntimeType(ctx, field->type->as<FuncTypeAST>(), true)
-            : getType(ctx, field->type);
+        llvm::Type* fieldType = nullptr;
+        
+        if (field->type && field->type->isa<FuncTypeAST>()) {
+            // Function-typed field: use runtime type { ptr, ptr }
+            fieldType = getFunctionRuntimeType(
+                ctx,
+                field->type->as<FuncTypeAST>(),
+                true
+            );
+        } else {
+            // Regular field: get the LLVM type
+            // If this is a self-reference, getType() will return a pointer
+            // to the opaque struct type because:
+            //   1. The struct is already in the cache (from step 5)
+            //   2. getNamedType() checks the cache before recursing
+            fieldType = getType(ctx, field->type);
+        }
+
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, field->loc,
                                     "field '", ctx.pool.lookup(field->name),
@@ -301,13 +355,17 @@ llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
         fieldTypes.push_back(fieldType);
     }
 
-    llvm::StructType* structType = llvm::StructType::create(
-        ctx.llvmCtx,
-        llvm::ArrayRef<llvm::Type*>(fieldTypes),
-        structName
-    );
+    // ─── 7. Define the opaque struct ──────────────────────────────────────
+    // Now that we have all field types, we can finally define the struct.
+    // If the struct is still opaque (not already defined), set its body.
+    if (structType->isOpaque()) {
+        structType->setBody(fieldTypes);
+    }
 
-    ctx.structCache[decl] = structType;
+    // ─── 8. Store in cache ─────────────────────────────────────────────────
+    ctx.cacheStruct(decl, structType);
+    decl->llvmType = structType;
+
     return structType;
 }
 
