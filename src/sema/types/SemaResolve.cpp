@@ -168,6 +168,13 @@ TypeAST* resolveType(TypeAST* type, SemaContext& ctx) {
     }
 }
 
+// ─── Primitive Type ──────────────────────────────────────────────────────
+
+TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
+    (void)ctx;
+    return type;
+}
+
 // ─── Named Type ──────────────────────────────────────────────────────────
 
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {

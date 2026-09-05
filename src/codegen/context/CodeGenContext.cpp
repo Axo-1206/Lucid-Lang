@@ -252,4 +252,132 @@ llvm::Type* CodeGenContext::getPointeeType(llvm::Type* type) const {
     return llvm::Type::getInt8Ty(llvmCtx);
 }
 
+// ─── reassign ───────────────────────────────────────────────────────────────
+
+void CodeGenContext::reassign(ValueDeclAST* decl, llvm::Value* oldValue, llvm::Value* newValue) {
+    if (!decl || !oldValue || !newValue) return;
+    if (liveTrackers.empty()) return;
+
+    // ─── Check if the variable is currently alive ──────────────────────
+    if (!isAlive(decl)) {
+        return;  // Nothing to clean up
+    }
+
+    // ─── Determine what type of resource we're releasing ──────────────
+    TypeAST* type = decl->type;
+    if (!type) return;
+
+    llvm::Type* valueType = oldValue->getType();
+
+    // ─── CLOSURE ──────────────────────────────────────────────────────────
+    if (type->isa<FuncTypeAST>()) {
+        if (valueType->isStructTy() && valueType->getStructNumElements() == 2) {
+            llvm::Value* oldEnv = builder.CreateExtractValue(oldValue, 1, "old_env");
+            llvm::Value* isNull = builder.CreateIsNull(oldEnv, "old_env_is_null");
+
+            llvm::Function* func = getCurrentFunction();
+            if (!func) return;
+
+            llvm::BasicBlock* releaseBlock = llvm::BasicBlock::Create(
+                llvmCtx, "release_old_env", func);
+            llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                llvmCtx, "release_old_continue", func);
+
+            builder.CreateCondBr(isNull, continueBlock, releaseBlock);
+
+            builder.SetInsertPoint(releaseBlock);
+            llvm::Function* releaseFn = getRuntimeFn(RuntimeFn::ReleaseEnv);
+            builder.CreateCall(releaseFn, {oldEnv});
+            builder.CreateBr(continueBlock);
+
+            builder.SetInsertPoint(continueBlock);
+        }
+        return;
+    }
+
+    // ─── DYNAMIC ARRAY ──────────────────────────────────────────────────
+    if (type->isa<ArrayTypeAST>()) {
+        ArrayTypeAST* arrayType = type->as<ArrayTypeAST>();
+        if (arrayType->isDynamic()) {
+            if (valueType->isStructTy() && valueType->getStructNumElements() == 3) {
+                llvm::Value* oldData = builder.CreateExtractValue(oldValue, 0, "old_array_data");
+                llvm::Value* isNull = builder.CreateIsNull(oldData, "old_array_is_null");
+
+                llvm::Function* func = getCurrentFunction();
+                if (!func) return;
+
+                llvm::BasicBlock* freeBlock = llvm::BasicBlock::Create(
+                    llvmCtx, "free_old_array", func);
+                llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                    llvmCtx, "free_old_array_continue", func);
+
+                builder.CreateCondBr(isNull, continueBlock, freeBlock);
+
+                builder.SetInsertPoint(freeBlock);
+                llvm::Function* freeFn = getRuntimeFn(RuntimeFn::Free);
+                builder.CreateCall(freeFn, {oldData});
+                builder.CreateBr(continueBlock);
+
+                builder.SetInsertPoint(continueBlock);
+            }
+        }
+        return;
+    }
+
+    // ─── STRING ──────────────────────────────────────────────────────────
+    if (type->isa<PrimitiveTypeAST>()) {
+        PrimitiveTypeAST* primType = type->as<PrimitiveTypeAST>();
+        if (primType->primitiveKind == PrimitiveKind::String) {
+            if (valueType->isStructTy() && valueType->getStructNumElements() == 3) {
+                llvm::Value* oldData = builder.CreateExtractValue(oldValue, 0, "old_string_data");
+
+                // Check if it's a static string literal
+                bool isStaticString = false;
+                if (llvm::Constant* constPtr = llvm::dyn_cast<llvm::Constant>(oldData)) {
+                    if (llvm::isa<llvm::GlobalVariable>(constPtr)) {
+                        isStaticString = true;
+                    }
+                }
+
+                if (!isStaticString) {
+                    llvm::Value* isNull = builder.CreateIsNull(oldData, "old_string_is_null");
+                    llvm::Function* func = getCurrentFunction();
+                    if (!func) return;
+
+                    llvm::BasicBlock* freeBlock = llvm::BasicBlock::Create(
+                        llvmCtx, "free_old_string", func);
+                    llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+                        llvmCtx, "free_old_string_continue", func);
+
+                    builder.CreateCondBr(isNull, continueBlock, freeBlock);
+
+                    builder.SetInsertPoint(freeBlock);
+                    llvm::Function* freeFn = getRuntimeFn(RuntimeFn::Free);
+                    builder.CreateCall(freeFn, {oldData});
+                    builder.CreateBr(continueBlock);
+
+                    builder.SetInsertPoint(continueBlock);
+                }
+            }
+        }
+        return;
+    }
+
+    // ─── FUTURE ───────────────────────────────────────────────────────────
+    if (type->isa<FutureTypeAST>()) {
+        diagnostics.errorAt(DiagCode::Sem_InvalidUnary, decl->loc,
+                            "internal error: Future<T> cannot be reassigned while pending");
+        return;
+    }
+
+    // ─── THREAD ──────────────────────────────────────────────────────────
+    if (type->isa<ThreadTypeAST>()) {
+        diagnostics.errorAt(DiagCode::Sem_InvalidUnary, decl->loc,
+                            "internal error: Thread<T> cannot be reassigned while running");
+        return;
+    }
+
+    // Other types (primitives, structs, references) don't need cleanup
+}
+
 } // namespace codegen
