@@ -121,10 +121,7 @@ static llvm::Value* lowerIntrinsicArg(
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-llvm::Value* emitIntrinsicFromAST(
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
+llvm::Value* emitIntrinsicFromAST(IntrinsicCallExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
     SourceLocation loc = expr->loc;
@@ -136,22 +133,111 @@ llvm::Value* emitIntrinsicFromAST(
     }
 
     // ─── Special-case: #scope_exit ────────────────────────────────────────
-    // #scope_exit is handled entirely in Sema and stored on BlockStmtAST.
-    // No runtime code is generated at the call site itself.
     if (info->kind == IntrinsicKind::ScopeExit) {
         return nullptr;
     }
 
     // ─── Special-case: #sizeof(T) / #alignof(T) ──────────────────────────
-    // These intrinsics operate on types, not values. They have no arguments
-    // at runtime - the type comes from expr->resolvedType.
+    // These intrinsics operate on types, not values. The type comes from
+    // expr->resolvedType. They have no value arguments.
     if (info->kind == IntrinsicKind::Sizeof || info->kind == IntrinsicKind::Alignof) {
-        // Just delegate to the emitter with empty args
         return emitIntrinsic(expr->intrinsicName, {}, expr, ctx);
     }
 
-    // ─── Special-case: #addrof(x) ─────────────────────────────────────────
-    // addrof(x) returns the address of x - do NOT load
+    // ─── Special-case: #bitcast(T, x) ─────────────────────────────────────
+    // The type comes from expr->resolvedType. The value is args[0].
+    // We lower the value argument normally.
+    if (info->kind == IntrinsicKind::Bitcast) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#bitcast' requires a value argument");
+            return nullptr;
+        }
+        // Lower the value argument
+        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        if (!argVal) return nullptr;
+        if (expr->args[0]->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
+            if (elemType) {
+                argVal = loadIfNeeded(argVal, elemType, ctx);
+            }
+        }
+        // Delegate to emitIntrinsic with the value argument
+        return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #alloc(T, count) ──────────────────────────────────
+    // The type comes from expr->resolvedType. The count is args[0].
+    if (info->kind == IntrinsicKind::Alloc) {
+        if (expr->args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#alloc' requires a count argument");
+            return nullptr;
+        }
+        // Lower the count argument
+        llvm::Value* countVal = lowerExpression(expr->args[0], ctx);
+        if (!countVal) return nullptr;
+        if (expr->args[0]->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
+            if (elemType) {
+                countVal = loadIfNeeded(countVal, elemType, ctx);
+            }
+        }
+        // Delegate to emitIntrinsic with the count argument
+        return emitIntrinsic(expr->intrinsicName, {countVal}, expr, ctx);
+    }
+
+    // ─── Special-case: #simd_splat(type, lanes, scalar) ──────────────────
+    // The type comes from expr->resolvedType. lanes and scalar are args[0] and args[1].
+    if (info->kind == IntrinsicKind::SimdSplat) {
+        if (expr->args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_splat' requires 2 value arguments: (lanes, scalar)");
+            return nullptr;
+        }
+        // Lower lanes (arg 0) and scalar (arg 1)
+        std::vector<llvm::Value*> valueArgs;
+        for (size_t i = 0; i < expr->args.size(); ++i) {
+            llvm::Value* argVal = lowerExpression(expr->args[i], ctx);
+            if (!argVal) return nullptr;
+            if (expr->args[i]->isLValue) {
+                llvm::Type* elemType = getType(ctx, expr->args[i]->resolvedType);
+                if (elemType) {
+                    argVal = loadIfNeeded(argVal, elemType, ctx);
+                }
+            }
+            valueArgs.push_back(argVal);
+        }
+        // Delegate to emitIntrinsic with the value arguments
+        return emitIntrinsic(expr->intrinsicName, valueArgs, expr, ctx);
+    }
+
+    // ─── Special-case: #simd_load(ptr, lanes) ─────────────────────────────
+    // The type comes from expr->resolvedType. ptr and lanes are args[0] and args[1].
+    if (info->kind == IntrinsicKind::SimdLoad) {
+        if (expr->args.size() < 2) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#simd_load' requires 2 value arguments: (ptr, lanes)");
+            return nullptr;
+        }
+        // Lower ptr (arg 0) and lanes (arg 1)
+        std::vector<llvm::Value*> valueArgs;
+        for (size_t i = 0; i < expr->args.size(); ++i) {
+            llvm::Value* argVal = lowerExpression(expr->args[i], ctx);
+            if (!argVal) return nullptr;
+            if (expr->args[i]->isLValue) {
+                llvm::Type* elemType = getType(ctx, expr->args[i]->resolvedType);
+                if (elemType) {
+                    argVal = loadIfNeeded(argVal, elemType, ctx);
+                }
+            }
+            valueArgs.push_back(argVal);
+        }
+        // Delegate to emitIntrinsic with the value arguments
+        return emitIntrinsic(expr->intrinsicName, valueArgs, expr, ctx);
+    }
+
+    // ─── #addrof(x) ─────────────────────────────────────────────────────────
     if (info->kind == IntrinsicKind::Addrof) {
         if (expr->args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
@@ -211,8 +297,9 @@ llvm::Value* emitIntrinsicFromAST(
         return argVal;
     }
 
-    // ─── General case: Lower all arguments with the appropriate rules ────
-    // This handles all other intrinsics (math, memory, string, etc.)
+    // ─── General case: Lower all arguments ────────────────────────────────
+    // For most intrinsics, all arguments are value arguments.
+    // Type arguments are handled by the special cases above.
     std::vector<llvm::Value*> args;
     args.reserve(expr->args.size());
 

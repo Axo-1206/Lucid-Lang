@@ -560,16 +560,72 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     }
 
     while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        ExprAST* arg = parseExpr(stream, ctx);
-        if (arg) {
-            args.push_back(arg);
+        // ─── Check if this looks like a type argument ──────────────────────
+        // We need to look ahead to see if this is a type in a type context.
+        // The parser can't always know, so we parse as identifier and let Sema decide.
+        bool isTypeArg = false;
+        
+        if (stream.check(TokenType::IDENTIFIER)) {
+            // Check if it's a primitive type keyword
+            if (is_primitive_type(stream.peekType())) {
+                isTypeArg = true;
+            } else {
+                // For user-defined types, we need to look ahead to see if
+                // this is in a type context. We'll let Sema resolve this.
+                // For now, parse as identifier and mark as potential type.
+                // We'll detect this later based on the intrinsic context.
+            }
+        }
+        
+        if (isTypeArg) {
+            // ─── Parse as a primitive type ──────────────────────────────────
+            // For primitive types, parseType() will create a PrimitiveTypeAST.
+            // But we need to wrap it in a way that Sema can recognize.
+            // We'll parse the type and then create an IdentifierExprAST
+            // that references it.
+            TypeAST* type = parseType(stream, ctx);
+            if (type) {
+                // ─── Create an IdentifierExprAST with isType = true ────────
+                // For primitive types, we need to create a name for the type.
+                // We'll use the type's string representation as the name.
+                std::string typeName = typeToString(type, ctx.pool);
+                InternedString name = ctx.pool.intern(typeName);
+                
+                auto* idExpr = ctx.arena.make<IdentifierExprAST>(name);
+                idExpr->loc = stream.currentLoc();
+                idExpr->isType = true;
+                idExpr->resolvedTypeNode = type;
+                idExpr->resolvedType = type;
+                idExpr->valueState = ValueState::Definite;
+                idExpr->isLValue = false;
+                idExpr->isConst = true;
+                
+                args.push_back(idExpr);
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                        "expected type, got '", stream.peekValue(), "'");
+                auto* placeholder = ctx.arena.make<UnknownExprAST>();
+                placeholder->hasSyntaxError = true;
+                args.push_back(placeholder);
+            }
+        } else {
+            // ─── Parse as regular expression ────────────────────────────────
+            ExprAST* arg = parseExpr(stream, ctx);
+            if (arg) {
+                args.push_back(arg);
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                        "failed to parse argument, got '", stream.peekValue(), "'");
+                
+                auto* placeholder = ctx.arena.make<UnknownExprAST>();
+                placeholder->hasSyntaxError = true;
+                args.push_back(placeholder);
 
-            if (!stream.match(TokenType::COMMA)) {
-                if (stream.check(TokenType::RPAREN)) {
-                    break;
+                if (stream.match(TokenType::COMMA)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                            "expected argument expression before ','");
+                    continue;
                 }
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate arguments");
 
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
                 if (stream.match(TokenType::COMMA)) {
@@ -577,20 +633,14 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
                 }
                 break;
             }
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "failed to parse argument, got '", stream.peekValue(), "'");
-            
-            auto* placeholder = ctx.arena.make<UnknownExprAST>();
-            placeholder->hasSyntaxError = true;
-            args.push_back(placeholder);
-
-            if (stream.match(TokenType::COMMA)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                        "expected argument expression before ','");
-                continue;
+        }
+        
+        if (!stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RPAREN)) {
+                break;
             }
-
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected ',' to separate arguments");
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (stream.match(TokenType::COMMA)) {
                 continue;

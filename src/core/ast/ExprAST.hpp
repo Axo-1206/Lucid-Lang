@@ -182,7 +182,6 @@ struct StructLiteralExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A bare identifier used as an expression.
-/// @brief A bare identifier used as an expression.
 /// 
 /// @example
 ///   x        – local variable or parameter
@@ -212,6 +211,17 @@ struct IdentifierExprAST : ExprAST {
     
     /// @brief The field index for fast access (set by Sema).
     size_t fieldIndex = SIZE_MAX;
+
+    // ─── Type Context Support for Intrinsics ──────────────────────
+    /// @brief True if this identifier was parsed/treated as a type.
+    /// For example: #sizeof(int) → 'int' is a type
+    ///              #simd_splat(float32, 4, x) → 'float32' is a type
+    bool isType = false;
+
+    /// @brief The resolved type when isType is true.
+    /// For primitive types, this is a PrimitiveTypeAST.
+    /// For user-defined types, this is a NamedTypeAST.
+    TypeAST* resolvedTypeNode = nullptr;
 
     explicit IdentifierExprAST(InternedString n) 
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}

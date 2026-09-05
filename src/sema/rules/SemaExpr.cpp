@@ -240,6 +240,66 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         return ctx.getUnknownType();
     }
 
+    // ─── Handle type context (isType = true) ──────────────────────────────
+    // This is used for intrinsics like #sizeof(int), #alignof(Vec2), etc.
+    if (expr->isType) {
+        // ─── Look up the name in the TYPE namespace ──────────────────────
+        TypeDeclAST* typeDecl = ctx.lookupType(expr->name);
+        if (typeDecl) {
+            // It's a user-defined type!
+            NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(expr->name);
+            namedType->resolvedDecl = typeDecl;
+            namedType->genericArgs = expr->genericArgs;
+            namedType->loc = expr->loc;
+            
+            expr->resolvedTypeNode = namedType;
+            expr->resolvedType = namedType;
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;
+            expr->isConst = true;
+            return namedType;
+        }
+        
+        // ─── Check if it's a primitive type ─────────────────────────────────
+        if (isPrimitiveTypeName(expr->name, ctx.pool)) {
+            PrimitiveKind kind = primitiveKindFromName(expr->name, ctx.pool);
+            PrimitiveTypeAST* primType = ctx.arena.make<PrimitiveTypeAST>(kind);
+            primType->loc = expr->loc;
+            
+            expr->resolvedTypeNode = primType;
+            expr->resolvedType = primType;
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;
+            expr->isConst = true;
+            return primType;
+        }
+        
+        // ─── Check if it's a generic parameter ─────────────────────────────
+        if (ctx.isGenericParam(expr->name)) {
+            // Generic parameters are types, but they can't be used with
+            // intrinsics like sizeof because they're not concrete.
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "cannot use generic parameter '", 
+                                  ctx.pool.lookup(expr->name), 
+                                  "' as a type in this context (requires concrete type)");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+        
+        // ─── Type not found ──────────────────────────────────────────────────
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "unknown type '", ctx.pool.lookup(expr->name), 
+                              "' in type context");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+
     // ─── Handle `self` parameter ────────────────────────────────────────────
     // `self` is a special parameter that refers to the current struct instance.
     // It can be synthesized by the parser OR written explicitly by the user.
@@ -279,6 +339,26 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     // ─── Step 2: Look up the value declaration ────────────────────────────
     ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) {
+        // ─── Try to resolve as a type (fallback) ─────────────────────────────
+        // This handles the case where the parser couldn't tell it was a type.
+        // For example: #sizeof(Vec2) where Vec2 wasn't recognized as a type
+        // by the parser because it's a user-defined type.
+        TypeDeclAST* typeDecl = ctx.lookupType(expr->name);
+        if (typeDecl) {            
+            NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(expr->name);
+            namedType->resolvedDecl = typeDecl;
+            namedType->genericArgs = expr->genericArgs;
+            namedType->loc = expr->loc;
+            
+            expr->isType = true;
+            expr->resolvedTypeNode = namedType;
+            expr->resolvedType = namedType;
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;
+            expr->isConst = true;
+            return namedType;
+        }
+        
         ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, expr,
                               "undefined value '", ctx.pool.lookup(expr->name), "'");
         expr->resolvedType = ctx.getUnknownType();

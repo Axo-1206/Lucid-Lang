@@ -581,21 +581,25 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
 
     // ─── #alloc(T, count) -> *T ──────────────────────────────────────
-    // NOTE: T is a type argument, not a value argument - like #sizeof(T),
-    // #bitcast(T,x), and #simd_splat(x), the element type comes from the
-    // call's resolved type (*T), and `args` holds only the value arg(s)
-    // (count). The previous version indexed args[1] as if T occupied a
-    // value-arg slot, and never multiplied by sizeof(T) - it passed the
-    // raw count straight through as a byte size.
+    // T is a type argument (compile-time), not a value argument.
+    // args[0] is the count (value argument).
     if (kind == IntrinsicKind::Alloc) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#alloc' requires an argument (count)");
+                                "intrinsic '#alloc' requires an argument (count)");
             return nullptr;
         }
 
+        // ─── Get the target type from the resolved type ───────────────────────
+        // expr->resolvedType should be *T (PtrTypeAST)
         llvm::Type* targetType = getType(ctx, expr->resolvedType);
+        if (!targetType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                "could not determine target type for '#alloc'");
+            return nullptr;
+        }
 
+        // ─── Get the element size from the pointee type ──────────────────────
         uint64_t elemSize = 1;
         if (expr->resolvedType && expr->resolvedType->isa<PtrTypeAST>()) {
             TypeAST* pointee = expr->resolvedType->as<PtrTypeAST>()->inner;
@@ -603,6 +607,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             if (resolvedSize > 0) elemSize = resolvedSize;
         }
 
+        // ─── Count is the first (and only) value argument ────────────────────
         llvm::Value* count = args[0];
         if (count->getType() != i64) {
             count = ctx.builder.CreateIntCast(count, i64, false, "alloc_count");
@@ -614,11 +619,11 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
         );
 
         llvm::Function* allocFunc = ctx.getRuntimeFn(RuntimeFn::Alloc);
-
         llvm::Value* result = ctx.builder.CreateCall(allocFunc, {size});
 
-        if (targetType && targetType->isPointerTy()) {
-            return ctx.builder.CreateBitCast(result, targetType);
+        // ─── Cast to the target pointer type ──────────────────────────────────
+        if (targetType->isPointerTy()) {
+            return ctx.builder.CreateBitCast(result, targetType, "alloc_result");
         }
         return result;
     }

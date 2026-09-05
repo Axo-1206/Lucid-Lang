@@ -58,11 +58,15 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 /// @brief Validate #tostr intrinsic.
 /// @param expr The intrinsic call expression.
 /// @param ctx The semantic context.
 /// @return true if the #tostr call is valid.
 bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx);
+
+bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 } // namespace sema

@@ -564,30 +564,53 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Splat ────────────────────────────────────────────────────────
-    // #simd_splat(scalar)
-    // Note: type_enum and lanes_enum are compile-time constants consumed by Sema.
+    // #simd_splat(type, lanes, scalar)
+    // Note: 'type' is a TYPE argument (compile-time) - not in args.
+    //       'lanes' is a VALUE argument (integer literal) - args[0]
+    //       'scalar' is a VALUE argument - args[1]
+    //
     // The resolved type is Simd<T,N> which maps to the vector type.
     if (kind == IntrinsicKind::SimdSplat) {
-        if (args.empty()) {
+        // We need 2 value arguments: lanes and scalar
+        // The type argument is not in args.
+        if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_splat' requires a scalar argument");
+                                "intrinsic '#simd_splat' requires 2 arguments: (lanes, scalar)");
             return nullptr;
         }
 
         llvm::VectorType* vecType = getVectorType();
         if (!vecType) return nullptr;
 
-        llvm::Value* scalar = args[0];
-        
-        // Validate scalar type matches vector element type
-        llvm::Type* scalarType = scalar->getType();
-        llvm::Type* elemType = vecType->getElementType();
-        if (scalarType != elemType) {
+        // ─── Validate lanes (first argument) ──────────────────────────────────
+        llvm::Value* lanesVal = args[0];
+        if (!isConstantInt(lanesVal)) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "scalar type does not match vector element type");
+                                "lanes argument to '#simd_splat' must be a compile-time integer constant");
+            return nullptr;
+        }
+        
+        uint64_t laneCount = getConstantIntValue(lanesVal);
+        uint64_t vectorLaneCount = vecType->getElementCount().getKnownMinValue();
+        
+        if (laneCount != vectorLaneCount) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                "lanes value (", laneCount, 
+                                ") does not match vector lane count (", vectorLaneCount, ")");
             return nullptr;
         }
 
+        // ─── Validate scalar (second argument) ───────────────────────────────
+        llvm::Value* scalar = args[1];
+        llvm::Type* elemType = vecType->getElementType();
+        
+        if (scalar->getType() != elemType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                "scalar type does not match vector element type");
+            return nullptr;
+        }
+
+        // ─── Splat the scalar across all lanes ──────────────────────────────
         return ctx.builder.CreateVectorSplat(
             vecType->getElementCount(),
             scalar
@@ -595,31 +618,49 @@ llvm::Value* emitLLVMSIMDIntrinsic(
     }
 
     // ─── SIMD Load ────────────────────────────────────────────────────────
-    // #simd_load(ptr)
-    // Note: lanes_enum is a compile-time constant consumed by Sema.
+    // #simd_load(ptr, lanes)
+    // Note: 'ptr' is a VALUE argument - args[0]
+    //       'lanes' is a VALUE argument - args[1]
+    // The type T is inferred from the pointer's pointee type.
     // The resolved type is Simd<T,N> which maps to the vector type.
     if (kind == IntrinsicKind::SimdLoad) {
-        if (args.empty()) {
+        if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_load' requires a pointer argument");
+                                "intrinsic '#simd_load' requires 2 arguments: (ptr, lanes)");
             return nullptr;
         }
 
         llvm::VectorType* vecType = getVectorType();
         if (!vecType) return nullptr;
 
+        // ─── Validate ptr (first argument) ────────────────────────────────────
         llvm::Value* ptr = args[0];
-
-        // Validate pointer type - should be a pointer
         if (!ptr->getType()->isPointerTy()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "argument to '#simd_load' must be a pointer");
+                                "first argument to '#simd_load' must be a pointer");
             return nullptr;
         }
 
-        // With opaque pointers, we can't check the pointee type directly.
-        // Sema already validated this, so we trust it.
+        // ─── Validate lanes (second argument) ─────────────────────────────────
+        llvm::Value* lanesVal = args[1];
+        if (!isConstantInt(lanesVal)) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                "lanes argument to '#simd_load' must be a compile-time integer constant");
+            return nullptr;
+        }
+        
+        uint64_t laneCount = getConstantIntValue(lanesVal);
+        uint64_t vectorLaneCount = vecType->getElementCount().getKnownMinValue();
+        
+        if (laneCount != vectorLaneCount) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                "lanes value (", laneCount, 
+                                ") does not match vector lane count (", vectorLaneCount, ")");
+            return nullptr;
+        }
 
+        // ─── Load the vector ──────────────────────────────────────────────────
+        // Sema validated the element type matches the pointer's pointee type.
         return ctx.builder.CreateLoad(vecType, ptr);
     }
 

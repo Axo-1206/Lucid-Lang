@@ -260,6 +260,51 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
             return parseModuleAccessExpr(stream, ctx);
         }
     }
+
+    // ─── Identifier: x or Vec2 or int ──────────────────────────────────
+    if (current == TokenType::IDENTIFIER) {
+        Token nameTok = stream.peek();
+        std::string_view name = nameTok.value;
+        
+        // ─── Check if this is a primitive type in a type context ──────
+        // If the identifier is a primitive type name and we're in a context
+        // where a type is expected (like inside #sizeof), we want to treat
+        // it as a type, not a value.
+        bool isTypeName = is_primitive_type(nameTok.type);
+        
+        // ─── Check if this is a struct name followed by '{' ────────────
+        // If the identifier is a struct name and the next token is '{',
+        // it's a struct literal, which is handled above.
+        
+        // ─── Check if this is a generic type reference ─────────────────
+        // If the identifier is followed by '<', it might be a generic type.
+        bool hasGenericArgs = false;
+        size_t savedPos = stream.getPos();
+        stream.consume(); // Consume identifier temporarily
+        if (stream.check(TokenType::LESS)) {
+            // This could be a generic type or a generic function call
+            hasGenericArgs = true;
+        }
+        stream.setPos(savedPos);
+        
+        // ─── Parse the identifier ──────────────────────────────────────
+        IdentifierExprAST* idExpr = parseIdentifierExpr(stream, ctx);
+        if (!idExpr) {
+            return nullptr;
+        }
+        
+        // ─── Mark as type if it's a primitive type name ──────────────
+        // This will be resolved by Sema
+        if (isTypeName) {
+            // The parser can't know for sure if this is a type or a value
+            // in all contexts. We'll let Sema decide based on context.
+            // But we can mark it as a potential type.
+            // Sema will look at the context to determine if it's a type.
+            idExpr->isType = true;
+        }
+        
+        return idExpr;
+    }
     
     // ─── Struct literal: Point { x = 1, y = 2 } ────────────────────────
     if (looksLikeStructLiteral(stream, ctx)) {
@@ -921,6 +966,12 @@ IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx) 
     auto* idExpr = ctx.arena.make<IdentifierExprAST>(name);
     idExpr->loc = loc;
     idExpr->genericArgs = genericArgs;
+    
+    // ─── Default: it's a value, not a type ──────────────────────────────
+    // The semantic pass will determine if it should be treated as a type
+    // based on context (e.g., inside #sizeof).
+    idExpr->isType = false;
+    
     return idExpr;
 }
 

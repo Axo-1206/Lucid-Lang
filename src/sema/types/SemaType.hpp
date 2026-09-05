@@ -254,4 +254,50 @@ bool validateArenaInitializer(ExprAST* init, SemaContext& ctx);
 
 bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx);
 
+
+// ─── Other helpers ────────────────────────────────────────────────────
+
+/// @brief Check if a name is a primitive type name.
+inline bool isPrimitiveTypeName(InternedString name, StringPool& pool) {
+    std::string_view view = pool.lookupView(name);
+    static const std::unordered_set<std::string_view> primitiveNames = {
+        "bool", "int8", "int16", "int32", "int64",
+        "uint8", "uint16", "uint32", "uint64",
+        "byte", "short", "int", "long",
+        "ubyte", "ushort", "uint", "ulong",
+        "float", "double", "decimal",
+        "string", "char"
+    };
+    return primitiveNames.find(view) != primitiveNames.end();
+}
+
+/// @brief Convert a primitive type name to its PrimitiveKind.
+inline PrimitiveKind primitiveKindFromName(InternedString name, StringPool& pool) {
+    std::string_view view = pool.lookupView(name);
+    // This is the same mapping as in the lexer/parser
+    if (view == "bool")     return PrimitiveKind::Bool;
+    if (view == "int8")     return PrimitiveKind::Int8;
+    if (view == "int16")    return PrimitiveKind::Int16;
+    if (view == "int32")    return PrimitiveKind::Int32;
+    if (view == "int64")    return PrimitiveKind::Int64;
+    if (view == "uint8")    return PrimitiveKind::Uint8;
+    if (view == "uint16")   return PrimitiveKind::Uint16;
+    if (view == "uint32")   return PrimitiveKind::Uint32;
+    if (view == "uint64")   return PrimitiveKind::Uint64;
+    if (view == "byte")     return PrimitiveKind::Byte;
+    if (view == "short")    return PrimitiveKind::Short;
+    if (view == "int")      return PrimitiveKind::Int;
+    if (view == "long")     return PrimitiveKind::Long;
+    if (view == "ubyte")    return PrimitiveKind::Ubyte;
+    if (view == "ushort")   return PrimitiveKind::Ushort;
+    if (view == "uint")     return PrimitiveKind::Uint;
+    if (view == "ulong")    return PrimitiveKind::Ulong;
+    if (view == "float")    return PrimitiveKind::Float;
+    if (view == "double")   return PrimitiveKind::Double;
+    if (view == "decimal")  return PrimitiveKind::Decimal;
+    if (view == "string")   return PrimitiveKind::String;
+    if (view == "char")     return PrimitiveKind::Char;
+    return PrimitiveKind::Int;  // Fallback
+}
+
 } // namespace sema

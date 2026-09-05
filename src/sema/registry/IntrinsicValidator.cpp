@@ -112,110 +112,6 @@ static bool isInsideSpecializedFunction(SemaContext& ctx) {
 
 // ─── Simd Helpers ────────────────────────────────────────────────────────
 
-static std::optional<PrimitiveKind> validateSimdTypeEnum(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return std::nullopt;
-
-    // Resolve the expression first
-    TypeAST* exprType = resolveExpr(expr, ctx);
-    if (!exprType || exprType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdType argument has unknown type");
-        return std::nullopt;
-    }
-
-    // Must be an enum type
-    if (!expr->isa<FieldAccessExprAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdType must be an enum value (e.g., SimdType.Float32)");
-        return std::nullopt;
-    }
-
-    FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-    ValueDeclAST* decl = field->resolvedDecl;
-    if (!decl || !decl->isa<EnumVariantAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdType must be an enum variant");
-        return std::nullopt;
-    }
-
-    EnumVariantAST* variant = decl->as<EnumVariantAST>();
-    if (variant->name.isEmpty()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "Invalid SimdType variant");
-        return std::nullopt;
-    }
-
-    // Map the enum variant name to PrimitiveKind
-    std::string_view name = ctx.pool.lookupView(variant->name);
-    
-    // SimdType enum variants
-    if (name == "Int8")   return PrimitiveKind::Int8;
-    if (name == "Int16")  return PrimitiveKind::Int16;
-    if (name == "Int32")  return PrimitiveKind::Int32;
-    if (name == "Int64")  return PrimitiveKind::Int64;
-    if (name == "Uint8")  return PrimitiveKind::Uint8;
-    if (name == "Uint16") return PrimitiveKind::Uint16;
-    if (name == "Uint32") return PrimitiveKind::Uint32;
-    if (name == "Uint64") return PrimitiveKind::Uint64;
-    if (name == "Float32") return PrimitiveKind::Float;
-    if (name == "Float64") return PrimitiveKind::Double;
-
-    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                          "Invalid SimdType enum value: ", name,
-                          " (expected Int8, Int16, Int32, Int64, "
-                          "Uint8, Uint16, Uint32, Uint64, Float32, Float64)");
-    return std::nullopt;
-}
-
-static std::optional<uint64_t> validateSimdLanesEnum(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return std::nullopt;
-
-    TypeAST* exprType = resolveExpr(expr, ctx);
-    if (!exprType || exprType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdLanes argument has unknown type");
-        return std::nullopt;
-    }
-
-    if (!expr->isa<FieldAccessExprAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdLanes must be an enum value (e.g., SimdLanes.Lanes4)");
-        return std::nullopt;
-    }
-
-    FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-    ValueDeclAST* decl = field->resolvedDecl;
-    if (!decl || !decl->isa<EnumVariantAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "SimdLanes must be an enum variant");
-        return std::nullopt;
-    }
-
-    EnumVariantAST* variant = decl->as<EnumVariantAST>();
-    if (variant->name.isEmpty()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "Invalid SimdLanes variant");
-        return std::nullopt;
-    }
-
-    // SimdLanes enum variants: Lanes1, Lanes2, Lanes4, Lanes8, Lanes16, Lanes32, Lanes64
-    std::string_view name = ctx.pool.lookupView(variant->name);
-    
-    if (name == "Lanes1")  return 1;
-    if (name == "Lanes2")  return 2;
-    if (name == "Lanes4")  return 4;
-    if (name == "Lanes8")  return 8;
-    if (name == "Lanes16") return 16;
-    if (name == "Lanes32") return 32;
-    if (name == "Lanes64") return 64;
-
-    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                          "Invalid SimdLanes enum value: ", name,
-                          " (expected Lanes1, Lanes2, Lanes4, Lanes8, "
-                          "Lanes16, Lanes32, Lanes64)");
-    return std::nullopt;
-}
-
 /// @brief Parse a compile-time integer constant.
 static int64_t parseConstantInt(ExprAST* expr, SemaContext& ctx) {
     if (!expr->isa<LiteralExprAST>()) return 0;
@@ -303,7 +199,9 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
         // ─── Type & Value Inspection ──────────────────────────────────────
         case IntrinsicKind::Sizeof:
+            return validateSizeof(expr, ctx);
         case IntrinsicKind::Alignof:
+            return validateAlignof(expr, ctx);
         case IntrinsicKind::Typeof:
         case IntrinsicKind::Nameof:
         case IntrinsicKind::Ptrstr:
@@ -322,7 +220,7 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
         // ─── Bit Manipulation ─────────────────────────────────────────────
         case IntrinsicKind::Bitcast:
-            return true;
+            return validateBitcast(expr, ctx);
 
         case IntrinsicKind::Clz:
         case IntrinsicKind::Ctz:
@@ -995,94 +893,126 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     
     std::string_view name = lookupStringView(expr->intrinsicName);
     
-    // ─── #simd_splat(type_enum, lanes_enum, scalar) ──────────────────────
-    //
-    // Grammar (using enums from std library):
-    //   #simd_splat(SimdType.Float32, SimdLanes.Lanes4, 3.14)
+    // ─── #simd_splat(type, lanes, scalar) ──────────────────────────────────
+    //   #simd_splat(float, 4, 3.14)
+    //   #simd_splat(int, 8, 0)
     //
     //   where:
-    //     type_enum is a SimdType enum variant (Int8, Int16, ..., Float64)
-    //     lanes_enum is a SimdLanes enum variant (Lanes1, Lanes2, ..., Lanes64)
-    //     scalar is a value of the type specified by type_enum
+    //     type is a numeric primitive type (int8, int16, ..., float64)
+    //     lanes is an integer literal (1, 2, 4, 8, 16, 32, 64)
+    //     scalar is a value of the type specified by 'type'
     //
     if (name == "simd_splat") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "#simd_splat expects 3 arguments: (type_enum, lanes_enum, scalar)");
+                                  "#simd_splat expects 3 arguments: (type, lanes, scalar)");
             return false;
         }
         
-        // ─── 1. Validate first argument is a SimdType enum ──────────────
+        // ─── 1. Validate first argument is a TYPE ────────────────────────────
         ExprAST* typeArg = expr->args[0];
-        auto elementKindOpt = validateSimdTypeEnum(typeArg, ctx);
-        if (!elementKindOpt.has_value()) {
-            // Error already reported by validateSimdTypeEnum
-            return false;
-        }
-        PrimitiveKind elementKind = elementKindOpt.value();
+        TypeAST* elementType = nullptr;
         
-        // ─── 2. Validate second argument is a SimdLanes enum ─────────────
-        ExprAST* lanesArg = expr->args[1];
-        auto laneCountOpt = validateSimdLanesEnum(lanesArg, ctx);
-        if (!laneCountOpt.has_value()) {
-            // Error already reported by validateSimdLanesEnum
-            return false;
-        }
-        uint64_t laneCount = laneCountOpt.value();
-        
-        // ─── 3. Validate lane count > 0 ──────────────────────────────────
-        if (laneCount == 0) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
-                                  "Simd lane count must be > 0");
-            return false;
-        }
-        
-        // ─── 4. Validate scalar matches the specified type ────────────────
-        ExprAST* scalar = expr->args[2];
-        if (!scalar || !scalar->resolvedType) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "#simd_splat: scalar argument has no type");
-            return false;
+        if (typeArg->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
+            if (id->isType) {
+                elementType = id->resolvedTypeNode;
+            } else {
+                // Try to resolve as a type (fallback)
+                if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                    PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                    elementType = ctx.arena.make<PrimitiveTypeAST>(kind);
+                    id->isType = true;
+                    id->resolvedTypeNode = elementType;
+                } else {
+                    TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+                    if (typeDecl) {
+                        NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                        namedType->resolvedDecl = typeDecl;
+                        elementType = namedType;
+                        id->isType = true;
+                        id->resolvedTypeNode = elementType;
+                    }
+                }
+            }
         }
         
-        TypeAST* scalarType = scalar->resolvedType;
-        if (!scalarType->isa<PrimitiveTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
-                                  "#simd_splat: scalar must be a primitive type");
+        if (!elementType) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
+                                  "#simd_splat: first argument must be a type "
+                                  "(numeric primitive like int32, float64, etc.)");
             return false;
         }
         
-        PrimitiveTypeAST* scalarPrim = scalarType->as<PrimitiveTypeAST>();
-        PrimitiveKind scalarKind = scalarPrim->primitiveKind;
-        
-        // Check that the scalar's type matches the enum-specified type
-        if (scalarKind != elementKind) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
-                                  "#simd_splat: scalar type (", 
-                                  primitiveKindToString(scalarKind), 
-                                  ") does not match specified type (",
-                                  primitiveKindToString(elementKind), ")");
-            return false;
-        }
-        
-        // ─── 5. Also verify the enum type is a valid SIMD element type ───
-        // This is redundant but safe - validateSimdTypeEnum already does this
-        if (!isValidSimdElementType(scalarType)) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, scalar,
-                                  "#simd_splat: scalar type must be a numeric primitive "
+        // ─── 2. Validate element type is a valid SIMD element type ───────────
+        if (!isValidSimdElementType(elementType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, typeArg,
+                                  "#simd_splat: type must be a numeric primitive "
                                   "(int8, int16, int32, int64, uint8, uint16, uint32, "
                                   "uint64, float32, or float64)");
+            ctx.diagnostics.note(typeArg,
+                                 "Got: ", typeToString(elementType, ctx.pool));
             return false;
         }
+        
+        // ─── 3. Validate second argument is an integer literal (lanes) ──────
+        ExprAST* lanesArg = expr->args[1];
+        if (!lanesArg->isa<LiteralExprAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
+                                  "#simd_splat: lanes must be an integer literal");
+            return false;
+        }
+        
+        LiteralExprAST* lanesLit = lanesArg->as<LiteralExprAST>();
+        if (lanesLit->kind != LiteralKind::Int && 
+            lanesLit->kind != LiteralKind::Hex &&
+            lanesLit->kind != LiteralKind::Binary) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
+                                  "#simd_splat: lanes must be an integer literal");
+            return false;
+        }
+        
+        int64_t laneCount = parseConstantInt(lanesArg, ctx);
+        if (laneCount <= 0) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
+                                  "#simd_splat: lane count must be > 0");
+            return false;
+        }
+        
+        // ─── 4. Validate scalar matches the specified type ──────────────────
+        ExprAST* scalar = expr->args[2];
+        TypeAST* scalarType = resolveExpr(scalar, ctx);
+        if (!scalarType || scalarType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
+                                  "#simd_splat: scalar argument has unknown type");
+            return false;
+        }
+        
+        // Scalar must match the element type
+        if (!typesEqual(elementType, scalarType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
+                                  "#simd_splat: scalar type (", 
+                                  typeToString(scalarType, ctx.pool),
+                                  ") does not match specified type (",
+                                  typeToString(elementType, ctx.pool), ")");
+            return false;
+        }
+        
+        // ─── 5. Resolve the return type ──────────────────────────────────────
+        // Simd<T, N> where T = elementType, N = laneCount
+        SimdTypeAST* simdType = ctx.arena.make<SimdTypeAST>(elementType, static_cast<uint64_t>(laneCount));
+        simdType->loc = expr->loc;
+        expr->resolvedType = simdType;
         
         return true;
     }
     
-    // ─── #simd_load(ptr, lanes_enum) ─────────────────────────────────────
+    // ─── #simd_load(ptr, lanes) ─────────────────────────────────────────
+    // Updated: lanes is an integer literal, not an enum
     if (name == "simd_load") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "#simd_load expects 2 arguments: (ptr, lanes_enum)");
+                                  "#simd_load expects 2 arguments: (ptr, lanes)");
             return false;
         }
         
@@ -1106,24 +1036,34 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Validate lanes enum (second argument)
+        // Validate lanes (second argument) - must be integer literal
         ExprAST* lanesArg = expr->args[1];
-        auto laneCountOpt = validateSimdLanesEnum(lanesArg, ctx);
-        if (!laneCountOpt.has_value()) {
+        if (!lanesArg->isa<LiteralExprAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
+                                  "#simd_load: lanes must be an integer literal");
             return false;
         }
-        uint64_t laneCount = laneCountOpt.value();
         
-        if (laneCount == 0) {
+        int64_t laneCount = parseConstantInt(lanesArg, ctx);
+        if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
-                                  "Simd lane count must be > 0");
+                                  "#simd_load: lane count must be > 0");
             return false;
         }
+        
+        // Resolve the return type: Simd<T, N>
+        SimdTypeAST* simdType = ctx.arena.make<SimdTypeAST>(
+            ptrInner->inner, 
+            static_cast<uint64_t>(laneCount)
+        );
+        simdType->loc = expr->loc;
+        expr->resolvedType = simdType;
         
         return true;
     }
     
     // ─── #simd_store(ptr, simd_value) ────────────────────────────────────
+    // No changes needed - already validates correctly
     if (name == "simd_store") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1199,6 +1139,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_fma(a, b, c) ────────────────────────────────────────────────
+    // No changes needed - already validates correctly
     if (name == "simd_fma") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1232,6 +1173,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_extract(v, index) ──────────────────────────────────────────
+    // No changes needed - already validates correctly
     if (name == "simd_extract") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1273,6 +1215,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_insert(v, index, value) ────────────────────────────────────
+    // No changes needed - already validates correctly
     if (name == "simd_insert") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1324,12 +1267,70 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!info) return false;
 
     switch (info->kind) {
-        case IntrinsicKind::Alloc:
-            // #alloc(T, count) - count is the only value argument
-            if (expr->args.size() >= 1 && !validateIntArg(expr->args[0], "count", ctx)) {
+        case IntrinsicKind::Alloc: {
+            // #alloc(T, count) - T is a type, count is a value
+            // Grammar: #alloc(T, count) -> *T
+            
+            // ─── 1. Validate first argument is a TYPE ────────────────────────
+            if (expr->args.empty()) {
+                ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                      "#alloc expects 2 arguments: (type, count)");
                 return false;
             }
+            
+            ExprAST* typeArg = expr->args[0];
+            TypeAST* elementType = nullptr;
+            
+            if (typeArg->isa<IdentifierExprAST>()) {
+                IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
+                if (id->isType) {
+                    elementType = id->resolvedTypeNode;
+                } else {
+                    // Try to resolve as a type (fallback)
+                    TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+                    if (typeDecl) {
+                        NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                        namedType->resolvedDecl = typeDecl;
+                        namedType->genericArgs = id->genericArgs;
+                        elementType = namedType;
+                        id->isType = true;
+                        id->resolvedTypeNode = elementType;
+                        id->resolvedType = elementType;
+                    } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                        PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                        elementType = ctx.arena.make<PrimitiveTypeAST>(kind);
+                        id->isType = true;
+                        id->resolvedTypeNode = elementType;
+                        id->resolvedType = elementType;
+                    }
+                }
+            }
+            
+            if (!elementType) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
+                                      "#alloc expects a type as the first argument");
+                ctx.diagnostics.note(typeArg,
+                                     "Usage: #alloc(T, count) where T is a type");
+                return false;
+            }
+            
+            // ─── 2. Validate count argument ──────────────────────────────────
+            if (expr->args.size() < 2) {
+                ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                      "#alloc expects 2 arguments: (type, count)");
+                return false;
+            }
+            
+            if (!validateIntArg(expr->args[1], "count", ctx)) {
+                return false;
+            }
+            
+            // ─── 3. Resolve the return type: *T ──────────────────────────────
+            PtrTypeAST* ptrType = ctx.getPtrType(elementType);
+            expr->resolvedType = ptrType;
+            
             return true;
+        }
 
         case IntrinsicKind::Free:
             if (!expr->args.empty() && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
@@ -1338,6 +1339,75 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         default:
             return true;
     }
+}
+
+/// @brief Validate #bitcast(T, x) intrinsic.
+/// 
+/// Grammar: #bitcast(T, x) -> T
+/// where T is a type, and x is an expression that can be bitcast to T.
+/// Both types must have the same size.
+bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (expr->args.size() != 2) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#bitcast expects 2 arguments: (type, value)");
+        return false;
+    }
+    
+    // ─── 1. Validate first argument is a TYPE ──────────────────────────────
+    ExprAST* typeArg = expr->args[0];
+    TypeAST* targetType = nullptr;
+    
+    if (typeArg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
+        if (id->isType) {
+            targetType = id->resolvedTypeNode;
+        } else {
+            // Try to resolve as a type (fallback)
+            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+            if (typeDecl) {
+                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                namedType->resolvedDecl = typeDecl;
+                namedType->genericArgs = id->genericArgs;
+                targetType = namedType;
+                id->isType = true;
+                id->resolvedTypeNode = targetType;
+                id->resolvedType = targetType;
+            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                targetType = ctx.arena.make<PrimitiveTypeAST>(kind);
+                id->isType = true;
+                id->resolvedTypeNode = targetType;
+                id->resolvedType = targetType;
+            }
+        }
+    }
+    
+    if (!targetType) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
+                              "#bitcast expects a type as the first argument");
+        ctx.diagnostics.note(typeArg,
+                             "Usage: #bitcast(T, x) where T is a type");
+        return false;
+    }
+    
+    // ─── 2. Validate the value argument ─────────────────────────────────────
+    ExprAST* valueArg = expr->args[1];
+    TypeAST* valueType = resolveExpr(valueArg, ctx);
+    if (!valueType || valueType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, valueArg,
+                              "#bitcast: value argument has unknown type");
+        return false;
+    }
+    
+    // ─── 3. Both types must be sized ────────────────────────────────────────
+    // We can't check sizes at compile time without CodeGen info,
+    // but Sema can check that both types are valid.
+    
+    // ─── 4. Resolve the return type ─────────────────────────────────────────
+    expr->resolvedType = targetType;
+    expr->valueState = ValueState::Definite;
+    
+    return true;
 }
 
 bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -1409,6 +1479,125 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── 6. All checks passed ──────────────────────────────────────────────
+    return true;
+}
+
+/// @brief Validate #sizeof(T) intrinsic.
+bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (expr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#sizeof expects 1 argument");
+        return false;
+    }
+    
+    ExprAST* arg = expr->args[0];
+    
+    // ─── Check if the argument is a type reference ──────────────────────
+    TypeAST* type = nullptr;
+    
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType) {
+            // It was parsed as a type - use the resolved type node
+            type = id->resolvedTypeNode;
+        } else {
+            // It was parsed as a value - try to resolve as a type
+            // This handles the fallback case where the parser couldn't tell
+            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+            if (typeDecl) {
+                // It's a user-defined type!
+                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                namedType->resolvedDecl = typeDecl;
+                namedType->genericArgs = id->genericArgs;
+                type = namedType;
+            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                // It's a primitive type
+                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                type = ctx.arena.make<PrimitiveTypeAST>(kind);
+            }
+            
+            if (type) {
+                // Update the identifier to mark it as a type
+                id->isType = true;
+                id->resolvedTypeNode = type;
+                id->resolvedType = type;
+            }
+        }
+    }
+    
+    if (!type) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#sizeof expects a type, got an expression");
+        return false;
+    }
+    
+    // ─── Type must be concrete (no generic parameters) ──────────────────
+    if (containsGenericParameter(type, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
+                              "#sizeof cannot be used with generic type '",
+                              typeToString(type, ctx.pool), "'");
+        ctx.diagnostics.note(arg,
+                             "Only concrete types have a known size at compile time");
+        return false;
+    }
+    
+    // ─── Type must be sized ──────────────────────────────────────────────
+    // All types are sized in Lucid, except maybe future/thread which are handles
+    // This is a placeholder for future validation
+    
+    return true;
+}
+
+/// @brief Validate #alignof(T) intrinsic.
+bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (expr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#alignof expects 1 argument");
+        return false;
+    }
+    
+    ExprAST* arg = expr->args[0];
+    
+    // ─── Same logic as sizeof ──────────────────────────────────────────────
+    TypeAST* type = nullptr;
+    
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType) {
+            type = id->resolvedTypeNode;
+        } else {
+            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+            if (typeDecl) {
+                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                namedType->resolvedDecl = typeDecl;
+                namedType->genericArgs = id->genericArgs;
+                type = namedType;
+            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                type = ctx.arena.make<PrimitiveTypeAST>(kind);
+            }
+            
+            if (type) {
+                id->isType = true;
+                id->resolvedTypeNode = type;
+                id->resolvedType = type;
+            }
+        }
+    }
+    
+    if (!type) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#alignof expects a type, got an expression");
+        return false;
+    }
+    
+    if (containsGenericParameter(type, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
+                              "#alignof cannot be used with generic type '",
+                              typeToString(type, ctx.pool), "'");
+        return false;
+    }
+    
     return true;
 }
 
