@@ -1234,6 +1234,37 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
         return nullptr;
     }
 
+    // ─── 2.5. Handle array.length ──────────────────────────────────────
+    // Check if this is a special array length field access
+    InternedString lengthName = ctx.pool.intern("length");
+    if (expr->fieldName == lengthName && expr->fieldIndex == SIZE_MAX) {
+        // This is an array.length access (special case)
+        if (objectType->isa<ArrayTypeAST>()) {
+            ArrayTypeAST* arrayType = objectType->as<ArrayTypeAST>();
+            
+            // ─── Lower the object (if it's an l-value, load it) ─────────────
+            // Arrays are never nullable/fallible, so no unwrapping needed.
+            if (expr->object->isLValue) {
+                llvm::Type* elemType = getType(ctx, expr->object->resolvedType);
+                if (elemType) {
+                    object = loadIfNeeded(object, elemType, ctx);
+                }
+                if (!object) return nullptr;
+            }
+            
+            // ─── Use the existing getArrayLength helper ──────────────────
+            llvm::Value* length = getArrayLength(object, arrayType, ctx);
+            if (!length) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->loc,
+                                        "could not get length for array");
+                return nullptr;
+            }
+            
+            expr->llvmValue = length;
+            return length;
+        }
+    }
+
     // ─── 3. Determine what kind of access this is ──────────────────────────
     // Case 1: Enum variant access (e.g., Direction.North)
     // Case 2: Struct field access (e.g., point.x)

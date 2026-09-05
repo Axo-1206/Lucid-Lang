@@ -574,6 +574,32 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
+    // ─── Handle array.length ──────────────────────────────────────────
+    // Check if this is a field access on an array type
+    // Grammar: `array.length` where array is [*]T, [_]T, or [N]T
+    // The length field is a special read-only property that returns uint64
+    InternedString lengthName = ctx.pool.intern("length");
+    if (expr->fieldName == lengthName) {
+        if (objectType->isa<ArrayTypeAST>()) {
+            // The length is always uint64, regardless of the array's element type
+            TypeAST* uint64Type = ctx.getUint64Type();
+            
+            expr->resolvedDecl = nullptr;  // Not a real field declaration
+            expr->ownerType = nullptr;
+            expr->isEnumAccess = false;
+            expr->fieldIndex = SIZE_MAX;   // Special sentinel for length field
+            expr->resolvedType = uint64Type;
+            expr->valueState = ValueState::Definite;
+            
+            // ─── Determine mutability ──────────────────────────────────────
+            // array.length is always read-only (you can't assign to it)
+            expr->isLValue = false;
+            expr->isConst = true;
+            
+            return uint64Type;
+        }
+    }
+
     // ─── Handle ArenaDescriptor built-in type ────────────────────────────────
     // ArenaDescriptor has two read-only fields: base (*uint8) and size (uint64)
     if (isArenaDescriptorType(objectType)) {

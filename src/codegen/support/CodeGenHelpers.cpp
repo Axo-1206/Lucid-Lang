@@ -18,38 +18,20 @@ llvm::Value* getArrayLength(llvm::Value* target, ArrayTypeAST* arrayType, CodeGe
         }
 
         case ArrayKind::Dynamic: {
-            // Dynamic array: the length is stored at the beginning.
-            // With opaque pointers, we cannot use getPointerElementType().
-            // We need to know the layout from the AST/type system.
-            //
+            // Dynamic array: length is stored before the data
             // The target is a pointer to the array data.
-            // The length is stored before the data: [length: i64][data: T*]
-            // We need to offset back by 8 bytes to get the length.
-            
-            // First, check if the target is a pointer (it should be)
-            if (isPointerType(target->getType())) {
-                // For dynamic arrays, we assume the runtime stores the length
-                // immediately before the data. So we subtract 8 bytes from the
-                // data pointer to get the length pointer.
-                llvm::Value* lenPtr = ctx.builder.CreatePtrToInt(
-                    target,
-                    i64Ty,
-                    "data_ptr_int"
-                );
-                lenPtr = ctx.builder.CreateSub(
-                    lenPtr,
-                    llvm::ConstantInt::get(i64Ty, 8),
-                    "len_ptr_int"
-                );
-                lenPtr = ctx.builder.CreateIntToPtr(
-                    lenPtr,
-                    llvm::PointerType::get(ctx.llvmCtx, 0),
-                    "len_ptr"
-                );
+            // The length is stored at offset -8 from the data pointer.
+            if (target->getType()->isPointerTy()) {
+                // Get the length by reading from the allocation header
+                // In the runtime, dynamic arrays are allocated with a header:
+                // [length: i64][data: T*]
+                llvm::Value* lenPtr = ctx.builder.CreatePtrToInt(target, i64Ty, "data_ptr_int");
+                lenPtr = ctx.builder.CreateSub(lenPtr, llvm::ConstantInt::get(i64Ty, 8), "len_ptr_int");
+                lenPtr = ctx.builder.CreateIntToPtr(lenPtr, llvm::PointerType::get(ctx.llvmCtx, 0), "len_ptr");
                 return ctx.builder.CreateLoad(i64Ty, lenPtr, "array_len");
             }
             
-            // Fallback: return a placeholder
+            // Fallback: return 0
             ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, SourceLocation(),
                                       "dynamic array length extraction not fully implemented");
             return llvm::ConstantInt::get(i64Ty, 0);
@@ -57,25 +39,19 @@ llvm::Value* getArrayLength(llvm::Value* target, ArrayTypeAST* arrayType, CodeGe
 
         case ArrayKind::Slice: {
             // Slice: { ptr, len, cap }
-            // The target is the slice struct value (not a pointer).
-            // We need to extract the len field (index 1).
-            if (isStructType(target->getType())) {
+            // The target is the slice struct value.
+            // Extract the len field (index 1).
+            if (target->getType()->isStructTy()) {
                 llvm::StructType* structType = llvm::cast<llvm::StructType>(target->getType());
                 if (structType->getNumElements() > 1) {
-                    llvm::Value* len = ctx.builder.CreateExtractValue(
-                        target,
-                        1,
-                        "slice_len"
-                    );
+                    llvm::Value* len = ctx.builder.CreateExtractValue(target, 1, "slice_len");
                     return len;
                 }
             }
             
             // If target is a pointer to a slice struct:
-            if (isPointerType(target->getType())) {
-                // With opaque pointers, we can't get the pointee type directly.
-                // But we can use the fact that slices are { ptr, len, cap }.
-                // We can GEP to the len field using an i8* base.
+            if (target->getType()->isPointerTy()) {
+                // GEP to the len field using an i8* base
                 llvm::Value* base = ctx.builder.CreatePointerCast(
                     target,
                     llvm::PointerType::get(ctx.llvmCtx, 0),
