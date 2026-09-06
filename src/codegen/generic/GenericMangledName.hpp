@@ -84,6 +84,11 @@ std::string sanitizeForMangledName(const std::string& str);
 /// @return The sanitized module path.
 std::string getMangledModulePath(CodeGenContext& ctx);
 
+/// @brief Get the module path for a specific LLVM module.
+/// @param module The LLVM module.
+/// @return The sanitized module path.
+std::string getMangledModulePathForModule(llvm::Module* module);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Primitive Type Encoding
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1480,6 +1480,31 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
+    // ─── Find the target module ────────────────────────────────────────────
+    ModuleAST* targetModule = expr->resolvedModule;
+    if (!targetModule && ctx.currentModule) {
+        auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
+        if (it != ctx.currentModule->resolvedImports.end()) {
+            targetModule = it->second;
+        }
+    }
+
+    if (!targetModule) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
+                                "module '", ctx.pool.lookup(expr->moduleName),
+                                "' not found");
+        return nullptr;
+    }
+
+    // ─── Get the LLVM module ──────────────────────────────────────────────
+    llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
+    if (!targetLLVMModule) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
+                                "module '", ctx.pool.lookup(expr->moduleName),
+                                "' not generated");
+        return nullptr;
+    }
+
     // ─── Get the mangled name ──────────────────────────────────────────────
     std::string mangledName;
     if (resolvedDecl->isa<FuncDeclAST>()) {
@@ -1509,36 +1534,18 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    // ─── Find the target module ────────────────────────────────────────────
-    ModuleAST* targetModule = expr->resolvedModule;
-    if (!targetModule && ctx.currentModule) {
-        auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
-        if (it != ctx.currentModule->resolvedImports.end()) {
-            targetModule = it->second;
-        }
-    }
-
-    if (!targetModule) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
-                                "module '", ctx.pool.lookup(expr->moduleName),
-                                "' not found");
-        return nullptr;
-    }
-
-    // ─── Get the LLVM module ──────────────────────────────────────────────
-    llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
-    if (!targetLLVMModule) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
-                                "module '", ctx.pool.lookup(expr->moduleName),
-                                "' not generated");
-        return nullptr;
-    }
-
-    // ─── Look up by mangled name ──────────────────────────────────────────
+    // ─── Look up by declaration type ──────────────────────────────────────
     llvm::Value* symbol = nullptr;
-    
+
     if (resolvedDecl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
+        
+        // ─── Check if already cached in current context ────────────────────
+        symbol = ctx.lookupFunction(funcDecl);
+        if (symbol) {
+            expr->llvmValue = symbol;
+            return symbol;
+        }
         
         if (isGenericFunction(funcDecl)) {      
             if (shouldSpecialize(funcDecl)) {
@@ -1549,19 +1556,32 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
                 return nullptr;
             } else {
                 // ─── Type-erased: look up by mangled name ─────────────────────
-                // The erased function is named {module}_{name}__erased
-                std::string erasedName = getMangledModulePath(ctx) + "_" + 
+                // Use the target module's path, not the current module's path.
+                // The erased function is named {module}_{name}__erased in the
+                // target module.
+                std::string erasedName = getMangledModulePathForModule(targetLLVMModule) + "_" + 
                                         ctx.pool.lookup(funcDecl->name) + "__erased";
                 symbol = targetLLVMModule->getFunction(erasedName);
                 
                 if (!symbol) {
+                    // Try to generate the erased function in the target module
+                    // This would require a version of generateErasedGenericFunction
+                    // that takes a module parameter.
+                    //
+                    // For now, we need to ensure the target module's declarations
+                    // were processed first. If not, we could generate it here.
+                    //
+                    // Fallback: Check if the function exists in the current module
+                    // with a different name pattern.
                     ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                        "generic function '", ctx.pool.lookup(funcDecl->name),
-                        "' not instantiated in module '", 
-                        ctx.pool.lookup(expr->moduleName), "'");
+                        "type-erased generic function '", ctx.pool.lookup(funcDecl->name),
+                        "' not found in module '", 
+                        ctx.pool.lookup(expr->moduleName), 
+                        "'. Did you forget to compile the target module?");
                     return nullptr;
                 }
                 
+                // ─── Cache in current context ─────────────────────────────────
                 ctx.storeFunction(funcDecl, llvm::cast<llvm::Function>(symbol));
                 expr->llvmValue = symbol;
                 return symbol;

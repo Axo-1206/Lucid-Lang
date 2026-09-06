@@ -274,6 +274,15 @@ std::string getMangledModulePath(CodeGenContext& ctx) {
     return path.empty() ? "global" : path;
 }
 
+std::string getMangledModulePathForModule(llvm::Module* module) {
+    if (!module) return "global";
+    std::string path = module->getName().str();
+    for (char& c : path) {
+        if (c == '/' || c == '\\' || c == '.') c = '_';
+    }
+    return path.empty() ? "global" : path;
+}
+
 char encodePrimitiveKind(PrimitiveKind kind) {
     switch (kind) {
         case PrimitiveKind::Bool:   return 'b';
