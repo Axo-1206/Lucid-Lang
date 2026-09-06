@@ -239,6 +239,20 @@ struct SemaContext {
     bool insideNestedFunction() const;
     FuncDeclAST* getInnermostFunction() const;
     BaseAST* getInnermostFunctionNode() const;
+
+    // ─── Other Helpers ─────────────────────────────────────────────────
+
+    /// @brief Parse a compile-time integer constant.
+    int64_t parseConstantInt(ExprAST* expr) {
+        if (!expr->isa<LiteralExprAST>()) return 0;
+        LiteralExprAST* lit = expr->as<LiteralExprAST>();
+        try {
+            std::string valStr = pool.lookup(lit->value);
+            return std::stoll(valStr, nullptr, 0);
+        } catch (const std::exception& e) {
+            return 0;
+        }
+    }
 };
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────

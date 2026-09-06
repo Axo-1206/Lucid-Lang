@@ -116,6 +116,69 @@ bool isGenericParamType(TypeAST* type, SemaContext& ctx) {
     return ctx.isGenericParam(named->name);
 }
 
+bool containsGenericParameter(TypeAST* type, SemaContext& ctx) {
+    if (!type) return false;
+    
+    if (type->isa<NamedTypeAST>()) {
+        NamedTypeAST* named = type->as<NamedTypeAST>();
+        if (ctx.isGenericParam(named->name)) {
+            return true;
+        }
+        // Check generic arguments of a named type (e.g., Box<T>)
+        for (TypeAST* arg : named->genericArgs) {
+            if (containsGenericParameter(arg, ctx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    if (type->isa<ArrayTypeAST>()) {
+        ArrayTypeAST* array = type->as<ArrayTypeAST>();
+        return containsGenericParameter(array->element, ctx);
+    }
+    
+    if (type->isa<NullableTypeAST>()) {
+        NullableTypeAST* nullable = type->as<NullableTypeAST>();
+        return containsGenericParameter(nullable->inner, ctx);
+    }
+    
+    if (type->isa<FallibleTypeAST>()) {
+        FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
+        return containsGenericParameter(fallible->inner, ctx);
+    }
+    
+    if (type->isa<CombinedTypeAST>()) {
+        CombinedTypeAST* combined = type->as<CombinedTypeAST>();
+        return containsGenericParameter(combined->inner, ctx);
+    }
+    
+    if (type->isa<PtrTypeAST>()) {
+        PtrTypeAST* ptr = type->as<PtrTypeAST>();
+        return containsGenericParameter(ptr->inner, ctx);
+    }
+    
+    if (type->isa<RefTypeAST>()) {
+        RefTypeAST* ref = type->as<RefTypeAST>();
+        return containsGenericParameter(ref->inner, ctx);
+    }
+    
+    if (type->isa<FuncTypeAST>()) {
+        FuncTypeAST* func = type->as<FuncTypeAST>();
+        for (ParamAST* param : func->params) {
+            if (containsGenericParameter(param->type, ctx)) {
+                return true;
+            }
+        }
+        if (func->returnType && containsGenericParameter(func->returnType, ctx)) {
+            return true;
+        }
+        return false;
+    }
+    
+    return false;  // Primitive types don't contain generic parameters
+}
+
 // ─── Built-in Type Predicates ────────────────────────────────────────────
 
 bool isArenaType(TypeAST* type) {

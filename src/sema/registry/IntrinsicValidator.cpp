@@ -23,107 +23,6 @@ static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
     return registry.isVoid(name);
 }
 
-// ─── Helper: Check if a type is a generic parameter ──────────────────────
-
-static bool isGenericParameterType(TypeAST* type, SemaContext& ctx) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    NamedTypeAST* named = type->as<NamedTypeAST>();
-    return ctx.isGenericParam(named->name);
-}
-
-// ─── Helper: Check if a type contains a generic parameter ────────────────
-
-static bool containsGenericParameter(TypeAST* type, SemaContext& ctx) {
-    if (!type) return false;
-    
-    if (type->isa<NamedTypeAST>()) {
-        NamedTypeAST* named = type->as<NamedTypeAST>();
-        if (ctx.isGenericParam(named->name)) {
-            return true;
-        }
-        // Check generic arguments of a named type (e.g., Box<T>)
-        for (TypeAST* arg : named->genericArgs) {
-            if (containsGenericParameter(arg, ctx)) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    if (type->isa<ArrayTypeAST>()) {
-        ArrayTypeAST* array = type->as<ArrayTypeAST>();
-        return containsGenericParameter(array->element, ctx);
-    }
-    
-    if (type->isa<NullableTypeAST>()) {
-        NullableTypeAST* nullable = type->as<NullableTypeAST>();
-        return containsGenericParameter(nullable->inner, ctx);
-    }
-    
-    if (type->isa<FallibleTypeAST>()) {
-        FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-        return containsGenericParameter(fallible->inner, ctx);
-    }
-    
-    if (type->isa<CombinedTypeAST>()) {
-        CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-        return containsGenericParameter(combined->inner, ctx);
-    }
-    
-    if (type->isa<PtrTypeAST>()) {
-        PtrTypeAST* ptr = type->as<PtrTypeAST>();
-        return containsGenericParameter(ptr->inner, ctx);
-    }
-    
-    if (type->isa<RefTypeAST>()) {
-        RefTypeAST* ref = type->as<RefTypeAST>();
-        return containsGenericParameter(ref->inner, ctx);
-    }
-    
-    if (type->isa<FuncTypeAST>()) {
-        FuncTypeAST* func = type->as<FuncTypeAST>();
-        for (ParamAST* param : func->params) {
-            if (containsGenericParameter(param->type, ctx)) {
-                return true;
-            }
-        }
-        if (func->returnType && containsGenericParameter(func->returnType, ctx)) {
-            return true;
-        }
-        return false;
-    }
-    
-    return false;  // Primitive types don't contain generic parameters
-}
-
-// ─── Helper: Check if we're inside a generic function ─────────────────────
-
-static bool isInsideGenericFunction(SemaContext& ctx) {
-    FuncDeclAST* func = ctx.stack.getInnermostFunction();
-    return func && !func->genericParams.empty();
-}
-
-// ─── Helper: Check if we're inside a specialized function ─────────────────
-
-static bool isInsideSpecializedFunction(SemaContext& ctx) {
-    FuncDeclAST* func = ctx.stack.getInnermostFunction();
-    return func && func->shouldSpecialize;
-}
-
-// ─── Simd Helpers ────────────────────────────────────────────────────────
-
-/// @brief Parse a compile-time integer constant.
-static int64_t parseConstantInt(ExprAST* expr, SemaContext& ctx) {
-    if (!expr->isa<LiteralExprAST>()) return 0;
-    LiteralExprAST* lit = expr->as<LiteralExprAST>();
-    try {
-        std::string valStr = ctx.pool.lookup(lit->value);
-        return std::stoll(valStr, nullptr, 0);
-    } catch (const std::exception& e) {
-        return 0;
-    }
-}
-
 // ─── Public API ────────────────────────────────────────────────────────────
 
 bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -972,7 +871,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        int64_t laneCount = parseConstantInt(lanesArg, ctx);
+        int64_t laneCount = ctx.parseConstantInt(lanesArg);
         if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
                                   "#simd_splat: lane count must be > 0");
@@ -1044,7 +943,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        int64_t laneCount = parseConstantInt(lanesArg, ctx);
+        int64_t laneCount = ctx.parseConstantInt(lanesArg);
         if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
                                   "#simd_load: lane count must be > 0");
@@ -1202,7 +1101,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        int64_t index = parseConstantInt(idx, ctx);
+        int64_t index = ctx.parseConstantInt(idx);
         if (index < 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
                                   "#simd_extract: index must be >= 0");

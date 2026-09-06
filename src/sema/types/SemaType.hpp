@@ -125,6 +125,7 @@ bool isStructType(TypeAST* type, SemaContext& ctx);
 bool isEnumType(TypeAST* type, SemaContext& ctx);
 bool isTraitType(TypeAST* type, SemaContext& ctx);
 bool isGenericParamType(TypeAST* type, SemaContext& ctx);
+bool containsGenericParameter(TypeAST* type, SemaContext& ctx);
 
 // ─── Built-in Type Predicates ────────────────────────────────────────────
 
