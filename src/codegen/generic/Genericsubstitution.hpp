@@ -104,6 +104,11 @@ struct GenericSubstitution {
     /// The concrete type arguments provided at the call/use site.
     const ArenaSpan<TypeAST*>& typeArgs;
 
+    GenericSubstitution(
+        const ArenaSpan<GenericParamDeclAST*>& params,
+        const ArenaSpan<TypeAST*>& args
+    ) : genericParams(params), typeArgs(args) {}
+
     /// @brief Find the type argument for a given generic parameter name.
     /// @param name The generic parameter name.
     /// @return The substituted type, or nullptr if not found (either `name`
@@ -152,17 +157,13 @@ struct GenericSubstitution {
 
     /// @brief Get the generic parameter at a given index.
     GenericParamDeclAST* getParam(size_t index) const {
-        if (index < genericParams.size()) {
-            return genericParams[index];
-        }
+        if (index < genericParams.size()) return genericParams[index];
         return nullptr;
     }
 
     /// @brief Get the type argument at a given index.
     TypeAST* getArg(size_t index) const {
-        if (index < typeArgs.size()) {
-            return typeArgs[index];
-        }
+        if (index < typeArgs.size()) return typeArgs[index];
         return nullptr;
     }
 };
