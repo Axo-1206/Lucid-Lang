@@ -13,6 +13,62 @@
 
 namespace codegen {
 
+// ─── Generic Parameter Helpers ────────────────────────────────────────────
+
+bool CodeGenContext::isUnresolvedGenericParameter(TypeAST* type) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    
+    // ─── Check resolvedDecl first (Sema's determination) ──────────────────
+    if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+        return true;
+    }
+    
+    // ─── Fallback: check current substitution context ─────────────────────
+    if (currentGenericSubstitution) {
+        return currentGenericSubstitution->isGenericParam(named->name);
+    }
+    
+    return false;
+}
+
+llvm::Value* CodeGenContext::getCurrentGenericTag() {
+    llvm::Function* func = getCurrentFunction();
+    if (!func || func->arg_size() == 0) {
+        return nullptr;
+    }
+    
+    // ─── Option 1: The tag is the first parameter (i8) ──────────────────
+    llvm::Value* firstArg = func->getArg(0);
+    if (firstArg->getType()->isIntegerTy() && 
+        firstArg->getType()->getIntegerBitWidth() == 8) {
+        return firstArg;
+    }
+    
+    // ─── Option 2: The tag is part of a tagged slot { i8, i8* } ──────────
+    if (firstArg->getType()->isStructTy()) {
+        llvm::StructType* structType = llvm::cast<llvm::StructType>(firstArg->getType());
+        if (structType->getNumElements() == 2) {
+            // The tag is usually the first field
+            llvm::Type* field0 = structType->getElementType(0);
+            if (field0->isIntegerTy() && field0->getIntegerBitWidth() == 8) {
+                return builder.CreateExtractValue(firstArg, 0, "generic_tag");
+            }
+        }
+    }
+    
+    // ─── Option 3: The tag is a hidden parameter ──────────────────────────
+    // This would be set by the generic lowering infrastructure.
+    // For now, check if we have a stored tag value.
+    // This is where you'd check if currentGenericSubstitution provides a tag.
+    
+    // ─── Fallback: use a dummy tag ──────────────────────────────────────
+    // This shouldn't happen in a well-formed program.
+    // Return nullptr to let the caller handle it.
+    return nullptr;
+}
+
 // ─── Runtime Function Helpers ─────────────────────────────────────────────
 
 llvm::Function* CodeGenContext::getOrCreateRuntimeFunction(

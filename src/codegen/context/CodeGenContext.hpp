@@ -5,10 +5,12 @@
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../runtime/RuntimeFunctionRegistry.hpp"
 #include "../generic/GenericRegistry.hpp"
+#include "../generic/Genericsubstitution.hpp"
 #include "../support/LiveVariableTracker.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 
@@ -101,6 +103,13 @@ struct CodeGenContext {
         size_t scopeDepth = 0;
     };
     std::vector<LoopInfo> loops;
+
+    // ─── Generic Context ──────────────────────────────────────────────────
+    
+    /// @brief The current generic substitution context (if any).
+    /// This is set when lowering a generic function body and used to resolve
+    /// generic parameter names in types.
+    const GenericSubstitution* currentGenericSubstitution = nullptr;
     
     // ─── Current Function ───────────────────────────────────────────────
     llvm::Function* currentFunction = nullptr;
@@ -162,6 +171,22 @@ struct CodeGenContext {
     llvm::Function* getCurrentFunction() const {
         return currentFunction;
     }
+
+    // ─── Generic Parameter Helpers ──────────────────────────────────────
+    
+    /// @brief Check if a type is a generic parameter that needs runtime resolution.
+    /// 
+    /// This returns true if:
+    ///   1. Sema resolved the type to a GenericParamDeclAST, or
+    ///   2. The type name matches a generic parameter in the current substitution context
+    /// 
+    /// Used by #sizeof(T) and #alignof(T) to determine whether to use runtime tag lookup
+    /// instead of compile-time constants.
+    bool isUnresolvedGenericParameter(TypeAST* type);
+
+    /// @brief Get the current generic tag from the value representation.
+    /// @return The tag value (i8), or nullptr if not available.
+    llvm::Value* getCurrentGenericTag();
     
     // ─── Runtime Function Helpers ──────────────────────────────────────
     
