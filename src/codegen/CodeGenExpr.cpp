@@ -3,6 +3,7 @@
 
 #include "CodeGen.hpp"
 #include "core/ASTStrings.hpp"
+#include "generic/GenericMangledName.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
@@ -364,27 +365,11 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
 
     if (decl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        llvm::Function* func = ctx.lookupFunction(funcDecl);
-        if (!func) {
-            llvm::FunctionType* funcType = getFunctionType(
-                ctx,
-                funcDecl->funcType,
-                funcDecl->hasClosure
-            );
-            if (!funcType) return nullptr;
-
-            std::string funcName = funcDecl->isForeignFunction
-                ? ctx.pool.lookup(funcDecl->name)
-                : ctx.pool.lookup(funcDecl->mangledName);
-            func = llvm::Function::Create(
-                funcType,
-                llvm::GlobalValue::ExternalLinkage,
-                funcName,
-                ctx.module
-            );
-            ctx.storeFunction(funcDecl, func);
-        }
-
+        
+        // ─── Use the generic resolution helper ──────────────────────────────
+        llvm::Value* func = resolveGenericCall(funcDecl, expr->genericArgs, ctx, expr->loc);
+        if (!func) return nullptr;
+        
         expr->llvmValue = func;
         return func;
     }
@@ -515,13 +500,29 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
     // ─── 3. Get the LLVM struct type ───────────────────────────────────────
-    llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
-    if (!llvmStructType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                "struct type '", ctx.pool.lookup(structDecl->name), 
-                                "' has no LLVM type");
-        return nullptr;
+    llvm::Type* structType = nullptr;
+    
+    if (isGenericStruct(structDecl)) {
+        structType = getOrCreateSpecializedStruct(structDecl, expr->genericArgs, ctx);
+        if (!structType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
+                "failed to instantiate generic struct '", 
+                ctx.pool.lookup(structDecl->name), "'");
+            return nullptr;
+        }
+    } else {
+        structType = ctx.lookupStruct(structDecl);
+        if (!structType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                    "struct type '", ctx.pool.lookup(structDecl->name), 
+                                    "' has no LLVM type");
+            return nullptr;
+        }
     }
+    
+    llvm::StructType* llvmStructType = llvm::cast<llvm::StructType>(structType);
+
+    
 
     // ─── 4. Build the struct value from field initializers ─────────────────
     // Start with undef for the struct
@@ -1537,10 +1538,42 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
     llvm::Value* symbol = nullptr;
     
     if (resolvedDecl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
+        
+        if (isGenericFunction(funcDecl)) {      
+            if (shouldSpecialize(funcDecl)) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
+                    "cross-module specialized generic function '",
+                    ctx.pool.lookup(funcDecl->name),
+                    "' not yet supported");
+                return nullptr;
+            } else {
+                // ─── Type-erased: look up by mangled name ─────────────────────
+                // The erased function is named {module}_{name}__erased
+                std::string erasedName = getMangledModulePath(ctx) + "_" + 
+                                        ctx.pool.lookup(funcDecl->name) + "__erased";
+                symbol = targetLLVMModule->getFunction(erasedName);
+                
+                if (!symbol) {
+                    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                        "generic function '", ctx.pool.lookup(funcDecl->name),
+                        "' not instantiated in module '", 
+                        ctx.pool.lookup(expr->moduleName), "'");
+                    return nullptr;
+                }
+                
+                ctx.storeFunction(funcDecl, llvm::cast<llvm::Function>(symbol));
+                expr->llvmValue = symbol;
+                return symbol;
+            }
+        }
+        
+        // ─── Non-generic: look up by mangled name ────────────────────────────
         symbol = targetLLVMModule->getFunction(mangledName);
         if (symbol) {
-            ctx.storeFunction(resolvedDecl->as<FuncDeclAST>(), 
-                              llvm::cast<llvm::Function>(symbol));
+            ctx.storeFunction(funcDecl, llvm::cast<llvm::Function>(symbol));
+            expr->llvmValue = symbol;
+            return symbol;
         }
     } else if (resolvedDecl->isa<VarDeclAST>()) {
         symbol = targetLLVMModule->getGlobalVariable(mangledName);
