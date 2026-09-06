@@ -38,18 +38,22 @@
 ///     produce confusing "unknown type" errors instead of clear diagnostics.
 ///
 /// ───────────────────────────────────────────────────────────────────────────
-/// 3.  OWNERSHIP AND LIFETIME
+/// 3.  MEMORY MODEL
 /// ───────────────────────────────────────────────────────────────────────────
 ///
-/// `GenericSubstitution` does NOT own any of the data it references. It holds
-/// pointers/references to AST nodes that live in the arena (via the string
-/// pool and the AST allocation arena). This means:
+/// `GenericSubstitution` uses `ArenaSpan` for both generic parameters and
+/// type arguments. This matches the AST's memory model:
+///   - Generic parameters are stored in `FuncDeclAST::genericParams` and
+///     `StructDeclAST::genericParams` as `ArenaSpan<GenericParamDeclAST*>`.
+///   - Type arguments are stored in AST nodes as `ArenaSpan<TypeAST*>`.
+///   - No heap allocation is needed for substitution contexts.
+///   - The substitution is trivially copyable (just two spans).
 ///
-///   - It is cheap to copy (just two references + a trivial lookup loop).
-///   - It is valid only as long as the underlying AST and type argument
-///     vectors remain alive.
-///   - It is intended to be constructed on the stack as a temporary context
-///     during code generation, not stored persistently.
+/// This is a significant improvement over using `std::vector`:
+///   - No heap allocation at call sites
+///   - No conversion overhead
+///   - Consistent with the AST design
+///   - Safe: the arena outlives all substitutions
 ///
 /// ───────────────────────────────────────────────────────────────────────────
 /// 4.  USAGE SCENARIOS
@@ -77,108 +81,6 @@
 ///      - "This name IS a generic param, but no type argument was supplied"
 ///        (report a clear arity mismatch error, rather than silently creating
 ///        a bogus struct named "T").
-///
-/// ───────────────────────────────────────────────────────────────────────────
-/// 5.  WHY THIS IS ITS OWN HEADER (NOT IN CODEGENGENERIC OR GENERICMANGLEDNAME)
-/// ───────────────────────────────────────────────────────────────────────────
-///
-/// `GenericSubstitution` is needed in full (not just forward‑declared) by
-/// both:
-///   - `CodeGenGeneric.hpp/cpp`   (builds substitutions, drives instantiation)
-///   - `GenericMangledName.hpp/cpp` (consumes substitutions to mangle names)
-///
-/// Putting the definition in either of those headers and having the other
-/// include it would create a cycle:
-///
-///     CodeGenGeneric.hpp  ←─ includes ─→  GenericMangledName.hpp  ←─ includes ─→  CodeGenGeneric.hpp
-///
-/// A previous version worked around this with a forward declaration in
-/// `GenericMangledName.hpp` and the real definition in `CodeGenGeneric.hpp`,
-/// with `GenericMangledName.cpp` including `CodeGenGeneric.hpp` for the full
-/// type. That avoided the cycle but made the ownership of the type unclear.
-///
-/// Giving `GenericSubstitution` its own header removes the ambiguity:
-/// neither `CodeGenGeneric.hpp` nor `GenericMangledName.hpp` owns it; both
-/// simply include it. This is the cleanest solution.
-///
-/// ───────────────────────────────────────────────────────────────────────────
-/// 6.  KEY METHODS
-/// ───────────────────────────────────────────────────────────────────────────
-///
-///   ┌───────────────────────────────────────────────────────────────────┐
-///   │ TypeAST* lookup(InternedString name) const                        │
-///   ├───────────────────────────────────────────────────────────────────┤
-///   │ Returns the concrete type argument for the given generic          │
-///   │ parameter name. Returns `nullptr` if:                             │
-///   │   - `name` is not in `genericParams` (it's a user‑defined type).  │
-///   │   - `name` IS in `genericParams` but `typeArgs` is missing an     │
-///   │     entry (out‑of‑bounds).                                        │
-///   │                                                                   │
-///   │ Use `isGenericParam()` to distinguish these two failure modes.    │
-///   └───────────────────────────────────────────────────────────────────┘
-///
-///   ┌───────────────────────────────────────────────────────────────────┐
-///   │ bool isGenericParam(InternedString name) const                    │
-///   ├───────────────────────────────────────────────────────────────────┤
-///   │ Checks whether `name` is one of this substitution's generic       │
-///   │ parameters, REGARDLESS of whether a type argument was supplied.   │
-///   │                                                                   │
-///   │ Distinguishes:                                                    │
-///   │   - "This name isn't generic at all" → fall through to normal     │
-///   │     named‑type resolution.                                        │
-///   │   - "This name IS a generic parameter, but typeArgs is missing    │
-///   │     an entry for it" → report an arity bug clearly, not silently  │
-///   │     forward‑declare a struct named "T".                           │
-///   └───────────────────────────────────────────────────────────────────┘
-///
-/// ───────────────────────────────────────────────────────────────────────────
-/// 7.  EXAMPLE: BOX<T> INSTANTIATION
-/// ───────────────────────────────────────────────────────────────────────────
-///
-/// Given:
-///   struct Box<T> { value T }
-///   let intBox = Box<int> { value = 42 }
-///
-/// The compiler builds a substitution:
-///   genericParams = [GenericParamDeclAST("T")]
-///   typeArgs      = [PrimitiveTypeAST(Int)]
-///
-/// When CodeGen processes the field `value T`:
-///   1. `getType()` sees a `NamedTypeAST("T")` with `subst` non‑null.
-///   2. Calls `subst.lookup("T")` → returns `PrimitiveTypeAST(Int)`.
-///   3. Recursively calls `getType(ctx, PrimitiveTypeAST(Int), subst)`.
-///   4. Returns `llvm::Type::getInt32Ty(...)`.
-///
-/// When mangling `Box<int>`:
-///   1. `typeToMangleString()` sees `NamedTypeAST("T")` with `subst`.
-///   2. `subst.lookup("T")` → `PrimitiveTypeAST(Int)`.
-///   3. Encodes `"i"` (the mangling for `int`) instead of literal `"T"`.
-///   4. Result: `"Box_i"` (distinct from `Box_f` for `Box<float>`).
-///
-/// ───────────────────────────────────────────────────────────────────────────
-/// 8.  MEMORY AND PERFORMANCE
-/// ───────────────────────────────────────────────────────────────────────────
-///
-/// The lookup operation is O(n) in the number of generic parameters, where
-/// `n` is typically small (1–3 parameters). For larger parameter lists, the
-/// compiler may choose to use a hash‑based lookup in the future, but the
-/// current linear scan is sufficient for all realistic generic declarations.
-///
-/// Because the struct holds only references, it is cheap to pass by value
-/// or by const reference, and constructing one is essentially free.
-///
-/// ───────────────────────────────────────────────────────────────────────────
-/// 9.  FUTURE EXTENSIONS
-/// ───────────────────────────────────────────────────────────────────────────
-///
-/// Future versions may add:
-///   - Support for default type arguments (e.g., `Box<T = int>`).
-///   - Support for dependent types (where one type argument depends on
-///     another, e.g., `Array<T, size_of(T)>`).
-///   - Caching of lookup results to speed up repeated substitutions.
-///
-/// Any such extension should preserve the existing API and the separation
-/// of concerns between substitution, type lowering, and name mangling.
 
 #pragma once
 
@@ -192,9 +94,15 @@
 namespace codegen {
 
 /// @brief Context for substituting generic parameters with concrete types.
+///
+/// Uses ArenaSpan for both parameters and arguments, matching the AST's
+/// memory model. No heap allocation is needed.
 struct GenericSubstitution {
+    /// The generic parameters from the declaration.
     const ArenaSpan<GenericParamDeclAST*>& genericParams;
-    const std::vector<TypeAST*>& typeArgs;
+    
+    /// The concrete type arguments provided at the call/use site.
+    const ArenaSpan<TypeAST*>& typeArgs;
 
     /// @brief Find the type argument for a given generic parameter name.
     /// @param name The generic parameter name.
@@ -221,10 +129,41 @@ struct GenericSubstitution {
     /// that should be reported clearly, not silently forwarded to
     /// getNamedType()'s forward-declaration fallback).
     bool isGenericParam(InternedString name) const {
-        for (const auto* param : genericParams) {
-            if (param->name == name) return true;
+        for (size_t i = 0; i < genericParams.size(); ++i) {
+            if (genericParams[i]->name == name) return true;
         }
         return false;
+    }
+
+    /// @brief Get the number of generic parameters.
+    size_t paramCount() const {
+        return genericParams.size();
+    }
+
+    /// @brief Get the number of type arguments provided.
+    size_t argCount() const {
+        return typeArgs.size();
+    }
+
+    /// @brief Check if the substitution has all required arguments.
+    bool isComplete() const {
+        return typeArgs.size() == genericParams.size();
+    }
+
+    /// @brief Get the generic parameter at a given index.
+    GenericParamDeclAST* getParam(size_t index) const {
+        if (index < genericParams.size()) {
+            return genericParams[index];
+        }
+        return nullptr;
+    }
+
+    /// @brief Get the type argument at a given index.
+    TypeAST* getArg(size_t index) const {
+        if (index < typeArgs.size()) {
+            return typeArgs[index];
+        }
+        return nullptr;
     }
 };
 

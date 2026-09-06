@@ -4,11 +4,29 @@
 /// This registry tracks which specialized versions of generic functions and
 /// structs have already been generated, preventing duplicate instantiations.
 /// It is a CACHE, not a global registry - it lives per CodeGenContext.
+///
+/// ───────────────────────────────────────────────────────────────────────────
+/// MEMORY MODEL
+/// ───────────────────────────────────────────────────────────────────────────
+///
+/// GenericInstantiationKey stores `ArenaSpan<TypeAST*>` for type arguments,
+/// matching the AST's memory model. This means:
+///   - No heap allocation for keys
+///   - Keys are trivially copyable (just pointer + size)
+///   - Type ASTs are arena-allocated and outlive the registry
+///   - The registry stores LLVM objects which ARE heap-allocated (by LLVM)
+///
+/// This is a deliberate hybrid: AST data lives in the arena, LLVM objects
+/// are managed by LLVM's own allocator.
 
 #pragma once
 
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/memory/ArenaSpan.hpp"
+
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Type.h>
 
 #include <unordered_map>
 #include <vector>
@@ -21,10 +39,14 @@ namespace codegen {
 ///
 /// Uniquely identifies a specific instantiation of a generic declaration
 /// by its declaration and the concrete type arguments.
+///
+/// Uses ArenaSpan for typeArgs, matching the AST's memory model.
+/// No heap allocation is needed for keys.
 struct GenericInstantiationKey {
-    DeclAST* decl;                    ///< The generic declaration
-    std::vector<TypeAST*> typeArgs;   ///< Concrete type arguments
+    DeclAST* decl;                      ///< The generic declaration
+    ArenaSpan<TypeAST*> typeArgs;       ///< Concrete type arguments (arena-allocated)
 
+    /// @brief Equality comparison.
     bool operator==(const GenericInstantiationKey& other) const {
         if (decl != other.decl) return false;
         if (typeArgs.size() != other.typeArgs.size()) return false;
@@ -33,6 +55,24 @@ struct GenericInstantiationKey {
         }
         return true;
     }
+
+    /// @brief Check if the key represents a valid instantiation.
+    bool isValid() const {
+        return decl != nullptr && typeArgs.size() > 0;
+    }
+
+    /// @brief Get the number of type arguments.
+    size_t argCount() const {
+        return typeArgs.size();
+    }
+
+    /// @brief Get a type argument by index.
+    TypeAST* getArg(size_t index) const {
+        if (index < typeArgs.size()) {
+            return typeArgs[index];
+        }
+        return nullptr;
+    }
 };
 
 /// @brief Hash for GenericInstantiationKey.
@@ -40,8 +80,8 @@ struct GenericInstantiationKeyHash {
     size_t operator()(const GenericInstantiationKey& key) const {
         size_t h1 = std::hash<DeclAST*>{}(key.decl);
         size_t h2 = 0;
-        for (TypeAST* t : key.typeArgs) {
-            h2 ^= std::hash<TypeAST*>{}(t) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
+        for (size_t i = 0; i < key.typeArgs.size(); ++i) {
+            h2 ^= std::hash<TypeAST*>{}(key.typeArgs[i]) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
         }
         return h1 ^ (h2 << 1);
     }
@@ -58,20 +98,36 @@ struct GenericInstantiationKeyHash {
 /// ─── Struct Instantiations ────────────────────────────────────────────────
 /// Generic struct → (type args → specialized struct type)
 struct GenericRegistry {
-    // ─── Function Instantiations ──────────────────────────────────────────
-    std::unordered_map<
-        FuncDeclAST*,
-        std::unordered_map<GenericInstantiationKey, llvm::Function*, GenericInstantiationKeyHash>
-    > functionInstantiations;
+public:
+    // ─── Type Aliases ──────────────────────────────────────────────────────
 
-    // ─── Struct Instantiations ─────────────────────────────────────────────
-    std::unordered_map<
-        StructDeclAST*,
-        std::unordered_map<GenericInstantiationKey, llvm::Type*, GenericInstantiationKeyHash>
-    > structInstantiations;
+    using FunctionInstantiationMap = std::unordered_map<
+        GenericInstantiationKey,
+        llvm::Function*,
+        GenericInstantiationKeyHash
+    >;
+
+    using StructInstantiationMap = std::unordered_map<
+        GenericInstantiationKey,
+        llvm::Type*,
+        GenericInstantiationKeyHash
+    >;
+
+    // ─── Function Instantiations ──────────────────────────────────────────
+
+    /// @brief Map from generic function declaration to its instantiations.
+    std::unordered_map<FuncDeclAST*, FunctionInstantiationMap> functionInstantiations;
+
+    /// @brief Map from generic struct declaration to its instantiations.
+    std::unordered_map<StructDeclAST*, StructInstantiationMap> structInstantiations;
+
+    // ─── Query Methods ─────────────────────────────────────────────────────
 
     /// @brief Check if a function instantiation already exists.
-    bool hasFunctionInstantiation(FuncDeclAST* decl, const std::vector<TypeAST*>& typeArgs) const {
+    bool hasFunctionInstantiation(
+        FuncDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs
+    ) const {
         auto it = functionInstantiations.find(decl);
         if (it == functionInstantiations.end()) return false;
 
@@ -80,7 +136,10 @@ struct GenericRegistry {
     }
 
     /// @brief Get a function instantiation if it exists.
-    llvm::Function* getFunctionInstantiation(FuncDeclAST* decl, const std::vector<TypeAST*>& typeArgs) const {
+    llvm::Function* getFunctionInstantiation(
+        FuncDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs
+    ) const {
         auto it = functionInstantiations.find(decl);
         if (it == functionInstantiations.end()) return nullptr;
 
@@ -90,13 +149,20 @@ struct GenericRegistry {
     }
 
     /// @brief Store a function instantiation.
-    void storeFunctionInstantiation(FuncDeclAST* decl, const std::vector<TypeAST*>& typeArgs, llvm::Function* func) {
+    void storeFunctionInstantiation(
+        FuncDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs,
+        llvm::Function* func
+    ) {
         GenericInstantiationKey key{decl, typeArgs};
         functionInstantiations[decl][key] = func;
     }
 
     /// @brief Check if a struct instantiation already exists.
-    bool hasStructInstantiation(StructDeclAST* decl, const std::vector<TypeAST*>& typeArgs) const {
+    bool hasStructInstantiation(
+        StructDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs
+    ) const {
         auto it = structInstantiations.find(decl);
         if (it == structInstantiations.end()) return false;
 
@@ -105,7 +171,10 @@ struct GenericRegistry {
     }
 
     /// @brief Get a struct instantiation if it exists.
-    llvm::Type* getStructInstantiation(StructDeclAST* decl, const std::vector<TypeAST*>& typeArgs) const {
+    llvm::Type* getStructInstantiation(
+        StructDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs
+    ) const {
         auto it = structInstantiations.find(decl);
         if (it == structInstantiations.end()) return nullptr;
 
@@ -115,15 +184,70 @@ struct GenericRegistry {
     }
 
     /// @brief Store a struct instantiation.
-    void storeStructInstantiation(StructDeclAST* decl, const std::vector<TypeAST*>& typeArgs, llvm::Type* type) {
+    void storeStructInstantiation(
+        StructDeclAST* decl,
+        const ArenaSpan<TypeAST*>& typeArgs,
+        llvm::Type* type
+    ) {
         GenericInstantiationKey key{decl, typeArgs};
         structInstantiations[decl][key] = type;
     }
+
+    // ─── Bulk Operations ──────────────────────────────────────────────────
+
+    /// @brief Get all function instantiations for a declaration.
+    /// @return A const reference to the instantiation map, or empty if none.
+    const FunctionInstantiationMap& getFunctionInstantiations(
+        FuncDeclAST* decl
+    ) const {
+        static const FunctionInstantiationMap empty;
+        auto it = functionInstantiations.find(decl);
+        return it != functionInstantiations.end() ? it->second : empty;
+    }
+
+    /// @brief Get all struct instantiations for a declaration.
+    const StructInstantiationMap& getStructInstantiations(
+        StructDeclAST* decl
+    ) const {
+        static const StructInstantiationMap empty;
+        auto it = structInstantiations.find(decl);
+        return it != structInstantiations.end() ? it->second : empty;
+    }
+
+    /// @brief Get the number of function instantiations.
+    size_t functionInstantiationCount() const {
+        size_t count = 0;
+        for (const auto& pair : functionInstantiations) {
+            count += pair.second.size();
+        }
+        return count;
+    }
+
+    /// @brief Get the number of struct instantiations.
+    size_t structInstantiationCount() const {
+        size_t count = 0;
+        for (const auto& pair : structInstantiations) {
+            count += pair.second.size();
+        }
+        return count;
+    }
+
+    // ─── Lifecycle ─────────────────────────────────────────────────────────
 
     /// @brief Clear all instantiations (for hot-reload).
     void clear() {
         functionInstantiations.clear();
         structInstantiations.clear();
+    }
+
+    /// @brief Check if the registry is empty.
+    bool empty() const {
+        return functionInstantiations.empty() && structInstantiations.empty();
+    }
+
+    /// @brief Get total number of instantiations (functions + structs).
+    size_t totalCount() const {
+        return functionInstantiationCount() + structInstantiationCount();
     }
 };
 

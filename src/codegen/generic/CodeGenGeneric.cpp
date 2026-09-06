@@ -1,5 +1,11 @@
 /// @file CodeGenGeneric.cpp
 /// @brief Implementation of generic instantiation.
+///
+/// This file implements the generic instantiation pipeline:
+///   1. Detection: isGenericFunction, isGenericStruct, shouldSpecialize
+///   2. Specialized creation: createSpecializedFunction, createSpecializedStruct
+///   3. Type-erased generation: generateErasedGenericFunction, generateErasedGenericStruct
+///   4. Registry access: getOrCreateSpecializedFunction, getOrCreateSpecializedStruct
 
 #include "CodeGenGeneric.hpp"
 #include "../types/CodeGenType.hpp"
@@ -39,48 +45,94 @@ bool shouldSpecialize(DeclAST* decl) {
     return false;
 }
 
-bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams) {
-    for (GenericParamDeclAST* param : genericParams) {
+bool isGenericParameterName(
+    InternedString name,
+    const ArenaSpan<GenericParamDeclAST*>& genericParams
+) {
+    for (const GenericParamDeclAST* param : genericParams) {
         if (param->name == name) return true;
     }
     return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. Specialized Instantiation Creation
+// 2. Helper: Build Type Argument Vector for LLVM Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* createSpecializedFunction(FuncDeclAST* funcDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
+/// @brief Build a vector of LLVM types from type arguments with substitution.
+/// @param ctx The code generation context.
+/// @param typeArgs The type arguments (from ArenaSpan).
+/// @param subst The substitution context.
+/// @return A vector of LLVM types, or empty on error.
+static std::vector<llvm::Type*> buildParamTypes(
+    CodeGenContext& ctx,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    const GenericSubstitution& subst
+) {
+    std::vector<llvm::Type*> paramTypes;
+    paramTypes.reserve(typeArgs.size());
+
+    for (size_t i = 0; i < typeArgs.size(); ++i) {
+        llvm::Type* paramType = getType(ctx, typeArgs[i], &subst);
+        if (!paramType) {
+            return {};
+        }
+        paramTypes.push_back(paramType);
+    }
+
+    return paramTypes;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Specialized Instantiation Creation
+// ─────────────────────────────────────────────────────────────────────────────
+
+llvm::Function* createSpecializedFunction(
+    FuncDeclAST* funcDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
     if (!funcDecl) return nullptr;
+
+    // ─── Validate arity ──────────────────────────────────────────────────
+    if (typeArgs.size() != funcDecl->genericParams.size()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, funcDecl->loc,
+            "generic function '", ctx.pool.lookup(funcDecl->name),
+            "' expected ", funcDecl->genericParams.size(),
+            " type arguments, got ", typeArgs.size());
+        return nullptr;
+    }
 
     // ─── Generate mangled name for this instantiation ──────────────────────
     InternedString mangledName = generateMangledNameForGeneric(funcDecl, typeArgs, ctx);
     
     if (!mangledName.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
-                                "failed to generate mangled name for generic function '",
-                                ctx.pool.lookup(funcDecl->name), "'");
+            "failed to generate mangled name for generic function '",
+            ctx.pool.lookup(funcDecl->name), "'");
         return nullptr;
     }
     
     std::string funcName = ctx.pool.lookup(mangledName);
 
-    // ─── Build parameter types ──────────────────────────────────────────────
+    // ─── Build parameter types with substitution ──────────────────────────
     GenericSubstitution subst{funcDecl->genericParams, typeArgs};
     std::vector<llvm::Type*> paramTypes;
 
+    // Add closure environment pointer if needed
     if (funcDecl->hasClosure) {
         paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
+    // Build parameter types from function signature
     FuncTypeAST* funcType = funcDecl->funcType;
     while (funcType) {
         for (ParamAST* param : funcType->params) {
             llvm::Type* paramType = getType(ctx, param->type, &subst);
             if (!paramType) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-                                        "parameter '", ctx.pool.lookup(param->name),
-                                        "' has invalid type in specialization");
+                    "parameter '", ctx.pool.lookup(param->name),
+                    "' has invalid type in specialization");
                 return nullptr;
             }
             paramTypes.push_back(paramType);
@@ -94,12 +146,16 @@ llvm::Function* createSpecializedFunction(FuncDeclAST* funcDecl, const std::vect
         returnType = getType(ctx, funcDecl->funcType->returnType, &subst);
         if (!returnType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, funcDecl->loc,
-                                    "invalid return type in specialization");
+                "invalid return type in specialization");
             return nullptr;
         }
     }
 
-    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(returnType, paramTypes, false);
+    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(
+        returnType,
+        paramTypes,
+        false
+    );
 
     // ─── Check if already exists ──────────────────────────────────────────
     llvm::Function* existingFunc = ctx.module->getFunction(funcName);
@@ -138,16 +194,29 @@ llvm::Function* createSpecializedFunction(FuncDeclAST* funcDecl, const std::vect
     return func;
 }
 
-llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
+llvm::Type* createSpecializedStruct(
+    StructDeclAST* structDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
     if (!structDecl) return nullptr;
+
+    // ─── Validate arity ──────────────────────────────────────────────────
+    if (typeArgs.size() != structDecl->genericParams.size()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, structDecl->loc,
+            "generic struct '", ctx.pool.lookup(structDecl->name),
+            "' expected ", structDecl->genericParams.size(),
+            " type arguments, got ", typeArgs.size());
+        return nullptr;
+    }
 
     // ─── Generate mangled name for this instantiation ──────────────────────
     InternedString mangledName = generateMangledNameForGeneric(structDecl, typeArgs, ctx);
     
     if (!mangledName.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
-                                "failed to generate mangled name for generic struct '",
-                                ctx.pool.lookup(structDecl->name), "'");
+            "failed to generate mangled name for generic struct '",
+            ctx.pool.lookup(structDecl->name), "'");
         return nullptr;
     }
     
@@ -161,15 +230,18 @@ llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector
         llvm::Type* fieldType = getType(ctx, field->type, &subst);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
-                                    "field '", ctx.pool.lookup(field->name),
-                                    "' has invalid type in specialization");
+                "field '", ctx.pool.lookup(field->name),
+                "' has invalid type in specialization");
             return nullptr;
         }
         fieldTypes.push_back(fieldType);
     }
 
     // ─── Check if already exists ────────────────────────────────────────────
-    llvm::StructType* existingType = llvm::StructType::getTypeByName(ctx.llvmCtx, structName);
+    llvm::StructType* existingType = llvm::StructType::getTypeByName(
+        ctx.llvmCtx,
+        structName
+    );
     if (existingType) {
         if (!existingType->isOpaque()) {
             return existingType;
@@ -177,13 +249,8 @@ llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector
         // A struct with this exact mangled name was already forward-declared
         // somewhere (e.g. a recursive generic struct, or another module's
         // reference via getModuleTypeAccess()) but never given a body.
-        // llvm::StructType::create(ctx.llvmCtx, fieldTypes, structName)
-        // would NOT reuse this name - LLVM auto-uniquifies duplicate named
-        // struct types by appending ".0"/".1"/etc, so callers still holding
-        // a pointer to `existingType` (looked up by the mangled name) would
-        // be left with a permanently-opaque type while the real definition
-        // lives under a different, divergent name. Completing the existing
-        // type in place keeps a single canonical type for this name.
+        // Completing the existing type in place keeps a single canonical type
+        // for this name.
         existingType->setBody(fieldTypes);
         Trace::detail("Completed forward-declared specialized struct: ", structName,
                     " (", fieldTypes.size(), " fields)");
@@ -191,7 +258,11 @@ llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector
     }
 
     // ─── Create the struct type with the mangled name ──────────────────────
-    llvm::StructType* structType = llvm::StructType::create(ctx.llvmCtx, fieldTypes, structName);
+    llvm::StructType* structType = llvm::StructType::create(
+        ctx.llvmCtx,
+        fieldTypes,
+        structName
+    );
 
     Trace::detail("Created specialized struct: ", structName,
                 " (", fieldTypes.size(), " fields)");
@@ -200,19 +271,17 @@ llvm::Type* createSpecializedStruct(StructDeclAST* structDecl, const std::vector
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Type-Erased Generic Generation
+// 4. Type-Erased Generic Generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* generateErasedGenericFunction(FuncDeclAST* funcDecl, CodeGenContext& ctx) {
+llvm::Function* generateErasedGenericFunction(
+    FuncDeclAST* funcDecl,
+    CodeGenContext& ctx
+) {
     if (!funcDecl) return nullptr;
 
     std::string funcName = ctx.pool.lookup(funcDecl->name);
-    // Module-qualify, like createSpecializedFunction's mangled names do -
-    // otherwise two modules each declaring a same-named non-specialized
-    // generic (e.g. both defining `identity<T>`) collide on the exact same
-    // "identity__erased" symbol. This is an ExternalLinkage function, so an
-    // unqualified collision is a hard multi-TU linker error/ODR violation,
-    // not just an in-process lookup ambiguity.
+    // Module-qualify to avoid collisions across modules
     std::string mangledName = getMangledModulePath(ctx) + "_" + funcName + "__erased";
 
     std::vector<llvm::Type*> paramTypes;
@@ -229,9 +298,13 @@ llvm::Function* generateErasedGenericFunction(FuncDeclAST* funcDecl, CodeGenCont
         funcType = funcType->getNext();
     }
 
-    llvm::Type*         returnType   = llvm::PointerType::get(ctx.llvmCtx, 0);
-    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(returnType, paramTypes, false);
-    llvm::Function*     existingFunc = ctx.module->getFunction(mangledName);
+    llvm::Type* returnType = llvm::PointerType::get(ctx.llvmCtx, 0);
+    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(
+        returnType,
+        paramTypes,
+        false
+    );
+    llvm::Function* existingFunc = ctx.module->getFunction(mangledName);
 
     if (existingFunc) {
         return existingFunc;
@@ -274,15 +347,14 @@ llvm::Type* generateErasedGenericStruct(
     if (!structDecl) return nullptr;
 
     std::string structName = ctx.pool.lookup(structDecl->name);
-    // Same module-qualification fix as generateErasedGenericFunction above.
     std::string mangledName = getMangledModulePath(ctx) + "_" + structName + "__erased";
 
     // ─── Get or create the canonical TaggedSlot type ──────────────────────
-    // This is a SHARED type across all erased generic structs.
-    // DO NOT recreate it per struct - that creates distinct types
-    // that are structurally identical but nominally different.
     static const char* slotName = "TaggedSlot";
-    llvm::StructType* slotType = llvm::StructType::getTypeByName(ctx.llvmCtx, slotName);
+    llvm::StructType* slotType = llvm::StructType::getTypeByName(
+        ctx.llvmCtx,
+        slotName
+    );
     if (!slotType) {
         std::vector<llvm::Type*> slotFields = {
             llvm::Type::getInt8Ty(ctx.llvmCtx),              // tag (0 = valid, 1 = nil, 2 = err)
@@ -302,6 +374,7 @@ llvm::Type* generateErasedGenericStruct(
 
     // ─── Build field types using the shared TaggedSlot ───────────────────
     std::vector<llvm::Type*> fieldTypes;
+    fieldTypes.reserve(structDecl->fields.size());
     for (size_t i = 0; i < structDecl->fields.size(); ++i) {
         fieldTypes.push_back(slotType);
     }
@@ -320,18 +393,28 @@ llvm::Type* generateErasedGenericStruct(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Public Registry API
+// 5. Public Registry API
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* getOrCreateSpecializedFunction(FuncDeclAST* funcDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
-    if (!funcDecl || !isGenericFunction(funcDecl)) return nullptr;
+llvm::Function* getOrCreateSpecializedFunction(
+    FuncDeclAST* funcDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
+    if (!funcDecl || !isGenericFunction(funcDecl)) {
+        // Non-generic function - just return the regular function
+        return ctx.lookupFunction(funcDecl);
+    }
 
+    // ─── Type-erased path (default) ──────────────────────────────────────
     if (!shouldSpecialize(funcDecl)) {
         return generateErasedGenericFunction(funcDecl, ctx);
     }
 
+    // ─── Specialized path (@[specialize]) ──────────────────────────────
     GenericInstantiationKey key{funcDecl, typeArgs};
 
+    // Check cache
     auto funcIt = ctx.genericRegistry.functionInstantiations.find(funcDecl);
     if (funcIt != ctx.genericRegistry.functionInstantiations.end()) {
         auto typeIt = funcIt->second.find(key);
@@ -340,23 +423,38 @@ llvm::Function* getOrCreateSpecializedFunction(FuncDeclAST* funcDecl, const std:
         }
     }
 
+    // Create new specialization
     llvm::Function* specialized = createSpecializedFunction(funcDecl, typeArgs, ctx);
     if (!specialized) return nullptr;
 
+    // Cache it
     ctx.genericRegistry.functionInstantiations[funcDecl][key] = specialized;
+
+    // Record for reflection
+    recordGenericInstantiation(funcDecl, typeArgs, ctx);
 
     return specialized;
 }
 
-llvm::Type* getOrCreateSpecializedStruct(StructDeclAST* structDecl, const std::vector<TypeAST*>& typeArgs, CodeGenContext& ctx) {
-    if (!structDecl || !isGenericStruct(structDecl)) return nullptr;
+llvm::Type* getOrCreateSpecializedStruct(
+    StructDeclAST* structDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
+    if (!structDecl || !isGenericStruct(structDecl)) {
+        // Non-generic struct - just return the regular struct type
+        return ctx.lookupStruct(structDecl);
+    }
 
+    // ─── Type-erased path (default) ──────────────────────────────────────
     if (!shouldSpecialize(structDecl)) {
         return generateErasedGenericStruct(structDecl, ctx);
     }
 
+    // ─── Specialized path (@[specialize]) ──────────────────────────────
     GenericInstantiationKey key{structDecl, typeArgs};
 
+    // Check cache
     auto structIt = ctx.genericRegistry.structInstantiations.find(structDecl);
     if (structIt != ctx.genericRegistry.structInstantiations.end()) {
         auto typeIt = structIt->second.find(key);
@@ -365,12 +463,85 @@ llvm::Type* getOrCreateSpecializedStruct(StructDeclAST* structDecl, const std::v
         }
     }
 
+    // Create new specialization
     llvm::Type* specialized = createSpecializedStruct(structDecl, typeArgs, ctx);
     if (!specialized) return nullptr;
 
+    // Cache it
     ctx.genericRegistry.structInstantiations[structDecl][key] = specialized;
 
     return specialized;
+}
+
+llvm::Value* resolveGenericCall(
+    FuncDeclAST* funcDecl,
+    const ArenaSpan<TypeAST*>& genericArgs,
+    CodeGenContext& ctx,
+    const SourceLocation& loc
+) {
+    if (!funcDecl) return nullptr;
+
+    // ─── Non-generic: return regular function ─────────────────────────────
+    if (!isGenericFunction(funcDecl)) {
+        if (!genericArgs.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, loc,
+                "function '", ctx.pool.lookup(funcDecl->name), 
+                "' is not generic but has generic arguments");
+            return nullptr;
+        }
+        return ctx.lookupFunction(funcDecl);
+    }
+
+    // ─── Generic: validate arity ──────────────────────────────────────────
+    if (genericArgs.size() != funcDecl->genericParams.size()) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, loc,
+            "generic function '", ctx.pool.lookup(funcDecl->name), 
+            "' expected ", funcDecl->genericParams.size(), 
+            " type arguments, got ", genericArgs.size());
+        return nullptr;
+    }
+
+    // ─── Get or create specialized/erased function ──────────────────────
+    return getOrCreateSpecializedFunction(funcDecl, genericArgs, ctx);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Reflection Support
+// ─────────────────────────────────────────────────────────────────────────────
+
+void recordGenericInstantiation(
+    FuncDeclAST* funcDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
+    // This is where we'd store instantiations for reflection.
+    // For now, this is a placeholder.
+    // 
+    // TODO: Store typeArgs in a list on FuncDeclAST for #sizeof/#alignof/#tostr.
+    // 
+    // Example implementation:
+    // if (!funcDecl->instantiationList) {
+    //     funcDecl->instantiationList = new std::vector<ArenaSpan<TypeAST*>>();
+    // }
+    // funcDecl->instantiationList->push_back(typeArgs);
+
+    // For now, just trace it
+    Trace::detail("Recorded generic instantiation: ",
+                ctx.pool.lookup(funcDecl->name),
+                " with ", typeArgs.size(), " type arguments");
+}
+
+std::vector<ArenaSpan<TypeAST*>> getRecordedInstantiations(
+    FuncDeclAST* funcDecl,
+    CodeGenContext& ctx
+) {
+    // This would return the recorded instantiations.
+    // For now, return empty.
+    // 
+    // TODO: Implement when FuncDeclAST has instantiationList.
+    (void)funcDecl;
+    (void)ctx;
+    return {};
 }
 
 } // namespace codegen

@@ -3,6 +3,7 @@
 
 #include "GenericMangledName.hpp"
 #include "core/ASTStrings.hpp"
+#include "core/memory/StringPool.hpp"
 
 #include <sstream>
 #include <algorithm>
@@ -10,19 +11,33 @@
 
 namespace codegen {
 
-// ─── Private Helper: Build Mangled String ──────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. Private Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Build an InternedString from components.
 static InternedString buildMangledName(const std::string& components, CodeGenContext& ctx) {
     std::string result = "_L";
     result += components;
     return ctx.pool.intern(result);
 }
 
-// ─── Public API ─────────────────────────────────────────────────────────────
+/// @brief Encode a single type argument (implementation).
+static std::string encodeTypeArg(
+    TypeAST* type,
+    StringPool& pool,
+    const GenericSubstitution* subst
+) {
+    return typeToMangleString(type, pool, subst);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Main Entry Point
+// ─────────────────────────────────────────────────────────────────────────────
 
 InternedString generateMangledNameForGeneric(
     DeclAST* baseDecl,
-    const std::vector<TypeAST*>& typeArgs,
+    const ArenaSpan<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!baseDecl || typeArgs.empty()) {
@@ -45,18 +60,11 @@ InternedString generateMangledNameForGeneric(
     }
     
     // ─── 4. For functions, also encode parameter and return types ──────
-    //
-    // NOTE: `as<T>()` is an UNCHECKED cast (assert-only in debug, UB in
-    // release on a kind mismatch) - it is NOT like dyn_cast and never
-    // returns nullptr. `if (X* x = ptr->as<T>())` is therefore always
-    // truthy regardless of the actual kind. The correct pattern (already
-    // used elsewhere in this codebase, e.g. CodeGenGeneric.cpp's
-    // shouldSpecialize()) is to guard with isa<T>() first.
     if (baseDecl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = baseDecl->as<FuncDeclAST>();
         GenericSubstitution subst{funcDecl->genericParams, typeArgs};
 
-        // Parameter types (substituted at any depth - not just bare `T`)
+        // Parameter types (substituted at any depth)
         result += "_P";
         FuncTypeAST* funcType = funcDecl->funcType;
         while (funcType) {
@@ -68,7 +76,11 @@ InternedString generateMangledNameForGeneric(
 
         // Return type (substituted at any depth)
         if (funcDecl->funcType->returnType) {
-            result += "_R" + typeToMangleString(funcDecl->funcType->returnType, ctx.pool, &subst);
+            result += "_R" + typeToMangleString(
+                funcDecl->funcType->returnType,
+                ctx.pool,
+                &subst
+            );
         } else {
             result += "_RV";
         }
@@ -88,9 +100,15 @@ InternedString generateMangledNameForGeneric(
     return buildMangledName(result, ctx);
 }
 
-// ─── Core Encoding Functions ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Core Encoding Functions
+// ─────────────────────────────────────────────────────────────────────────────
 
-std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSubstitution* subst) {
+std::string typeToMangleString(
+    TypeAST* type,
+    StringPool& pool,
+    const GenericSubstitution* subst
+) {
     if (!type) return "V";
     
     switch (type->kind) {
@@ -115,11 +133,29 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSub
 
             std::string name = sanitizeForMangledName(pool.lookup(named->name));
             
+            // Encode generic arguments recursively
             if (!named->genericArgs.empty()) {
                 name += "_G";
                 for (size_t i = 0; i < named->genericArgs.size(); ++i) {
                     if (i > 0) name += "_";
                     name += typeToMangleString(named->genericArgs[i], pool, subst);
+                }
+            }
+            return name;
+        }
+        
+        case ASTKind::ModuleTypeAccess: {
+            ModuleTypeAccessAST* access = type->as<ModuleTypeAccessAST>();
+            std::string name = "M" + 
+                sanitizeForMangledName(pool.lookup(access->moduleName)) +
+                "_" + 
+                sanitizeForMangledName(pool.lookup(access->typeName));
+            
+            if (!access->genericArgs.empty()) {
+                name += "_G";
+                for (size_t i = 0; i < access->genericArgs.size(); ++i) {
+                    if (i > 0) name += "_";
+                    name += typeToMangleString(access->genericArgs[i], pool, subst);
                 }
             }
             return name;
@@ -132,7 +168,7 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSub
                 result += std::to_string(arr->size);
             } else if (arr->isSlice()) {
                 result += "_";
-            } else {
+            } else { // Dynamic
                 result += "*";
             }
             result += typeToMangleString(arr->element, pool, subst);
@@ -193,23 +229,21 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSub
             return "H" + typeToMangleString(thread->inner, pool, subst);
         }
 
-        case ASTKind::ModuleTypeAccess: {
-            // Previously unhandled - fell through to the generic "?<kind>"
-            // default below, which produced the SAME placeholder string
-            // for every module-qualified type regardless of which module
-            // or type it actually named, causing collisions whenever two
-            // different cross-module types were used as generic arguments.
-            ModuleTypeAccessAST* access = type->as<ModuleTypeAccessAST>();
-            std::string name = "M" + sanitizeForMangledName(pool.lookup(access->moduleName)) +
-                                "_" + sanitizeForMangledName(pool.lookup(access->typeName));
-            if (!access->genericArgs.empty()) {
-                name += "_G";
-                for (size_t i = 0; i < access->genericArgs.size(); ++i) {
-                    if (i > 0) name += "_";
-                    name += typeToMangleString(access->genericArgs[i], pool, subst);
-                }
-            }
-            return name;
+        case ASTKind::SimdType: {
+            SimdTypeAST* simd = type->as<SimdTypeAST>();
+            std::string result = "SIMD";
+            result += std::to_string(simd->laneCount);
+            result += "_";
+            result += typeToMangleString(simd->elementType, pool, subst);
+            return result;
+        }
+
+        case ASTKind::ArenaType: {
+            return "Arena";
+        }
+
+        case ASTKind::ArenaDescriptorType: {
+            return "ArenaDesc";
         }
         
         default:
@@ -217,7 +251,9 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool, const GenericSub
     }
 }
 
-// ─── Helper Functions ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Helper Functions
+// ─────────────────────────────────────────────────────────────────────────────
 
 std::string sanitizeForMangledName(const std::string& str) {
     std::string result = str;
@@ -268,6 +304,23 @@ char encodePrimitiveKind(PrimitiveKind kind) {
 
 bool isPrimitiveType(TypeAST* type) {
     return type && type->isa<PrimitiveTypeAST>();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Encoding Type Arguments
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string encodeTypeArgs(
+    const ArenaSpan<TypeAST*>& typeArgs,
+    StringPool& pool,
+    const GenericSubstitution* subst
+) {
+    std::string result;
+    for (size_t i = 0; i < typeArgs.size(); ++i) {
+        if (i > 0) result += "_";
+        result += typeToMangleString(typeArgs[i], pool, subst);
+    }
+    return result;
 }
 
 } // namespace codegen
