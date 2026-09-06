@@ -373,18 +373,36 @@ llvm::Value* emitLucidTypeIntrinsic(
     if (kind == IntrinsicKind::Bitcast) {
         if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#bitcast' requires an argument");
+                                "intrinsic '#bitcast' requires an argument");
             return nullptr;
         }
 
         llvm::Type* targetType = getType(ctx, expr->resolvedType);
         if (!targetType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "could not determine target type for '#bitcast'");
+                                "could not determine target type for '#bitcast'");
             return nullptr;
         }
 
         llvm::Value* val = args[0];
+        llvm::Type* valueType = val->getType();
+        
+        // ─── Size check ────────────────────────────────────────────────────
+        // Use LLVM's DataLayout to get sizes
+        const llvm::DataLayout& dl = ctx.module->getDataLayout();
+        uint64_t targetSize = dl.getTypeAllocSize(targetType);
+        uint64_t valueSize = dl.getTypeAllocSize(valueType);
+        
+        if (targetSize != valueSize) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                                    "#bitcast: type sizes must match: ",
+                                    typeToString(expr->resolvedType, ctx.pool), " (",
+                                    targetSize, " bytes) vs ",
+                                    typeToString(expr->args[0]->resolvedType, ctx.pool), " (",
+                                    valueSize, " bytes)");
+            return nullptr;
+        }
+        
         return ctx.builder.CreateBitCast(val, targetType);
     }
 

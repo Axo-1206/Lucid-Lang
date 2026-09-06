@@ -1243,8 +1243,13 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 /// @brief Validate #bitcast(T, x) intrinsic.
 /// 
 /// Grammar: #bitcast(T, x) -> T
-/// where T is a type, and x is an expression that can be bitcast to T.
+/// where T is a CONCRETE type, and x is an expression that can be bitcast to T.
 /// Both types must have the same size.
+/// 
+/// ─── Important ──────────────────────────────────────────────────────────────
+/// #bitcast(T, x) CANNOT be used with generic T because the return type
+/// would be generic. Unlike #sizeof(T) which always returns uint64, the
+/// return type of #bitcast is T itself.
 bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.size() != 2) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1289,7 +1294,36 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── 2. Validate the value argument ─────────────────────────────────────
+    // ─── 2. REJECT generic parameters ──────────────────────────────────────
+    // #bitcast returns T, so T must be concrete.
+    if (isGenericParamType(targetType, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, typeArg,
+                              "#bitcast cannot be used with generic type '",
+                              ctx.pool.lookup(targetType->as<NamedTypeAST>()->name),
+                              "' - the return type must be concrete");
+        ctx.diagnostics.note(typeArg,
+                             "Use a concrete type with #bitcast, like #bitcast(float, x)");
+        return false;
+    }
+    
+    // ─── 3. Check if type contains generic parameters ──────────────────────
+    if (containsGenericParameter(targetType, ctx)) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, typeArg,
+                              "#bitcast cannot be used with type '",
+                              typeToString(targetType, ctx.pool),
+                              "' which contains generic parameters");
+        ctx.diagnostics.note(typeArg,
+                             "The return type of #bitcast must be fully concrete");
+        return false;
+    }
+    
+    // ─── 4. Fully resolve the target type ──────────────────────────────────
+    targetType = resolveType(targetType, ctx);
+    if (!targetType || targetType->isa<UnknownTypeAST>()) {
+        return false;
+    }
+    
+    // ─── 5. Validate the value argument ─────────────────────────────────────
     ExprAST* valueArg = expr->args[1];
     TypeAST* valueType = resolveExpr(valueArg, ctx);
     if (!valueType || valueType->isa<UnknownTypeAST>()) {
@@ -1298,11 +1332,7 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── 3. Both types must be sized ────────────────────────────────────────
-    // We can't check sizes at compile time without CodeGen info,
-    // but Sema can check that both types are valid.
-    
-    // ─── 4. Resolve the return type ─────────────────────────────────────────
+    // ─── 7. Resolve the return type ─────────────────────────────────────────
     expr->resolvedType = targetType;
     expr->valueState = ValueState::Definite;
     
@@ -1343,7 +1373,7 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── 3. Reject generic parameters ──────────────────────────────────────
-    if (isGenericParameterType(argType, ctx)) {
+    if (isGenericParamType(argType, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                               "#tostr cannot be used with generic type '", 
                               ctx.pool.lookup(argType->as<NamedTypeAST>()->name), 
