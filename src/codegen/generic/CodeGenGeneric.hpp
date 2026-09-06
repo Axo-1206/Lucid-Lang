@@ -14,7 +14,6 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/trace/Trace.hpp"
-#include "GenericSubstitution.hpp"
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Type.h>
 #include <unordered_map>
@@ -31,19 +30,9 @@ bool isGenericFunction(FuncDeclAST* decl);
 bool isGenericStruct(StructDeclAST* decl);
 bool shouldSpecialize(DeclAST* decl);
 bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams);
-size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. Type Substitution Context
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// GenericSubstitution now lives in GenericSubstitution.hpp (included above) -
-// it moved out of this file because GenericMangledName.hpp/cpp also need the
-// full definition, and having either of these two files include the other
-// would form a cycle. See GenericSubstitution.hpp for the full rationale.
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. Specialized Instantiation Creation
+// 2. Specialized Instantiation Creation
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* createSpecializedFunction(
@@ -59,7 +48,7 @@ llvm::Type* createSpecializedStruct(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Type-Erased Generic Generation
+// 3. Type-Erased Generic Generation
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* generateErasedGenericFunction(
@@ -73,7 +62,7 @@ llvm::Type* generateErasedGenericStruct(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Public Registry API
+// 4. Public Registry API
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* getOrCreateSpecializedFunction(

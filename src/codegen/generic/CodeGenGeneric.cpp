@@ -46,13 +46,6 @@ bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDec
     return false;
 }
 
-size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams) {
-    for (size_t i = 0; i < genericParams.size(); ++i) {
-        if (genericParams[i]->name == name) return i;
-    }
-    return SIZE_MAX;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Specialized Instantiation Creation
 // ─────────────────────────────────────────────────────────────────────────────
