@@ -1460,16 +1460,6 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── Type must be concrete (no generic parameters) ──────────────────
-    if (containsGenericParameter(type, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
-                              "#sizeof cannot be used with generic type '",
-                              typeToString(type, ctx.pool), "'");
-        ctx.diagnostics.note(arg,
-                             "Only concrete types have a known size at compile time");
-        return false;
-    }
-    
     // ─── Type must be sized ──────────────────────────────────────────────
     // All types are sized in Lucid, except maybe future/thread which are handles
     // This is a placeholder for future validation
@@ -1517,13 +1507,6 @@ bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!type) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "#alignof expects a type, got an expression");
-        return false;
-    }
-    
-    if (containsGenericParameter(type, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
-                              "#alignof cannot be used with generic type '",
-                              typeToString(type, ctx.pool), "'");
         return false;
     }
     
