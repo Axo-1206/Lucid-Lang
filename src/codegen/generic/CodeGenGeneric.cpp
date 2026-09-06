@@ -242,16 +242,29 @@ llvm::Type* createSpecializedStruct(
         ctx.llvmCtx,
         structName
     );
+    
     if (existingType) {
         if (!existingType->isOpaque()) {
+            // ─── Already fully defined: cache and return ────────────────────
+            ctx.cacheStruct(structDecl, existingType);
+            structDecl->llvmType = existingType;
+            structDecl->mangledName = mangledName;
             return existingType;
         }
+        
+        // ─── Forward-declared but not defined: complete it ────────────────
         // A struct with this exact mangled name was already forward-declared
         // somewhere (e.g. a recursive generic struct, or another module's
         // reference via getModuleTypeAccess()) but never given a body.
         // Completing the existing type in place keeps a single canonical type
         // for this name.
         existingType->setBody(fieldTypes);
+        
+        // ─── Cache the completed type ──────────────────────────────────────
+        ctx.cacheStruct(structDecl, existingType);
+        structDecl->llvmType = existingType;
+        structDecl->mangledName = mangledName;
+        
         Trace::detail("Completed forward-declared specialized struct: ", structName,
                     " (", fieldTypes.size(), " fields)");
         return existingType;
@@ -263,6 +276,12 @@ llvm::Type* createSpecializedStruct(
         fieldTypes,
         structName
     );
+
+    // ─── Cache the struct type ─────────────────────────────────────────────
+    // This is CRITICAL: without this, ctx.lookupStruct() will fail
+    ctx.cacheStruct(structDecl, structType);
+    structDecl->llvmType = structType;
+    structDecl->mangledName = mangledName;
 
     Trace::detail("Created specialized struct: ", structName,
                 " (", fieldTypes.size(), " fields)");
@@ -462,12 +481,22 @@ llvm::Type* getOrCreateSpecializedStruct(
             return typeIt->second;
         }
     }
+    
+    // ─── Also check ctx.structCache ──────────────────────────────────
+    // The type might have been created but not stored in the registry yet
+    // (e.g., through forward declaration completion).
+    llvm::StructType* cached = ctx.lookupStruct(structDecl);
+    if (cached && !cached->isOpaque()) {
+        // Store in registry for future lookups
+        ctx.genericRegistry.structInstantiations[structDecl][key] = cached;
+        return cached;
+    }
 
     // Create new specialization
     llvm::Type* specialized = createSpecializedStruct(structDecl, typeArgs, ctx);
     if (!specialized) return nullptr;
 
-    // Cache it
+    // Cache it in registry
     ctx.genericRegistry.structInstantiations[structDecl][key] = specialized;
 
     return specialized;
