@@ -12,9 +12,11 @@
 #include "sema/context/SemaContext.hpp"
 
 #include <unordered_map>
-#include <unordered_set>
 
 namespace sema {
+
+// Forward declaration - defined in SemaResolve.cpp
+TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TypeTagRegistry
@@ -87,32 +89,42 @@ struct GenericSubstitution {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type Substitution Helpers (declarations only)
+// GenericResolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Substitute generic parameters in a type.
+struct GenericResolution {
+    DeclAST* resolvedDecl = nullptr;
+    bool isSpecialized = false;
+    uint32_t typeTag = 0;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type Substitution Helpers (declarations)
+// ─────────────────────────────────────────────────────────────────────────────
+
 TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Substitute generic parameters in a statement.
 StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Substitute generic parameters in an expression.
 ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Check if a type contains any generic parameters.
 bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Specialized Struct/Function Creation (declarations only)
+// Generic Resolution (declaration)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Create a specialized struct declaration from a generic template.
+GenericResolution resolveGenericInstantiation(
+    DeclAST* templateDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    SemaContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Specialized Struct/Function Creation (declarations)
+// ─────────────────────────────────────────────────────────────────────────────
+
 StructDeclAST* createSpecializedStruct(
     StructDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
-/// @brief Create a specialized function declaration from a generic template.
 FuncDeclAST* createSpecializedFunction(
     FuncDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
