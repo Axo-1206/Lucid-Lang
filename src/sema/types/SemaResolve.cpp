@@ -207,6 +207,76 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // ─── Step 3: Handle generic struct instantiation ──────────────────────────
+    if (decl->isa<StructDeclAST>()) {
+        StructDeclAST* structDecl = decl->as<StructDeclAST>();
+        
+        // Only handle if this is a generic instantiation (has generic args)
+        if (!type->genericArgs.empty()) {
+            if (structDecl->shouldSpecialize) {
+                // ─── @[specialize] path ──────────────────────────────────────────
+                // Create a specialized struct declaration
+                StructDeclAST* specialized = createSpecializedStruct(
+                    structDecl, type->genericArgs, ctx);
+                
+                if (!specialized) {
+                    return nullptr;
+                }
+                
+                // Store the specialized declaration on the NamedTypeAST
+                type->resolvedDecl = specialized;
+                type->isSpecialized = true;
+                type->isGenericInstantiation = false;
+                type->typeTag = 0;
+                
+                return type;
+                
+            } else {
+                // ─── Type-erased path ────────────────────────────────────────────
+                // Keep the template declaration
+                type->resolvedDecl = structDecl;
+                type->isSpecialized = false;
+                type->isGenericInstantiation = true;
+                
+                // ─── FIXED: Use the NamedTypeAST itself as the tag key ──────────
+                // The type is already the canonical representation of this
+                // instantiation (name + generic args). Multiple occurrences
+                // of the same instantiation share the same NamedTypeAST via
+                // the TypeCache, so they'll get the same tag.
+                type->typeTag = ctx.typeTagRegistry.getTag(type);
+                
+                return type;
+            }
+        }
+        
+        // Non-generic struct - just store the declaration
+        type->resolvedDecl = structDecl;
+        type->isSpecialized = false;
+        type->isGenericInstantiation = false;
+        type->typeTag = 0;
+        return type;
+    }
+
+    // ─── Step 4: Handle enum type ────────────────────────────────────────────
+    if (decl->isa<EnumDeclAST>()) {
+        if (!type->genericArgs.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "enum '", ctx.pool.lookup(type->name), "' is not generic");
+            return nullptr;
+        }
+        type->resolvedDecl = decl;
+        type->isSpecialized = false;
+        type->isGenericInstantiation = false;
+        type->typeTag = 0;
+        return type;
+    }
+
+    // ─── Step 5: Handle trait type (already validated) ─────────────────────
+    if (decl->isa<TraitDeclAST>()) {
+        type->resolvedDecl = decl;
+        return type;
+    }
+
     return type;
 }
 
