@@ -15,6 +15,7 @@
 #include "core/ASTStrings.hpp"
 #include "core/builtins/ArenaMethod.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
+#include "sema/context/Generic.hpp"
 #include "sema/types/SemaType.hpp"
 
 #include <unordered_set>
@@ -241,12 +242,10 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     }
 
     // ─── Handle type context (isType = true) ──────────────────────────────
-    // This is used for intrinsics like #sizeof(int), #alignof(Vec2), etc.
     if (expr->isType) {
-        // ─── Look up the name in the TYPE namespace ──────────────────────
+        // Look up the name in the TYPE namespace
         TypeDeclAST* typeDecl = ctx.lookupType(expr->name);
         if (typeDecl) {
-            // It's a user-defined type!
             NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(expr->name);
             namedType->resolvedDecl = typeDecl;
             namedType->genericArgs = expr->genericArgs;
@@ -260,7 +259,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             return namedType;
         }
         
-        // ─── Check if it's a primitive type ─────────────────────────────────
         if (isPrimitiveTypeName(expr->name, ctx.pool)) {
             PrimitiveKind kind = primitiveKindFromName(expr->name, ctx.pool);
             PrimitiveTypeAST* primType = ctx.arena.make<PrimitiveTypeAST>(kind);
@@ -274,10 +272,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             return primType;
         }
         
-        // ─── Check if it's a generic parameter ─────────────────────────────
         if (ctx.isGenericParam(expr->name)) {
-            // Generic parameters are types, but they can't be used with
-            // intrinsics like sizeof because they're not concrete.
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                   "cannot use generic parameter '", 
                                   ctx.pool.lookup(expr->name), 
@@ -289,7 +284,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             return ctx.getUnknownType();
         }
         
-        // ─── Type not found ──────────────────────────────────────────────────
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "unknown type '", ctx.pool.lookup(expr->name), 
                               "' in type context");
@@ -301,8 +295,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     }
 
     // ─── Handle `self` parameter ────────────────────────────────────────────
-    // `self` is a special parameter that refers to the current struct instance.
-    // It can be synthesized by the parser OR written explicitly by the user.
     if (ctx.pool.lookupView(expr->name) == "self") {
         ValueDeclAST* decl = ctx.lookupValue(expr->name);
         if (!decl || !decl->isa<ParamAST>()) {
@@ -319,8 +311,8 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         expr->resolvedDecl = selfParam;
         expr->resolvedType = selfParam->type;
         expr->valueState = ValueState::Definite;
-        expr->isLValue = true;   // self is a reference (l-value)
-        expr->isConst = false;   // self is mutable by default
+        expr->isLValue = true;
+        expr->isConst = false;
         return selfParam->type;
     }
 
@@ -339,10 +331,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     // ─── Step 2: Look up the value declaration ────────────────────────────
     ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) {
-        // ─── Try to resolve as a type (fallback) ─────────────────────────────
-        // This handles the case where the parser couldn't tell it was a type.
-        // For example: #sizeof(Vec2) where Vec2 wasn't recognized as a type
-        // by the parser because it's a user-defined type.
+        // Try to resolve as a type (fallback)
         TypeDeclAST* typeDecl = ctx.lookupType(expr->name);
         if (typeDecl) {            
             NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(expr->name);
@@ -369,18 +358,14 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     }
 
     // ─── Step 3: Transform field access through self ──────────────────────
-    // If the identifier resolves to a FieldDeclAST, and 'self' is in scope,
-    // then this is actually a field access: self.field
     if (decl->isa<FieldDeclAST>()) {
         ValueDeclAST* selfDecl = ctx.lookupValue(ctx.pool.intern("self"));
         if (selfDecl && selfDecl->isa<ParamAST>()) {
             FieldDeclAST* fieldDecl = decl->as<FieldDeclAST>();
             
-            // ─── Mark this as an implicit field access ─────────────────────
             expr->isImplicitFieldAccess = true;
             expr->fieldIndex = fieldDecl->fieldIndex;
             
-            // ─── Create the self identifier expression ─────────────────────
             IdentifierExprAST* selfIdent = ctx.arena.make<IdentifierExprAST>(
                 ctx.pool.intern("self")
             );
@@ -390,7 +375,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             selfIdent->isLValue = true;
             selfIdent->valueState = ValueState::Definite;
             
-            // ─── Store the self object ──────────────────────────────────────
             expr->selfObject = selfIdent;
             expr->resolvedDecl = fieldDecl;
             expr->resolvedType = fieldDecl->type;
@@ -447,6 +431,8 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     }
 
     // ─── Step 6: Handle generic arguments ──────────────────────────────────
+    TypeAST* declType = decl->type;
+    
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -458,6 +444,8 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
         }
 
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        
+        // Resolve each generic argument
         for (TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -476,21 +464,54 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
             expr->isLValue = false;
             return ctx.getUnknownType();
         }
-        
-        // Use the function's type (generic args are stored on the expression)
-        decl->type = funcDecl->type;
-        if (!decl->type) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                                  "'", ctx.pool.lookup(expr->name), "' has no type information");
+
+        // ─── Step 6a: Handle @[specialize] vs type-erased ──────────────────
+        // Use the unified resolution function
+        GenericResolution resolution = resolveGenericInstantiation(
+            funcDecl, expr->genericArgs, ctx);
+
+        if (!resolution.resolvedDecl) {
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             expr->isLValue = false;
             return ctx.getUnknownType();
         }
+
+        // Cast to FuncDeclAST (should always succeed for function instantiation)
+        if (!resolution.resolvedDecl->isa<FuncDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "generic instantiation of function '", 
+                                  ctx.pool.lookup(expr->name),
+                                  "' did not produce a function declaration");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+
+        FuncDeclAST* resolvedFunc = resolution.resolvedDecl->as<FuncDeclAST>();
+
+        if (resolution.isSpecialized) {
+            // ─── @[specialize] path ──────────────────────────────────────────
+            // Store specialized declaration and clear generic args
+            expr->resolvedDecl = resolvedFunc;
+            expr->genericArgs = {};  // Clear generic args - they're now in the specialized decl
+            decl = resolvedFunc;
+            declType = resolvedFunc->funcType;
+        } else {
+            // ─── Type-erased path ────────────────────────────────────────────
+            // Keep the template. The CallExprAST will handle runtime dispatch.
+            // We store the generic args on the identifier for the call site.
+            expr->resolvedDecl = resolvedFunc;
+            // genericArgs remain on the identifier for the call site
+            declType = resolvedFunc->funcType;
+        }
+    } else {
+        expr->resolvedDecl = decl;
+        declType = decl->type;
     }
 
     // ─── Step 7: Determine value state ────────────────────────────────────
-    TypeAST* declType = decl->type;
     ValueState state = ValueState::Unknown;
     
     if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
@@ -539,7 +560,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     }
 
     // ─── Step 10: Set final type ──────────────────────────────────────────
-    expr->resolvedDecl = decl;
     expr->resolvedType = declType;
     expr->valueState = state;
     
@@ -806,7 +826,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
 // =============================================================================
 
 TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Look up the member by module alias ─────────────────────────
+    // ─── Step 1: Look up the module by alias ────────────────────────────────
     ModuleAST* module = ctx.lookupImport(expr->moduleName);
     if (!module) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
@@ -815,10 +835,10 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
         expr->resolvedDecl = nullptr;
-        expr->resolvedModule = nullptr;
         return ctx.getUnknownType();
     }
 
+    // ─── Step 2: Look up the member in the module ────────────────────────────
     ValueDeclAST* decl = ctx.lookupModuleValueMember(module, expr->memberName);
     if (!decl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
@@ -828,24 +848,21 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
         expr->resolvedDecl = nullptr;
-        expr->resolvedModule = module;
         return ctx.getUnknownType();
     }
 
     if (decl->hasSyntaxError) {
         expr->resolvedDecl = decl;
-        expr->resolvedModule = module;
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         expr->isLValue = false;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Store resolved declaration and module ─────────────────────
+    // ─── Step 3: Store resolved declaration ──────────────────────────────────
     expr->resolvedDecl = decl;
-    expr->resolvedModule = module;
 
-    // ─── Step 3: Check if the member is exported ───────────────────────────
+    // ─── Step 4: Check if the member is exported ────────────────────────────
     if (!ctx.isValueExported(decl)) {
         ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -858,16 +875,8 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Get the declaration's type ──────────────────────────────────
-    // Use the effective type (accounting for any narrowing that might apply)
-    // For module members, narrowing doesn't apply (they're global), but we
-    // use the same pattern for consistency.
-    TypeAST* declType = ctx.getEffectiveType(decl, expr->memberName);
-    if (!declType) {
-        // Fallback to decl->type if effective type is not available
-        declType = decl->type;
-    }
-    
+    // ─── Step 5: Get the declaration's type ──────────────────────────────────
+    TypeAST* declType = decl->type;
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -878,7 +887,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         return ctx.getUnknownType();
     }
 
-    // ─── Step 5: Set isLValue and isConst based on member's keyword ──────
+    // ─── Step 6: Set isLValue and isConst based on member's keyword ────────
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -895,7 +904,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         expr->isConst = false;
     }
 
-    // ─── Step 6: Handle generic arguments if present ────────────────────────
+    // ─── Step 7: Handle generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -930,28 +939,40 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
             return ctx.getUnknownType();
         }
 
-        // Use the function's type (generic arguments are stored on the expression)
-        declType = funcDecl->type;
-        if (!declType) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                                  "member '", ctx.pool.lookup(expr->memberName),
-                                  "' has no type information");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            return ctx.getUnknownType();
+        // ─── 7a. Handle @[specialize] vs type-erased ──────────────────────
+        if (funcDecl->shouldSpecialize) {
+            // ─── @[specialize] path: Create specialized function ────────────
+            FuncDeclAST* specialized = createSpecializedFunction(
+                funcDecl, expr->genericArgs, ctx);
+            
+            if (!specialized) {
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                expr->isLValue = false;
+                return ctx.getUnknownType();
+            }
+            
+            // Store specialized declaration and clear generic args
+            expr->resolvedDecl = specialized;
+            expr->genericArgs = {};
+            declType = specialized->funcType;
+            
+        } else {
+            // ─── Type-erased path: Keep template, store info on CallExprAST ──
+            // The generic arguments remain on the ModuleAccessExprAST.
+            // The CallExprAST will use them to set isGenericCall and typeTags.
+            // For now, we just keep the template and the generic args.
+            declType = funcDecl->funcType;
         }
     }
 
-    // ─── Step 7: Determine value state ──────────────────────────────────────
+    // ─── Step 8: Determine value state ──────────────────────────────────────
     ValueState state;
     if (decl->isa<EnumVariantAST>()) {
         state = ValueState::Definite;
     } else if (isNullableType(declType) || isFallibleType(declType)) {
-        // Nullable/fallible module members are unknown until runtime
         state = ValueState::Unknown;
     } else if (decl->isa<FuncDeclAST>()) {
-        // Functions are definite (they exist at compile time)
         state = ValueState::Definite;
     } else if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
@@ -964,11 +985,11 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         state = ValueState::Unknown;
     }
 
-    // ─── Step 8: Set the expression's type ──────────────────────────────────
+    // ─── Step 9: Set the expression's type ──────────────────────────────────
     expr->resolvedType = declType;
     expr->valueState = state;
 
-    // ─── Step 9: Validate against target type if provided ─────────────────
+    // ─── Step 10: Validate against target type if provided ──────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, declType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
@@ -1490,6 +1511,8 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, TypeAST* targetType,
 // =============================================================================
 
 TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    if (!expr) return ctx.getUnknownType();
+
     // ─── Step 1: Look up the struct type ─────────────────────────────────
     TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
     if (!typeDecl) {
@@ -1497,6 +1520,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                               "undefined type '", ctx.pool.lookup(expr->typeName), "'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
@@ -1509,6 +1533,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                               "ArenaDescriptor can only be obtained via arena::descriptor()");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
@@ -1517,6 +1542,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                               "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
@@ -1525,10 +1551,16 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     if (structDecl->hasSyntaxError) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
     // ─── Step 2: Check and validate generic arguments ────────────────────
+    StructDeclAST* targetStruct = structDecl;
+    bool isGenericInstantiation = false;
+    bool isSpecialized = false;
+    uint32_t typeTag = 0;
+
     if (!expr->genericArgs.empty()) {
         // ─── 2a. Check arity ─────────────────────────────────────────────
         if (expr->genericArgs.size() != structDecl->genericParams.size()) {
@@ -1539,6 +1571,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                                   expr->genericArgs.size());
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
 
@@ -1551,6 +1584,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                                       " for struct '", ctx.pool.lookup(structDecl->name), "'");
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
+                expr->resolvedDecl = nullptr;
                 return ctx.getUnknownType();
             }
             const_cast<TypeAST*&>(expr->genericArgs[i]) = resolvedArg;
@@ -1560,22 +1594,59 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         if (!validateGenericArguments(expr->genericArgs, structDecl->genericParams, expr, ctx)) {
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
+
+        // ─── 2d. Handle @[specialize] vs type-erased ─────────────────────
+        //  Use the unified resolution function
+        GenericResolution resolution = resolveGenericInstantiation(
+            structDecl, expr->genericArgs, ctx);
+
+        if (!resolution.resolvedDecl) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
+            return ctx.getUnknownType();
+        }
+
+        // Cast to StructDeclAST (should always succeed for struct instantiation)
+        if (!resolution.resolvedDecl->isa<StructDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "generic instantiation of struct '", 
+                                  ctx.pool.lookup(expr->typeName),
+                                  "' did not produce a struct declaration");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
+            return ctx.getUnknownType();
+        }
+
+        targetStruct = resolution.resolvedDecl->as<StructDeclAST>();
+        isSpecialized = resolution.isSpecialized;
+        isGenericInstantiation = !resolution.isSpecialized;
+        typeTag = resolution.typeTag;
     } else if (!structDecl->genericParams.empty()) {
-        // ─── 2d. Struct has generic parameters but no arguments provided ──
-        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+        // ─── 2e. Struct has generic parameters but no arguments provided ──
+        ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, expr,
                               "struct '", ctx.pool.lookup(structDecl->name),
                               "' requires ", structDecl->genericParams.size(),
                               " generic argument(s)");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Build field map ─────────────────────────────────────────
+    // ─── Step 3: Store resolved struct declaration and flags ───────────────
+    expr->resolvedDecl = targetStruct;
+    expr->isSpecialized = isSpecialized;
+    expr->isGenericInstantiation = isGenericInstantiation;
+    expr->typeTag = typeTag;
+
+    // ─── Step 4: Build field map from target struct ────────────────────────
     std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
-    for (FieldDeclAST* field : structDecl->fields) {
+    for (FieldDeclAST* field : targetStruct->fields) {
         fieldMap[field->name] = field;
     }
 
@@ -1583,15 +1654,16 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     bool hasErr = false;
     bool allDefinite = true;
 
-    // ─── Step 4: Validate each field initializer ─────────────────────────
+    // ─── Step 5: Validate each field initializer ─────────────────────────
     for (FieldInitAST* init : expr->inits) {
         auto it = fieldMap.find(init->name);
         if (it == fieldMap.end()) {
             ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, init,
-                                  "struct '", ctx.pool.lookup(structDecl->name),
+                                  "struct '", ctx.pool.lookup(targetStruct->name),
                                   "' has no field named '", ctx.pool.lookup(init->name), "'");
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
 
@@ -1600,7 +1672,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
             continue;
         }
 
-        // ─── 4a. Const field validation ─────────────────────────────────
+        // ─── 5a. Const field validation ─────────────────────────────────
         if (field->isConst()) {
             if (init->value->isa<LiteralExprAST>()) {
                 const LiteralExprAST* literal = init->value->as<LiteralExprAST>();
@@ -1612,48 +1684,33 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
                                           "' (const fields must have definite values)");
                     expr->resolvedType = ctx.getUnknownType();
                     expr->valueState = ValueState::Unknown;
+                    expr->resolvedDecl = nullptr;
                     return ctx.getUnknownType();
                 }
             }
         }
 
-        // ─── 4b. Check if field has a block body (function field) ────────
-        // If the field has a defaultBody, the literal can provide a value
-        // But the value can be a function reference OR an anonymous function
-        // (since we're at a struct literal site, anonymous functions are allowed)
+        // ─── 5b. Check if field has a block body (function field) ────────
         bool isFunctionType = field->type && field->type->isa<FuncTypeAST>();
 
-        // ─── 4c. Resolve initializer against the field type ─────────────
+        // ─── 5c. Resolve initializer against the field type ─────────────
         TypeAST* initType = resolveExprWithTarget(init->value, field->type, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
 
-        // ─── 4d. Special validation for function fields ──────────────────
+        // ─── 5d. Special validation for function fields ──────────────────
         if (isFunctionType && field->defaultBody) {
-            // The field has a block body at declaration site.
-            // At struct literal site, the user can override it with:
-            //   - A function reference (existingFn)
-            //   - An anonymous function (func_literal)
-            //   - Any expression that evaluates to a function value
-            
-            // Check if the initializer is a function value
             if (!isFunctionValue(init->value, ctx)) {
-                // But wait - if the initializer is a block (which would be
-                // an anonymous function at struct literal site), it should
-                // be allowed because we're at a struct literal site.
-                // The parser would have parsed it as an AnonFuncExpr,
-                // which is a function value.
-                
-                // If it's not a function value, report an error
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, init,
                                       "field '", ctx.pool.lookup(field->name),
                                       "' must be initialized with a function value");
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
+                expr->resolvedDecl = nullptr;
                 return ctx.getUnknownType();
             }
         }
@@ -1668,8 +1725,8 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         initializedFields.insert(init->name);
     }
 
-    // ─── Step 5: Check for missing required fields ──────────────────────
-    for (FieldDeclAST* field : structDecl->fields) {
+    // ─── Step 6: Check for missing required fields ──────────────────────
+    for (FieldDeclAST* field : targetStruct->fields) {
         if (field->hasSyntaxError) {
             continue;
         }
@@ -1678,13 +1735,12 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
             continue;
         }
 
-        // ─── 5a. Check if field has a default value or default body ──────
-        // If the field has a defaultVal or defaultBody, it's optional
+        // ─── 6a. Check if field has a default value or default body ──────
         if (field->defaultVal || field->defaultBody) {
             continue;
         }
 
-        // ─── 5b. Nullable and fallible fields are optional ──────────────
+        // ─── 6b. Nullable and fallible fields are optional ──────────────
         if (isNullableType(field->type)) {
             continue;
         }
@@ -1693,39 +1749,39 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
             continue;
         }
 
-        // ─── 5c. Combined (T?!) fields must be explicitly initialized ──
+        // ─── 6c. Combined (T?!) fields must be explicitly initialized ──
         if (field->type->isa<CombinedTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                                   "combined field '", ctx.pool.lookup(field->name),
                                   "' (T?!) must be explicitly initialized (no implicit default)");
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
 
-        // ─── 5d. Function fields with no default are required ────────────
+        // ─── 6d. Function fields with no default are required ────────────
         if (field->type->isa<FuncTypeAST>()) {
-            // Function fields without a defaultBody must be initialized
-            // (defaultVal would be a function reference at declaration site)
-            // If neither is present, the field is required
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                                   "function field '", ctx.pool.lookup(field->name),
                                   "' must be initialized in struct literal (no default body)");
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->resolvedDecl = nullptr;
             return ctx.getUnknownType();
         }
 
-        // ─── 5e. Plain fields with no default are required ──────────────
+        // ─── 6e. Plain fields with no default are required ──────────────
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                               "field '", ctx.pool.lookup(field->name),
                               "' must be initialized in struct literal (no default value)");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->resolvedDecl = nullptr;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 6: Propagate value state ──────────────────────────────────
+    // ─── Step 7: Propagate value state ──────────────────────────────────
     ValueState state;
     if (hasErr) {
         state = ValueState::Err;
@@ -1735,14 +1791,13 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         state = ValueState::Unknown;
     }
 
-    // ─── Step 7: Return the struct type (cached) ──────────────────────
-    NamedTypeAST* resultType = ctx.getNamedType(structDecl->name);
+    // ─── Step 8: Set the resolved type ──────────────────────────────────
+    // The resolved type is the struct type (cached)
+    NamedTypeAST* resultType = ctx.getNamedType(targetStruct->name);
     expr->resolvedType = resultType;
     expr->valueState = state;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    expr->isLValue = false;   // Struct literals are never l-values
-    expr->isConst = allDefinite;  // All fields must be const for the struct to be const
+    expr->isLValue = false;
+    expr->isConst = allDefinite;
     
     return resultType;
 }
@@ -2085,6 +2140,8 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, TypeAST* targetType, SemaContext& 
 // =============================================================================
 
 TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
+    if (!expr) return ctx.getUnknownType();
+
     // ─── Step 1: Resolve callee ─────────────────────────────────────────────
     TypeAST* calleeType = resolveExpr(expr->callee, ctx);
     if (!calleeType || calleeType->isa<UnknownTypeAST>()) {
@@ -2114,52 +2171,107 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
 
     FuncTypeAST* funcType = calleeType->as<FuncTypeAST>();
 
-    // ─── Step 3: Check generic arguments ────────────────────────────────────
-    FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
-    if (funcDecl) {
-        if (!expr->genericArgs.empty()) {
-            for (TypeAST* arg : expr->genericArgs) {
-                if (!resolveType(arg, ctx)) {
-                    ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                          "invalid generic argument type for '",
-                                          ctx.pool.lookup(funcDecl->name), "'");
-                    expr->resolvedType = ctx.getUnknownType();
-                    expr->valueState = ValueState::Unknown;
-                    return ctx.getUnknownType();
+    // ─── Step 3: Get the function declaration from the callee ──────────────
+    // The callee (IdentifierExprAST or ModuleAccessExprAST) already has resolvedDecl.
+    // We extract the function declaration and generic arguments from it.
+    //  The specialize/erase decision was already made in resolveIdentifierExpr
+    //    or resolveModuleAccessExpr. We just read the result.
+    
+    FuncDeclAST* funcDecl = nullptr;
+    ArenaSpan<TypeAST*> genericArgs;
+    bool isGenericCall = false;
+
+    if (expr->callee->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = expr->callee->as<IdentifierExprAST>();
+        if (id->resolvedDecl && id->resolvedDecl->isa<FuncDeclAST>()) {
+            funcDecl = id->resolvedDecl->as<FuncDeclAST>();
+            genericArgs = id->genericArgs;
+            
+            //  Read the cached state from the callee
+            // The callee already has resolvedDecl set to either:
+            //   - A specialized FuncDeclAST (if @[specialize])
+            //   - The template FuncDeclAST (if type-erased)
+            // 
+            // We determine isGenericCall by checking if this is a type-erased call:
+            //   - If the callee is the template AND it has generic args -> type-erased
+            //   - If the callee is specialized -> not generic
+            if (funcDecl && !funcDecl->genericParams.empty() && !genericArgs.empty()) {
+                // Check if this is a type-erased call (template kept, not specialized)
+                // We can check if funcDecl->shouldSpecialize is false
+                if (!funcDecl->shouldSpecialize) {
+                    isGenericCall = true;
                 }
             }
+        }
+    } else if (expr->callee->isa<ModuleAccessExprAST>()) {
+        ModuleAccessExprAST* mod = expr->callee->as<ModuleAccessExprAST>();
+        if (mod->resolvedDecl && mod->resolvedDecl->isa<FuncDeclAST>()) {
+            funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
+            genericArgs = mod->genericArgs;
+            
+            //  Same logic as above
+            if (funcDecl && !funcDecl->genericParams.empty() && !genericArgs.empty()) {
+                if (!funcDecl->shouldSpecialize) {
+                    isGenericCall = true;
+                }
+            }
+        }
+    }
+    
+    // If we couldn't get the function declaration, try resolveCalleeOrError
+    if (!funcDecl) {
+        FuncDeclAST* resolved = resolveCalleeOrError(expr->callee, ctx);
+        if (!resolved) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+        funcDecl = resolved;
+        // genericArgs remain empty if not found
+    }
 
-            if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+    // ─── Step 4: Validate generic arguments if present ────────────────────
+    if (!genericArgs.empty()) {
+        if (funcDecl->genericParams.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "function '", ctx.pool.lookup(funcDecl->name),
+                                  "' is not generic but generic arguments were provided");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+
+        // Resolve each generic argument
+        for (TypeAST* arg : genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                      "invalid generic argument type");
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
-        } else if (!funcDecl->genericParams.empty()) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
-                                  "generic function '", ctx.pool.lookup(funcDecl->name),
-                                  "' requires ", funcDecl->genericParams.size(),
-                                  " generic argument(s)");
+        }
+
+        if (!validateGenericArguments(genericArgs, funcDecl->genericParams, expr, ctx)) {
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
-    } else {
-        if (!expr->genericArgs.empty()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "generic arguments can only be applied to named function calls");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
+    } else if (!funcDecl->genericParams.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+                              "generic function '", ctx.pool.lookup(funcDecl->name),
+                              "' requires ", funcDecl->genericParams.size(),
+                              " generic argument(s)");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Check argument count with variadic support ─────────────────
-    size_t requiredArgs = 0;
+    // ─── Step 5: Check argument count with variadic support ─────────────────
     size_t totalArgs = funcType->params.size();
     bool hasVariadic = false;
     size_t variadicIndex = totalArgs;
     
-    // Find the variadic parameter (if any)
     for (size_t i = 0; i < totalArgs; ++i) {
         if (funcType->params[i]->isVariadic) {
             hasVariadic = true;
@@ -2169,9 +2281,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
     }
 
     if (hasVariadic) {
-        // ─── Variadic function ─────────────────────────────────────────────────
-        // Required arguments are all parameters before the variadic
-        requiredArgs = variadicIndex;
+        size_t requiredArgs = variadicIndex;
         
         if (expr->args.size() < requiredArgs) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -2183,9 +2293,8 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
-        // No upper bound check - variadic can take unlimited arguments
+        // No upper bound for variadic
     } else {
-        // ─── Non-variadic function ─────────────────────────────────────────────
         if (expr->args.size() != totalArgs) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                                   "wrong number of arguments: expected ", totalArgs,
@@ -2196,26 +2305,20 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
         }
     }
 
-    // ─── Step 5: Check each argument type ──────────────────────────────────
+    // ─── Step 6: Check each argument type ──────────────────────────────────
     bool hasErrArg = false;
+    TypeAST* expectedReturnType = funcType->returnType;
     
     for (size_t i = 0; i < expr->args.size(); ++i) {
         ExprAST* arg = expr->args[i];
         
-        // Determine the expected parameter type
         TypeAST* expectedType = nullptr;
         
         if (hasVariadic && i >= variadicIndex) {
-            // ─── This argument goes to the variadic parameter ──────────────────
-            // The variadic parameter's type is [*]T (dynamic array)
-            // The argument type should be T (element type)
             ParamAST* variadicParam = funcType->params[variadicIndex];
-            
-            // The type should be [*]T
             if (variadicParam->type->isa<ArrayTypeAST>()) {
                 expectedType = variadicParam->type->as<ArrayTypeAST>()->element;
             } else {
-                // Fallback - should not happen
                 ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, expr,
                                       "variadic parameter has invalid type (expected array)");
                 expr->resolvedType = ctx.getUnknownType();
@@ -2223,11 +2326,9 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
                 return ctx.getUnknownType();
             }
         } else {
-            // ─── Regular parameter ──────────────────────────────────────────────
             expectedType = funcType->params[i]->type;
         }
 
-        // Resolve the argument against the expected type
         TypeAST* argType = resolveExprWithTarget(arg, expectedType, ctx);
         if (!argType || argType->isa<UnknownTypeAST>()) {
             expr->resolvedType = ctx.getUnknownType();
@@ -2256,26 +2357,40 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
         }
     }
 
-    // ─── Step 6: Propagate value state ──────────────────────────────────────
+    // ─── Step 7: Store generic call info for type-erased path ──────────────
+    if (isGenericCall && funcDecl) {
+        expr->isGenericCall = true;
+        
+        // Store type tags for each type argument
+        expr->typeTags.clear();
+        for (TypeAST* arg : genericArgs) {
+            // Get or assign a type tag from the registry
+            // Note: For specialized functions, genericArgs is empty
+            expr->typeTags.push_back(ctx.typeTagRegistry.getTag(arg));
+        }
+    } else {
+        expr->isGenericCall = false;
+        expr->typeTags.clear();
+    }
+
+    // ─── Step 8: Propagate value state ──────────────────────────────────────
     ValueState state;
-    if (hasErrArg && isFallibleType(funcType->returnType)) {
+    if (hasErrArg && isFallibleType(expectedReturnType)) {
         state = ValueState::Err;
-    } else if (isNullableType(funcType->returnType) || isFallibleType(funcType->returnType)) {
+    } else if (isNullableType(expectedReturnType) || isFallibleType(expectedReturnType)) {
         state = ValueState::Unknown;
-    } else if (!funcType->returnType) {
+    } else if (!expectedReturnType) {
         state = ValueState::None;
     } else {
         state = ValueState::Definite;
     }
 
-    expr->resolvedType = funcType->returnType;
+    expr->resolvedType = expectedReturnType;
     expr->valueState = state;
+    expr->isLValue = false;
+    expr->isConst = false;
     
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    expr->isLValue = false;   // Function calls are never l-values
-    expr->isConst = false;    // Function calls are not compile-time constants
-    
-    return funcType->returnType;
+    return expectedReturnType;
 }
 
 // =============================================================================
@@ -3350,8 +3465,8 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
 ///   └── return resolvedType
 ///
 /// Subsequent calls to resolveComposeOperand (same operand):
-///   ├── operand->callable->resolvedType != nullptr ✅
-///   ├── operand->callable->resolvedDecl != nullptr ✅ (if applicable)
+///   ├── operand->callable->resolvedType != nullptr 
+///   ├── operand->callable->resolvedDecl != nullptr  (if applicable)
 ///   └── use cached values directly
 /// 
 /// @param operand The composition operand.
