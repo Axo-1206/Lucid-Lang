@@ -5,6 +5,7 @@
 #include "../context/SemaContext.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "sema/context/Generic.hpp"
 
 namespace sema {
 
@@ -213,40 +214,34 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         
         // Only handle if this is a generic instantiation (has generic args)
         if (!type->genericArgs.empty()) {
-            if (structDecl->shouldSpecialize) {
-                // ─── @[specialize] path ──────────────────────────────────────────
-                // Create a specialized struct declaration
-                StructDeclAST* specialized = createSpecializedStruct(
-                    structDecl, type->genericArgs, ctx);
-                
-                if (!specialized) {
-                    return nullptr;
-                }
-                
-                // Store the specialized declaration on the NamedTypeAST
-                type->resolvedDecl = specialized;
-                type->isSpecialized = true;
-                type->isGenericInstantiation = false;
-                type->typeTag = 0;
-                
-                return type;
-                
-            } else {
-                // ─── Type-erased path ────────────────────────────────────────────
-                // Keep the template declaration
-                type->resolvedDecl = structDecl;
-                type->isSpecialized = false;
-                type->isGenericInstantiation = true;
-                
-                // ─── FIXED: Use the NamedTypeAST itself as the tag key ──────────
-                // The type is already the canonical representation of this
-                // instantiation (name + generic args). Multiple occurrences
-                // of the same instantiation share the same NamedTypeAST via
-                // the TypeCache, so they'll get the same tag.
-                type->typeTag = ctx.typeTagRegistry.getTag(type);
-                
-                return type;
+            // Use the unified resolution function
+            GenericResolution resolution = resolveGenericInstantiation(
+                structDecl, type->genericArgs, ctx);
+            
+            if (!resolution.resolvedDecl) {
+                return nullptr;
             }
+            
+            // ─── Safely cast the resolved declaration ──────────────────────────
+            // The resolvedDecl should be either:
+            //   - For @[specialize]: a specialized StructDeclAST (TypeDeclAST)
+            //   - For type-erased: the original StructDeclAST (TypeDeclAST)
+            if (!resolution.resolvedDecl->isa<TypeDeclAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                      "generic instantiation of '", ctx.pool.lookup(type->name),
+                                      "' did not produce a type declaration");
+                return nullptr;
+            }
+            
+            TypeDeclAST* resolvedTypeDecl = resolution.resolvedDecl->as<TypeDeclAST>();
+            
+            // Store the resolution result on the NamedTypeAST
+            type->resolvedDecl = resolvedTypeDecl;
+            type->isSpecialized = resolution.isSpecialized;
+            type->isGenericInstantiation = !resolution.isSpecialized;
+            type->typeTag = resolution.typeTag;
+            
+            return type;
         }
         
         // Non-generic struct - just store the declaration
@@ -259,6 +254,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
 
     // ─── Step 4: Handle enum type ────────────────────────────────────────────
     if (decl->isa<EnumDeclAST>()) {
+        // Enums are not generic - ensure no generic args
         if (!type->genericArgs.empty()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
                                   "enum '", ctx.pool.lookup(type->name), "' is not generic");
