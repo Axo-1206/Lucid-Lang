@@ -32,13 +32,12 @@
 
 #pragma once
 
+#include "core/ast/TypeAST.hpp"
+
 #include <unordered_map>
 #include <cstdint>
 
 namespace sema {
-
-// Forward declaration to avoid including TypeAST.hpp
-struct TypeAST;
 
 /// @brief Registry for mapping types to runtime tags.
 ///
