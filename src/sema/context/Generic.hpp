@@ -10,54 +10,16 @@
 #include "core/memory/ArenaSpan.hpp"
 #include "core/memory/InternedString.hpp"
 #include "sema/context/SemaContext.hpp"
+#include "sema/context/TypeTagRegistry.hpp"
 
-#include <unordered_map>
+#include <unordered_set>
+#include <functional>
 
 namespace sema {
 
-// Forward declaration - defined in SemaResolve.cpp
-TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
+// ─── GenericSubstitution ─────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TypeTagRegistry
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct TypeTagRegistry {
-    std::unordered_map<TypeAST*, uint32_t> typeToTag;
-    std::unordered_map<uint32_t, TypeAST*> tagToType;
-    uint32_t nextTag = 1;
-
-    uint32_t getTag(TypeAST* type) {
-        auto it = typeToTag.find(type);
-        if (it != typeToTag.end()) {
-            return it->second;
-        }
-        uint32_t tag = nextTag++;
-        typeToTag[type] = tag;
-        tagToType[tag] = type;
-        return tag;
-    }
-
-    TypeAST* getType(uint32_t tag) const {
-        auto it = tagToType.find(tag);
-        return it != tagToType.end() ? it->second : nullptr;
-    }
-
-    bool hasTag(TypeAST* type) const {
-        return typeToTag.find(type) != typeToTag.end();
-    }
-
-    void clear() {
-        typeToTag.clear();
-        tagToType.clear();
-        nextTag = 1;
-    }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GenericSubstitution
-// ─────────────────────────────────────────────────────────────────────────────
-
+/// @brief Simple substitution context for generic parameters to concrete types.
 struct GenericSubstitution {
     const ArenaSpan<GenericParamDeclAST*>& genericParams;
     const ArenaSpan<TypeAST*>& typeArgs;
@@ -88,43 +50,71 @@ struct GenericSubstitution {
     bool isComplete() const { return typeArgs.size() == genericParams.size(); }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GenericResolution
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── GenericResolution ─────────────────────────────────────────────────────
 
+/// @brief Result of resolving a generic instantiation.
+/// 
+/// Contains either:
+///   - A specialized declaration (@[specialize] path) with genericParams empty
+///   - The template declaration with a runtime type tag (type-erased path)
 struct GenericResolution {
+    /// The resolved declaration (specialized or template).
     DeclAST* resolvedDecl = nullptr;
+    
+    /// True if this resolved to a specialized declaration (@[specialize] path).
     bool isSpecialized = false;
+    
+    /// Runtime type tag (only valid when isSpecialized == false).
+    /// 0 is reserved for "no tag" (non-generic or specialized).
     uint32_t typeTag = 0;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Type Substitution Helpers (declarations)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Type Substitution Helpers (declarations) ──────────────────────────────
 
+/// @brief Substitute generic parameters in a type.
 TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaContext& ctx);
+
+/// @brief Substitute generic parameters in a statement.
 StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaContext& ctx);
+
+/// @brief Substitute generic parameters in an expression.
 ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaContext& ctx);
+
+/// @brief Check if a type contains any generic parameters.
 bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Generic Resolution (declaration)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Generic Resolution (declaration) ─────────────────────────────────────
 
+/// @brief Resolve a generic instantiation, choosing between specialization and type-erasure.
+/// 
+/// This is the SINGLE decision point for generic instantiation. It handles:
+///   - Arity validation
+///   - @[specialize] vs type-erased path selection
+///   - Specialized declaration creation (if needed)
+///   - Type tag assignment (if type-erased)
+/// 
+/// @param templateDecl The generic declaration (FuncDeclAST* or StructDeclAST*).
+/// @param typeArgs The concrete type arguments provided at the use site.
+/// @param ctx The semantic context.
+/// @return A GenericResolution containing the resolved declaration and tag.
+/// 
+/// @note This function should be called ONCE per instantiation. Call sites
+///       should store the result on the AST node (e.g., resolvedDecl, 
+///       isSpecialized, typeTag) rather than re-deriving it.
 GenericResolution resolveGenericInstantiation(
     DeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Specialized Struct/Function Creation (declarations)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Specialized Struct/Function Creation (declarations) ──────────────────
 
+/// @brief Create a specialized struct declaration from a generic template.
 StructDeclAST* createSpecializedStruct(
     StructDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
+/// @brief Create a specialized function declaration from a generic template.
 FuncDeclAST* createSpecializedFunction(
     FuncDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,

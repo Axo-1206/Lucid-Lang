@@ -10,18 +10,13 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "sema/context/TypeTagRegistry.hpp"  // ← Add this
 
 #include <vector>
 #include <unordered_map>
 #include <cassert>
 
 namespace sema {
-
-// ─── Forward Declarations ──────────────────────────────────────────────────
-
-struct ModuleTable;
-struct TypeCache;
-struct SemaContext;
 
 // ─── ModuleTable ──────────────────────────────────────────────────────────
 
@@ -125,6 +120,11 @@ struct SemaContext {
     
     // ─── Type Cache ────────────────────────────────────────────────────
     TypeCache typeCache;
+    
+    // ─── Type Tag Registry ────────────────────────────────────────────
+    /// @brief Registry for mapping concrete types to runtime type tags.
+    /// Used for type-erased generic dispatch.
+    TypeTagRegistry typeTagRegistry;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     std::vector<TypeDeclAST*> definingTypes;
@@ -239,6 +239,12 @@ struct SemaContext {
     bool insideNestedFunction() const;
     FuncDeclAST* getInnermostFunction() const;
     BaseAST* getInnermostFunctionNode() const;
+
+    // ─── Type Tag Registry Accessors ──────────────────────────────────
+    
+    /// @brief Get the type tag registry (for type-erased generic dispatch).
+    TypeTagRegistry& getTypeTagRegistry() { return typeTagRegistry; }
+    const TypeTagRegistry& getTypeTagRegistry() const { return typeTagRegistry; }
 
     // ─── Other Helpers ─────────────────────────────────────────────────
 
