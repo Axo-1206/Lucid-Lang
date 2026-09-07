@@ -20,6 +20,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "support/CodeGenAlloca.hpp"
+#include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
