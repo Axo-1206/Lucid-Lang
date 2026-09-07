@@ -212,12 +212,12 @@ using ParamGroup = std::vector<ParamAST*>;
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
     FuncTypeAST* funcType = nullptr;
     StmtAST* body;
     
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     bool isForeignFunction = false;    // True if @[foreign] attribute is present
     bool shouldSpecialize = false;     // from @[specialize]
     bool isInline = false;             // from @[inline]
@@ -229,9 +229,16 @@ struct FuncDeclAST : ValueDeclAST {
     bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
     bool isReturned = false;    /// True if this function is returned from its parent
     
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    // ─── Type-Erased Generic Support (only used when shouldSpecialize == false) ──
+    /// @brief The erased function name for type-erased generics.
+    /// Example: "_Lmodule_identity__erased"
+    InternedString erasedName;
+    
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
     llvm::Function* llvmFunction = nullptr;
+    llvm::Function* erasedFunction = nullptr;      // set by CodeGen
+    llvm::FunctionType* erasedFunctionType = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
@@ -241,6 +248,8 @@ struct FuncDeclAST : ValueDeclAST {
         , funcType(ft)
         , genericParams(params)
         , body(b) {}
+        
+    bool isGeneric() const { return !genericParams.empty(); }
 };
 
 // ─── EnumVariantAST ───────────────────────────────────────────────────────
@@ -345,18 +354,22 @@ struct FieldDeclAST : ValueDeclAST {
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
     ArenaSpan<FieldDeclAST*> fields;
     ArenaSpan<NamedTypeAST*> traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
     
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    bool shouldSpecialize = false;
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
+    bool shouldSpecialize = false;     // from @[specialize]
     
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    // ─── Type-Erased Generic Support ──────────────────────────────────────
+    // No new fields needed – erased struct type is always TaggedSlot (compiler-builtin)
+    
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     llvm::StructType* llvmType = nullptr;
     InternedString mangledName;        // Mangled name for AOT compilation
+    llvm::StructType* erasedStructType = nullptr;  // set by CodeGen
     
     // Physical layout - computed by CodeGen using LLVM DataLayout
     uint64_t totalSize = 0;
@@ -380,6 +393,8 @@ struct StructDeclAST : TypeDeclAST {
         }
         return SIZE_MAX;
     }
+    
+    bool isGeneric() const { return !genericParams.empty(); }
 };
 
 // ─── EnumDeclAST ──────────────────────────────────────────────────────────

@@ -167,10 +167,23 @@ struct FieldInitAST : BaseAST {
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
     const InternedString typeName;
-    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;  // e.g., [int] for Box<int> { ... }
     ArenaSpan<FieldInitAST*> inits;
+
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
+    /// @brief The resolved struct declaration (template or specialized).
+    StructDeclAST* resolvedDecl = nullptr;
+
+    /// @brief True if this resolves to a specialized declaration (@[specialize]).
+    bool isSpecialized = false;
+
+    /// @brief True if this is a type-erased instantiation (default path).
+    bool isGenericInstantiation = false;
+
+    /// @brief Runtime type tag (only valid when isGenericInstantiation == true).
+    uint32_t typeTag = 0;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
@@ -191,36 +204,34 @@ struct StructLiteralExprAST : ExprAST {
 /// The semantic pass resolves the name against the symbol table and sets
 /// resolvedType. If the name resolves to a struct field and 'self' is in scope,
 /// it's transformed into an implicit field access through self.
+///
+/// NOTE: resolvedDecl already points to the appropriate function declaration.
+/// genericArgs are already stored.
 struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
     const InternedString name;
-    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;  // e.g., [int] for identity<int>
 
-    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    ValueDeclAST* resolvedDecl = nullptr;
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
+    ValueDeclAST* resolvedDecl = nullptr;  // template OR specialized function
 
-    // ─── Field Access Through Self Information ─────────────────────
+    // ─── Field Access Through Self Information ─────────────────────────────
     /// @brief True if this identifier was resolved as a field access through 'self'.
-    /// This tells CodeGen that this identifier is actually `self.field`.
     bool isImplicitFieldAccess = false;
     
     /// @brief The 'self' parameter expression (for CodeGen to use as the object).
-    /// This is set when isImplicitFieldAccess is true.
     ExprAST* selfObject = nullptr;
     
     /// @brief The field index for fast access (set by Sema).
     size_t fieldIndex = SIZE_MAX;
 
-    // ─── Type Context Support for Intrinsics ──────────────────────
+    // ─── Type Context Support for Intrinsics ──────────────────────────────
     /// @brief True if this identifier was parsed/treated as a type.
-    /// For example: #sizeof(int) → 'int' is a type
-    ///              #simd_splat(float32, 4, x) → 'float32' is a type
     bool isType = false;
 
     /// @brief The resolved type when isType is true.
-    /// For primitive types, this is a PrimitiveTypeAST.
-    /// For user-defined types, this is a NamedTypeAST.
     TypeAST* resolvedTypeNode = nullptr;
 
     explicit IdentifierExprAST(InternedString n) 
@@ -284,20 +295,15 @@ struct ModuleAccessExprAST : ExprAST {
 
     const InternedString moduleName;
     const InternedString memberName;
-    ArenaSpan<TypeAST*> genericArgs; // Generic function instantiation
+    ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    /// @brief The resolved declaration for the module member.
-    /// This can be a FuncDeclAST, VarDeclAST, or EnumVariantAST.
     ValueDeclAST* resolvedDecl = nullptr;
-    
-    /// @brief The module containing the member.
-    ModuleAST* resolvedModule = nullptr;
 
     ModuleAccessExprAST(InternedString mod, InternedString mem) 
         : ExprAST(ASTKind::ModuleAccessExpr),
-        moduleName(mod),
-        memberName(mem) {}
+          moduleName(mod),
+          memberName(mem) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -334,11 +340,21 @@ struct ModuleAccessExprAST : ExprAST {
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    ExprAST* callee = nullptr;
-    ArenaSpan<TypeAST*> genericArgs;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
+    ExprAST* callee = nullptr;          // IdentifierExprAST or ModuleAccessExprAST
+    // REMOVED: ArenaSpan<TypeAST*> genericArgs;  // redundant – callee already has them
     ArenaSpan<ExprAST*> args;
     const bool hasArgPack = false;    // true for `fn(args)!`
 
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
+    /// @brief True if this is a type-erased generic call (default path).
+    bool isGenericCall = false;
+    
+    /// @brief Runtime type tags for each type argument (type-erased path only).
+    /// The order matches the genericArgs on the callee.
+    std::vector<uint32_t> typeTags;
+
+    // ─── Constructor ─────────────────────────────────────────────────────
     CallExprAST(bool a) 
         : ExprAST(ASTKind::CallExpr), hasArgPack(a) {}
 };

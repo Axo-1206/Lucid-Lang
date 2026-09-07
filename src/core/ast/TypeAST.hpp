@@ -223,28 +223,28 @@ struct PrimitiveTypeAST : TypeAST {
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────────
     InternedString name;
     ArenaSpan<TypeAST*> genericArgs;
     
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     /// @brief The resolved declaration for this named type.
     /// 
     /// This is set by `resolveNamedType()` during semantic analysis.
-    /// It can be a StructDeclAST, EnumDeclAST, or TraitDeclAST.
-    /// For generic parameters, this remains nullptr (use isGenericParam instead).
+    /// It can be:
+    ///   - For @[specialize]: a specialized StructDeclAST (e.g., Box_int)
+    ///   - For type-erased: the template StructDeclAST (e.g., Box<T>)
+    ///   - For non-generic: the original StructDeclAST
     TypeDeclAST* resolvedDecl = nullptr;
 
-    /// @brief Check if this named type is the built-in ArenaDescriptor type.
-    bool isArenaDescriptorType() const {
-        // ArenaDescriptor has no generic arguments
-        return lookupStringView(name) == "ArenaDescriptor" && genericArgs.empty();
-    }
+    /// @brief True if this resolves to a specialized declaration (@[specialize]).
+    bool isSpecialized = false;
 
-    /// @brief Check if this named type is the built-in Arena type.
-    bool isArenaType() const {
-        // Arena has no generic arguments
-        return lookupStringView(name) == "Arena" && genericArgs.empty();
-    }
+    /// @brief True if this is a type-erased instantiation (default path).
+    bool isGenericInstantiation = false;
+
+    /// @brief Runtime type tag (only valid when isGenericInstantiation == true).
+    uint32_t typeTag = 0;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
@@ -588,6 +588,7 @@ struct FuncTypeAST : TypeAST {
 /// @field moduleName    The module name (left-hand side of `:`).
 /// @field typeName      The type name (right-hand side of `:`).
 /// @field genericArgs   Generic arguments if the type is generic.
+/// NOTE: Sema transforms this into a NamedTypeAST which carries all generic info.
 struct ModuleTypeAccessAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ModuleTypeAccess;
 
