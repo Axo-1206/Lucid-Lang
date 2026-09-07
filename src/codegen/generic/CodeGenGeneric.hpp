@@ -2,7 +2,7 @@
 /// @brief Generic instantiation handling for code generation.
 ///
 /// This file provides:
-///   1. Detection helpers: isGenericFunction, isGenericStruct, shouldSpecialize
+///   1. Detection helpers: isGenericFunction, isGenericStruct
 ///   2. Type-erased generation: generateErasedGenericFunction, generateErasedGenericStruct
 ///   3. Registry access: getOrCreateSpecializedFunction, getOrCreateSpecializedStruct
 ///
@@ -12,11 +12,15 @@
 ///   1. Sema calls resolveGenericInstantiation() which:
 ///      - If @[specialize]: creates a specialized decl with genericParams = {}
 ///        and sets mangledName.
-///      - If type-erased: keeps the template with genericParams intact.
+///      - If type-erased: keeps the template with genericParams intact and
+///        sets erasedName.
 ///
 ///   2. CodeGen checks decl->genericParams:
 ///      - If empty: Sema already specialized it → lookup by mangled name.
-///      - If non-empty: type-erased path → generate erased version.
+///      - If non-empty: type-erased path → use erasedName.
+///
+///   CodeGen NO LONGER checks shouldSpecialize() - that decision is final
+///   and already made by Sema.
 
 #pragma once
 
@@ -39,9 +43,8 @@ bool isGenericFunction(FuncDeclAST* decl);
 bool isGenericStruct(StructDeclAST* decl);
 
 /// @brief Check if a declaration has the @[specialize] attribute.
-/// @note This is a READ-ONLY check. The decision was already made by Sema.
-///       CodeGen should NOT use this to decide between paths - it should
-///       check decl->genericParams.empty() instead.
+/// @note This is a READ-ONLY informational check. CodeGen should NOT use
+///       this to make decisions - use decl->genericParams.empty() instead.
 bool shouldSpecialize(DeclAST* decl);
 
 /// @brief Check if a type contains any generic parameters at any depth.

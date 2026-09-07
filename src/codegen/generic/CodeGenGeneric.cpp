@@ -36,6 +36,8 @@ bool isGenericStruct(StructDeclAST* decl) {
     return decl && !decl->genericParams.empty();
 }
 
+// SIMPLIFIED: Keep for informational/debug purposes only
+// CodeGen should NOT use this to make decisions.
 bool shouldSpecialize(DeclAST* decl) {
     if (!decl) return false;
     if (decl->isa<FuncDeclAST>()) {
@@ -120,7 +122,7 @@ llvm::Function* generateErasedGenericFunction(
 ) {
     if (!funcDecl) return nullptr;
 
-    // ✅ Read the cached erased name from the AST (set by Sema)
+    // Read the cached erased name from the AST (set by Sema)
     std::string mangledName = ctx.pool.lookup(funcDecl->erasedName);
     if (mangledName.empty()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
@@ -199,7 +201,7 @@ llvm::Type* generateErasedGenericStruct(
 ) {
     if (!structDecl) return nullptr;
 
-    // ✅ Read the cached erased name from the AST (set by Sema)
+    // Read the cached erased name from the AST (set by Sema)
     std::string mangledName = ctx.pool.lookup(structDecl->erasedName);
     if (mangledName.empty()) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
@@ -252,7 +254,7 @@ llvm::Type* generateErasedGenericStruct(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Public Registry API (Simplified)
+// 3. Public Registry API (SIMPLIFIED)
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* getOrCreateSpecializedFunction(
@@ -267,7 +269,7 @@ llvm::Function* getOrCreateSpecializedFunction(
         return ctx.lookupFunction(funcDecl);
     }
 
-    // ─── Check if Sema already specialized this ────────────────────────────
+    // SIMPLIFIED: Just check genericParams.empty()
     // Sema's resolveGenericInstantiation() creates specialized decls with
     // genericParams = {} and mangledName already set.
     if (funcDecl->genericParams.empty()) {
@@ -276,7 +278,7 @@ llvm::Function* getOrCreateSpecializedFunction(
         if (mangledName.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
                 "specialized function '", ctx.pool.lookup(funcDecl->name),
-                "' has no mangled name");
+                "' has no mangled name (Sema should have set this)");
             return nullptr;
         }
         
@@ -284,7 +286,7 @@ llvm::Function* getOrCreateSpecializedFunction(
         if (!func) {
             ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
                 "specialized function '", ctx.pool.lookup(funcDecl->name),
-                "' not found in module");
+                "' not found in module (was Sema supposed to create it?)");
             return nullptr;
         }
         
@@ -309,7 +311,7 @@ llvm::Type* getOrCreateSpecializedStruct(
         return ctx.lookupStruct(structDecl);
     }
 
-    // ─── Check if Sema already specialized this ────────────────────────────
+    // SIMPLIFIED: Just check genericParams.empty()
     // Sema's resolveGenericInstantiation() creates specialized decls with
     // genericParams = {} and mangledName already set.
     if (structDecl->genericParams.empty()) {
@@ -318,7 +320,7 @@ llvm::Type* getOrCreateSpecializedStruct(
         if (mangledName.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
                 "specialized struct '", ctx.pool.lookup(structDecl->name),
-                "' has no mangled name");
+                "' has no mangled name (Sema should have set this)");
             return nullptr;
         }
         
@@ -330,7 +332,7 @@ llvm::Type* getOrCreateSpecializedStruct(
         if (!structType || structType->isOpaque()) {
             ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
                 "specialized struct '", ctx.pool.lookup(structDecl->name),
-                "' not found in module");
+                "' not found in module (was Sema supposed to create it?)");
             return nullptr;
         }
         
@@ -375,6 +377,7 @@ llvm::Value* resolveGenericCall(
     }
 
     // ─── Get or create specialized/erased function ──────────────────────
+    // The function handles both paths internally
     return getOrCreateSpecializedFunction(funcDecl, genericArgs, ctx);
 }
 
