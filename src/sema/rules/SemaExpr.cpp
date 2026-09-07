@@ -960,7 +960,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         } else {
             // ─── Type-erased path: Keep template, store info on CallExprAST ──
             // The generic arguments remain on the ModuleAccessExprAST.
-            // The CallExprAST will use them to set isGenericCall and typeTags.
+            // The CallExprAST will use them to set isGenericCall and typeIds.
             // For now, we just keep the template and the generic args.
             declType = funcDecl->funcType;
         }
@@ -1559,7 +1559,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     StructDeclAST* targetStruct = structDecl;
     bool isGenericInstantiation = false;
     bool isSpecialized = false;
-    uint32_t typeTag = 0;
+    uint32_t typeId = 0;
 
     if (!expr->genericArgs.empty()) {
         // ─── 2a. Check arity ─────────────────────────────────────────────
@@ -1625,7 +1625,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         targetStruct = resolution.resolvedDecl->as<StructDeclAST>();
         isSpecialized = resolution.isSpecialized;
         isGenericInstantiation = !resolution.isSpecialized;
-        typeTag = resolution.typeTag;
+        typeId = resolution.typeId;
     } else if (!structDecl->genericParams.empty()) {
         // ─── 2e. Struct has generic parameters but no arguments provided ──
         ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, expr,
@@ -1642,7 +1642,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     expr->resolvedDecl = targetStruct;
     expr->isSpecialized = isSpecialized;
     expr->isGenericInstantiation = isGenericInstantiation;
-    expr->typeTag = typeTag;
+    expr->typeId = typeId;
 
     // ─── Step 4: Build field map from target struct ────────────────────────
     std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
@@ -2362,15 +2362,15 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
         expr->isGenericCall = true;
         
         // Store type tags for each type argument
-        expr->typeTags.clear();
+        expr->typeIds.clear();
         for (TypeAST* arg : genericArgs) {
             // Get or assign a type tag from the registry
             // Note: For specialized functions, genericArgs is empty
-            expr->typeTags.push_back(ctx.typeTagRegistry.getTag(arg));
+            expr->typeIds.push_back(ctx.typeIdRegistry.getTag(arg));
         }
     } else {
         expr->isGenericCall = false;
-        expr->typeTags.clear();
+        expr->typeIds.clear();
     }
 
     // ─── Step 8: Propagate value state ──────────────────────────────────────

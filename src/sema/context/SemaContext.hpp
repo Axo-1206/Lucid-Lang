@@ -10,7 +10,7 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "sema/context/TypeTagRegistry.hpp"  // ← Add this
+#include "sema/context/TypeIdRegistry.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -124,7 +124,7 @@ struct SemaContext {
     // ─── Type Tag Registry ────────────────────────────────────────────
     /// @brief Registry for mapping concrete types to runtime type tags.
     /// Used for type-erased generic dispatch.
-    TypeTagRegistry typeTagRegistry;
+    TypeIdRegistry typeIdRegistry;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     std::vector<TypeDeclAST*> definingTypes;
@@ -243,8 +243,8 @@ struct SemaContext {
     // ─── Type Tag Registry Accessors ──────────────────────────────────
     
     /// @brief Get the type tag registry (for type-erased generic dispatch).
-    TypeTagRegistry& getTypeTagRegistry() { return typeTagRegistry; }
-    const TypeTagRegistry& getTypeTagRegistry() const { return typeTagRegistry; }
+    TypeIdRegistry& getTypeIdRegistry() { return typeIdRegistry; }
+    const TypeIdRegistry& getTypeIdRegistry() const { return typeIdRegistry; }
 
     // ─── Other Helpers ─────────────────────────────────────────────────
 

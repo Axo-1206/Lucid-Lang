@@ -1,4 +1,4 @@
-/// @file sema/context/TypeTagRegistry.hpp
+/// @file sema/context/typeIdRegistry.hpp
 /// @brief Registry for mapping concrete types to runtime type tags.
 ///
 /// This registry is used for type-erased generic dispatch. It assigns a unique
@@ -23,11 +23,11 @@
 /// @code
 ///   // In resolveNamedType (type-erased path)
 ///   TypeAST* canonicalType = ctx.getNamedType("Box", {intType});
-///   type->typeTag = ctx.getTypeTagRegistry().getTag(canonicalType);
+///   type->typeId = ctx.gettypeIdRegistry().getTag(canonicalType);
 ///
 ///   // In resolveCallExpr
-///   uint32_t tag = ctx.getTypeTagRegistry().getTag(argType);
-///   call->typeTags.push_back(tag);
+///   uint32_t tag = ctx.gettypeIdRegistry().getTag(argType);
+///   call->typeIds.push_back(tag);
 /// @endcode
 
 #pragma once
@@ -45,8 +45,8 @@ namespace sema {
 /// concrete type that appears in a type-erased generic context.
 ///
 /// @note The registry is intended to be owned by SemaContext and accessed
-///       via SemaContext::getTypeTagRegistry().
-struct TypeTagRegistry {
+///       via SemaContext::getTypeIdRegistry().
+struct TypeIdRegistry {
     /// Map from type AST to tag.
     std::unordered_map<TypeAST*, uint32_t> typeToTag;
 

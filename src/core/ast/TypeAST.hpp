@@ -244,7 +244,7 @@ struct NamedTypeAST : TypeAST {
     bool isGenericInstantiation = false;
 
     /// @brief Runtime type tag (only valid when isGenericInstantiation == true).
-    uint32_t typeTag = 0;
+    uint32_t typeId = 0;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}

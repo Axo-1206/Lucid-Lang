@@ -239,7 +239,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             type->resolvedDecl = resolvedTypeDecl;
             type->isSpecialized = resolution.isSpecialized;
             type->isGenericInstantiation = !resolution.isSpecialized;
-            type->typeTag = resolution.typeTag;
+            type->typeId = resolution.typeId;
             
             return type;
         }
@@ -248,7 +248,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         type->resolvedDecl = structDecl;
         type->isSpecialized = false;
         type->isGenericInstantiation = false;
-        type->typeTag = 0;
+        type->typeId = 0;
         return type;
     }
 
@@ -263,7 +263,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         type->resolvedDecl = decl;
         type->isSpecialized = false;
         type->isGenericInstantiation = false;
-        type->typeTag = 0;
+        type->typeId = 0;
         return type;
     }
 

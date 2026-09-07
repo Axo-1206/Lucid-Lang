@@ -10,7 +10,7 @@
 #include "core/memory/ArenaSpan.hpp"
 #include "core/memory/InternedString.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/context/TypeTagRegistry.hpp"
+#include "sema/context/TypeIdRegistry.hpp"
 
 #include <unordered_set>
 #include <functional>
@@ -66,7 +66,7 @@ struct GenericResolution {
     
     /// Runtime type tag (only valid when isSpecialized == false).
     /// 0 is reserved for "no tag" (non-generic or specialized).
-    uint32_t typeTag = 0;
+    uint32_t typeId = 0;
 };
 
 // ─── Type Substitution Helpers (declarations) ──────────────────────────────
@@ -100,7 +100,7 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 /// 
 /// @note This function should be called ONCE per instantiation. Call sites
 ///       should store the result on the AST node (e.g., resolvedDecl, 
-///       isSpecialized, typeTag) rather than re-deriving it.
+///       isSpecialized, typeId) rather than re-deriving it.
 GenericResolution resolveGenericInstantiation(
     DeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,

@@ -183,7 +183,7 @@ struct StructLiteralExprAST : ExprAST {
     bool isGenericInstantiation = false;
 
     /// @brief Runtime type tag (only valid when isGenericInstantiation == true).
-    uint32_t typeTag = 0;
+    uint32_t typeId = 0;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
@@ -352,7 +352,7 @@ struct CallExprAST : ExprAST {
     
     /// @brief Runtime type tags for each type argument (type-erased path only).
     /// The order matches the genericArgs on the callee.
-    std::vector<uint32_t> typeTags;
+    std::vector<uint32_t> typeIds;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     CallExprAST(bool a) 

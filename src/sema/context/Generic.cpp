@@ -398,7 +398,7 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             // ─── Copy semantic fields ──────────────────────────────────────────────
             // Note: genericArgs is NOT stored on CallExprAST - it's on the callee
             newCall->isGenericCall = call->isGenericCall;
-            newCall->typeTags = call->typeTags;  // std::vector<uint32_t> - copy is fine
+            newCall->typeIds = call->typeIds;  // std::vector<uint32_t> - copy is fine
             newCall->loc = call->loc;
             
             return newCall;
@@ -456,7 +456,7 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             newStruct->resolvedDecl = structExpr->resolvedDecl;
             newStruct->isSpecialized = structExpr->isSpecialized;
             newStruct->isGenericInstantiation = structExpr->isGenericInstantiation;
-            newStruct->typeTag = structExpr->typeTag;
+            newStruct->typeId = structExpr->typeId;
             newStruct->loc = structExpr->loc;
             return newStruct;
         }
@@ -853,7 +853,7 @@ GenericResolution resolveGenericInstantiation(
             result.resolvedDecl = specialized;
         }
         result.isSpecialized = true;
-        result.typeTag = 0;  // No tag needed for specialized declarations
+        result.typeId = 0;  // No tag needed for specialized declarations
         
     } else {
         // ─── Type-erased path ──────────────────────────────────────────────────
@@ -905,7 +905,7 @@ GenericResolution resolveGenericInstantiation(
         }
         
         // Assign a tag for the canonical type
-        result.typeTag = ctx.typeTagRegistry.getTag(canonicalType);
+        result.typeId = ctx.typeIdRegistry.getTag(canonicalType);
     }
 
     return result;
