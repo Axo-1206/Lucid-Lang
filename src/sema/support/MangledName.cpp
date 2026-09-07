@@ -2,6 +2,7 @@
 /// @brief Implementation of mangled name generation.
 
 #include "MangledName.hpp"
+#include "../context/Generic.hpp"
 #include "core/ASTStrings.hpp"
 
 #include <sstream>
@@ -324,6 +325,88 @@ char encodePrimitiveKind(PrimitiveKind kind) {
         case PrimitiveKind::Char:   return 'C';
         default:                    return '?';
     }
+}
+
+// ─── Generic Instantiation Mangling ──────────────────────────────────────
+
+InternedString generateMangledNameForGeneric(DeclAST* decl, const ArenaSpan<TypeAST*>& typeArgs, SemaContext& ctx) {
+    if (!decl || typeArgs.empty()) {
+        return InternedString(0);
+    }
+    
+    std::string result;
+    
+    // ─── 1. Module path ──────────────────────────────────────────────────
+    result += getMangledModulePath(ctx) + "_";
+    
+    // ─── 2. Declaration name ──────────────────────────────────────────────
+    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
+    
+    // ─── 3. Generic arguments (concrete types) ──────────────────────────
+    result += "_G";
+    for (size_t i = 0; i < typeArgs.size(); ++i) {
+        if (i > 0) result += "_";
+        result += typeToMangleString(typeArgs[i], ctx);
+    }
+    
+    // ─── 4. For functions, also encode parameter and return types ──────
+    if (decl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        GenericSubstitution subst{funcDecl->genericParams, typeArgs};
+        
+        // Parameter types (substituted)
+        result += "_P";
+        FuncTypeAST* funcType = funcDecl->funcType;
+        while (funcType) {
+            for (ParamAST* param : funcType->params) {
+                if (param->type) {
+                    TypeAST* subType = substituteType(param->type, subst, ctx);
+                    result += typeToMangleString(subType, ctx);
+                }
+            }
+            funcType = funcType->getNext();
+        }
+        
+        // Return type (substituted)
+        if (funcDecl->funcType->returnType) {
+            TypeAST* subReturn = substituteType(funcDecl->funcType->returnType, subst, ctx);
+            result += "_R" + typeToMangleString(subReturn, ctx);
+        } else {
+            result += "_RV";
+        }
+    }
+    
+    // ─── 5. For structs, encode field types ──────────────────────────────
+    if (decl->isa<StructDeclAST>()) {
+        StructDeclAST* structDecl = decl->as<StructDeclAST>();
+        GenericSubstitution subst{structDecl->genericParams, typeArgs};
+        
+        result += "_F";
+        for (FieldDeclAST* field : structDecl->fields) {
+            if (field->type) {
+                TypeAST* subType = substituteType(field->type, subst, ctx);
+                result += typeToMangleString(subType, ctx);
+            }
+        }
+    }
+    
+    return ctx.pool.intern("_L" + result);
+}
+
+InternedString extendMangledNameWithGenericArgs(InternedString baseName, const ArenaSpan<TypeAST*>& typeArgs, SemaContext& ctx) {
+    if (!baseName.isValid() || typeArgs.empty()) {
+        return baseName;
+    }
+    
+    std::string result = ctx.pool.lookup(baseName);
+    result += "_G";
+    
+    for (size_t i = 0; i < typeArgs.size(); ++i) {
+        if (i > 0) result += "_";
+        result += typeToMangleString(typeArgs[i], ctx);
+    }
+    
+    return ctx.pool.intern(result);
 }
 
 } // namespace sema
