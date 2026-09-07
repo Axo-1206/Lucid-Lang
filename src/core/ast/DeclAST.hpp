@@ -363,12 +363,10 @@ struct StructDeclAST : TypeDeclAST {
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     bool shouldSpecialize = false;     // from @[specialize]
     
-    // ─── Type-Erased Generic Support ──────────────────────────────────────
-    // No new fields needed – erased struct type is always TaggedSlot (compiler-builtin)
-    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     llvm::StructType* llvmType = nullptr;
     InternedString mangledName;        // Mangled name for AOT compilation
+    InternedString erasedName;
     llvm::StructType* erasedStructType = nullptr;  // set by CodeGen
     
     // Physical layout - computed by CodeGen using LLVM DataLayout

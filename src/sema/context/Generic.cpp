@@ -4,11 +4,30 @@
 #include "Generic.hpp"
 #include "sema/support/MangledName.hpp"
 #include "core/trace/Trace.hpp"
+#include "sema/types/SemaType.hpp"
 
 namespace sema {
 
+    // ─────────────────────────────────────────────────────────────────────────────
+// Helper: Compute Erased Name
 // ─────────────────────────────────────────────────────────────────────────────
-// Type Substitution Helpers
+
+/// @brief Compute the erased name for a declaration in the type-erased path.
+/// @param decl The declaration (function or struct).
+/// @param ctx The semantic context.
+/// @return The erased name as an InternedString.
+static InternedString computeErasedName(DeclAST* decl, SemaContext& ctx) {
+    if (!decl) return InternedString(0);
+    
+    std::string path = getMangledModulePath(ctx);
+    std::string name = ctx.pool.lookup(decl->name);
+    std::string erasedName = path + "_" + name + "__erased";
+    
+    return ctx.pool.intern(erasedName);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Get Mangled Module Path
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaContext& ctx) {
@@ -842,6 +861,23 @@ GenericResolution resolveGenericInstantiation(
         result.resolvedDecl = templateDecl;
         result.isSpecialized = false;
         
+        // Compute and store the erased name on the declaration
+        InternedString erasedName = computeErasedName(templateDecl, ctx);
+        
+        if (isFunction) {
+            FuncDeclAST* funcDecl = templateDecl->as<FuncDeclAST>();
+            funcDecl->erasedName = erasedName;
+            Trace::detail("Set erased name for function '", 
+                         ctx.pool.lookup(funcDecl->name), 
+                         "': ", ctx.pool.lookup(erasedName));
+        } else {
+            StructDeclAST* structDecl = templateDecl->as<StructDeclAST>();
+            structDecl->erasedName = erasedName;
+            Trace::detail("Set erased name for struct '", 
+                         ctx.pool.lookup(structDecl->name), 
+                         "': ", ctx.pool.lookup(erasedName));
+        }
+        
         // Compute a canonical type for the tag registry
         // The canonical type represents the concrete instantiation
         // For functions: use the function's substituted signature
@@ -909,7 +945,7 @@ StructDeclAST* createSpecializedStruct(
     // ─── Create substitution context ────────────────────────────────────────
     GenericSubstitution subst{templateDecl->genericParams, typeArgs};
 
-    //  Use makeSpan with transform for fields
+    // Use makeSpan with transform for fields
     auto substitutedFields = ctx.arena.makeSpan<FieldDeclAST*>(
         templateDecl->fields,
         [&](FieldDeclAST* field) -> FieldDeclAST* {
@@ -958,6 +994,7 @@ StructDeclAST* createSpecializedStruct(
     );
     specialized->shouldSpecialize = true;
     specialized->mangledName = mangledName;
+    specialized->erasedName = InternedString(0);  // Not needed for specialized
     specialized->loc = templateDecl->loc;
 
     Trace::detail("Created specialized struct: ", ctx.pool.lookup(mangledName),
@@ -1024,6 +1061,7 @@ FuncDeclAST* createSpecializedFunction(
     );
     specialized->shouldSpecialize = true;
     specialized->mangledName = mangledName;
+    specialized->erasedName = InternedString(0);  // Not needed for specialized
     specialized->isForeignFunction = templateDecl->isForeignFunction;
     specialized->isInline = templateDecl->isInline;
     specialized->isNoInline = templateDecl->isNoInline;

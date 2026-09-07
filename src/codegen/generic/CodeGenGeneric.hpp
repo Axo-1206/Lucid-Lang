@@ -3,21 +3,20 @@
 ///
 /// This file provides:
 ///   1. Detection helpers: isGenericFunction, isGenericStruct, shouldSpecialize
-///   2. Type substitution: GenericSubstitution
-///   3. Instantiation: createSpecializedFunction, createSpecializedStruct
-///   4. Type-erased generation: generateErasedGenericFunction, generateErasedGenericStruct
-///   5. Registry access: getOrCreateSpecializedFunction, getOrCreateSpecializedStruct
+///   2. Type-erased generation: generateErasedGenericFunction, generateErasedGenericStruct
+///   3. Registry access: getOrCreateSpecializedFunction, getOrCreateSpecializedStruct
 ///
-/// ───────────────────────────────────────────────────────────────────────────
-/// MEMORY MODEL
-/// ───────────────────────────────────────────────────────────────────────────
+/// Sema now handles ALL specialization decisions. CodeGen simply reads the
+/// result. The flow is:
 ///
-/// All generic APIs use ArenaSpan<TypeAST*> for type arguments, matching the
-/// AST's memory model. This means:
-///   - No heap allocation at call sites
-///   - No conversion from ArenaSpan to vector
-///   - Direct pass-through of AST data
-///   - The arena outlives all generic operations
+///   1. Sema calls resolveGenericInstantiation() which:
+///      - If @[specialize]: creates a specialized decl with genericParams = {}
+///        and sets mangledName.
+///      - If type-erased: keeps the template with genericParams intact.
+///
+///   2. CodeGen checks decl->genericParams:
+///      - If empty: Sema already specialized it → lookup by mangled name.
+///      - If non-empty: type-erased path → generate erased version.
 
 #pragma once
 
@@ -33,97 +32,101 @@ namespace codegen {
 
 // ─── Detection Helpers ────────────────────────────────────────────────────
 
+/// @brief Check if a function declaration is generic (has generic parameters).
 bool isGenericFunction(FuncDeclAST* decl);
+
+/// @brief Check if a struct declaration is generic (has generic parameters).
 bool isGenericStruct(StructDeclAST* decl);
+
+/// @brief Check if a declaration has the @[specialize] attribute.
+/// @note This is a READ-ONLY check. The decision was already made by Sema.
+///       CodeGen should NOT use this to decide between paths - it should
+///       check decl->genericParams.empty() instead.
 bool shouldSpecialize(DeclAST* decl);
-bool isGenericParameterName(
-    InternedString name,
-    const ArenaSpan<GenericParamDeclAST*>& genericParams
-);
-
-// ─── Generic Parameter Helpers (need context for substitution) ─────────
-
-/// @brief Check if a type is a generic parameter in the given substitution context.
-inline bool isGenericParameterType(TypeAST* type, const GenericSubstitution* subst) {
-    if (!type || !subst) return false;
-    if (!type->isa<NamedTypeAST>()) return false;
-    NamedTypeAST* named = type->as<NamedTypeAST>();
-    return subst->isGenericParam(named->name);
-}
-
-/// @brief Get the substituted type for a generic parameter, if any.
-inline TypeAST* getSubstitutedType(TypeAST* type, const GenericSubstitution* subst) {
-    if (!type || !subst) return nullptr;
-    if (!type->isa<NamedTypeAST>()) return nullptr;
-    NamedTypeAST* named = type->as<NamedTypeAST>();
-    return subst->lookup(named->name);
-}
 
 /// @brief Check if a type contains any generic parameters at any depth.
 bool containsGenericParameter(TypeAST* type, const GenericSubstitution* subst);
 
-// ─── Instantiation API ────────────────────────────────────────────────────
+// ─── Type-Erased Generation ──────────────────────────────────────────────
 
-llvm::Function* createSpecializedFunction(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-);
-
-llvm::Type* createSpecializedStruct(
-    StructDeclAST* structDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-);
-
+/// @brief Generate a type-erased generic function.
+/// 
+/// This is used for the default (non-@[specialize]) path.
+/// The function takes all parameters as TaggedSlot* and returns TaggedSlot*.
+/// 
+/// @param funcDecl The generic function declaration.
+/// @param ctx The code generation context.
+/// @return The LLVM function, or nullptr on error.
 llvm::Function* generateErasedGenericFunction(
     FuncDeclAST* funcDecl,
     CodeGenContext& ctx
 );
 
+/// @brief Generate a type-erased generic struct.
+/// 
+/// This is used for the default (non-@[specialize]) path.
+/// All fields are TaggedSlot (tag byte + opaque pointer).
+/// 
+/// @param structDecl The generic struct declaration.
+/// @param ctx The code generation context.
+/// @return The LLVM struct type, or nullptr on error.
 llvm::Type* generateErasedGenericStruct(
     StructDeclAST* structDecl,
     CodeGenContext& ctx
 );
 
+// ─── Registry Access ──────────────────────────────────────────────────────
+
+/// @brief Get or create a specialized function.
+///
 /// This is the main entry point for resolving generic function calls.
-/// It handles both:
-///   - @[specialize]: Creates a monomorphized version for the specific types.
-///   - Default: Returns the type-erased function.
+/// It handles both paths:
+///   - Specialized (@[specialize]): Sema already created the decl with
+///     genericParams = {} and mangledName set. CodeGen just looks it up.
+///   - Type-erased (default): Generates the erased version.
+///
+/// @param funcDecl The function declaration (template or specialized).
+/// @param typeArgs The type arguments (for cache key, if needed).
+/// @param ctx The code generation context.
+/// @return The LLVM function, or nullptr on error.
 llvm::Function* getOrCreateSpecializedFunction(
     FuncDeclAST* funcDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
+/// @brief Get or create a specialized struct type.
+///
 /// This is the main entry point for resolving generic struct types.
-/// It handles both:
-///   - @[specialize]: Creates a monomorphized version for the specific types.
-///   - Default: Returns the type-erased struct type.
+/// It handles both paths:
+///   - Specialized (@[specialize]): Sema already created the decl with
+///     genericParams = {} and mangledName set. CodeGen just looks it up.
+///   - Type-erased (default): Generates the erased version.
+///
+/// @param structDecl The struct declaration (template or specialized).
+/// @param typeArgs The type arguments (for cache key, if needed).
+/// @param ctx The code generation context.
+/// @return The LLVM struct type, or nullptr on error.
 llvm::Type* getOrCreateSpecializedStruct(
     StructDeclAST* structDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
+/// @brief Resolve a generic call to a function.
+///
+/// Convenience wrapper for getOrCreateSpecializedFunction with error handling.
+///
+/// @param funcDecl The function declaration.
+/// @param genericArgs The generic arguments.
+/// @param ctx The code generation context.
+/// @param loc The source location for error reporting.
+/// @return The LLVM function, or nullptr on error.
 llvm::Value* resolveGenericCall(
     FuncDeclAST* funcDecl,
     const ArenaSpan<TypeAST*>& genericArgs,
     CodeGenContext& ctx,
     const SourceLocation& loc
-);
-
-/// This is called from getOrCreateSpecializedFunction to record each
-/// instantiation for use by #sizeof/#alignof/#tostr intrinsics.
-void recordGenericInstantiation(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-);
-
-std::vector<ArenaSpan<TypeAST*>> getRecordedInstantiations(
-    FuncDeclAST* funcDecl,
-    CodeGenContext& ctx
 );
 
 } // namespace codegen
