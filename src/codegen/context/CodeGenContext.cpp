@@ -13,32 +13,101 @@
 
 namespace codegen {
 
-// ─── Generic Parameter Helpers ────────────────────────────────────────────
+llvm::StructType* CodeGenContext::getTaggedSlotType() {
+    if (taggedSlotType_) {
+        return taggedSlotType_;
+    }
+    
+    static const char* slotName = "TaggedSlot";
+    llvm::StructType* slotType = llvm::StructType::getTypeByName(llvmCtx, slotName);
+    
+    if (!slotType) {
+        std::vector<llvm::Type*> slotFields = {
+            llvm::Type::getInt8Ty(llvmCtx),              // tag (0 = valid, 1 = nil, 2 = err, or type ID)
+            llvm::PointerType::get(llvmCtx, 0)          // value (opaque pointer)
+        };
+        slotType = llvm::StructType::create(llvmCtx, slotFields, slotName);
+    }
+    
+    taggedSlotType_ = slotType;
+    return slotType;
+}
 
-bool CodeGenContext::isUnresolvedGenericParameter(TypeAST* type) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
+llvm::Value* CodeGenContext::boxIntoTaggedSlot(llvm::Value* value, llvm::Value* tag, llvm::Type* valueType) {
+    if (!value) return nullptr;
+    if (!tag) {
+        // Default tag: 0 (valid)
+        tag = llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0);
+    }
+
+    llvm::StructType* slotType = getTaggedSlotType();
     
-    NamedTypeAST* named = type->as<NamedTypeAST>();
+    // ─── Truncate tag to i8 if needed ──────────────────────────────────────
+    if (tag->getType()->isIntegerTy() && tag->getType()->getIntegerBitWidth() != 8) {
+        tag = builder.CreateTrunc(tag, llvm::Type::getInt8Ty(llvmCtx), "tag_trunc");
+    }
+
+    // ─── Bitcast value to i8* ──────────────────────────────────────────────
+    llvm::Type* i8PtrType = llvm::PointerType::get(llvmCtx, 0);
+    llvm::Value* ptrValue = value;
+    if (value->getType() != i8PtrType) {
+        ptrValue = builder.CreateBitCast(value, i8PtrType, "value_bitcast");
+    }
+
+    // ─── Allocate TaggedSlot on the stack ──────────────────────────────────
+    llvm::AllocaInst* slotAlloca = builder.CreateAlloca(slotType, nullptr, "tagged_slot");
     
-    // ─── Check resolvedDecl first (Sema's determination) ──────────────────
-    if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
-        return true;
+    // ─── Store tag ──────────────────────────────────────────────────────────
+    llvm::Value* tagPtr = builder.CreateStructGEP(slotType, slotAlloca, 0, "tag_ptr");
+    builder.CreateStore(tag, tagPtr);
+    
+    // ─── Store value ────────────────────────────────────────────────────────
+    llvm::Value* valuePtr = builder.CreateStructGEP(slotType, slotAlloca, 1, "value_ptr");
+    builder.CreateStore(ptrValue, valuePtr);
+
+    return slotAlloca;
+}
+
+llvm::Value* CodeGenContext::boxIntoTaggedSlot(llvm::Value* value, uint32_t tag, llvm::Type* valueType) {
+    llvm::Value* tagValue = llvm::ConstantInt::get(
+        llvm::Type::getInt32Ty(llvmCtx),
+        tag
+    );
+    return boxIntoTaggedSlot(value, tagValue, valueType);
+}
+
+llvm::Value* CodeGenContext::unboxFromTaggedSlot(llvm::Value* slotPtr, llvm::Type* targetType) {
+    if (!slotPtr || !targetType) return nullptr;
+
+    llvm::StructType* slotType = getTaggedSlotType();
+
+    // ─── Load the slot ──────────────────────────────────────────────────────
+    llvm::Value* slot = builder.CreateLoad(slotType, slotPtr, "slot_load");
+    
+    // ─── Extract tag (optional, for debugging/validation) ──────────────────
+    // llvm::Value* tag = builder.CreateExtractValue(slot, 0, "slot_tag");
+    
+    // ─── Extract value ──────────────────────────────────────────────────────
+    llvm::Value* ptrValue = builder.CreateExtractValue(slot, 1, "slot_value");
+    
+    // ─── Bitcast to target type ─────────────────────────────────────────────
+    if (targetType->isPointerTy()) {
+        return builder.CreateBitCast(ptrValue, targetType, "unboxed_ptr");
     }
     
-    // ─── Fallback: check current substitution context ─────────────────────
-    if (currentGenericSubstitution) {
-        return currentGenericSubstitution->isGenericParam(named->name);
+    // For non-pointer types, load from the pointer
+    // This is used when the target is a value type stored in the slot
+    if (ptrValue->getType()->isPointerTy()) {
+        return builder.CreateLoad(targetType, ptrValue, "unboxed_value");
     }
     
-    return false;
+    // Fallback: just return the pointer (this should be rare)
+    return ptrValue;
 }
 
 // ─── Runtime Function Helpers ─────────────────────────────────────────────
 
-llvm::Function* CodeGenContext::getOrCreateRuntimeFunction(
-    const std::string& name,
-    llvm::FunctionType* type
-) {
+llvm::Function* CodeGenContext::getOrCreateRuntimeFunction(const std::string& name, llvm::FunctionType* type) {
     llvm::Function* func = getRuntimeFunction(name);
     if (func) return func;
 
@@ -72,10 +141,7 @@ llvm::Function* CodeGenContext::getRuntimeFn(RuntimeFn fn) {
     return func;
 }
 
-llvm::Function* CodeGenContext::getOrInsertFunction(
-    const std::string& name,
-    llvm::FunctionType* type
-) {
+llvm::Function* CodeGenContext::getOrInsertFunction(const std::string& name, llvm::FunctionType* type) {
     llvm::FunctionCallee callee = module->getOrInsertFunction(name, type);
     return llvm::dyn_cast<llvm::Function>(callee.getCallee());
 }
@@ -253,10 +319,7 @@ llvm::Value* CodeGenContext::createStringLiteral(const std::string& str) {
 
 // ─── Intrinsic Helpers ─────────────────────────────────────────────────────
 
-llvm::Function* CodeGenContext::getLLVMIntrinsicDecl(
-    llvm::Intrinsic::ID id,
-    llvm::ArrayRef<llvm::Type*> argTypes
-) {
+llvm::Function* CodeGenContext::getLLVMIntrinsicDecl(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> argTypes) {
     return llvm::Intrinsic::getDeclaration(module, id, argTypes);
 }
 

@@ -472,7 +472,6 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         return nullptr;
     }
 
-    // The resolved type should be a NamedTypeAST
     NamedTypeAST* namedType = structTypeAST->as<NamedTypeAST>();
     if (!namedType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
@@ -480,8 +479,6 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         return nullptr;
     }
 
-    // ─── 2. Get the resolved declaration from the named type ────────────────
-    // The resolvedDecl should be set by Sema on the NamedTypeAST
     TypeDeclAST* typeDecl = namedType->resolvedDecl;
     if (!typeDecl) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedType, expr->loc,
@@ -498,6 +495,9 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
     }
 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+    // ─── 2. Check if this is a type-erased generic struct ──────────────────
+    bool isErasedStruct = expr->isGenericInstantiation && expr->typeTag != 0;
 
     // ─── 3. Get the LLVM struct type ───────────────────────────────────────
     llvm::Type* structType = nullptr;
@@ -522,26 +522,21 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
     
     llvm::StructType* llvmStructType = llvm::cast<llvm::StructType>(structType);
 
-    
-
-    // ─── 4. Build the struct value from field initializers ─────────────────
-    // Start with undef for the struct
-    llvm::Value* result = llvm::UndefValue::get(llvmStructType);
-
-    // ─── 5. Map field names to indices ─────────────────────────────────────
+    // ─── 4. Map field names to indices ─────────────────────────────────────
     std::unordered_map<InternedString, size_t> fieldIndexMap;
     for (size_t i = 0; i < structDecl->fields.size(); ++i) {
         fieldIndexMap[structDecl->fields[i]->name] = i;
     }
 
-    // Track which fields have been initialized
     std::vector<bool> initialized(structDecl->fields.size(), false);
+
+    // ─── 5. Build the struct value ──────────────────────────────────────────
+    llvm::Value* result = llvm::UndefValue::get(llvmStructType);
 
     // ─── 6. Process each field initializer ─────────────────────────────────
     for (FieldInitAST* init : expr->inits) {
         if (!init) continue;
 
-        // Find the field index
         auto it = fieldIndexMap.find(init->name);
         if (it == fieldIndexMap.end()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_FieldNotFound, init->loc,
@@ -559,7 +554,6 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
             return nullptr;
         }
 
-        // If the field value is an l-value, load it
         if (init->value->isLValue) {
             llvm::Type* elemType = getType(ctx, init->value->resolvedType);
             if (elemType) {
@@ -568,54 +562,82 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
             if (!fieldValue) return nullptr;
         }
 
-        // ─── Type compatibility check ──────────────────────────────────────
+        // ─── Get the expected field type from the LLVM struct ──────────────
         llvm::Type* expectedType = llvmStructType->getElementType(fieldIndex);
-        if (fieldValue->getType() != expectedType) {
-            // Try to cast if compatible
-            if (fieldValue->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
-                fieldValue = ctx.builder.CreateIntCast(
-                    fieldValue, 
-                    expectedType, 
-                    true,  // signed
-                    "field_cast"
-                );
-            } else if (fieldValue->getType()->isFloatingPointTy() && 
-                       expectedType->isFloatingPointTy()) {
-                if (fieldValue->getType()->isFloatTy() && expectedType->isDoubleTy()) {
-                    fieldValue = ctx.builder.CreateFPExt(
-                        fieldValue, 
-                        expectedType, 
-                        "field_fpext"
-                    );
-                } else if (fieldValue->getType()->isDoubleTy() && expectedType->isFloatTy()) {
-                    fieldValue = ctx.builder.CreateFPTrunc(
-                        fieldValue, 
-                        expectedType, 
-                        "field_fptrunc"
-                    );
+
+        // ─── ✅ Phase 4.2: BOX THE FIELD for type-erased structs ────────────
+        if (isErasedStruct) {
+            // For type-erased structs, every field is a TaggedSlot*
+            // Each field needs its own type tag
+            uint32_t fieldTag = 0;
+            
+            // Try to get the field's type tag from Sema
+            // The field type might be generic, in which case we need its tag
+            FieldDeclAST* field = structDecl->fields[fieldIndex];
+            if (field && field->type) {
+                if (field->type->isa<NamedTypeAST>()) {
+                    NamedTypeAST* fieldNamedType = field->type->as<NamedTypeAST>();
+                    fieldTag = fieldNamedType->typeTag;
                 }
-            } else if (fieldValue->getType()->isPointerTy() && 
-                       expectedType->isPointerTy()) {
-                fieldValue = ctx.builder.CreatePointerCast(
-                    fieldValue, 
-                    expectedType, 
-                    "field_ptr_cast"
-                );
-            } else {
-                // Get type names for diagnostic using LLVM's own printing
-                std::string expectedName;
-                llvm::raw_string_ostream expectedOS(expectedName);
-                expectedType->print(expectedOS);
-                
-                std::string actualName;
-                llvm::raw_string_ostream actualOS(actualName);
-                fieldValue->getType()->print(actualOS);
-                
-                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, init->loc,
-                                        "field '", ctx.pool.lookup(init->name), 
-                                        "' type mismatch: expected ", expectedName,
-                                        " but got ", actualName);
+            }
+            
+            // ─── Box the field value into a TaggedSlot ──────────────────────
+            fieldValue = ctx.boxIntoTaggedSlot(
+                fieldValue,
+                fieldTag,
+                fieldValue->getType()
+            );
+            if (!fieldValue) {
                 return nullptr;
+            }
+            
+            // The boxed value is a pointer to TaggedSlot
+            // It should match the expected type (which is also a pointer)
+            if (fieldValue->getType() != expectedType) {
+                fieldValue = ctx.builder.CreateBitCast(
+                    fieldValue,
+                    expectedType,
+                    "field_box_cast"
+                );
+            }
+        } else {
+            // ─── Normal struct: cast if needed ──────────────────────────────
+            if (fieldValue->getType() != expectedType) {
+                if (fieldValue->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
+                    fieldValue = ctx.builder.CreateIntCast(
+                        fieldValue, 
+                        expectedType, 
+                        true,
+                        "field_cast"
+                    );
+                } else if (fieldValue->getType()->isFloatingPointTy() && 
+                           expectedType->isFloatingPointTy()) {
+                    if (fieldValue->getType()->isFloatTy() && expectedType->isDoubleTy()) {
+                        fieldValue = ctx.builder.CreateFPExt(
+                            fieldValue, 
+                            expectedType, 
+                            "field_fpext"
+                        );
+                    } else if (fieldValue->getType()->isDoubleTy() && expectedType->isFloatTy()) {
+                        fieldValue = ctx.builder.CreateFPTrunc(
+                            fieldValue, 
+                            expectedType, 
+                            "field_fptrunc"
+                        );
+                    }
+                } else if (fieldValue->getType()->isPointerTy() && 
+                           expectedType->isPointerTy()) {
+                    fieldValue = ctx.builder.CreatePointerCast(
+                        fieldValue, 
+                        expectedType, 
+                        "field_ptr_cast"
+                    );
+                } else {
+                    ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, init->loc,
+                                            "field '", ctx.pool.lookup(init->name), 
+                                            "' type mismatch");
+                    return nullptr;
+                }
             }
         }
 
@@ -636,17 +658,14 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         llvm::Type* fieldType = llvmStructType->getElementType(i);
         llvm::Constant* defaultValue = nullptr;
         
-        // Check if the field has a default value expression
         if (field->defaultVal) {
             llvm::Value* defaultVal = lowerExpression(field->defaultVal, ctx);
             if (defaultVal && llvm::isa<llvm::Constant>(defaultVal)) {
                 defaultValue = llvm::cast<llvm::Constant>(defaultVal);
             } else {
-                // Default value is not a constant - use null
                 defaultValue = llvm::Constant::getNullValue(fieldType);
             }
         } else {
-            // Use null/default for uninitialized fields
             defaultValue = llvm::Constant::getNullValue(fieldType);
         }
 
@@ -951,11 +970,43 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
 
     // ─── Lower arguments ───────────────────────────────────────────────────
     std::vector<llvm::Value*> args;
-    for (ExprAST* arg : expr->args) {
+    
+    // ─── Check if this is a type-erased generic call ──────────────────────
+    bool isTypeErasedCall = expr->isGenericCall && !expr->typeTags.empty();
+    
+    // ─── Get the callee's function type from Sema ──────────────────────────
+    FuncTypeAST* calleeFuncType = expr->callee->resolvedType
+        ? expr->callee->resolvedType->as<FuncTypeAST>()
+        : nullptr;
+    
+    if (!calleeFuncType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, expr->callee->loc,
+                                "call callee does not resolve to a function type");
+        return nullptr;
+    }
+
+    // ─── Get the LLVM function type ────────────────────────────────────────
+    llvm::FunctionType* fnType = getFunctionType(ctx, calleeFuncType);
+    if (!fnType) {
+        return nullptr;
+    }
+
+    // ─── Process each argument ─────────────────────────────────────────────
+    size_t paramIndex = 0;
+    size_t tagIndex = 0;
+    size_t numParams = fnType->getNumParams();
+    bool hasVariadic = !calleeFuncType->params.empty() && 
+                       calleeFuncType->params.back()->isVariadic;
+    size_t fixedParamCount = hasVariadic ? calleeFuncType->params.size() - 1 : calleeFuncType->params.size();
+
+    for (size_t i = 0; i < expr->args.size(); ++i) {
+        ExprAST* arg = expr->args[i];
         llvm::Value* argVal = lowerExpression(arg, ctx);
         if (!argVal) {
             return nullptr;
         }
+
+        // ─── Load if l-value ────────────────────────────────────────────────
         if (arg->isLValue) {
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
             if (elemType) {
@@ -963,33 +1014,93 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             }
             if (!argVal) return nullptr;
         }
-        args.push_back(argVal);
+
+        // ─── Determine if this argument needs boxing ───────────────────────
+        // 1. Type-erased generic call: box all arguments
+        // 2. Function parameter expects TaggedSlot* (opaque pointer)
+        bool needsBoxing = false;
+        uint32_t tag = 0;
+
+        if (isTypeErasedCall) {
+            // ─── Type-erased call: box EVERYTHING ──────────────────────────
+            needsBoxing = true;
+            
+            // ─── Get the type tag for this argument ────────────────────────
+            if (tagIndex < expr->typeTags.size()) {
+                tag = expr->typeTags[tagIndex];
+            } else {
+                // Fallback: if we don't have a tag, use 0 (valid)
+                tag = 0;
+            }
+            tagIndex++;
+        } else {
+            // ─── Non-generic call: check if parameter expects tagged slot ───
+            if (paramIndex < fixedParamCount) {
+                // Fixed parameter
+                ParamAST* param = calleeFuncType->params[paramIndex];
+                if (param && param->type) {
+                    // If the parameter type is a generic parameter (unresolved),
+                    // it should be boxed
+                    if (ctx.isUnresolvedGenericParameter(param->type)) {
+                        needsBoxing = true;
+                        tag = 0;  // Tag will be determined at runtime
+                    }
+                }
+            } else if (hasVariadic) {
+                // Variadic parameter - check if element type needs boxing
+                ParamAST* variadicParam = calleeFuncType->params.back();
+                if (variadicParam && variadicParam->type) {
+                    if (variadicParam->type->isa<ArrayTypeAST>()) {
+                        TypeAST* elemType = variadicParam->type->as<ArrayTypeAST>()->element;
+                        if (elemType && ctx.isUnresolvedGenericParameter(elemType)) {
+                            needsBoxing = true;
+                            tag = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ─── Box the argument if needed ─────────────────────────────────────
+        if (needsBoxing) {
+            argVal = ctx.boxIntoTaggedSlot(
+                argVal,
+                tag,
+                argVal->getType()
+            );
+            if (!argVal) {
+                return nullptr;
+            }
+            // The boxed value is a pointer to TaggedSlot
+            args.push_back(argVal);
+        } else {
+            args.push_back(argVal);
+        }
+
+        paramIndex++;
     }
 
-    // ─── Build the callable's real signature ───────────────────────────────
-    // Sema (resolveCallExpr) already guarantees expr->callee resolves to a
-    // FuncTypeAST - a value that's neither the closure struct shape nor a
-    // callable pointer means CodeGen and Sema have gone out of sync, not
-    // that the user wrote something uncallable.
-    FuncTypeAST* calleeFuncType = expr->callee->resolvedType
-        ? expr->callee->resolvedType->as<FuncTypeAST>()
-        : nullptr;
-    assert(calleeFuncType && "call callee does not resolve to a FuncTypeAST - "
-                              "Sema should have caught this");
-    if (!calleeFuncType) {
-        return nullptr;
+    // ─── Add trailing variadic slot if needed ──────────────────────────────
+    if (hasVariadic && args.size() < numParams) {
+        // Fill missing variadic arguments with null slice
+        llvm::StructType* sliceType = ctx.getSliceType();
+        args.push_back(llvm::Constant::getNullValue(sliceType));
     }
 
-    llvm::FunctionType* fnType = getFunctionType(ctx, calleeFuncType);
-    if (!fnType) {
-        return nullptr;
+    // ─── Ensure argument count matches function signature ──────────────────
+    if (args.size() != numParams) {
+        // Try to pad with nulls or truncate
+        if (args.size() < numParams) {
+            for (size_t i = args.size(); i < numParams; ++i) {
+                llvm::Type* paramType = fnType->getParamType(i);
+                args.push_back(llvm::Constant::getNullValue(paramType));
+            }
+        } else {
+            args.resize(numParams);
+        }
     }
 
-    // emitCallableCall (closure/CodeGenClosure.hpp) discriminates closure
-    // values, plain llvm::Function references, and indirect function
-    // pointers - the same shared dispatch lowerPipelineStep and
-    // createCompositionWrapper use, instead of a fourth independent copy
-    // of that three-way check here.
+    // ─── Call the function ──────────────────────────────────────────────────
     llvm::Value* result = emitCallableCall(calleeVal, args, fnType, ctx, "call");
     expr->llvmValue = result;
     return result;

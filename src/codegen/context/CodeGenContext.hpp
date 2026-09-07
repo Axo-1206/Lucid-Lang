@@ -105,11 +105,65 @@ struct CodeGenContext {
     std::vector<LoopInfo> loops;
 
     // ─── Generic Context ──────────────────────────────────────────────────
-    
-    /// @brief The current generic substitution context (if any).
-    /// This is set when lowering a generic function body and used to resolve
-    /// generic parameter names in types.
-    const GenericSubstitution* currentGenericSubstitution = nullptr;
+
+    /// @brief Cached TaggedSlot type.
+    llvm::StructType* taggedSlotType_ = nullptr;
+
+    /// @brief Box a value into a TaggedSlot for type-erased generic dispatch.
+    /// 
+    /// Creates a TaggedSlot struct with:
+    ///   - tag: The runtime type tag (0 = valid, 1 = nil, 2 = err, or type ID)
+    ///   - value: The opaque pointer to the actual value
+    /// 
+    /// @param value The value to box (will be bitcast to i8*).
+    /// @param tag The type tag (uint32_t, will be truncated to i8).
+    /// @param valueType The LLVM type of the value (for debugging).
+    /// @return A pointer to the allocated TaggedSlot.
+    /// 
+    /// ─── Memory Model ──────────────────────────────────────────────────────
+    /// The TaggedSlot is allocated on the stack using alloca. The caller
+    /// is responsible for ensuring the slot outlives its use.
+    /// 
+    /// ─── Usage ─────────────────────────────────────────────────────────────
+    /// ```cpp
+    /// llvm::Value* boxed = ctx.boxIntoTaggedSlot(
+    ///     argValue,
+    ///     tagValue,
+    ///     argValue->getType()
+    /// );
+    /// ```
+    llvm::Value* boxIntoTaggedSlot(
+        llvm::Value* value,
+        llvm::Value* tag,
+        llvm::Type* valueType
+    );
+
+    /// @brief Box a value with a known type tag (compile-time constant).
+    /// 
+    /// Convenience overload for when the tag is known at compile time.
+    /// @param value The value to box.
+    /// @param tag The type tag (uint32_t).
+    /// @param valueType The LLVM type of the value.
+    /// @return A pointer to the allocated TaggedSlot.
+    llvm::Value* boxIntoTaggedSlot(
+        llvm::Value* value,
+        uint32_t tag,
+        llvm::Type* valueType
+    );
+
+    /// @brief Unbox a value from a TaggedSlot.
+    /// 
+    /// @param slotPtr Pointer to the TaggedSlot.
+    /// @param targetType The expected LLVM type of the unboxed value.
+    /// @return The unboxed value, or nullptr on error.
+    llvm::Value* unboxFromTaggedSlot(
+        llvm::Value* slotPtr,
+        llvm::Type* targetType
+    );
+
+    /// @brief Get or create the TaggedSlot type.
+    /// @return The TaggedSlot struct type.
+    llvm::StructType* getTaggedSlotType();
     
     // ─── Current Function ───────────────────────────────────────────────
     llvm::Function* currentFunction = nullptr;
@@ -183,10 +237,6 @@ struct CodeGenContext {
     /// Used by #sizeof(T) and #alignof(T) to determine whether to use runtime tag lookup
     /// instead of compile-time constants.
     bool isUnresolvedGenericParameter(TypeAST* type);
-
-    /// @brief Get the current generic tag from the value representation.
-    /// @return The tag value (i8), or nullptr if not available.
-    llvm::Value* getCurrentGenericTag();
     
     // ─── Runtime Function Helpers ──────────────────────────────────────
     
@@ -404,5 +454,75 @@ struct CodeGenContext {
     llvm::Type* getPointeeType(llvm::Value* ptr) const;
     llvm::Type* getPointeeType(llvm::Type* type) const;
 };
+
+/// @brief Get the type tag for a struct field.
+/// @param field The field declaration.
+/// @param ctx The code generation context.
+/// @return The type tag (0 if not tagged).
+static inline uint32_t getFieldTypeTag(FieldDeclAST* field, CodeGenContext& ctx) {
+    if (!field || !field->type) return 0;
+    
+    if (field->type->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedType = field->type->as<NamedTypeAST>();
+        return namedType->typeTag;
+    }
+    
+    // Check if the field type is a generic parameter
+    if (ctx.isUnresolvedGenericParameter(field->type)) {
+        // For generic parameters, the tag is determined at runtime
+        // We return 0 and the caller handles it
+        return 0;
+    }
+    
+    return 0;
+}
+
+
+/// @brief Get the type tag from an expression, if available.
+/// @param expr The expression to check.
+/// @return The type tag (0 = no tag / not generic), or 0 if not available.
+static inline uint32_t getTypeTagFromExpr(ExprAST* expr) {
+    if (!expr) return 0;
+    
+    switch (expr->kind) {
+        case ASTKind::CallExpr: {
+            CallExprAST* call = expr->as<CallExprAST>();
+            if (!call->typeTags.empty()) {
+                return call->typeTags[0];
+            }
+            return 0;
+        }
+        
+        case ASTKind::StructLiteralExpr: {
+            StructLiteralExprAST* structLit = expr->as<StructLiteralExprAST>();
+            return structLit->typeTag;
+        }
+        
+        default:
+            return 0;
+    }
+}
+
+/// @brief Get all type tags from a call expression.
+/// @param call The call expression.
+/// @return The vector of type tags (empty if none).
+static inline const std::vector<uint32_t>& getTypeTagsFromCall(CallExprAST* call) {
+    return call->typeTags;
+}
+
+static inline bool isGenericParameterType(TypeAST* type) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    return named->resolvedDecl && 
+           named->resolvedDecl->isa<GenericParamDeclAST>();
+}
+
+static inline bool isGenericParameterTypeWithName(TypeAST* type, InternedString name) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    return named->resolvedDecl && 
+           named->resolvedDecl->isa<GenericParamDeclAST>() &&
+           named->name == name;
+}
 
 } // namespace codegen
