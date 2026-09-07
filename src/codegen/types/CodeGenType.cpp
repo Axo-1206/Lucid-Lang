@@ -23,6 +23,11 @@ llvm::Type* getType(CodeGenContext& ctx, TypeAST* type) {
 llvm::Type* getType(CodeGenContext& ctx, TypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
+    // ─── If no substitution was passed, check the context ──────────────
+    if (!subst) {
+        subst = ctx.currentGenericSubstitution;
+    }
+
     // ─── Check cache only when no substitution ──────────────────────────────
     // When substitution is present, we cannot cache by type alone because
     // the same type with different substitutions yields different LLVM types.
@@ -174,9 +179,12 @@ llvm::StructType* getArenaDescriptorType(CodeGenContext& ctx) {
 llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named, const GenericSubstitution* subst) {
     if (!named) return nullptr;
 
-    // ─── Defensive check for traits ──────────────────────────────────
-    // Traits should never reach CodeGen because Sema rejects them everywhere
-    // except generic constraints. This is a safety net.
+    // ─── If no substitution was passed, check the context ──────────────
+    if (!subst) {
+        subst = ctx.currentGenericSubstitution;
+    }
+
+    // ─── Defensive check for traits ──────────────────────────────────────
     if (named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TraitInvalidContext, named->loc,
                                 "INTERNAL ERROR: trait '", ctx.pool.lookup(named->name),
@@ -189,23 +197,43 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named, const Generic
 
     // ─── 1. Check if this is a generic parameter ──────────────────────────
     if (subst) {
-        TypeAST* substituted = subst->lookup(named->name);
-        if (substituted) {
-            // Recursively get type of the substituted type
-            return getType(ctx, substituted, subst);
-        }
+        // First, check if this name is a generic parameter in the substitution
         if (subst->isGenericParam(named->name)) {
+            TypeAST* substituted = subst->lookup(named->name);
+            if (substituted) {
+                // Recursively get LLVM type of the substituted type
+                // This handles T -> int, or T -> Box<int>, etc.
+                return getType(ctx, substituted, subst);
+            }
+            // Shouldn't happen if arity was validated
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, named->loc,
                                     "missing type argument for generic parameter '",
                                     ctx.pool.lookup(named->name), "'");
             return nullptr;
         }
+        
+        // Also check if the name matches a generic parameter from the outer context
+        // This handles the case where subst is for Box<T> and named->name is "T"
+        // but "T" is actually from the outer Wrapper<T> context.
+        // The outer context is ctx.currentGenericSubstitution, which we already have.
     }
 
     // ─── 2. Resolve struct/enum via resolvedDecl ──────────────────────────
     if (named->resolvedDecl) {
         if (named->resolvedDecl->isa<StructDeclAST>()) {
-            return getStructType(ctx, named->resolvedDecl->as<StructDeclAST>());
+            StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();
+            
+            // ─── Generic struct: use specialized resolution ────────────────────
+            if (isGenericStruct(structDecl)) {
+                // Pass the generic args from the NamedTypeAST.
+                // These args may contain generic parameters from the outer context
+                // (e.g., Box<T> where T is from Wrapper<T>).
+                // getOrCreateSpecializedStruct will handle this.
+                return getOrCreateSpecializedStruct(structDecl, named->genericArgs, ctx);
+            }
+            
+            // ─── Non-generic struct: normal lookup ────────────────────────────
+            return getStructType(ctx, structDecl);
         }
         if (named->resolvedDecl->isa<EnumDeclAST>()) {
             return getEnumType(ctx, named->resolvedDecl->as<EnumDeclAST>());
@@ -213,49 +241,33 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named, const Generic
     }
 
     // ─── 3. Try to resolve as a primitive type ──────────────────────────────
-    // Delegate to getPrimitiveType via the canonical mapping.
-    // This is the SOURCE OF TRUTH for primitive type mapping.
     static const std::unordered_map<std::string, PrimitiveKind> primMap = {
-        // Boolean
         {"bool", PrimitiveKind::Bool},
-        
-        // Signed integers (fixed-width)
         {"int8", PrimitiveKind::Int8},
         {"int16", PrimitiveKind::Int16},
         {"int32", PrimitiveKind::Int32},
         {"int64", PrimitiveKind::Int64},
-        
-        // Unsigned integers (fixed-width)
         {"uint8", PrimitiveKind::Uint8},
         {"uint16", PrimitiveKind::Uint16},
         {"uint32", PrimitiveKind::Uint32},
         {"uint64", PrimitiveKind::Uint64},
-        
-        // Signed integers (machine-dependent)
         {"byte", PrimitiveKind::Byte},
         {"short", PrimitiveKind::Short},
         {"int", PrimitiveKind::Int},
         {"long", PrimitiveKind::Long},
-        
-        // Unsigned integers (machine-dependent)
         {"ubyte", PrimitiveKind::Ubyte},
         {"ushort", PrimitiveKind::Ushort},
         {"uint", PrimitiveKind::Uint},
         {"ulong", PrimitiveKind::Ulong},
-        
-        // Floating point
         {"float", PrimitiveKind::Float},
         {"double", PrimitiveKind::Double},
         {"decimal", PrimitiveKind::Decimal},
-        
-        // Text
         {"string", PrimitiveKind::String},
         {"char", PrimitiveKind::Char}
     };
     
     auto it = primMap.find(typeName);
     if (it != primMap.end()) {
-        // Create a temporary PrimitiveTypeAST and delegate
         PrimitiveTypeAST tmp(it->second);
         return getPrimitiveType(ctx, &tmp);
     }
@@ -266,8 +278,6 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named, const Generic
     }
 
     // ─── 5. Unknown type - create forward declaration ──────────────────────
-    // This typically means the type is defined in another module or
-    // we're still in the declaration phase.
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, named->loc,
                               "type '", typeName, "' not yet defined, "
                               "creating forward declaration");
@@ -338,11 +348,8 @@ llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
                 true
             );
         } else {
-            // Regular field: get the LLVM type
-            // If this is a self-reference, getType() will return a pointer
-            // to the opaque struct type because:
-            //   1. The struct is already in the cache (from step 5)
-            //   2. getNamedType() checks the cache before recursing
+            // For self-referential fields, getType() will return a pointer
+            // to the opaque struct type because it's already in the cache.
             fieldType = getType(ctx, field->type);
         }
 
@@ -356,8 +363,6 @@ llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
     }
 
     // ─── 7. Define the opaque struct ──────────────────────────────────────
-    // Now that we have all field types, we can finally define the struct.
-    // If the struct is still opaque (not already defined), set its body.
     if (structType->isOpaque()) {
         structType->setBody(fieldTypes);
     }
@@ -545,6 +550,8 @@ llvm::Type* getRefType(CodeGenContext& ctx, RefTypeAST* type) {
 llvm::Type* getArrayType(CodeGenContext& ctx, ArrayTypeAST* type, const GenericSubstitution* subst) {
     if (!type) return nullptr;
 
+    // ─── Pass substitution to element type ──────────────────────────────
+    // This handles arrays of generic types: [*]T where T is a generic param
     llvm::Type* elemType = getType(ctx, type->element, subst);
     if (!elemType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, type->loc,
@@ -558,13 +565,11 @@ llvm::Type* getArrayType(CodeGenContext& ctx, ArrayTypeAST* type, const GenericS
 
         case ArrayKind::Dynamic:
             // Dynamic arrays are heap-allocated, stored as a pointer
-            // With opaque pointers, we don't need the element type
             return llvm::PointerType::get(ctx.llvmCtx, 0);
 
         case ArrayKind::Slice:
             // Slices are { ptr, len, cap }
             {
-                // With opaque pointers, ptr is just a pointer
                 llvm::Type* ptrType = llvm::PointerType::get(ctx.llvmCtx, 0);
                 llvm::Type* lenType = llvm::Type::getInt64Ty(ctx.llvmCtx);
                 std::string typeName = "slice_" + typeToString(type->element, ctx.pool);
@@ -702,14 +707,49 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type) 
     std::string moduleName = ctx.pool.lookup(type->moduleName);
     std::string typeName = ctx.pool.lookup(type->typeName);
 
-    // Try a module-qualified name first so same-named types from different
-    // modules don't alias each other.
-    std::string qualifiedName = moduleName + "." + typeName;
+    // ─── Try to find the target module ────────────────────────────────────
+    ModuleAST* targetModule = nullptr;
+    if (ctx.currentModule) {
+        auto it = ctx.currentModule->resolvedImports.find(type->moduleName);
+        if (it != ctx.currentModule->resolvedImports.end()) {
+            targetModule = it->second;
+        }
+    }
 
+    // ─── If we have the target module, resolve the declaration ────────────
+    if (targetModule) {
+        for (DeclAST* decl : targetModule->decls) {
+            if (decl->isa<TypeDeclAST>()) {
+                TypeDeclAST* typeDecl = decl->as<TypeDeclAST>();
+                if (typeDecl->name == type->typeName) {
+                    
+                    if (typeDecl->isa<StructDeclAST>()) {
+                        StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+                        
+                        if (isGenericStruct(structDecl)) {
+                            // ─── Generic struct: use specialized resolution ──
+                            // The generic args may contain generic parameters
+                            // from the current context.
+                            return getOrCreateSpecializedStruct(structDecl, type->genericArgs, ctx);
+                        }
+                        
+                        // ─── Non-generic struct ──────────────────────────────
+                        return getStructType(ctx, structDecl);
+                    }
+                    
+                    if (typeDecl->isa<EnumDeclAST>()) {
+                        return getEnumType(ctx, typeDecl->as<EnumDeclAST>());
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Fallback: try qualified name ──────────────────────────────────────
+    std::string qualifiedName = moduleName + "." + typeName;
     llvm::StructType* structType = llvm::StructType::getTypeByName(ctx.llvmCtx, qualifiedName);
+    
     if (!structType) {
-        // Fall back to the bare name for compatibility with types that were
-        // registered without module qualification.
         structType = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName);
     }
 
