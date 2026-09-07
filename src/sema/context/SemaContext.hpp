@@ -121,8 +121,8 @@ struct SemaContext {
     // ─── Type Cache ────────────────────────────────────────────────────
     TypeCache typeCache;
     
-    // ─── Type Tag Registry ────────────────────────────────────────────
-    /// @brief Registry for mapping concrete types to runtime type tags.
+    // ─── Type Id Registry ────────────────────────────────────────────
+    /// @brief Registry for mapping concrete types to runtime type ids.
     /// Used for type-erased generic dispatch.
     TypeIdRegistry typeIdRegistry;
     
@@ -239,12 +239,6 @@ struct SemaContext {
     bool insideNestedFunction() const;
     FuncDeclAST* getInnermostFunction() const;
     BaseAST* getInnermostFunctionNode() const;
-
-    // ─── Type Tag Registry Accessors ──────────────────────────────────
-    
-    /// @brief Get the type tag registry (for type-erased generic dispatch).
-    TypeIdRegistry& getTypeIdRegistry() { return typeIdRegistry; }
-    const TypeIdRegistry& getTypeIdRegistry() const { return typeIdRegistry; }
 
     // ─── Other Helpers ─────────────────────────────────────────────────
 

@@ -56,7 +56,7 @@ struct GenericSubstitution {
 /// 
 /// Contains either:
 ///   - A specialized declaration (@[specialize] path) with genericParams empty
-///   - The template declaration with a runtime type tag (type-erased path)
+///   - The template declaration with a runtime type id (type-erased path)
 struct GenericResolution {
     /// The resolved declaration (specialized or template).
     DeclAST* resolvedDecl = nullptr;
@@ -64,8 +64,8 @@ struct GenericResolution {
     /// True if this resolved to a specialized declaration (@[specialize] path).
     bool isSpecialized = false;
     
-    /// Runtime type tag (only valid when isSpecialized == false).
-    /// 0 is reserved for "no tag" (non-generic or specialized).
+    /// Runtime type id (only valid when isSpecialized == false).
+    /// 0 is reserved for "no id" (non-generic or specialized).
     uint32_t typeId = 0;
 };
 
@@ -91,12 +91,12 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 ///   - Arity validation
 ///   - @[specialize] vs type-erased path selection
 ///   - Specialized declaration creation (if needed)
-///   - Type tag assignment (if type-erased)
+///   - Type id assignment (if type-erased)
 /// 
 /// @param templateDecl The generic declaration (FuncDeclAST* or StructDeclAST*).
 /// @param typeArgs The concrete type arguments provided at the use site.
 /// @param ctx The semantic context.
-/// @return A GenericResolution containing the resolved declaration and tag.
+/// @return A GenericResolution containing the resolved declaration and id.
 /// 
 /// @note This function should be called ONCE per instantiation. Call sites
 ///       should store the result on the AST node (e.g., resolvedDecl, 

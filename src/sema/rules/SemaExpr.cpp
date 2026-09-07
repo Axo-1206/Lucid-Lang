@@ -2361,12 +2361,12 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
     if (isGenericCall && funcDecl) {
         expr->isGenericCall = true;
         
-        // Store type tags for each type argument
+        // Store type ids for each type argument
         expr->typeIds.clear();
         for (TypeAST* arg : genericArgs) {
-            // Get or assign a type tag from the registry
+            // Get or assign a type id from the registry
             // Note: For specialized functions, genericArgs is empty
-            expr->typeIds.push_back(ctx.typeIdRegistry.getTag(arg));
+            expr->typeIds.push_back(ctx.typeIdRegistry.getId(arg));
         }
     } else {
         expr->isGenericCall = false;

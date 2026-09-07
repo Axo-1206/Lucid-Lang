@@ -853,11 +853,11 @@ GenericResolution resolveGenericInstantiation(
             result.resolvedDecl = specialized;
         }
         result.isSpecialized = true;
-        result.typeId = 0;  // No tag needed for specialized declarations
+        result.typeId = 0;  // No id needed for specialized declarations
         
     } else {
         // ─── Type-erased path ──────────────────────────────────────────────────
-        // Keep the template declaration and assign a runtime type tag
+        // Keep the template declaration and assign a runtime type id
         result.resolvedDecl = templateDecl;
         result.isSpecialized = false;
         
@@ -878,7 +878,7 @@ GenericResolution resolveGenericInstantiation(
                          "': ", ctx.pool.lookup(erasedName));
         }
         
-        // Compute a canonical type for the tag registry
+        // Compute a canonical type for the id registry
         // The canonical type represents the concrete instantiation
         // For functions: use the function's substituted signature
         // For structs: use the NamedTypeAST (name + args) as the canonical key
@@ -904,8 +904,8 @@ GenericResolution resolveGenericInstantiation(
             canonicalType = ctx.getNamedType(templateDecl->name, typeArgs);
         }
         
-        // Assign a tag for the canonical type
-        result.typeId = ctx.typeIdRegistry.getTag(canonicalType);
+        // Assign a id for the canonical type
+        result.typeId = ctx.typeIdRegistry.getId(canonicalType);
     }
 
     return result;

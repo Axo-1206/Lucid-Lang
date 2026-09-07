@@ -566,6 +566,8 @@ lucid/
     │   │
     │   ├── context/                        # Context components
     │   │   ├── ContextStack.hpp/cpp        
+    │   │   ├── Generic.hpp/cpp        
+    │   │   ├── TypeIdRegistry.hpp          # Registry for mapping concrete types to runtime type id.
     │   │   └── SemaContext.hpp/cpp         # Unified context (composition)
     │   │
     │   ├── rules/                          # Analysis rules
@@ -639,6 +641,9 @@ lucid/
     │   │   │
     │   │   ├── string/
     │   │   │   └── StringRuntime.cpp           # String operations
+    │   │   │
+    │   │   ├── tag/
+    │   │   │   └── TagLookupRuntime.cpp
     │   │   │
     │   │   ├── closure/
     │   │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
