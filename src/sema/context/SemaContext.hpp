@@ -95,6 +95,38 @@ struct TypeCache {
     std::unordered_map<RefTypeKey, RefTypeAST*, RefTypeKeyHash> refTypes;
 };
 
+// ─── Specialization Cache Key ─────────────────────────────────────────────
+
+/// @brief Key for identifying a unique specialization.
+/// 
+/// Uniquely identifies a specialization by the template declaration and
+/// the concrete type arguments.
+struct SpecializationKey {
+    DeclAST* templateDecl;              // The generic declaration
+    ArenaSpan<TypeAST*> typeArgs;       // Concrete type arguments
+
+    bool operator==(const SpecializationKey& other) const {
+        if (templateDecl != other.templateDecl) return false;
+        if (typeArgs.size() != other.typeArgs.size()) return false;
+        for (size_t i = 0; i < typeArgs.size(); ++i) {
+            if (typeArgs[i] != other.typeArgs[i]) return false;
+        }
+        return true;
+    }
+};
+
+/// @brief Hash for SpecializationKey.
+struct SpecializationKeyHash {
+    size_t operator()(const SpecializationKey& key) const {
+        size_t h1 = std::hash<DeclAST*>{}(key.templateDecl);
+        size_t h2 = 0;
+        for (size_t i = 0; i < key.typeArgs.size(); ++i) {
+            h2 ^= std::hash<TypeAST*>{}(key.typeArgs[i]) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
+        }
+        return h1 ^ (h2 << 1);
+    }
+};
+
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
 /// @brief Central hub for semantic analysis.
@@ -120,6 +152,38 @@ struct SemaContext {
     
     // ─── Type Cache ────────────────────────────────────────────────────
     TypeCache typeCache;
+
+    // ─── Specialization Cache ──────────────────────────────────────────────
+    /// @brief Cache for specialized declarations.
+    /// 
+    /// Tracks both in-progress and completed specializations to:
+    ///   1. Prevent infinite recursion for self-referential types
+    ///   2. Deduplicate identical specializations
+    /// 
+    /// Key: (templateDecl, typeArgs) → specialized DeclAST*
+    /// 
+    /// IMPORTANT: A declaration is inserted BEFORE its fields are substituted,
+    /// breaking recursive cycles. This is the "register before recursing" pattern.
+    std::unordered_map<SpecializationKey, DeclAST*, SpecializationKeyHash> specializationCache;
+
+    /// @brief Check if a specialization is already in progress or completed.
+    bool hasSpecialization(DeclAST* templateDecl, const ArenaSpan<TypeAST*>& typeArgs) const {
+        SpecializationKey key{templateDecl, typeArgs};
+        return specializationCache.find(key) != specializationCache.end();
+    }
+
+    /// @brief Get a cached specialization.
+    DeclAST* getSpecialization(DeclAST* templateDecl, const ArenaSpan<TypeAST*>& typeArgs) const {
+        SpecializationKey key{templateDecl, typeArgs};
+        auto it = specializationCache.find(key);
+        return it != specializationCache.end() ? it->second : nullptr;
+    }
+
+    /// @brief Register a specialization BEFORE filling its fields.
+    void registerSpecialization(DeclAST* templateDecl, const ArenaSpan<TypeAST*>& typeArgs, DeclAST* specialized) {
+        SpecializationKey key{templateDecl, typeArgs};
+        specializationCache[key] = specialized;
+    }
     
     // ─── Type Id Registry ────────────────────────────────────────────
     /// @brief Registry for mapping concrete types to runtime type ids.

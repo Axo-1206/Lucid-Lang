@@ -8,7 +8,7 @@
 
 namespace sema {
 
-    // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper: Compute Erased Name
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,253 @@ static InternedString computeErasedName(DeclAST* decl, SemaContext& ctx) {
     std::string erasedName = path + "_" + name + "__erased";
     
     return ctx.pool.intern(erasedName);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Create a shell struct and register it in the cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Create an empty shell for a specialized struct and register it in the cache.
+/// 
+/// This is the first half of the "register before recursing" pattern.
+/// The shell is created with no fields and immediately inserted into the cache.
+/// If a recursive call tries to create the same specialization, it finds the shell
+/// and returns it, breaking the infinite loop.
+/// 
+/// @param templateDecl The generic struct template.
+/// @param mangledName The mangled name for the specialization.
+/// @param ctx The semantic context.
+/// @return A shell StructDeclAST with empty fields, or nullptr on error.
+static StructDeclAST* createSpecializedStructShell(
+    StructDeclAST* templateDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    InternedString mangledName,
+    SemaContext& ctx
+) {
+    if (!templateDecl || !mangledName.isValid()) {
+        return nullptr;
+    }
+
+    // ─── Create the shell with empty fields ──────────────────────────────
+    StructDeclAST* shell = ctx.arena.make<StructDeclAST>(
+        mangledName,
+        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
+        ctx.arena.emptySpan<FieldDeclAST*>(),         // Empty fields (will be filled later)
+        templateDecl->traitRefs,                      // Traits are unchanged
+        templateDecl->isPacked
+    );
+    shell->shouldSpecialize = true;
+    shell->mangledName = mangledName;
+    shell->loc = templateDecl->loc;
+
+    // ─── Register the shell BEFORE any substitution ──────────────────────
+    // This breaks recursive cycles. If substituting a field triggers
+    // createSpecializedStruct for the same (templateDecl, typeArgs), the
+    // cache will return this shell.
+    // 
+    // Use typeArgs, NOT templateDecl->genericParams!
+    SpecializationKey key{templateDecl, typeArgs};
+    ctx.specializationCache[key] = shell;
+
+    return shell;
+}
+
+/// @brief Finalize a specialized struct by filling its fields.
+/// 
+/// This is the second half of the "register before recursing" pattern.
+/// After the shell is registered, we substitute all fields and create
+/// the final struct. The cache entry is updated to point to the final struct.
+/// 
+/// @param templateDecl The generic struct template.
+/// @param typeArgs The concrete type arguments.
+/// @param shell The shell struct to finalize.
+/// @param ctx The semantic context.
+/// @return The finalized StructDeclAST, or nullptr on error.
+static StructDeclAST* finalizeSpecializedStruct(
+    StructDeclAST* templateDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    StructDeclAST* shell,
+    SemaContext& ctx
+) {
+    if (!templateDecl || !shell) return nullptr;
+
+    // ─── Create substitution context ──────────────────────────────────────
+    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
+
+    // ─── Substitute all fields ────────────────────────────────────────────
+    std::vector<FieldDeclAST*> fieldList;
+    fieldList.reserve(templateDecl->fields.size());
+    bool hasError = false;
+
+    for (FieldDeclAST* field : templateDecl->fields) {
+        // Substitute the field type (this may recursively call back into
+        // createSpecializedStruct, but the shell is already in the cache)
+        TypeAST* substitutedType = substituteType(field->type, subst, ctx);
+        if (!substitutedType) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, field,
+                "field '", ctx.pool.lookup(field->name),
+                "' has invalid type in specialization");
+            hasError = true;
+            break;
+        }
+
+        // Substitute default value if present
+        ExprAST* substitutedDefault = field->defaultVal 
+            ? substituteExpr(field->defaultVal, subst, ctx) 
+            : nullptr;
+
+        // Substitute default body if present
+        StmtAST* substitutedBody = field->defaultBody 
+            ? substituteStmt(field->defaultBody, subst, ctx) 
+            : nullptr;
+
+        // Create the new field
+        FieldDeclAST* newField = ctx.arena.make<FieldDeclAST>(
+            field->name,
+            substitutedType,
+            substitutedDefault,
+            substitutedBody,
+            field->isConstField
+        );
+        newField->loc = field->loc;
+        fieldList.push_back(newField);
+    }
+
+    if (hasError) {
+        return nullptr;
+    }
+
+    // ─── Create the final struct with all fields ─────────────────────────
+    StructDeclAST* finalStruct = ctx.arena.make<StructDeclAST>(
+        shell->name,                                    // Same mangled name
+        ctx.arena.emptySpan<GenericParamDeclAST*>(),   // No generic params
+        ctx.arena.makeSpan<FieldDeclAST*>(fieldList),  // Populated fields
+        templateDecl->traitRefs,
+        templateDecl->isPacked
+    );
+    finalStruct->shouldSpecialize = true;
+    finalStruct->mangledName = shell->mangledName;
+    finalStruct->loc = shell->loc;
+
+    // ─── Update the cache entry to point to the final struct ─────────────
+    // The shell is no longer needed; we replace it with the final struct.
+    SpecializationKey key{templateDecl, typeArgs};
+    ctx.specializationCache[key] = finalStruct;
+
+    Trace::detail("Finalized specialized struct: ", 
+                  ctx.pool.lookup(finalStruct->mangledName),
+                  " (", fieldList.size(), " fields)");
+
+    return finalStruct;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Create a shell function and register it in the cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Create an empty shell for a specialized function and register it in the cache.
+/// 
+/// This is the function equivalent of createSpecializedStructShell.
+/// 
+/// @param templateDecl The generic function template.
+/// @param typeArgs The concrete type arguments for this specialization.
+/// @param mangledName The mangled name for the specialization.
+/// @param ctx The semantic context.
+/// @return A shell FuncDeclAST with empty body, or nullptr on error.
+static FuncDeclAST* createSpecializedFunctionShell(
+    FuncDeclAST* templateDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    InternedString mangledName,
+    SemaContext& ctx
+) {
+    if (!templateDecl || !mangledName.isValid()) {
+        return nullptr;
+    }
+
+    // ─── Create the shell with empty body ──────────────────────────────────
+    FuncDeclAST* shell = ctx.arena.make<FuncDeclAST>(
+        mangledName,
+        templateDecl->keyword,
+        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
+        nullptr,                                       // funcType (will be filled later)
+        nullptr                                        // body (will be filled later)
+    );
+    shell->shouldSpecialize = true;
+    shell->mangledName = mangledName;
+    shell->isForeignFunction = templateDecl->isForeignFunction;
+    shell->isInline = templateDecl->isInline;
+    shell->isNoInline = templateDecl->isNoInline;
+    shell->hasClosure = templateDecl->hasClosure;
+    shell->isReturned = templateDecl->isReturned;
+    shell->loc = templateDecl->loc;
+
+    // ─── Register the shell BEFORE any substitution ──────────────────────
+    // Use typeArgs, NOT templateDecl->genericParams!
+    SpecializationKey key{templateDecl, typeArgs};
+    ctx.specializationCache[key] = shell;
+
+    return shell;
+}
+
+/// @brief Finalize a specialized function by filling its body.
+/// 
+/// This is the function equivalent of finalizeSpecializedStruct.
+/// 
+/// @param templateDecl The generic function template.
+/// @param typeArgs The concrete type arguments.
+/// @param shell The shell function to finalize.
+/// @param ctx The semantic context.
+/// @return The finalized FuncDeclAST, or nullptr on error.
+static FuncDeclAST* finalizeSpecializedFunction(
+    FuncDeclAST* templateDecl,
+    const ArenaSpan<TypeAST*>& typeArgs,
+    FuncDeclAST* shell,
+    SemaContext& ctx
+) {
+    if (!templateDecl || !shell) return nullptr;
+
+    // ─── Create substitution context ──────────────────────────────────────
+    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
+
+    // ─── Substitute function type ──────────────────────────────────────────
+    TypeAST* substitutedFuncType = substituteType(templateDecl->funcType, subst, ctx);
+    if (!substitutedFuncType || !substitutedFuncType->isa<FuncTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, templateDecl,
+            "failed to substitute function type for '",
+            ctx.pool.lookup(templateDecl->name), "'");
+        return nullptr;
+    }
+
+    // ─── Substitute body ────────────────────────────────────────────────────
+    StmtAST* substitutedBody = templateDecl->body 
+        ? substituteStmt(templateDecl->body, subst, ctx) 
+        : nullptr;
+
+    // ─── Create the final function ─────────────────────────────────────────
+    FuncDeclAST* finalFunc = ctx.arena.make<FuncDeclAST>(
+        shell->name,
+        shell->keyword,
+        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
+        substitutedFuncType->as<FuncTypeAST>(),
+        substitutedBody
+    );
+    finalFunc->shouldSpecialize = true;
+    finalFunc->mangledName = shell->mangledName;
+    finalFunc->isForeignFunction = shell->isForeignFunction;
+    finalFunc->isInline = shell->isInline;
+    finalFunc->isNoInline = shell->isNoInline;
+    finalFunc->hasClosure = shell->hasClosure;
+    finalFunc->isReturned = shell->isReturned;
+    finalFunc->loc = shell->loc;
+
+    // ─── Update the cache entry to point to the final function ────────────
+    SpecializationKey key{templateDecl, typeArgs};
+    ctx.specializationCache[key] = finalFunc;
+
+    Trace::detail("Finalized specialized function: ", 
+                  ctx.pool.lookup(finalFunc->mangledName));
+
+    return finalFunc;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -812,7 +1059,6 @@ GenericResolution resolveGenericInstantiation(
         if (arg->isa<NamedTypeAST>()) {
             NamedTypeAST* namedArg = arg->as<NamedTypeAST>();
             if (!namedArg->resolvedDecl) {
-                // Try to resolve it
                 resolveNamedType(namedArg, ctx);
                 if (!namedArg->resolvedDecl) {
                     ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
@@ -836,7 +1082,7 @@ GenericResolution resolveGenericInstantiation(
     // ─── Branch: @[specialize] vs type-erased ──────────────────────────────
     if (shouldSpecialize) {
         // ─── @[specialize] path ──────────────────────────────────────────────
-        // Create a specialized declaration with substituted types
+        // Use the cache-aware creation functions
         if (isFunction) {
             FuncDeclAST* specialized = createSpecializedFunction(
                 templateDecl->as<FuncDeclAST>(), typeArgs, ctx);
@@ -853,58 +1099,15 @@ GenericResolution resolveGenericInstantiation(
             result.resolvedDecl = specialized;
         }
         result.isSpecialized = true;
-        result.typeId = 0;  // No id needed for specialized declarations
+        result.typeId = 0;
         
     } else {
         // ─── Type-erased path ──────────────────────────────────────────────────
-        // Keep the template declaration and assign a runtime type id
         result.resolvedDecl = templateDecl;
         result.isSpecialized = false;
         
-        // Compute and store the erased name on the declaration
-        InternedString erasedName = computeErasedName(templateDecl, ctx);
-        
-        if (isFunction) {
-            FuncDeclAST* funcDecl = templateDecl->as<FuncDeclAST>();
-            funcDecl->erasedName = erasedName;
-            Trace::detail("Set erased name for function '", 
-                         ctx.pool.lookup(funcDecl->name), 
-                         "': ", ctx.pool.lookup(erasedName));
-        } else {
-            StructDeclAST* structDecl = templateDecl->as<StructDeclAST>();
-            structDecl->erasedName = erasedName;
-            Trace::detail("Set erased name for struct '", 
-                         ctx.pool.lookup(structDecl->name), 
-                         "': ", ctx.pool.lookup(erasedName));
-        }
-        
-        // Compute a canonical type for the id registry
-        // The canonical type represents the concrete instantiation
-        // For functions: use the function's substituted signature
-        // For structs: use the NamedTypeAST (name + args) as the canonical key
-        TypeAST* canonicalType = nullptr;
-        
-        if (isFunction) {
-            // For functions, we need to build a canonical function type
-            // representing this instantiation
-            FuncDeclAST* funcDecl = templateDecl->as<FuncDeclAST>();
-            GenericSubstitution subst{genericParams, typeArgs};
-            
-            // Substitute the function type
-            if (funcDecl->funcType) {
-                canonicalType = substituteType(funcDecl->funcType, subst, ctx);
-            }
-            
-            // If substitution failed, use the NamedTypeAST as fallback
-            if (!canonicalType) {
-                canonicalType = ctx.getNamedType(templateDecl->name, typeArgs);
-            }
-        } else {
-            // For structs, use the NamedTypeAST (name + args) as the canonical key
-            canonicalType = ctx.getNamedType(templateDecl->name, typeArgs);
-        }
-        
-        // Assign a id for the canonical type
+        // Compute canonical type for the type ID registry
+        TypeAST* canonicalType = ctx.getNamedType(templateDecl->name, typeArgs);
         result.typeId = ctx.typeIdRegistry.getId(canonicalType);
     }
 
@@ -915,14 +1118,49 @@ GenericResolution resolveGenericInstantiation(
 // Specialized Struct Creation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Create a specialized struct from a generic template.
+/// 
+/// Uses the "register before recursing" pattern to handle self-referential
+/// types like `Node<T> { value: T, next: *Node<T> }`.
+/// 
+/// ─── Algorithm ──────────────────────────────────────────────────────────────
+/// 1. Check the specialization cache. If found, return it immediately.
+/// 2. Validate arity.
+/// 3. Generate the mangled name.
+/// 4. Create a shell struct (empty fields) and register it in the cache.
+/// 5. Substitute all field types (may recursively call back).
+/// 6. Create the final struct with all fields.
+/// 7. Update the cache entry to point to the final struct.
+/// 
+/// ─── Why This Works ─────────────────────────────────────────────────────────
+/// The cache is populated BEFORE any field substitution. If a field's type
+/// (e.g., `*Node<T>`) triggers a recursive instantiation of the same struct,
+/// the cache returns the shell, breaking the infinite loop.
+/// 
+/// @param templateDecl The generic struct template (must have genericParams).
+/// @param typeArgs The concrete type arguments (must match arity).
+/// @param ctx The semantic context.
+/// @return The specialized StructDeclAST, or nullptr on error.
 StructDeclAST* createSpecializedStruct(
     StructDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx) 
 {
-    if (!templateDecl) return nullptr;
+    // ─── Guard: Validate inputs ────────────────────────────────────────────
+    if (!templateDecl) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, nullptr,
+                              "cannot specialize null struct declaration");
+        return nullptr;
+    }
 
-    // ─── Validate arity ──────────────────────────────────────────────────────
+    // ─── Step 1: Check the cache ────────────────────────────────────────────
+    SpecializationKey key{templateDecl, typeArgs};
+    auto it = ctx.specializationCache.find(key);
+    if (it != ctx.specializationCache.end()) {
+        return it->second ? it->second->as<StructDeclAST>() : nullptr;
+    }
+
+    // ─── Step 2: Validate arity ─────────────────────────────────────────────
     if (typeArgs.size() != templateDecl->genericParams.size()) {
         ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, templateDecl,
             "struct '", ctx.pool.lookup(templateDecl->name),
@@ -931,7 +1169,7 @@ StructDeclAST* createSpecializedStruct(
         return nullptr;
     }
 
-    // ─── Generate mangled name ──────────────────────────────────────────────
+    // ─── Step 3: Generate mangled name ──────────────────────────────────────
     InternedString mangledName = generateMangledNameForGeneric(
         templateDecl, typeArgs, ctx);
     
@@ -942,79 +1180,69 @@ StructDeclAST* createSpecializedStruct(
         return nullptr;
     }
 
-    // ─── Create substitution context ────────────────────────────────────────
-    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
-
-    // Use makeSpan with transform for fields
-    auto substitutedFields = ctx.arena.makeSpan<FieldDeclAST*>(
-        templateDecl->fields,
-        [&](FieldDeclAST* field) -> FieldDeclAST* {
-            TypeAST* substitutedType = substituteType(field->type, subst, ctx);
-            if (!substitutedType) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, field,
-                    "field '", ctx.pool.lookup(field->name),
-                    "' has invalid type in specialization");
-                return nullptr;
-            }
-
-            // Substitute default value if present
-            ExprAST* substitutedDefault = field->defaultVal 
-                ? substituteExpr(field->defaultVal, subst, ctx) 
-                : nullptr;
-
-            // Default body is a statement - substitute if present
-            StmtAST* substitutedBody = field->defaultBody 
-                ? substituteStmt(field->defaultBody, subst, ctx) 
-                : nullptr;
-
-            FieldDeclAST* newField = ctx.arena.make<FieldDeclAST>(
-                field->name,
-                substitutedType,
-                substitutedDefault,
-                substitutedBody,
-                field->isConstField
-            );
-            newField->loc = field->loc;
-            return newField;
-        }
-    );
-
-    // Check for errors
-    for (FieldDeclAST* field : substitutedFields) {
-        if (!field) return nullptr;
+    // ─── Step 4: Create and register the shell ──────────────────────────────
+    StructDeclAST* shell = createSpecializedStructShell(
+        templateDecl, typeArgs, mangledName, ctx);  // Pass typeArgs
+    if (!shell) {
+        return nullptr;
     }
 
-    // ─── Create the specialized struct ──────────────────────────────────────
-    StructDeclAST* specialized = ctx.arena.make<StructDeclAST>(
-        mangledName,
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
-        substitutedFields,
-        templateDecl->traitRefs,  // Traits are unchanged
-        templateDecl->isPacked
-    );
-    specialized->shouldSpecialize = true;
-    specialized->mangledName = mangledName;
-    specialized->erasedName = InternedString(0);  // Not needed for specialized
-    specialized->loc = templateDecl->loc;
+    // ─── Step 5: Finalize the struct ────────────────────────────────────────
+    StructDeclAST* finalStruct = finalizeSpecializedStruct(
+        templateDecl, typeArgs, shell, ctx);
+    if (!finalStruct) {
+        return nullptr;
+    }
 
-    Trace::detail("Created specialized struct: ", ctx.pool.lookup(mangledName),
-                " (", substitutedFields.size(), " fields)");
+    // ─── Step 6: Result ─────────────────────────────────────────────────────
+    Trace::detail("Created specialized struct: ", 
+                  ctx.pool.lookup(finalStruct->mangledName),
+                  " (", finalStruct->fields.size(), " fields)");
 
-    return specialized;
+    return finalStruct;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Specialized Function Creation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Create a specialized function from a generic template.
+/// 
+/// Uses the "register before recursing" pattern to handle recursive functions.
+/// 
+/// ─── Algorithm ──────────────────────────────────────────────────────────────
+/// 1. Check the specialization cache. If found, return it immediately.
+/// 2. Validate arity.
+/// 3. Generate the mangled name.
+/// 4. Create a shell function (empty body) and register it in the cache.
+/// 5. Substitute the function type and body (may recursively call back).
+/// 6. Create the final function with all data.
+/// 7. Update the cache entry to point to the final function.
+/// 
+/// @param templateDecl The generic function template.
+/// @param typeArgs The concrete type arguments.
+/// @param ctx The semantic context.
+/// @return The specialized FuncDeclAST, or nullptr on error.
 FuncDeclAST* createSpecializedFunction(
     FuncDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx) 
 {
-    if (!templateDecl) return nullptr;
+    // ─── Guard: Validate inputs ────────────────────────────────────────────
+    if (!templateDecl) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, nullptr,
+                              "cannot specialize null function declaration");
+        return nullptr;
+    }
 
-    // ─── Validate arity ──────────────────────────────────────────────────────
+    // ─── Step 1: Check the cache ────────────────────────────────────────────
+    SpecializationKey key{templateDecl, typeArgs};
+    auto it = ctx.specializationCache.find(key);
+    if (it != ctx.specializationCache.end()) {
+        return it->second ? it->second->as<FuncDeclAST>() : nullptr;
+    }
+
+    // ─── Step 2: Validate arity ─────────────────────────────────────────────
     if (typeArgs.size() != templateDecl->genericParams.size()) {
         ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, templateDecl,
             "function '", ctx.pool.lookup(templateDecl->name),
@@ -1023,7 +1251,7 @@ FuncDeclAST* createSpecializedFunction(
         return nullptr;
     }
 
-    // ─── Generate mangled name ──────────────────────────────────────────────
+    // ─── Step 3: Generate mangled name ──────────────────────────────────────
     InternedString mangledName = generateMangledNameForGeneric(
         templateDecl, typeArgs, ctx);
     
@@ -1034,44 +1262,25 @@ FuncDeclAST* createSpecializedFunction(
         return nullptr;
     }
 
-    // ─── Create substitution context ────────────────────────────────────────
-    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
-
-    // ─── Substitute function type ───────────────────────────────────────────
-    TypeAST* substitutedFuncType = substituteType(templateDecl->funcType, subst, ctx);
-    if (!substitutedFuncType || !substitutedFuncType->isa<FuncTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, templateDecl,
-            "failed to substitute function type for '",
-            ctx.pool.lookup(templateDecl->name), "'");
+    // ─── Step 4: Create and register the shell ──────────────────────────────
+    FuncDeclAST* shell = createSpecializedFunctionShell(
+        templateDecl, typeArgs, mangledName, ctx);  // Pass typeArgs
+    if (!shell) {
         return nullptr;
     }
 
-    // ─── Substitute body ─────────────────────────────────────────────────────
-    StmtAST* substitutedBody = templateDecl->body 
-        ? substituteStmt(templateDecl->body, subst, ctx) 
-        : nullptr;
+    // ─── Step 5: Finalize the function ──────────────────────────────────────
+    FuncDeclAST* finalFunc = finalizeSpecializedFunction(
+        templateDecl, typeArgs, shell, ctx);
+    if (!finalFunc) {
+        return nullptr;
+    }
 
-    // ─── Create the specialized function ────────────────────────────────────
-    FuncDeclAST* specialized = ctx.arena.make<FuncDeclAST>(
-        mangledName,
-        templateDecl->keyword,
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
-        substitutedFuncType->as<FuncTypeAST>(),
-        substitutedBody
-    );
-    specialized->shouldSpecialize = true;
-    specialized->mangledName = mangledName;
-    specialized->erasedName = InternedString(0);  // Not needed for specialized
-    specialized->isForeignFunction = templateDecl->isForeignFunction;
-    specialized->isInline = templateDecl->isInline;
-    specialized->isNoInline = templateDecl->isNoInline;
-    specialized->hasClosure = templateDecl->hasClosure;
-    specialized->isReturned = templateDecl->isReturned;
-    specialized->loc = templateDecl->loc;
+    // ─── Step 6: Result ─────────────────────────────────────────────────────
+    Trace::detail("Created specialized function: ", 
+                  ctx.pool.lookup(finalFunc->mangledName));
 
-    Trace::detail("Created specialized function: ", ctx.pool.lookup(mangledName));
-
-    return specialized;
+    return finalFunc;
 }
 
 } // namespace sema
