@@ -176,11 +176,8 @@ struct StructLiteralExprAST : ExprAST {
     /// @brief The resolved struct declaration (template or specialized).
     StructDeclAST* resolvedDecl = nullptr;
 
-    /// @brief True if this resolves to a specialized declaration (@[specialize]).
-    bool isSpecialized = false;
-
-    /// @brief True if this is a type-erased instantiation (default path).
-    bool isGenericInstantiation = false;
+    /// @brief True if this is a type-erased instantiation (@[erased]).
+    bool isErased = false;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
@@ -344,8 +341,8 @@ struct CallExprAST : ExprAST {
     const bool hasArgPack = false;    // true for `fn(args)!`
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
-    /// @brief True if this is a type-erased generic call (default path).
-    bool isGenericCall = false;
+    /// @brief True if this is a type-erased generic call (@[erased]).
+    bool isErasedCall = false;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     CallExprAST(bool a) 

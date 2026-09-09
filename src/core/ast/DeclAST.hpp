@@ -219,7 +219,7 @@ struct FuncDeclAST : ValueDeclAST {
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     bool isForeignFunction = false;    // True if @[foreign] attribute is present
-    bool shouldSpecialize = false;     // from @[specialize]
+    bool isErased = false;             // true = type-erased (@[erased]), false = specialized (default)
     bool isInline = false;             // from @[inline]
     bool isNoInline = false;           // from @[noinline]
     
@@ -229,9 +229,8 @@ struct FuncDeclAST : ValueDeclAST {
     bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
     bool isReturned = false;    /// True if this function is returned from its parent
     
-    // ─── Type-Erased Generic Support (only used when shouldSpecialize == false) ──
-    /// @brief The erased function name for type-erased generics.
-    /// Example: "_Lmodule_identity__erased"
+    // ─── Type-Erased Generic Support (only used when isErased == true) ──
+    /// @brief The erased function name for type-erased generics (@[erased]).
     InternedString erasedName;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
@@ -361,7 +360,7 @@ struct StructDeclAST : TypeDeclAST {
     const bool isPacked = false;  // From @[packed] attribute
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
-    bool shouldSpecialize = false;     // from @[specialize]
+    bool isErased = false; // true = type-erased (@[erased]), false = specialized (default)
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     llvm::StructType* llvmType = nullptr;

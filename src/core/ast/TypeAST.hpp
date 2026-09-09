@@ -237,12 +237,9 @@ struct NamedTypeAST : TypeAST {
     ///   - For non-generic: the original StructDeclAST
     TypeDeclAST* resolvedDecl = nullptr;
 
-    /// @brief True if this resolves to a specialized declaration (@[specialize]).
-    bool isSpecialized = false;
-
-    /// @brief True if this is a type-erased instantiation (default path).
-    bool isGenericInstantiation = false;
-
+    /// @brief True if this is a type-erased instantiation (@[erased]).
+    bool isErased = false;
+    
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
 };
