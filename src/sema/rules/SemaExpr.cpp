@@ -942,27 +942,43 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
         // ─── 7a. Handle @[specialize] vs type-erased ──────────────────────
         if (funcDecl->shouldSpecialize) {
             // ─── @[specialize] path: Create specialized function ────────────
-            FuncDeclAST* specialized = createSpecializedFunction(
+            // Use the unified resolution function
+            GenericResolution resolution = resolveGenericInstantiation(
                 funcDecl, expr->genericArgs, ctx);
             
-            if (!specialized) {
+            if (!resolution.resolvedDecl) {
                 expr->resolvedType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
                 expr->isLValue = false;
                 return ctx.getUnknownType();
             }
-            
-            // Store specialized declaration and clear generic args
-            expr->resolvedDecl = specialized;
-            expr->genericArgs = {};
-            declType = specialized->funcType;
-            
-        } else {
-            // ─── Type-erased path: Keep template, store info on CallExprAST ──
-            // The generic arguments remain on the ModuleAccessExprAST.
-            // The CallExprAST will use them to set isGenericCall and typeIds.
-            // For now, we just keep the template and the generic args.
-            declType = funcDecl->funcType;
+
+            if (!resolution.resolvedDecl->isa<FuncDeclAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                    "generic instantiation of function '", 
+                                    ctx.pool.lookup(expr->memberName),
+                                    "' did not produce a function declaration");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                expr->isLValue = false;
+                return ctx.getUnknownType();
+            }
+
+            FuncDeclAST* resolvedFunc = resolution.resolvedDecl->as<FuncDeclAST>();
+
+            if (resolution.isSpecialized) {
+                // ─── @[specialize] path: Store specialized declaration ────────────
+                expr->resolvedDecl = resolvedFunc;
+                expr->genericArgs = {};  // Clear generic args - they're now in the specialized decl
+                declType = resolvedFunc->funcType;
+            } else {
+                // ─── Type-erased path: Keep template ──────────────────────────────────
+                // The generic arguments remain on the ModuleAccessExprAST.
+                // The CallExprAST will use them to set isGenericCall.
+                // No runtime type IDs are needed (grammar forbids #sizeof(T) etc. on type-erased generics).
+                expr->resolvedDecl = resolvedFunc;
+                declType = resolvedFunc->funcType;
+            }
         }
     }
 
@@ -1625,7 +1641,6 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         targetStruct = resolution.resolvedDecl->as<StructDeclAST>();
         isSpecialized = resolution.isSpecialized;
         isGenericInstantiation = !resolution.isSpecialized;
-        typeId = resolution.typeId;
     } else if (!structDecl->genericParams.empty()) {
         // ─── 2e. Struct has generic parameters but no arguments provided ──
         ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, expr,
@@ -1642,7 +1657,6 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     expr->resolvedDecl = targetStruct;
     expr->isSpecialized = isSpecialized;
     expr->isGenericInstantiation = isGenericInstantiation;
-    expr->typeId = typeId;
 
     // ─── Step 4: Build field map from target struct ────────────────────────
     std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
@@ -2174,8 +2188,8 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
     // ─── Step 3: Get the function declaration from the callee ──────────────
     // The callee (IdentifierExprAST or ModuleAccessExprAST) already has resolvedDecl.
     // We extract the function declaration and generic arguments from it.
-    //  The specialize/erase decision was already made in resolveIdentifierExpr
-    //    or resolveModuleAccessExpr. We just read the result.
+    // The specialize/erase decision was already made in resolveIdentifierExpr
+    // or resolveModuleAccessExpr. We just read the result.
     
     FuncDeclAST* funcDecl = nullptr;
     ArenaSpan<TypeAST*> genericArgs;
@@ -2187,7 +2201,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
             funcDecl = id->resolvedDecl->as<FuncDeclAST>();
             genericArgs = id->genericArgs;
             
-            //  Read the cached state from the callee
+            // Read the cached state from the callee
             // The callee already has resolvedDecl set to either:
             //   - A specialized FuncDeclAST (if @[specialize])
             //   - The template FuncDeclAST (if type-erased)
@@ -2209,7 +2223,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
             funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
             genericArgs = mod->genericArgs;
             
-            //  Same logic as above
+            // Same logic as above
             if (funcDecl && !funcDecl->genericParams.empty() && !genericArgs.empty()) {
                 if (!funcDecl->shouldSpecialize) {
                     isGenericCall = true;
@@ -2358,19 +2372,12 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
     }
 
     // ─── Step 7: Store generic call info for type-erased path ──────────────
+    // isGenericCall is still set to indicate that this is a type-erased call,
+    // which CodeGen may use to box arguments or handle dispatch differently.
     if (isGenericCall && funcDecl) {
         expr->isGenericCall = true;
-        
-        // Store type ids for each type argument
-        expr->typeIds.clear();
-        for (TypeAST* arg : genericArgs) {
-            // Get or assign a type id from the registry
-            // Note: For specialized functions, genericArgs is empty
-            expr->typeIds.push_back(ctx.typeIdRegistry.getId(arg));
-        }
     } else {
         expr->isGenericCall = false;
-        expr->typeIds.clear();
     }
 
     // ─── Step 8: Propagate value state ──────────────────────────────────────
