@@ -224,8 +224,8 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             
             // ─── Safely cast the resolved declaration ──────────────────────────
             // The resolvedDecl should be either:
-            //   - For @[specialize]: a specialized StructDeclAST (TypeDeclAST)
-            //   - For type-erased: the original StructDeclAST (TypeDeclAST)
+            //   - For specialized (default): a specialized StructDeclAST
+            //   - For type-erased (@[erased]): the original StructDeclAST (template)
             if (!resolution.resolvedDecl->isa<TypeDeclAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
                                       "generic instantiation of '", ctx.pool.lookup(type->name),
@@ -237,16 +237,17 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             
             // Store the resolution result on the NamedTypeAST
             type->resolvedDecl = resolvedTypeDecl;
-            type->isSpecialized = resolution.isSpecialized;
-            type->isGenericInstantiation = !resolution.isSpecialized;
+            type->isErased = resolution.isErased;
+            
+            // Note: isSpecialized is implied by !isErased, but we keep it for clarity
+            // and backward compatibility. In the future, we can remove isSpecialized.
             
             return type;
         }
         
         // Non-generic struct - just store the declaration
         type->resolvedDecl = structDecl;
-        type->isSpecialized = false;
-        type->isGenericInstantiation = false;
+        type->isErased = false;
         return type;
     }
 
@@ -259,8 +260,7 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
         type->resolvedDecl = decl;
-        type->isSpecialized = false;
-        type->isGenericInstantiation = false;
+        type->isErased = false;
         return type;
     }
 
