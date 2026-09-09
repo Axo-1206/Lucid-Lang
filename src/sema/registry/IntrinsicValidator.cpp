@@ -6,6 +6,8 @@
 #include "core/ASTStrings.hpp"
 #include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
+#include "sema/types/GenericHelpers.hpp"
+#include "core/trace/Trace.hpp"
 
 namespace sema {
 
@@ -345,7 +347,6 @@ ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) 
         return ValueState::None;
     }
 
-    // ─── Dispatch by IntrinsicKind ─────────────────────────────────────────
     switch (info->kind) {
         // ─── Memory allocations can fail ──────────────────────────────────
         case IntrinsicKind::Alloc:
@@ -372,7 +373,11 @@ ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) 
     }
 }
 
-// ─── Individual Validators ─────────────────────────────────────────────────
+// =============================================================================
+// INDIVIDUAL VALIDATORS
+// =============================================================================
+
+// ─── validateFloatingPoint ──────────────────────────────────────────────────
 
 bool validateFloatingPoint(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     for (size_t i = 0; i < expr->args.size(); ++i) {
@@ -382,6 +387,8 @@ bool validateFloatingPoint(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     return true;
 }
+
+// ─── validateMemoryOp ──────────────────────────────────────────────────────
 
 bool validateMemoryOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -406,6 +413,8 @@ bool validateMemoryOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return true;
     }
 }
+
+// ─── validateFence ────────────────────────────────────────────────────────
 
 bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.empty()) {
@@ -440,6 +449,8 @@ bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     return true;
 }
+
+// ─── validateStringOp ──────────────────────────────────────────────────────
 
 bool validateStringOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -479,6 +490,8 @@ bool validateStringOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 }
 
+// ─── validatePointerOp ─────────────────────────────────────────────────────
+
 bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
     const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
@@ -512,211 +525,7 @@ bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 }
 
-bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    // ─── 1. Must be inside a function body ────────────────────────────────
-    if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
-                              "#scope_exit is only valid inside a function body "
-                              "(not at module scope or inside const initializers)");
-        return false;
-    }
-
-    // ─── 2. Must have at least one argument (the function to call) ────────
-    if (expr->args.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                              "#scope_exit expects at least 1 argument (the function to call)");
-        return false;
-    }
-
-    // ─── 3. Resolve and validate the first argument ────────────────────────
-    ExprAST* funcArg = expr->args[0];
-    TypeAST* funcType = funcArg->resolvedType;
-    
-    // First, resolve the argument if not already resolved
-    if (!funcType || funcType->isa<UnknownTypeAST>()) {
-        funcType = resolveExpr(funcArg, ctx);
-        if (!funcType || funcType->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
-                                  "#scope_exit argument has unknown type");
-            return false;
-        }
-    }
-
-    // ─── 4. Verify it's a function type ────────────────────────────────────
-    if (!funcType->isa<FuncTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
-                              "#scope_exit expects a function as the first argument, got ",
-                              typeToString(funcType, ctx.pool));
-        return false;
-    }
-
-    FuncTypeAST* func = funcType->as<FuncTypeAST>();
-
-    // ─── 5. Handle generic function references ─────────────────────────────
-    bool hasGenericArgs = false;
-    FuncDeclAST* funcDecl = nullptr;
-    
-    if (funcArg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
-        hasGenericArgs = !id->genericArgs.empty();
-        
-        ValueDeclAST* decl = ctx.lookupValue(id->name);
-        if (decl && decl->isa<FuncDeclAST>()) {
-            funcDecl = decl->as<FuncDeclAST>();
-        }
-    } else if (funcArg->isa<ModuleAccessExprAST>()) {
-        ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
-        hasGenericArgs = !mod->genericArgs.empty();
-        
-        ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
-        if (decl && decl->isa<FuncDeclAST>()) {
-            funcDecl = decl->as<FuncDeclAST>();
-        }
-    } else if (funcArg->isa<AnonFuncExprAST>()) {
-        // Anonymous functions are always fully resolved
-        // No generic handling needed
-    }
-    
-    // ─── 6. Validate generic instantiation ─────────────────────────────────
-    if (funcDecl) {
-        bool hasGenericParams = !funcDecl->genericParams.empty();
-        
-        if (hasGenericParams && !hasGenericArgs) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, funcArg,
-                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
-                                  "' has generic parameters but no generic arguments were provided");
-            ctx.diagnostics.note(funcArg,
-                                 "Instantiate the generic function: '#scope_exit(",
-                                 ctx.pool.lookup(funcDecl->name), "<T>)'");
-            return false;
-        }
-        
-        if (!hasGenericParams && hasGenericArgs) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, funcArg,
-                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
-                                  "' is not generic but generic arguments were provided");
-            return false;
-        }
-    }
-
-    // ─── 7. The function must have exactly one parameter group ─────────────
-    if (func->isCurried()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
-                              "#scope_exit callback must have exactly one parameter group "
-                              "(curried functions are not allowed)");
-        ctx.diagnostics.note(funcArg,
-                             "Use a wrapper closure: '#scope_exit(() -> () { setup(5)() })' "
-                             "to call a curried function");
-        return false;
-    }
-
-    // ─── 8. The function must return void ──────────────────────────────────
-    if (func->returnType) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
-                              "#scope_exit callback must return void "
-                              "(cannot return a value during unwinding)");
-        ctx.diagnostics.note(funcArg,
-                             "The callback is called during unwinding - there is no "
-                             "caller to receive a return value or handle an error");
-        return false;
-    }
-
-    // ─── 9. No variadic parameters ─────────────────────────────────────────
-    for (ParamAST* param : func->params) {
-        if (param->isVariadic) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
-                                  "#scope_exit callback cannot have variadic parameters");
-            ctx.diagnostics.note(param,
-                                 "Variadic parameters are not supported in cleanup callbacks");
-            return false;
-        }
-    }
-
-    // ─── 10. Validate argument count against function parameters ──────────
-    size_t callbackArgs = expr->args.size() - 1;
-    size_t paramCount = func->params.size();
-
-    if (callbackArgs != paramCount) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                              "#scope_exit callback expects ", paramCount,
-                              " argument(s), got ", callbackArgs);
-        ctx.diagnostics.note(expr,
-                             "All parameters of the callback must be supplied at the #scope_exit call site");
-        return false;
-    }
-
-    // ─── 11. Validate each argument type against callback parameters ──────
-    auto argsBuilder = ctx.arena.makeBuilder<ExprAST*>();
-    
-    for (size_t i = 0; i < callbackArgs; ++i) {
-        ExprAST* arg = expr->args[i + 1];
-        TypeAST* expectedType = func->params[i]->type;
-
-        TypeAST* argType = resolveExprWithTarget(
-            arg, expectedType, ctx
-        );
-        if (!argType || argType->isa<UnknownTypeAST>()) {
-            return false;
-        }
-
-        if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                                  "cannot pass nil to non-nullable parameter in #scope_exit callback");
-            return false;
-        }
-
-        if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                                  "cannot pass err to non-fallible parameter in #scope_exit callback");
-            return false;
-        }
-
-        // Store the resolved argument
-        argsBuilder.push_back(arg);
-    }
-
-    // ─── 12. Check for field access capture issues ─────────────────────────
-    if (funcArg->isa<FieldAccessExprAST>()) {
-        FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
-        ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, funcArg,
-                                "function reference from struct field '",
-                                ctx.pool.lookup(field->fieldName),
-                                "' may capture the struct's lifetime");
-        ctx.diagnostics.note(funcArg,
-                             "Ensure the struct outlives the scope where #scope_exit is registered");
-    }
-
-    // ─── 13. Get the current block for registration ──────────────────────
-    BlockStmtAST* currentBlock = ctx.stack.currentBlock();
-    if (!currentBlock) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
-                              "#scope_exit must appear inside a block");
-        return false;
-    }
-
-    // ─── 14. Create the registration ──────────────────────────────────────
-    ScopeExitRegistration* registration = ctx.arena.make<ScopeExitRegistration>();
-    registration->callExpr = expr;
-    registration->callback = funcDecl;
-    registration->args = argsBuilder.build();
-
-    // ─── 15. Append to the current block's scopeExits ────────────────────
-    auto exitsBuilder = ctx.arena.makeBuilder<ScopeExitRegistrationPtr>();
-    
-    // Copy existing registrations (preserving registration order)
-    for (ScopeExitRegistrationPtr existing : currentBlock->scopeExits) {
-        exitsBuilder.push_back(existing);
-    }
-    // Add the new one at the end
-    exitsBuilder.push_back(registration);
-    
-    currentBlock->scopeExits = exitsBuilder.build();
-
-    Trace::info("validateScopeExit: registered #scope_exit in block with ",
-             currentBlock->scopeExits.size(), " total registrations");
-
-    return true;
-}
+// ─── validateAtomicOp ─────────────────────────────────────────────────────
 
 bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -733,27 +542,6 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     // ─── Validate the pointer argument ────────────────────────────────────
     if (!validatePtrArg(expr->args[0], "ptr", ctx)) {
         return false;
-    }
-
-    // ─── Special cases ─────────────────────────────────────────────────────
-    switch (info->kind) {
-        case IntrinsicKind::AtomicStore:
-            // atomic_store(ptr, val, ordering) - val can be any type
-            // Ordering is validated below
-            break;
-
-        case IntrinsicKind::AtomicCas:
-            // atomic_cas(ptr, expected, desired, ordering)
-            if (expr->args.size() >= 3) {
-                // expected and desired are validated by type system
-                // They must match the pointee type
-            }
-            break;
-
-        default:
-            // atomic_load, atomic_add, atomic_sub, atomic_and, atomic_or, atomic_xor
-            // These take ptr, [val], ordering
-            break;
     }
 
     // ─── Validate ordering (last argument, if present) ────────────────────
@@ -787,20 +575,14 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
+// ─── validateSIMD ──────────────────────────────────────────────────────────
+
 bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
     
     std::string_view name = lookupStringView(expr->intrinsicName);
     
     // ─── #simd_splat(type, lanes, scalar) ──────────────────────────────────
-    //   #simd_splat(float, 4, 3.14)
-    //   #simd_splat(int, 8, 0)
-    //
-    //   where:
-    //     type is a numeric primitive type (int8, int16, ..., float64)
-    //     lanes is an integer literal (1, 2, 4, 8, 16, 32, 64)
-    //     scalar is a value of the type specified by 'type'
-    //
     if (name == "simd_splat") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -808,7 +590,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // ─── 1. Validate first argument is a TYPE ────────────────────────────
         ExprAST* typeArg = expr->args[0];
         TypeAST* elementType = nullptr;
         
@@ -817,7 +598,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             if (id->isType) {
                 elementType = id->resolvedTypeNode;
             } else {
-                // Try to resolve as a type (fallback)
                 if (isPrimitiveTypeName(id->name, ctx.pool)) {
                     PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
                     elementType = ctx.arena.make<PrimitiveTypeAST>(kind);
@@ -838,34 +618,24 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         
         if (!elementType) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
-                                  "#simd_splat: first argument must be a type "
-                                  "(numeric primitive like int32, float64, etc.)");
+                                  "#simd_splat: first argument must be a type");
             return false;
         }
         
-        // ─── 2. Validate element type is a valid SIMD element type ───────────
+        // Validate SIMD element type is concrete and valid
+        if (!validateConcreteTypeForSimd(elementType, expr, ctx)) {
+            return false;
+        }
+        
         if (!isValidSimdElementType(elementType)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, typeArg,
-                                  "#simd_splat: type must be a numeric primitive "
-                                  "(int8, int16, int32, int64, uint8, uint16, uint32, "
-                                  "uint64, float32, or float64)");
-            ctx.diagnostics.note(typeArg,
-                                 "Got: ", typeToString(elementType, ctx.pool));
+                                  "#simd_splat: type must be a numeric primitive");
             return false;
         }
         
-        // ─── 3. Validate second argument is an integer literal (lanes) ──────
+        // Validate lanes
         ExprAST* lanesArg = expr->args[1];
         if (!lanesArg->isa<LiteralExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
-                                  "#simd_splat: lanes must be an integer literal");
-            return false;
-        }
-        
-        LiteralExprAST* lanesLit = lanesArg->as<LiteralExprAST>();
-        if (lanesLit->kind != LiteralKind::Int && 
-            lanesLit->kind != LiteralKind::Hex &&
-            lanesLit->kind != LiteralKind::Binary) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
                                   "#simd_splat: lanes must be an integer literal");
             return false;
@@ -878,7 +648,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // ─── 4. Validate scalar matches the specified type ──────────────────
+        // Validate scalar matches type
         ExprAST* scalar = expr->args[2];
         TypeAST* scalarType = resolveExpr(scalar, ctx);
         if (!scalarType || scalarType->isa<UnknownTypeAST>()) {
@@ -887,7 +657,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Scalar must match the element type
         if (!typesEqual(elementType, scalarType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
                                   "#simd_splat: scalar type (", 
@@ -897,8 +666,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // ─── 5. Resolve the return type ──────────────────────────────────────
-        // Simd<T, N> where T = elementType, N = laneCount
         SimdTypeAST* simdType = ctx.arena.make<SimdTypeAST>(elementType, static_cast<uint64_t>(laneCount));
         simdType->loc = expr->loc;
         expr->resolvedType = simdType;
@@ -907,7 +674,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_load(ptr, lanes) ─────────────────────────────────────────
-    // Updated: lanes is an integer literal, not an enum
     if (name == "simd_load") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -929,13 +695,19 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         }
         
         PtrTypeAST* ptrInner = ptr->resolvedType->as<PtrTypeAST>();
+        
+        // Validate SIMD element type is concrete and valid
+        if (!validateConcreteTypeForSimd(ptrInner->inner, expr, ctx)) {
+            return false;
+        }
+        
         if (!isValidSimdElementType(ptrInner->inner)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, ptr,
                                   "#simd_load: pointer must point to a numeric primitive");
             return false;
         }
         
-        // Validate lanes (second argument) - must be integer literal
+        // Validate lanes
         ExprAST* lanesArg = expr->args[1];
         if (!lanesArg->isa<LiteralExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
@@ -950,7 +722,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Resolve the return type: Simd<T, N>
         SimdTypeAST* simdType = ctx.arena.make<SimdTypeAST>(
             ptrInner->inner, 
             static_cast<uint64_t>(laneCount)
@@ -962,7 +733,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_store(ptr, simd_value) ────────────────────────────────────
-    // No changes needed - already validates correctly
     if (name == "simd_store") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1002,7 +772,7 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return true;
     }
     
-    // ─── Binary SIMD ops: #simd_add, #simd_sub, #simd_mul, #simd_div ────
+    // ─── Binary SIMD ops ──────────────────────────────────────────────────
     if (name == "simd_add" || name == "simd_sub" || 
         name == "simd_mul" || name == "simd_div" ||
         name == "simd_min" || name == "simd_max") {
@@ -1038,7 +808,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_fma(a, b, c) ────────────────────────────────────────────────
-    // No changes needed - already validates correctly
     if (name == "simd_fma") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1072,7 +841,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── #simd_extract(v, index) ──────────────────────────────────────────
-    // No changes needed - already validates correctly
     if (name == "simd_extract") {
         if (expr->args.size() != 2) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1094,13 +862,6 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        LiteralExprAST* lit = idx->as<LiteralExprAST>();
-        if (lit->kind != LiteralKind::Int) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "#simd_extract: index must be an integer literal");
-            return false;
-        }
-        
         int64_t index = ctx.parseConstantInt(idx);
         if (index < 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
@@ -1108,13 +869,10 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Validate index < lane count (requires const eval of lane count)
-        // This would be done in a separate const evaluation pass
         return true;
     }
     
     // ─── #simd_insert(v, index, value) ────────────────────────────────────
-    // No changes needed - already validates correctly
     if (name == "simd_insert") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1154,11 +912,12 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return true;
     }
     
-    // Unknown SIMD intrinsic
     ctx.diagnostics.error(DiagCode::Sem_UnknownIntrinsic, expr,
                           "unknown SIMD intrinsic '#", name, "'");
     return false;
 }
+
+// ─── validateMemoryManagement ─────────────────────────────────────────────
 
 bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -1167,10 +926,6 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     switch (info->kind) {
         case IntrinsicKind::Alloc: {
-            // #alloc(T, count) - T is a type, count is a value
-            // Grammar: #alloc(T, count) -> *T
-            
-            // ─── 1. Validate first argument is a TYPE ────────────────────────
             if (expr->args.empty()) {
                 ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                                       "#alloc expects 2 arguments: (type, count)");
@@ -1185,7 +940,6 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
                 if (id->isType) {
                     elementType = id->resolvedTypeNode;
                 } else {
-                    // Try to resolve as a type (fallback)
                     TypeDeclAST* typeDecl = ctx.lookupType(id->name);
                     if (typeDecl) {
                         NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
@@ -1208,12 +962,14 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             if (!elementType) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
                                       "#alloc expects a type as the first argument");
-                ctx.diagnostics.note(typeArg,
-                                     "Usage: #alloc(T, count) where T is a type");
                 return false;
             }
             
-            // ─── 2. Validate count argument ──────────────────────────────────
+            // Validate the element type is concrete for #alloc
+            if (!validateConcreteTypeForAlloc(elementType, expr, ctx)) {
+                return false;
+            }
+            
             if (expr->args.size() < 2) {
                 ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                                       "#alloc expects 2 arguments: (type, count)");
@@ -1224,7 +980,6 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
                 return false;
             }
             
-            // ─── 3. Resolve the return type: *T ──────────────────────────────
             PtrTypeAST* ptrType = ctx.getPtrType(elementType);
             expr->resolvedType = ptrType;
             
@@ -1240,16 +995,8 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 }
 
-/// @brief Validate #bitcast(T, x) intrinsic.
-/// 
-/// Grammar: #bitcast(T, x) -> T
-/// where T is a CONCRETE type, and x is an expression that can be bitcast to T.
-/// Both types must have the same size.
-/// 
-/// ─── Important ──────────────────────────────────────────────────────────────
-/// #bitcast(T, x) CANNOT be used with generic T because the return type
-/// would be generic. Unlike #sizeof(T) which always returns uint64, the
-/// return type of #bitcast is T itself.
+// ─── validateBitcast ──────────────────────────────────────────────────────
+
 bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.size() != 2) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1257,7 +1004,6 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── 1. Validate first argument is a TYPE ──────────────────────────────
     ExprAST* typeArg = expr->args[0];
     TypeAST* targetType = nullptr;
     
@@ -1266,7 +1012,6 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         if (id->isType) {
             targetType = id->resolvedTypeNode;
         } else {
-            // Try to resolve as a type (fallback)
             TypeDeclAST* typeDecl = ctx.lookupType(id->name);
             if (typeDecl) {
                 NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
@@ -1289,41 +1034,19 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!targetType) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
                               "#bitcast expects a type as the first argument");
-        ctx.diagnostics.note(typeArg,
-                             "Usage: #bitcast(T, x) where T is a type");
         return false;
     }
     
-    // ─── 2. REJECT generic parameters ──────────────────────────────────────
-    // #bitcast returns T, so T must be concrete.
-    if (isGenericParamType(targetType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, typeArg,
-                              "#bitcast cannot be used with generic type '",
-                              ctx.pool.lookup(targetType->as<NamedTypeAST>()->name),
-                              "' - the return type must be concrete");
-        ctx.diagnostics.note(typeArg,
-                             "Use a concrete type with #bitcast, like #bitcast(float, x)");
+    // Validate the target type is concrete for #bitcast
+    if (!validateConcreteTypeForBitcast(targetType, expr, ctx)) {
         return false;
     }
     
-    // ─── 3. Check if type contains generic parameters ──────────────────────
-    if (containsGenericParameter(targetType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, typeArg,
-                              "#bitcast cannot be used with type '",
-                              typeToString(targetType, ctx.pool),
-                              "' which contains generic parameters");
-        ctx.diagnostics.note(typeArg,
-                             "The return type of #bitcast must be fully concrete");
-        return false;
-    }
-    
-    // ─── 4. Fully resolve the target type ──────────────────────────────────
     targetType = resolveType(targetType, ctx);
     if (!targetType || targetType->isa<UnknownTypeAST>()) {
         return false;
     }
     
-    // ─── 5. Validate the value argument ─────────────────────────────────────
     ExprAST* valueArg = expr->args[1];
     TypeAST* valueType = resolveExpr(valueArg, ctx);
     if (!valueType || valueType->isa<UnknownTypeAST>()) {
@@ -1332,17 +1055,17 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── 7. Resolve the return type ─────────────────────────────────────────
     expr->resolvedType = targetType;
     expr->valueState = ValueState::Definite;
     
     return true;
 }
 
+// ─── validateTostr ─────────────────────────────────────────────────────────
+
 bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
     
-    // ─── 1. Must have exactly one argument ─────────────────────────────────
     if (expr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                               "#tostr requires exactly 1 argument");
@@ -1365,36 +1088,17 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     
     TypeAST* argType = arg->resolvedType;
     
-    // ─── 2. Function types are ALLOWED ────────────────────────────────────
-    // #tostr on functions returns the function's declared name
+    // ─── Function types are ALLOWED ──────────────────────────────────────
     if (argType->isa<FuncTypeAST>()) {
-        // No validation needed - functions are always valid
         return true;
     }
     
-    // ─── 3. Reject generic parameters ──────────────────────────────────────
-    if (isGenericParamType(argType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                              "#tostr cannot be used with generic type '", 
-                              ctx.pool.lookup(argType->as<NamedTypeAST>()->name), 
-                              "' - the concrete type is not known at compile time");
-        ctx.diagnostics.note(expr,
-                             "Only concrete types can be converted to strings");
+    // Validate the type is concrete for #tostr
+    if (!validateConcreteTypeForReflection(argType, expr, ctx, "tostr")) {
         return false;
     }
     
-    // ─── 4. Reject types containing generic parameters ─────────────────────
-    if (containsGenericParameter(argType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                              "#tostr cannot be used with type '", 
-                              typeToString(argType, ctx.pool),
-                              "' which contains generic parameters");
-        ctx.diagnostics.note(expr,
-                             "Only fully concrete types can be converted to strings");
-        return false;
-    }
-    
-    // ─── 5. Reject trait types ─────────────────────────────────────────────
+    // ─── Reject trait types ──────────────────────────────────────────────
     if (argType->isa<NamedTypeAST>()) {
         NamedTypeAST* named = argType->as<NamedTypeAST>();
         if (named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>()) {
@@ -1407,11 +1111,11 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         }
     }
     
-    // ─── 6. All checks passed ──────────────────────────────────────────────
     return true;
 }
 
-/// @brief Validate #sizeof(T) intrinsic.
+// ─── validateSizeof ───────────────────────────────────────────────────────
+
 bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1420,33 +1124,25 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     ExprAST* arg = expr->args[0];
-    
-    // ─── Check if the argument is a type reference ──────────────────────
     TypeAST* type = nullptr;
     
     if (arg->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = arg->as<IdentifierExprAST>();
         if (id->isType) {
-            // It was parsed as a type - use the resolved type node
             type = id->resolvedTypeNode;
         } else {
-            // It was parsed as a value - try to resolve as a type
-            // This handles the fallback case where the parser couldn't tell
             TypeDeclAST* typeDecl = ctx.lookupType(id->name);
             if (typeDecl) {
-                // It's a user-defined type!
                 NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
                 namedType->resolvedDecl = typeDecl;
                 namedType->genericArgs = id->genericArgs;
                 type = namedType;
             } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                // It's a primitive type
                 PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
                 type = ctx.arena.make<PrimitiveTypeAST>(kind);
             }
             
             if (type) {
-                // Update the identifier to mark it as a type
                 id->isType = true;
                 id->resolvedTypeNode = type;
                 id->resolvedType = type;
@@ -1460,14 +1156,16 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // ─── Type must be sized ──────────────────────────────────────────────
-    // All types are sized in Lucid, except maybe future/thread which are handles
-    // This is a placeholder for future validation
+    // Validate the type is concrete for #sizeof
+    if (!validateConcreteTypeForReflection(type, expr, ctx, "sizeof")) {
+        return false;
+    }
     
     return true;
 }
 
-/// @brief Validate #alignof(T) intrinsic.
+// ─── validateAlignof ──────────────────────────────────────────────────────
+
 bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
@@ -1476,8 +1174,6 @@ bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
     
     ExprAST* arg = expr->args[0];
-    
-    // ─── Same logic as sizeof ──────────────────────────────────────────────
     TypeAST* type = nullptr;
     
     if (arg->isa<IdentifierExprAST>()) {
@@ -1510,6 +1206,177 @@ bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
+    // Validate the type is concrete for #alignof
+    if (!validateConcreteTypeForReflection(type, expr, ctx, "alignof")) {
+        return false;
+    }
+    
+    return true;
+}
+
+// ─── validateScopeExit ────────────────────────────────────────────────────
+
+bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (!ctx.stack.insideFunction()) {
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
+                              "#scope_exit is only valid inside a function body");
+        return false;
+    }
+
+    if (expr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#scope_exit expects at least 1 argument");
+        return false;
+    }
+
+    ExprAST* funcArg = expr->args[0];
+    TypeAST* funcType = funcArg->resolvedType;
+    
+    if (!funcType || funcType->isa<UnknownTypeAST>()) {
+        funcType = resolveExpr(funcArg, ctx);
+        if (!funcType || funcType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
+                                  "#scope_exit argument has unknown type");
+            return false;
+        }
+    }
+
+    if (!funcType->isa<FuncTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
+                              "#scope_exit expects a function as the first argument, got ",
+                              typeToString(funcType, ctx.pool));
+        return false;
+    }
+
+    FuncTypeAST* func = funcType->as<FuncTypeAST>();
+
+    // ─── Handle generic function references ─────────────────────────────
+    bool hasGenericArgs = false;
+    FuncDeclAST* funcDecl = nullptr;
+    
+    if (funcArg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
+        hasGenericArgs = !id->genericArgs.empty();
+        
+        ValueDeclAST* decl = ctx.lookupValue(id->name);
+        if (decl && decl->isa<FuncDeclAST>()) {
+            funcDecl = decl->as<FuncDeclAST>();
+        }
+    } else if (funcArg->isa<ModuleAccessExprAST>()) {
+        ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
+        hasGenericArgs = !mod->genericArgs.empty();
+        
+        ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
+        if (decl && decl->isa<FuncDeclAST>()) {
+            funcDecl = decl->as<FuncDeclAST>();
+        }
+    }
+
+    // ─── Validate generic instantiation ─────────────────────────────────
+    if (funcDecl) {
+        bool hasGenericParams = !funcDecl->genericParams.empty();
+        
+        if (hasGenericParams && !hasGenericArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, funcArg,
+                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
+                                  "' has generic parameters but no generic arguments");
+            return false;
+        }
+        
+        if (!hasGenericParams && hasGenericArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, funcArg,
+                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
+                                  "' is not generic but generic arguments were provided");
+            return false;
+        }
+    }
+
+    if (func->isCurried()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
+                              "#scope_exit callback must have exactly one parameter group");
+        return false;
+    }
+
+    if (func->returnType) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
+                              "#scope_exit callback must return void");
+        return false;
+    }
+
+    for (ParamAST* param : func->params) {
+        if (param->isVariadic) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
+                                  "#scope_exit callback cannot have variadic parameters");
+            return false;
+        }
+    }
+
+    size_t callbackArgs = expr->args.size() - 1;
+    size_t paramCount = func->params.size();
+
+    if (callbackArgs != paramCount) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#scope_exit callback expects ", paramCount,
+                              " argument(s), got ", callbackArgs);
+        return false;
+    }
+
+    auto argsBuilder = ctx.arena.makeBuilder<ExprAST*>();
+    
+    for (size_t i = 0; i < callbackArgs; ++i) {
+        ExprAST* arg = expr->args[i + 1];
+        TypeAST* expectedType = func->params[i]->type;
+
+        TypeAST* argType = resolveExprWithTarget(arg, expectedType, ctx);
+        if (!argType || argType->isa<UnknownTypeAST>()) {
+            return false;
+        }
+
+        if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                                  "cannot pass nil to non-nullable parameter in #scope_exit callback");
+            return false;
+        }
+
+        if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                                  "cannot pass err to non-fallible parameter in #scope_exit callback");
+            return false;
+        }
+
+        argsBuilder.push_back(arg);
+    }
+
+    if (funcArg->isa<FieldAccessExprAST>()) {
+        FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
+        ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, funcArg,
+                                "function reference from struct field '",
+                                ctx.pool.lookup(field->fieldName),
+                                "' may capture the struct's lifetime");
+    }
+
+    BlockStmtAST* currentBlock = ctx.stack.currentBlock();
+    if (!currentBlock) {
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
+                              "#scope_exit must appear inside a block");
+        return false;
+    }
+
+    ScopeExitRegistration* registration = ctx.arena.make<ScopeExitRegistration>();
+    registration->callExpr = expr;
+    registration->callback = funcDecl;
+    registration->args = argsBuilder.build();
+
+    auto exitsBuilder = ctx.arena.makeBuilder<ScopeExitRegistrationPtr>();
+    for (ScopeExitRegistrationPtr existing : currentBlock->scopeExits) {
+        exitsBuilder.push_back(existing);
+    }
+    exitsBuilder.push_back(registration);
+    currentBlock->scopeExits = exitsBuilder.build();
+
+    Trace::info("validateScopeExit: registered #scope_exit in block with ",
+             currentBlock->scopeExits.size(), " total registrations");
+
     return true;
 }
 
