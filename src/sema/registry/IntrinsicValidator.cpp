@@ -654,11 +654,13 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         if (!elementType) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
                                 "#simd_splat: first argument must be a type "
-                                "(numeric primitive like int32, float64, or generic parameter T)");
+                                "(numeric primitive like int32, float64)");
             return false;
         }
         
-        // Validate SIMD element type is concrete and valid
+        // ─── Validate SIMD element type is concrete ─────────────────────────────
+        // This checks that the type is not a type-erased generic (@[erased]).
+        // By default, generics are specialized, so Simd<T,N> works normally.
         if (!validateConcreteTypeForSimd(elementType, expr, ctx)) {
             return false;
         }
@@ -980,7 +982,9 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
                 return false;
             }
             
-            // Validate the element type is concrete for #alloc
+            // ─── Validate the element type is concrete for #alloc ──────────────
+            // This checks that the type is not a type-erased generic (@[erased]).
+            // By default, generics are specialized, so #alloc works normally.
             if (!validateConcreteTypeForAlloc(elementType, expr, ctx)) {
                 return false;
             }
@@ -1027,7 +1031,9 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // Validate the target type is concrete for #bitcast
+    // ─── Validate the target type is concrete for #bitcast ───────────────────
+    // This checks that the type is not a type-erased generic (@[erased]).
+    // By default, generics are specialized, so #bitcast works normally.
     if (!validateConcreteTypeForBitcast(targetType, expr, ctx)) {
         return false;
     }
@@ -1083,7 +1089,9 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return true;
     }
     
-    // Validate the type is concrete for #tostr
+    // ─── Validate the type is concrete for #tostr ────────────────────────────
+    // This checks that the type is not a type-erased generic (@[erased]).
+    // By default, generics are specialized, so #tostr works normally.
     if (!validateConcreteTypeForReflection(argType, expr, ctx, "tostr")) {
         return false;
     }
@@ -1121,7 +1129,9 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // Validate the type is concrete for #sizeof
+    // ─── Validate the type is concrete for #sizeof ──────────────────────────
+    // This checks that the type is not a type-erased generic (@[erased]).
+    // By default, generics are specialized, so #sizeof works normally.
     if (!validateConcreteTypeForReflection(type, expr, ctx, "sizeof")) {
         return false;
     }
@@ -1146,7 +1156,9 @@ bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    // Validate the type is concrete for #alignof
+    // ─── Validate the type is concrete for #alignof ─────────────────────────
+    // This checks that the type is not a type-erased generic (@[erased]).
+    // By default, generics are specialized, so #alignof works normally.
     if (!validateConcreteTypeForReflection(type, expr, ctx, "alignof")) {
         return false;
     }
