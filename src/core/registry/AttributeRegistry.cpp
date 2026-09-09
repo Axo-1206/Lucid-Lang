@@ -50,8 +50,9 @@ static const AttributeEntry ATTRIBUTE_TABLE[] = {
         ASTKind::FuncDecl
     }},
     
-    // Specialize on generic functions and generic structs
-    {"specialize", false, true, 0, 0, {
+    // Erased on generic functions and generic structs
+    // This forces type erasure (tagged slots) instead of the default specialization
+    {"erased",     false, true, 0, 0, {
         ASTKind::FuncDecl,
         ASTKind::StructDecl
     }},
