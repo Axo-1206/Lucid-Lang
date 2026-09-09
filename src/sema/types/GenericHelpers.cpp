@@ -977,11 +977,12 @@ void emitTypeErasedError(
     TypeAST* type,
     BaseAST* node,
     SemaContext& ctx,
-    const std::string& featureName
+    const std::string& featureName,
+    DiagCode code
 ) {
     std::string typeName = typeToString(type, ctx.pool);
     
-    ctx.diagnostics.error(DiagCode::Sem_TypeErasedGenericReflection, node,
+    ctx.diagnostics.error(code, node,
                           "#", featureName, " cannot be used with type-erased generic '",
                           typeName, "'");
     

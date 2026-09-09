@@ -252,7 +252,8 @@ void emitTypeErasedError(
     TypeAST* type,
     BaseAST* node,
     SemaContext& ctx,
-    const std::string& featureName
+    const std::string& featureName,
+    DiagCode code = DiagCode::Sem_TypeErasedGenericReflection
 );
 
 /// @brief Get the names of generic parameters from a declaration.

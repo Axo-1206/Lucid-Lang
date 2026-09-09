@@ -27,6 +27,7 @@
 #include "../support/MangledName.hpp"
 #include "../registry/AttributeValidator.hpp"
 #include "sema/types/SemaType.hpp"
+#include "sema/types/GenericHelpers.hpp"
 
 
 namespace sema {
@@ -354,6 +355,8 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
                               "' does not return a value on all paths");
     }
 
+    validateTypeErasedEligibility(decl, ctx);
+
     // ─── 12. Capture analysis (nested functions) ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(decl, ctx);
@@ -579,6 +582,8 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
+
+    validateTypeErasedEligibility(decl, ctx);
 
     // ─── 7. Generate mangled name ───────────────────────────────────────────
     InternedString mangled = generateMangledName(decl, ctx);

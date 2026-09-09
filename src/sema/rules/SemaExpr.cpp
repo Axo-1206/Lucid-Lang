@@ -16,6 +16,7 @@
 #include "core/builtins/ArenaMethod.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
 #include "sema/context/Generic.hpp"
+#include "sema/types/GenericHelpers.hpp"
 #include "sema/types/SemaType.hpp"
 
 #include <unordered_set>
@@ -1245,6 +1246,34 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
         expr->isConst = false;
         return ctx.getUnknownType();
     }
+
+    TypeAST* genericArg = nullptr;
+    if (requiresGenericArg) {
+        genericArg = resolveType(expr->genericArgs[0], ctx);
+        if (!genericArg) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+
+        bool validGenericArg = true;
+        if (method == builtins::ArenaMethodKind::Alloc) {
+            validGenericArg = validateConcreteTypeForArenaAlloc(genericArg, expr, ctx);
+        } else if (method == builtins::ArenaMethodKind::Space ||
+                   method == builtins::ArenaMethodKind::CanFit) {
+            validGenericArg = validateConcreteTypeForArenaSpace(
+                genericArg, expr, ctx, ctx.pool.lookup(expr->methodName));
+        }
+        if (!validGenericArg) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+    }
     
     // ─── Step 5: For instance methods, validate LHS ────────────────────
     if (!expr->isStatic) {
@@ -1351,11 +1380,6 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
     }
     
     // ─── Step 7: Build return type ─────────────────────────────────────
-    TypeAST* genericArg = nullptr;
-    if (!expr->genericArgs.empty() && expr->genericArgs[0]) {
-        genericArg = expr->genericArgs[0];
-    }
-    
     TypeAST* returnType = getArenaMethodReturnType(method, genericArg, ctx);
     
     // ─── Step 8: Determine value state ──────────────────────────────────

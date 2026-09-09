@@ -384,6 +384,14 @@ bool validateGenericArguments(ArenaSpan<TypeAST*> args,
         }
     }
 
+    if (allValid && useSite && useSite->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedUseSite = useSite->as<NamedTypeAST>();
+        if (namedUseSite->resolvedDecl &&
+            !validateNestedGenericCompatibility(namedUseSite->resolvedDecl, args, ctx)) {
+            allValid = false;
+        }
+    }
+
     return allValid;
 }
 
@@ -576,18 +584,8 @@ bool validateBorrowedContext(TypeAST* type, SemaContext& ctx) {
         return false;
     }
 
-    // ─── Rule 2: No Array/Slice Storage ────────────────────────────────────
-    // A borrowed type cannot be an element of an array or slice
-    // This is checked in resolveArrayType, but we also check the context here
-    // The caller should have already checked this
-    
-    // ─── Rule 3: No Borrowed Returns ──────────────────────────────────────
-    // A borrowed type cannot be returned from a function
-    // This is checked in resolveFuncType for the return type
-    
-    // ─── Rule 4: No Closure Capture ──────────────────────────────────────
-    // A borrowed type cannot be captured by a closure
-    // This is checked in resolveAnonFuncExpr and resolveFuncDecl
+    // Array/slice elements, function returns, and closure captures are
+    // validated by their owning resolution and capture-analysis paths.
     
     return true;
 }

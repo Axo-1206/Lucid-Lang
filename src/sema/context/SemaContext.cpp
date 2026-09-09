@@ -629,7 +629,7 @@ RefTypeAST* SemaContext::getRefType(TypeAST* inner) {
 
 NamedTypeAST* SemaContext::getArenaType() {
     InternedString name = pool.intern("Arena");
-    TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
+    TypeCache::NamedTypeKey key{name, arena.emptySpan<TypeAST*>()};
     auto it = typeCache.namedTypes.find(key);
     if (it != typeCache.namedTypes.end()) {
         return it->second;
@@ -637,7 +637,7 @@ NamedTypeAST* SemaContext::getArenaType() {
     
     // Create the type directly, don't call getArenaType() again
     NamedTypeAST* type = arena.make<NamedTypeAST>(name);
-    type->genericArgs = arena.makeBuilder<TypeAST*>().build();
+    type->genericArgs = arena.emptySpan<TypeAST*>();
     
     typeCache.namedTypes[key] = type;
     return type;
@@ -645,7 +645,7 @@ NamedTypeAST* SemaContext::getArenaType() {
 
 NamedTypeAST* SemaContext::getArenaDescriptorType() {
     InternedString name = pool.intern("ArenaDescriptor");
-    TypeCache::NamedTypeKey key{name, arena.makeBuilder<TypeAST*>().build()};
+    TypeCache::NamedTypeKey key{name, arena.emptySpan<TypeAST*>()};
     auto it = typeCache.namedTypes.find(key);
     if (it != typeCache.namedTypes.end()) {
         return it->second;
@@ -653,7 +653,7 @@ NamedTypeAST* SemaContext::getArenaDescriptorType() {
     
     // Create the type directly
     NamedTypeAST* type = arena.make<NamedTypeAST>(name);
-    type->genericArgs = arena.makeBuilder<TypeAST*>().build();
+    type->genericArgs = arena.emptySpan<TypeAST*>();
     
     typeCache.namedTypes[key] = type;
     return type;

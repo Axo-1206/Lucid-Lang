@@ -316,6 +316,11 @@ enum class DiagCode : uint32_t {
     Sem_AttributeArgValue      = 6018,
     Sem_AttributeDuplicate     = 6019, // Duplicate attribute on same declaration
     Sem_AttributeNotApplicable = 6020, // attribute doesn't apply to this declaration
+    Sem_TypeErasedGenericReflection = 6021,  // #sizeof/#alignof/#tostr on type-erased generic
+    Sem_TypeErasedGenericAlloc      = 6022,  // #alloc/arena::alloc on type-erased generic
+    Sem_TypeErasedGenericSimd       = 6023,  // Simd<T,N> with type-erased T
+    Sem_TypeErasedGenericBitcast    = 6024,  // #bitcast on type-erased generic
+    Sem_TypeErasedNestedMismatch    = 6025,  // Type-erased container with specialized inner type
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)

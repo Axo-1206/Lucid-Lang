@@ -3,6 +3,7 @@
 
 #include "Generic.hpp"
 #include "sema/support/MangledName.hpp"
+#include "sema/types/GenericHelpers.hpp"
 #include "core/trace/Trace.hpp"
 #include "sema/types/SemaType.hpp"
 
@@ -1064,6 +1065,10 @@ GenericResolution resolveGenericInstantiation(
                     return result;
                 }
             }
+        }
+
+        if (!validateNestedGenericCompatibility(templateDecl, typeArgs, ctx)) {
+            return result;
         }
     }
 
