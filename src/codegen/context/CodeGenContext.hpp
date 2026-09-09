@@ -10,7 +10,6 @@
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../runtime/RuntimeFunctionRegistry.hpp"
 #include "../generic/GenericRegistry.hpp"
-#include "../generic/Genericsubstitution.hpp"
 #include "../support/LiveVariableTracker.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 
@@ -104,50 +103,52 @@ struct CodeGenContext {
     };
     std::vector<LoopInfo> loops;
 
-    // ─── Generic Context ──────────────────────────────────────────────────
+    // ─── TaggedSlot Helpers ──────────────────────────────────────────────
 
     /// @brief Cached TaggedSlot type.
+    /// 
+    /// TaggedSlot is used for two purposes:
+    ///   1. **Nil/Err State** (T?, T!, T?!): sentinel = 0 (nil), 1 (valid), 2 (err)
+    ///   2. **Type-Erased Generics**: All values are boxed as TaggedSlot* 
+    ///      to allow uniform handling of different types.
     llvm::StructType* taggedSlotType_ = nullptr;
 
     /// @brief Box a value into a TaggedSlot for type-erased generic dispatch.
     /// 
     /// Creates a TaggedSlot struct with:
-    ///   - tag: The runtime type tag (0 = valid, 1 = nil, 2 = err, or type ID)
+    ///   - sentinel: The state (0 = nil, 1 = valid, 2 = err) — DEFAULT IS 1 (valid)
     ///   - value: The opaque pointer to the actual value
     /// 
+    /// ─── Usage ──────────────────────────────────────────────────────────────
+    /// This is used in the type-erased path (non-@[specialize] generics):
+    ///   - Function arguments: Boxing before calling an erased generic function
+    ///   - Struct fields: Boxing before storing in an erased generic struct
+    /// 
+    /// ─── NOT Used for ──────────────────────────────────────────────────────
+    ///   - @[specialize] path: All types are concrete, no boxing needed
+    ///   - Non-generic code: No boxing needed
+    /// 
     /// @param value The value to box (will be bitcast to i8*).
-    /// @param tag The type tag (uint32_t, will be truncated to i8).
+    /// @param sentinel The state (0 = nil, 1 = valid, 2 = err). 
+    ///        Default is 1 (valid).
     /// @param valueType The LLVM type of the value (for debugging).
     /// @return A pointer to the allocated TaggedSlot.
-    /// 
-    /// ─── Memory Model ──────────────────────────────────────────────────────
-    /// The TaggedSlot is allocated on the stack using alloca. The caller
-    /// is responsible for ensuring the slot outlives its use.
-    /// 
-    /// ─── Usage ─────────────────────────────────────────────────────────────
-    /// ```cpp
-    /// llvm::Value* boxed = ctx.boxIntoTaggedSlot(
-    ///     argValue,
-    ///     tagValue,
-    ///     argValue->getType()
-    /// );
-    /// ```
     llvm::Value* boxIntoTaggedSlot(
         llvm::Value* value,
-        llvm::Value* tag,
+        llvm::Value* sentinel,
         llvm::Type* valueType
     );
 
-    /// @brief Box a value with a known type tag (compile-time constant).
+    /// @brief Box a value with a known sentinel (compile-time constant).
     /// 
-    /// Convenience overload for when the tag is known at compile time.
+    /// Convenience overload for when the sentinel is known at compile time.
     /// @param value The value to box.
-    /// @param tag The type tag (uint32_t).
+    /// @param sentinel The state (0 = nil, 1 = valid, 2 = err).
     /// @param valueType The LLVM type of the value.
     /// @return A pointer to the allocated TaggedSlot.
     llvm::Value* boxIntoTaggedSlot(
         llvm::Value* value,
-        uint32_t tag,
+        uint32_t sentinel,
         llvm::Type* valueType
     );
 
@@ -226,18 +227,6 @@ struct CodeGenContext {
         return currentFunction;
     }
 
-    // ─── Generic Parameter Helpers ──────────────────────────────────────
-    
-    /// @brief Check if a type is a generic parameter that needs runtime resolution.
-    /// 
-    /// This returns true if:
-    ///   1. Sema resolved the type to a GenericParamDeclAST, or
-    ///   2. The type name matches a generic parameter in the current substitution context
-    /// 
-    /// Used by #sizeof(T) and #alignof(T) to determine whether to use runtime tag lookup
-    /// instead of compile-time constants.
-    bool isUnresolvedGenericParameter(TypeAST* type);
-    
     // ─── Runtime Function Helpers ──────────────────────────────────────
     
     llvm::Function* getRuntimeFunction(const std::string& name) const {
@@ -454,75 +443,5 @@ struct CodeGenContext {
     llvm::Type* getPointeeType(llvm::Value* ptr) const;
     llvm::Type* getPointeeType(llvm::Type* type) const;
 };
-
-/// @brief Get the type tag for a struct field.
-/// @param field The field declaration.
-/// @param ctx The code generation context.
-/// @return The type tag (0 if not tagged).
-static inline uint32_t getFieldTypeTag(FieldDeclAST* field, CodeGenContext& ctx) {
-    if (!field || !field->type) return 0;
-    
-    if (field->type->isa<NamedTypeAST>()) {
-        NamedTypeAST* namedType = field->type->as<NamedTypeAST>();
-        return namedType->typeTag;
-    }
-    
-    // Check if the field type is a generic parameter
-    if (ctx.isUnresolvedGenericParameter(field->type)) {
-        // For generic parameters, the tag is determined at runtime
-        // We return 0 and the caller handles it
-        return 0;
-    }
-    
-    return 0;
-}
-
-
-/// @brief Get the type tag from an expression, if available.
-/// @param expr The expression to check.
-/// @return The type tag (0 = no tag / not generic), or 0 if not available.
-static inline uint32_t getTypeTagFromExpr(ExprAST* expr) {
-    if (!expr) return 0;
-    
-    switch (expr->kind) {
-        case ASTKind::CallExpr: {
-            CallExprAST* call = expr->as<CallExprAST>();
-            if (!call->typeTags.empty()) {
-                return call->typeTags[0];
-            }
-            return 0;
-        }
-        
-        case ASTKind::StructLiteralExpr: {
-            StructLiteralExprAST* structLit = expr->as<StructLiteralExprAST>();
-            return structLit->typeTag;
-        }
-        
-        default:
-            return 0;
-    }
-}
-
-/// @brief Get all type tags from a call expression.
-/// @param call The call expression.
-/// @return The vector of type tags (empty if none).
-static inline const std::vector<uint32_t>& getTypeTagsFromCall(CallExprAST* call) {
-    return call->typeTags;
-}
-
-static inline bool isGenericParameterType(TypeAST* type) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    NamedTypeAST* named = type->as<NamedTypeAST>();
-    return named->resolvedDecl && 
-           named->resolvedDecl->isa<GenericParamDeclAST>();
-}
-
-static inline bool isGenericParameterTypeWithName(TypeAST* type, InternedString name) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    NamedTypeAST* named = type->as<NamedTypeAST>();
-    return named->resolvedDecl && 
-           named->resolvedDecl->isa<GenericParamDeclAST>() &&
-           named->name == name;
-}
 
 } // namespace codegen

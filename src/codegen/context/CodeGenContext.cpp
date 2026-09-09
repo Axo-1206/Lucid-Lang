@@ -23,8 +23,11 @@ llvm::StructType* CodeGenContext::getTaggedSlotType() {
     
     if (!slotType) {
         std::vector<llvm::Type*> slotFields = {
-            llvm::Type::getInt8Ty(llvmCtx),              // tag (0 = valid, 1 = nil, 2 = err, or type ID)
-            llvm::PointerType::get(llvmCtx, 0)          // value (opaque pointer)
+            // sentinel: 0 = nil, 1 = valid, 2 = err
+            // This is the NULL/ERROR state, NOT a type ID!
+            llvm::Type::getInt8Ty(llvmCtx),
+            // value: Opaque pointer to the actual value
+            llvm::PointerType::get(llvmCtx, 0)
         };
         slotType = llvm::StructType::create(llvmCtx, slotFields, slotName);
     }
@@ -33,18 +36,18 @@ llvm::StructType* CodeGenContext::getTaggedSlotType() {
     return slotType;
 }
 
-llvm::Value* CodeGenContext::boxIntoTaggedSlot(llvm::Value* value, llvm::Value* tag, llvm::Type* valueType) {
+llvm::Value* CodeGenContext::boxIntoTaggedSlot(llvm::Value* value, llvm::Value* sentinel, llvm::Type* valueType) {
     if (!value) return nullptr;
-    if (!tag) {
-        // Default tag: 0 (valid)
-        tag = llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0);
+    if (!sentinel) {
+        // Default sentinel: 1 (valid)
+        sentinel = llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 1);
     }
 
     llvm::StructType* slotType = getTaggedSlotType();
     
-    // ─── Truncate tag to i8 if needed ──────────────────────────────────────
-    if (tag->getType()->isIntegerTy() && tag->getType()->getIntegerBitWidth() != 8) {
-        tag = builder.CreateTrunc(tag, llvm::Type::getInt8Ty(llvmCtx), "tag_trunc");
+    // ─── Truncate sentinel to i8 if needed ────────────────────────────────
+    if (sentinel->getType()->isIntegerTy() && sentinel->getType()->getIntegerBitWidth() != 8) {
+        sentinel = builder.CreateTrunc(sentinel, llvm::Type::getInt8Ty(llvmCtx), "sentinel_trunc");
     }
 
     // ─── Bitcast value to i8* ──────────────────────────────────────────────
@@ -57,9 +60,9 @@ llvm::Value* CodeGenContext::boxIntoTaggedSlot(llvm::Value* value, llvm::Value* 
     // ─── Allocate TaggedSlot on the stack ──────────────────────────────────
     llvm::AllocaInst* slotAlloca = builder.CreateAlloca(slotType, nullptr, "tagged_slot");
     
-    // ─── Store tag ──────────────────────────────────────────────────────────
-    llvm::Value* tagPtr = builder.CreateStructGEP(slotType, slotAlloca, 0, "tag_ptr");
-    builder.CreateStore(tag, tagPtr);
+    // ─── Store sentinel ─────────────────────────────────────────────────────
+    llvm::Value* sentinelPtr = builder.CreateStructGEP(slotType, slotAlloca, 0, "sentinel_ptr");
+    builder.CreateStore(sentinel, sentinelPtr);
     
     // ─── Store value ────────────────────────────────────────────────────────
     llvm::Value* valuePtr = builder.CreateStructGEP(slotType, slotAlloca, 1, "value_ptr");

@@ -49,69 +49,6 @@ bool shouldSpecialize(DeclAST* decl) {
     return false;
 }
 
-bool containsGenericParameter(TypeAST* type, const GenericSubstitution* subst) {
-    if (!type || !subst) return false;
-    
-    switch (type->kind) {
-        case ASTKind::NamedType: {
-            NamedTypeAST* named = type->as<NamedTypeAST>();
-            if (subst->isGenericParam(named->name)) return true;
-            for (TypeAST* arg : named->genericArgs) {
-                if (containsGenericParameter(arg, subst)) return true;
-            }
-            return false;
-        }
-        case ASTKind::ArrayType: {
-            ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-            return containsGenericParameter(arr->element, subst);
-        }
-        case ASTKind::NullableType: {
-            NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            return containsGenericParameter(nullable->inner, subst);
-        }
-        case ASTKind::FallibleType: {
-            FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            return containsGenericParameter(fallible->inner, subst);
-        }
-        case ASTKind::CombinedType: {
-            CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            return containsGenericParameter(combined->inner, subst);
-        }
-        case ASTKind::RefType: {
-            RefTypeAST* ref = type->as<RefTypeAST>();
-            return containsGenericParameter(ref->inner, subst);
-        }
-        case ASTKind::PtrType: {
-            PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            return containsGenericParameter(ptr->inner, subst);
-        }
-        case ASTKind::FuncType: {
-            FuncTypeAST* func = type->as<FuncTypeAST>();
-            for (ParamAST* param : func->params) {
-                if (containsGenericParameter(param->type, subst)) return true;
-            }
-            if (func->returnType && containsGenericParameter(func->returnType, subst)) {
-                return true;
-            }
-            return false;
-        }
-        case ASTKind::FutureType: {
-            FutureTypeAST* future = type->as<FutureTypeAST>();
-            return containsGenericParameter(future->inner, subst);
-        }
-        case ASTKind::ThreadType: {
-            ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            return containsGenericParameter(thread->inner, subst);
-        }
-        case ASTKind::SimdType: {
-            SimdTypeAST* simd = type->as<SimdTypeAST>();
-            return containsGenericParameter(simd->elementType, subst);
-        }
-        default:
-            return false;
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Type-Erased Generic Generation
 // ─────────────────────────────────────────────────────────────────────────────
