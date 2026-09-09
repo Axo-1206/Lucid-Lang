@@ -54,14 +54,14 @@ struct GenericSubstitution {
 /// @brief Result of resolving a generic instantiation.
 /// 
 /// Contains either:
-///   - A specialized declaration (@[specialize] path) with genericParams empty
-///   - The template declaration with a runtime (type-erased path)
+///   - A specialized declaration (default path) with genericParams empty
+///   - The template declaration with an erased name (type-erased path, @[erased])
 struct GenericResolution {
     /// The resolved declaration (specialized or template).
     DeclAST* resolvedDecl = nullptr;
     
-    /// True if this resolved to a specialized declaration (@[specialize] path).
-    bool isSpecialized = false;
+    /// True if this resolved to a type-erased declaration (@[erased] path).
+    bool isErased = false;
 };
 
 // ─── Type Substitution Helpers (declarations) ──────────────────────────────
@@ -84,9 +84,8 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 /// 
 /// This is the SINGLE decision point for generic instantiation. It handles:
 ///   - Arity validation
-///   - @[specialize] vs type-erased path selection
+///   - Specialized (default) vs type-erased (@[erased]) path selection
 ///   - Specialized declaration creation (if needed)
-
 /// 
 /// @param templateDecl The generic declaration (FuncDeclAST* or StructDeclAST*).
 /// @param typeArgs The concrete type arguments provided at the use site.
@@ -94,23 +93,39 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 /// @return A GenericResolution containing the resolved declaration and strategy.
 /// 
 /// @note This function should be called ONCE per instantiation. Call sites
-///       should store the result on the AST node (e.g., resolvedDecl, 
-///       isSpecialized) rather than re-deriving it.
+///       should store the result on the AST node (e.g., resolvedDecl, isErased)
+///       rather than re-deriving it.
 GenericResolution resolveGenericInstantiation(
     DeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
-// ─── Specialized Struct/Function Creation (declarations) ──────────────────
+// ─── Instantiated Struct/Function Creation (declarations) ──────────────────
 
-/// @brief Create a specialized struct declaration from a generic template.
-StructDeclAST* createSpecializedStruct(
+/// @brief Create an instantiated struct from a generic template.
+/// 
+/// This creates a specialized struct (default path) where all generic
+/// parameters are substituted with concrete types.
+/// 
+/// @param templateDecl The generic struct template.
+/// @param typeArgs The concrete type arguments.
+/// @param ctx The semantic context.
+/// @return The instantiated StructDeclAST, or nullptr on error.
+StructDeclAST* createInstantiatedStruct(
     StructDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
-/// @brief Create a specialized function declaration from a generic template.
-FuncDeclAST* createSpecializedFunction(
+/// @brief Create an instantiated function from a generic template.
+/// 
+/// This creates a specialized function (default path) where all generic
+/// parameters are substituted with concrete types.
+/// 
+/// @param templateDecl The generic function template.
+/// @param typeArgs The concrete type arguments.
+/// @param ctx The semantic context.
+/// @return The instantiated FuncDeclAST, or nullptr on error.
+FuncDeclAST* createInstantiatedFunction(
     FuncDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
