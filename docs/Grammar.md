@@ -5083,7 +5083,7 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 | `@[deprecated("msg")]` | any declaration                                                      | Compiler warning at use sites                            |
 | `@[inline]`            | function declaration                                                 | Hint to inline at call sites                             |
 | `@[noinline]`          | function declaration                                                 | Prevent inlining                                         |
-| `@[specialize]`        | generic function/struct                                              | Force monomorphization instead of type erasure           |
+| `@[erased]`            | generic function/struct                                              | Force type erasure (tagged slots) instead of specialization |
 
 
 **Rules:**
@@ -5092,37 +5092,36 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 - Attributes are a **fixed, closed set** — there is no user-defined or
   namespaced attribute form.
 
-`@[specialize]` — Generic Implementation Strategy
+`@[erased]` — Generic Implementation Strategy
 is valid on generic functions and generic structs only.
 
-Meaning: Forces the compiler to use monomorphization (template instantiation)
-for the annotated generic declaration instead of the default type erasure strategy.
+Meaning: Forces the compiler to use type erasure (tagged slots) for the
+annotated generic declaration instead of the default specialization strategy.
 
-By default, Lucid implements generics using type erasure with tagged slots:
-
-```lucid
--- Default: type erasure
-const identity<T> (v T) -> T = { return v }
-
--- One function in LLVM IR, works for all types
--- All values passed as tagged slots { tag, value }
--- Runtime tag checking for type safety
-```
-
-When `@[specialize]` is applied, the compiler generates a separate copy of the
-function/struct for each concrete type instantiation:
+By default, Lucid implements generics using monomorphization (specialization):
 
 ```lucid
-@[specialize]
+-- Default: specialization (monomorphization)
 const identity<T> (v T) -> T = { return v }
 
--- User code:
-let a int = identity<int>(5)      -- Generates identity_i32
-let b string = identity<string>("hello")  -- Generates identity_string
-let c float = identity<float>(3.14)  -- Generates identity_float
+-- One function copy per concrete type instantiation
+-- Zero runtime overhead, compile-time type information available
+-- #sizeof(T), #tostr(T), Simd<T,N>, and trait bounds work normally
 ```
 
-#### Type-Erased Generics — Restrictions
+When `@[erased]` is applied, the compiler generates a single shared version
+of the function/struct for all type instantiations:
+
+```lucid
+@[erased]
+const identity<T> (v T) -> T = { return v }
+
+-- One shared function for all types
+-- Values passed as tagged slots { tag, value }
+-- Reduced code size at the cost of runtime overhead
+```
+
+#### Type-Erased Generics — Restrictions (only applies with `@[erased]`)
 
 Type erasure only works because the compiler never needs `T`'s identity
 inside the shared function/struct body — every value is handled through
@@ -5132,27 +5131,25 @@ codegen against that uniform representation can supply it. Using any of the
 following on an unresolved (type-erased) generic parameter is a **compile
 error**, not a runtime cost:
 
-| Feature                                       | Why it needs a concrete `T`                                   |
-| --------------------------------------------- | ------------------------------------------------------------- |
-| `#sizeof(T)` / `#alignof(T)`                  | Needs `T`'s byte size/alignment, not carried by a tagged slot |
-| `#tostr(T)`                                   | Needs `T`'s field layout to emit per-field formatting code    |
-| `Simd<T, N>`                                  | Must lower to a genuine, fixed-shape LLVM vector type         |
-| `#alloc(T, count)` / `arena::alloc<T>(count)` | Need `T`'s byte size to compute the allocation                |
-| Trait bounds (`<T : Trait>`)                  | Needs `T`'s concrete method set resolved at compile time      |
+| Feature                                       | Why it needs a concrete `T`                                |
+| --------------------------------------------- | ---------------------------------------------------------- |
+| `#sizeof(T)` / `#alignof(T)`                  | Needs `T`'s byte size/alignment                            |
+| `#tostr(T)`                                   | Needs `T`'s field layout to emit per-field formatting code |
+| `Simd<T, N>`                                  | Must lower to a genuine, fixed-shape LLVM vector type      |
+| `#alloc(T, count)` / `arena::alloc<T>(count)` | Need `T`'s byte size to compute the allocation             |
+| Trait bounds (`<T : Trait>`)                  | Needs `T`'s concrete method set resolved at compile time   |
 
-The fix is always the same: annotate the declaration `@[specialize]`. Once
-specialized, `T` is a real, concrete type inside every generated copy, and
-all of the above become ordinary compile-time-resolved operations — no
-different from writing `#sizeof(int)` directly:
+**The fix:** Remove `@[erased]` from the declaration, or use explicit
+monomorphization by instantiating with concrete types.
 
 ```lucid
--- ❌ Type-erased (default) — compile error
+-- ❌ Type-erased — compile error
+@[erased]
 const boxedSize<T> (v T) -> uint64 = {
-    return #sizeof(T);   -- ERROR: T is type-erased here; add @[specialize]
+    return #sizeof(T);   -- ERROR: T is type-erased; remove @[erased]
 };
 
--- ✅ Specialized — T is concrete in every generated copy
-@[specialize]
+-- ✅ Default (specialized) — T is concrete in every generated copy
 const boxedSize<T> (v T) -> uint64 = {
     return #sizeof(T);   -- OK
 };
@@ -5160,20 +5157,22 @@ const boxedSize<T> (v T) -> uint64 = {
 
 **Nested composition follows the same rule.** A type-erased generic may
 only use *other* type-erased generics as its own type arguments. If a
-nested type argument is itself `@[specialize]`d, referencing it from a
-type-erased context is also a compile error — a specialized type no
+nested type argument is itself specialized (the default), referencing it from
+a type-erased context is also a compile error — a specialized type no
 longer has the uniform boxed shape a type-erased container needs to store
 it generically:
 
 ```lucid
-@[specialize]
-struct Box<T> { value: T }
+struct Box<T> { value: T }    -- default: specialized
 
 -- ❌ Wrapper is type-erased, but Box<T> is specialized — shape mismatch
+@[erased]
 struct Wrapper<T> { inner: Box<T> }
 
--- ✅ Specialize Wrapper too, so both sides agree on layout
-@[specialize]
+-- ✅ Erase Wrapper too, so both sides agree on layout
+@[erased]
+struct Box<T> { value: T }
+@[erased]
 struct Wrapper<T> { inner: Box<T> }
 ```
 
