@@ -343,16 +343,35 @@ llvm::Value* emitLucidTypeIntrinsic(
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
     llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
 
     // ─── #sizeof(T) ──────────────────────────────────────────────────────
     if (kind == IntrinsicKind::Sizeof) {
         if (expr && expr->resolvedType) {
-            llvm::Type* llvmType = getType(ctx, expr->resolvedType);
+            TypeAST* type = expr->resolvedType;
+            
+            // ─── Safety net: reject generic parameters ──────────────────────
+            if (type->isa<NamedTypeAST>()) {
+                NamedTypeAST* named = type->as<NamedTypeAST>();
+                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                        "INTERNAL ERROR: #sizeof(T) called on generic parameter '",
+                        ctx.pool.lookup(named->name),
+                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
+                    return llvm::ConstantInt::get(i64, 0);
+                }
+            }
+            
+            // ─── Concrete type: compile-time constant ──────────────────────
+            llvm::Type* llvmType = getType(ctx, type);
             if (llvmType) {
-                uint64_t size = getTypeSize(llvmType, ctx.module);
+                const llvm::DataLayout& dl = ctx.module->getDataLayout();
+                uint64_t size = dl.getTypeAllocSize(llvmType).getFixedValue();
                 return llvm::ConstantInt::get(i64, size);
             }
+            
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                "#sizeof: could not determine LLVM type for '", 
+                getLucidTypeName(ctx, type), "'");
         }
         return llvm::ConstantInt::get(i64, 0);
     }
@@ -360,13 +379,33 @@ llvm::Value* emitLucidTypeIntrinsic(
     // ─── #alignof(T) ──────────────────────────────────────────────────────
     if (kind == IntrinsicKind::Alignof) {
         if (expr && expr->resolvedType) {
-            llvm::Type* llvmType = getType(ctx, expr->resolvedType);
+            TypeAST* type = expr->resolvedType;
+            
+            // ─── Safety net: reject generic parameters ──────────────────────
+            if (type->isa<NamedTypeAST>()) {
+                NamedTypeAST* named = type->as<NamedTypeAST>();
+                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                        "INTERNAL ERROR: #alignof(T) called on generic parameter '",
+                        ctx.pool.lookup(named->name),
+                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
+                    return llvm::ConstantInt::get(i64, 1);
+                }
+            }
+            
+            // ─── Concrete type: compile-time constant ──────────────────────
+            llvm::Type* llvmType = getType(ctx, type);
             if (llvmType) {
-                uint64_t alignment = getTypeAlign(llvmType, ctx.module);
+                const llvm::DataLayout& dl = ctx.module->getDataLayout();
+                uint64_t alignment = dl.getABITypeAlign(llvmType).value();
                 return llvm::ConstantInt::get(i64, alignment);
             }
+            
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                "#alignof: could not determine LLVM type for '", 
+                getLucidTypeName(ctx, type), "'");
         }
-        return llvm::ConstantInt::get(i64, 0);
+        return llvm::ConstantInt::get(i64, 1);
     }
 
     // ─── #bitcast(T, x) ──────────────────────────────────────────────────
@@ -375,6 +414,20 @@ llvm::Value* emitLucidTypeIntrinsic(
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
                                 "intrinsic '#bitcast' requires an argument");
             return nullptr;
+        }
+
+        // ─── Safety net: reject generic parameters ──────────────────────────
+        if (expr->resolvedType) {
+            if (expr->resolvedType->isa<NamedTypeAST>()) {
+                NamedTypeAST* named = expr->resolvedType->as<NamedTypeAST>();
+                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                        "INTERNAL ERROR: #bitcast(T, x) called with generic parameter '",
+                        ctx.pool.lookup(named->name),
+                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
+                    return nullptr;
+                }
+            }
         }
 
         llvm::Type* targetType = getType(ctx, expr->resolvedType);
@@ -388,10 +441,9 @@ llvm::Value* emitLucidTypeIntrinsic(
         llvm::Type* valueType = val->getType();
         
         // ─── Size check ────────────────────────────────────────────────────
-        // Use LLVM's DataLayout to get sizes
         const llvm::DataLayout& dl = ctx.module->getDataLayout();
-        uint64_t targetSize = dl.getTypeAllocSize(targetType);
-        uint64_t valueSize = dl.getTypeAllocSize(valueType);
+        uint64_t targetSize = dl.getTypeAllocSize(targetType).getFixedValue();
+        uint64_t valueSize = dl.getTypeAllocSize(valueType).getFixedValue();
         
         if (targetSize != valueSize) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
@@ -437,7 +489,7 @@ llvm::Value* emitLucidTypeIntrinsic(
         ExprAST* arg = expr->args[0];
         if (arg->isa<IdentifierExprAST>()) {
             nameStr = ctx.pool.lookup(arg->as<IdentifierExprAST>()->name);
-        } if (arg->isa<FieldAccessExprAST>()) {
+        } else if (arg->isa<FieldAccessExprAST>()) {
             nameStr = ctx.pool.lookup(arg->as<FieldAccessExprAST>()->fieldName);
         } else {
             nameStr = "unknown";
@@ -454,6 +506,21 @@ llvm::Value* emitLucidTypeIntrinsic(
             return nullptr;
         }
 
+        // ─── Safety net: reject generic parameters ──────────────────────────
+        if (expr->args[0]->resolvedType) {
+            TypeAST* argType = expr->args[0]->resolvedType;
+            if (argType->isa<NamedTypeAST>()) {
+                NamedTypeAST* named = argType->as<NamedTypeAST>();
+                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
+                        "INTERNAL ERROR: #tostr called on generic parameter '",
+                        ctx.pool.lookup(named->name),
+                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
+                    return ctx.createStringLiteral("<generic>");
+                }
+            }
+        }
+
         return emitTostrValue(args[0], expr->args[0]->resolvedType, expr->args[0], loc, ctx);
     }
 
@@ -465,17 +532,12 @@ llvm::Value* emitLucidTypeIntrinsic(
             return nullptr;
         }
 
-        // args[0] is the raw, un-loaded address (see the Ptrstr
-        // special-case in emitIntrinsicFromAST, IntrinsicEmitter.cpp) -
-        // it must not be loaded, since the whole point is reporting the
-        // address itself, not the value stored there.
         llvm::Value* addr = args[0];
-        if (addr->getType() != i8Ptr) {
-            addr = ctx.builder.CreateBitCast(addr, i8Ptr);
+        if (addr->getType() != llvm::PointerType::get(ctx.llvmCtx, 0)) {
+            addr = ctx.builder.CreateBitCast(addr, llvm::PointerType::get(ctx.llvmCtx, 0));
         }
 
         llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::PtrToHexString);
-
         return ctx.builder.CreateCall(fn, {addr});
     }
 
