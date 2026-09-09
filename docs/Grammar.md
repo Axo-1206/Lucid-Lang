@@ -5122,6 +5122,61 @@ let b string = identity<string>("hello")  -- Generates identity_string
 let c float = identity<float>(3.14)  -- Generates identity_float
 ```
 
+#### Type-Erased Generics — Restrictions
+
+Type erasure only works because the compiler never needs `T`'s identity
+inside the shared function/struct body — every value is handled through
+one uniform tagged-slot representation. A handful of features fundamentally
+need `T`'s concrete identity at compile time, and no amount of clever
+codegen against that uniform representation can supply it. Using any of the
+following on an unresolved (type-erased) generic parameter is a **compile
+error**, not a runtime cost:
+
+| Feature                                       | Why it needs a concrete `T`                                   |
+| --------------------------------------------- | ------------------------------------------------------------- |
+| `#sizeof(T)` / `#alignof(T)`                  | Needs `T`'s byte size/alignment, not carried by a tagged slot |
+| `#tostr(T)`                                   | Needs `T`'s field layout to emit per-field formatting code    |
+| `Simd<T, N>`                                  | Must lower to a genuine, fixed-shape LLVM vector type         |
+| `#alloc(T, count)` / `arena::alloc<T>(count)` | Need `T`'s byte size to compute the allocation                |
+| Trait bounds (`<T : Trait>`)                  | Needs `T`'s concrete method set resolved at compile time      |
+
+The fix is always the same: annotate the declaration `@[specialize]`. Once
+specialized, `T` is a real, concrete type inside every generated copy, and
+all of the above become ordinary compile-time-resolved operations — no
+different from writing `#sizeof(int)` directly:
+
+```lucid
+-- ❌ Type-erased (default) — compile error
+const boxedSize<T> (v T) -> uint64 = {
+    return #sizeof(T);   -- ERROR: T is type-erased here; add @[specialize]
+};
+
+-- ✅ Specialized — T is concrete in every generated copy
+@[specialize]
+const boxedSize<T> (v T) -> uint64 = {
+    return #sizeof(T);   -- OK
+};
+```
+
+**Nested composition follows the same rule.** A type-erased generic may
+only use *other* type-erased generics as its own type arguments. If a
+nested type argument is itself `@[specialize]`d, referencing it from a
+type-erased context is also a compile error — a specialized type no
+longer has the uniform boxed shape a type-erased container needs to store
+it generically:
+
+```lucid
+@[specialize]
+struct Box<T> { value: T }
+
+-- ❌ Wrapper is type-erased, but Box<T> is specialized — shape mismatch
+struct Wrapper<T> { inner: Box<T> }
+
+-- ✅ Specialize Wrapper too, so both sides agree on layout
+@[specialize]
+struct Wrapper<T> { inner: Box<T> }
+```
+
 ### 2. Intrinsics `#`
 
 Intrinsics are direct calls into the compiler's backend — a layer shared
@@ -5193,8 +5248,8 @@ safety boundary.
 | `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                           |
 | `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                          |
 | `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                         |
-| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant when `T` is concrete; see **`#sizeof` / `#alignof` — Generic Behavior** below for `T` generic          |
-| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant when `T` is concrete; same generic-`T` behavior as `#sizeof`                                    |
+| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant; `T` must be concrete, see **`#sizeof` / `#alignof` — Generic Behavior** below                         |
+| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant; same rule as `#sizeof`                                                                         |
 
 ```lucid
 -- Generic logger: works on any type T, given a formatter for it
@@ -5296,40 +5351,42 @@ const logGeneric<T> (v T)(toStr (T) -> string) -> string = {
 
 #### `#sizeof` / `#alignof` — Generic Behavior
 
-Unlike `#tostr`, `#sizeof(T)` and `#alignof(T)` are **permitted on a generic
-`T`** — including under the default type-erasure strategy. The restriction
-that blocks `#tostr` doesn't apply here, because the two intrinsics need
-fundamentally different things from `T`: `#tostr` needs `T`'s full field
-layout to emit a *different sequence of formatting instructions* per type,
-which a single erased function body cannot do; `#sizeof`/`#alignof` only
-ever produce **one number**, which doesn't require knowing `T`'s shape at
-all — just its size.
+`#sizeof(T)` and `#alignof(T)` follow the same rule as `#tostr` (see
+**Type-Erased Generics — Restrictions**): both require a concrete `T`, and
+using either on an unresolved, type-erased generic parameter is a compile
+error. The underlying reason differs from `#tostr` — they only ever
+produce **one number**, not a variable-shaped sequence of formatting
+instructions — but that number still isn't recoverable from a type-erased
+value's uniform tagged-slot representation, which carries no size or
+alignment information at all, only the value itself:
 
-How that number is produced depends on what's known about `T` at the call
-site:
+```lucid
+-- ❌ Type-erased (default)
+const boxedSize<T> (v T) -> uint64 = {
+    return #sizeof(T);   -- ERROR: T is type-erased here; add @[specialize]
+};
 
-| `T` at the call site                             | Lowering                                                                                                                                                                                 |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Concrete (`#sizeof(Particle)`, `#sizeof(int)`)   | Resolved to a literal at Sema time — `CompileTimeConst`, same as today, zero runtime cost                                                                                                |
-| `@[specialize]`d generic parameter               | Each monomorphized copy has a concrete `T` substituted before lowering, so it's still a literal per copy                                                                                 |
-| Type-erased generic parameter (default strategy) | Not a literal — instead a small runtime lookup against the tag the erased value already carries (`tag → {size, align}`), a `RuntimeCall`-style resolution rather than `CompileTimeConst` |
+-- ✅ Specialized — T is a literal in every generated copy
+@[specialize]
+const boxedSize<T> (v T) -> uint64 = {
+    return #sizeof(T);   -- OK
+};
+```
 
-The third row costs a single table lookup, not a general reflection
-mechanism — it reuses the same runtime tag a type-erased value already
-carries for its ordinary tag-checking, and it's the reason
+`#sizeof(T)`/`#alignof(T)` on a **concrete** type (`#sizeof(int)`,
+`#sizeof(Particle)`) is always fine regardless of context — this rule only
+concerns an unresolved generic parameter, never a fully-named type.
+
 `arena::space<T>()` (`arena::remaining() / #sizeof(T)`, see **Arena**) is
-able to call `#sizeof(T)` directly on its own generic parameter without
-requiring `@[specialize]`.
+not an exception to this rule: `Arena`'s methods are compiler-builtin, not
+ordinary generic Lucid code, and are always resolved with a concrete `T`
+at each call site (`arena::space<int>()`) — they never go through the
+type-erasure-by-default path at all, so there's no unresolved `T` for the
+restriction to apply to.
 
-`#alloc(T, count)` resolves `T` the same way — it only ever needs `T`'s
-byte size to allocate, and returns a plain `*T` whose representation
-doesn't depend on `T`'s shape, so the same three-case table applies to it.
-
-`#simd_splat`'s `type` argument is the one exception: even though it also
-only needs a byte size, its return type `Simd<T,N>` must lower to a
-genuinely fixed-shape LLVM vector type with no erased or boxed fallback
-representation, so `type` must always be concrete — see **SIMD /
-Vector**.
+`#alloc(T, count)` and `#simd_splat`'s `type` argument follow the identical
+rule for the identical reason — see **Type-Erased Generics — Restrictions**
+and **SIMD / Vector**.
 
 ---
 
@@ -5824,10 +5881,10 @@ desc.size = 8192;                -- ERROR: ArenaDescriptor's fields are read-onl
 | `Arena`                         | Yes — compiler        | Scope exit — automatic, no user call | Yes — via `::descriptor()` (Rule 4) |
 | C `malloc` / foreign library    | No                    | Matching C free function             | N/A — C owns it entirely            |
 
-| Intrinsic          | Args           | Returns | Notes                                                                                                 |
-| ------------------ | -------------- | ------- | ----------------------------------------------------------------------------------------------------- |
-| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation; `T` may be generic — see **`#sizeof` / `#alignof` — Generic Behavior** |
-| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free                                                                     |
+| Intrinsic          | Args           | Returns | Notes                                                                                             |
+| ------------------ | -------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation; `T` must be concrete — see **Type-Erased Generics — Restrictions** |
+| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free                                                                 |
 
 | `Arena` operation         | Args                 | Returns           | Notes                                                      |
 | ------------------------- | -------------------- | ----------------- | ---------------------------------------------------------- |
@@ -6152,14 +6209,14 @@ isn't an arbitrary extra rule: the compiler needs `T` and `N` to determine
 the concrete `Simd<T,N>` return type at the call site, the exact same
 requirement `Arena::alloc<T>` already has for its own type argument — the
 difference is only that `Simd`'s type argument is resolved the same way
-`#sizeof(T)` resolves `T`, rather than through a generic `<T>`. **Unlike
-`#sizeof(T)`, `type` must be genuinely concrete — never a generic
-parameter** (see **`T` cannot be a generic parameter** above): `#sizeof(T)`
-only ever produces a number, which a type-erased `T` can still supply via a
-runtime tag lookup, but `#simd_splat`'s return type `Simd<T,N>` must lower
-to an actual fixed-shape LLVM vector type, and there is no erased or boxed
-representation for `Simd<T,N>` to fall back on if `T` isn't known at
-compile time.
+`#sizeof(T)` resolves `T`, rather than through a generic `<T>`. `type` must
+be genuinely concrete — never an unresolved, type-erased generic parameter
+(see **Type-Erased Generics — Restrictions**): `#simd_splat`'s return type
+`Simd<T,N>` must lower to an actual fixed-shape LLVM vector type, and there
+is no erased or boxed representation for `Simd<T,N>` to fall back on if `T`
+isn't known at compile time — the same restriction `#sizeof(T)` and
+`#alignof(T)` are now under, for a related but distinct reason (see
+**`#sizeof` / `#alignof` — Generic Behavior**).
 
 | Intrinsic                          | Args                      | Returns     | Notes                                                                                                                                                                |
 | ---------------------------------- | ------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
