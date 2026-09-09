@@ -182,9 +182,6 @@ struct StructLiteralExprAST : ExprAST {
     /// @brief True if this is a type-erased instantiation (default path).
     bool isGenericInstantiation = false;
 
-    /// @brief Runtime type tag (only valid when isGenericInstantiation == true).
-    uint32_t typeId = 0;
-
     // ─── Constructor ─────────────────────────────────────────────────────
     StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
         : ExprAST(ASTKind::StructLiteralExpr), typeName(n), genericArgs(args), inits(in) {}
@@ -349,10 +346,6 @@ struct CallExprAST : ExprAST {
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     /// @brief True if this is a type-erased generic call (default path).
     bool isGenericCall = false;
-    
-    /// @brief Runtime type tags for each type argument (type-erased path only).
-    /// The order matches the genericArgs on the callee.
-    std::vector<uint32_t> typeIds;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     CallExprAST(bool a) 
