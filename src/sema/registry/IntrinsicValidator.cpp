@@ -642,39 +642,19 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (name == "simd_splat") {
         if (expr->args.size() != 3) {
             ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "#simd_splat expects 3 arguments: (type, lanes, scalar)");
+                                "#simd_splat expects 3 arguments: (type, lanes, scalar)");
             return false;
         }
         
         ExprAST* typeArg = expr->args[0];
-        TypeAST* elementType = nullptr;
         
-        if (typeArg->isa<IdentifierExprAST>()) {
-            IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
-            if (id->isType) {
-                elementType = id->resolvedTypeNode;
-            } else {
-                if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                    PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
-                    elementType = ctx.arena.make<PrimitiveTypeAST>(kind);
-                    id->isType = true;
-                    id->resolvedTypeNode = elementType;
-                } else {
-                    TypeDeclAST* typeDecl = ctx.lookupType(id->name);
-                    if (typeDecl) {
-                        NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
-                        namedType->resolvedDecl = typeDecl;
-                        elementType = namedType;
-                        id->isType = true;
-                        id->resolvedTypeNode = elementType;
-                    }
-                }
-            }
-        }
+        // Use the shared helper that handles generic parameters correctly
+        TypeAST* elementType = resolveTypeArgument(typeArg, ctx);
         
         if (!elementType) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
-                                  "#simd_splat: first argument must be a type");
+                                "#simd_splat: first argument must be a type "
+                                "(numeric primitive like int32, float64, or generic parameter T)");
             return false;
         }
         
@@ -685,7 +665,11 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         
         if (!isValidSimdElementType(elementType)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, typeArg,
-                                  "#simd_splat: type must be a numeric primitive");
+                                "#simd_splat: type must be a numeric primitive "
+                                "(int8, int16, int32, int64, uint8, uint16, uint32, "
+                                "uint64, float32, or float64)");
+            ctx.diagnostics.note(typeArg,
+                                "Got: ", typeToString(elementType, ctx.pool));
             return false;
         }
         
@@ -693,14 +677,14 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         ExprAST* lanesArg = expr->args[1];
         if (!lanesArg->isa<LiteralExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
-                                  "#simd_splat: lanes must be an integer literal");
+                                "#simd_splat: lanes must be an integer literal");
             return false;
         }
         
         int64_t laneCount = ctx.parseConstantInt(lanesArg);
         if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
-                                  "#simd_splat: lane count must be > 0");
+                                "#simd_splat: lane count must be > 0");
             return false;
         }
         
@@ -709,16 +693,16 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         TypeAST* scalarType = resolveExpr(scalar, ctx);
         if (!scalarType || scalarType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
-                                  "#simd_splat: scalar argument has unknown type");
+                                "#simd_splat: scalar argument has unknown type");
             return false;
         }
         
         if (!typesEqual(elementType, scalarType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, scalar,
-                                  "#simd_splat: scalar type (", 
-                                  typeToString(scalarType, ctx.pool),
-                                  ") does not match specified type (",
-                                  typeToString(elementType, ctx.pool), ")");
+                                "#simd_splat: scalar type (", 
+                                typeToString(scalarType, ctx.pool),
+                                ") does not match specified type (",
+                                typeToString(elementType, ctx.pool), ")");
             return false;
         }
         
