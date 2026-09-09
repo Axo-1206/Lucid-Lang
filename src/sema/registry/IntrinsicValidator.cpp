@@ -25,6 +25,62 @@ static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
     return registry.isVoid(name);
 }
 
+/// @brief Resolve a type argument that may be a generic parameter.
+/// 
+/// This handles the common pattern for #sizeof(T), #alignof(T), #bitcast(T, x),
+/// and #alloc(T, count) where the first argument is a type.
+/// 
+/// @param arg The expression to resolve as a type.
+/// @param ctx The semantic context.
+/// @return The resolved TypeAST, or nullptr on error.
+static TypeAST* resolveTypeArgument(ExprAST* arg, SemaContext& ctx) {
+    if (!arg) return nullptr;
+    
+    TypeAST* type = nullptr;
+    
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType) {
+            type = id->resolvedTypeNode;
+        } else {
+            // ─── Check: Is this a generic parameter? ─────────────────────────
+            // This must be checked BEFORE lookupType or isPrimitiveTypeName!
+            if (ctx.isGenericParam(id->name)) {
+                GenericParamDeclAST* param = ctx.lookupGenericParam(id->name);
+                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                namedType->resolvedDecl = param;
+                type = namedType;
+                id->isType = true;
+                id->resolvedTypeNode = type;
+                id->resolvedType = type;
+            }
+            // ─── Check: Is it a user-defined type? ──────────────────────────
+            else {
+                TypeDeclAST* typeDecl = ctx.lookupType(id->name);
+                if (typeDecl) {
+                    NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
+                    namedType->resolvedDecl = typeDecl;
+                    namedType->genericArgs = id->genericArgs;
+                    type = namedType;
+                    id->isType = true;
+                    id->resolvedTypeNode = type;
+                    id->resolvedType = type;
+                }
+                // ─── Check: Is it a primitive type? ──────────────────────────
+                else if (isPrimitiveTypeName(id->name, ctx.pool)) {
+                    PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
+                    type = ctx.arena.make<PrimitiveTypeAST>(kind);
+                    id->isType = true;
+                    id->resolvedTypeNode = type;
+                    id->resolvedType = type;
+                }
+            }
+        }
+    }
+    
+    return type;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
@@ -928,40 +984,15 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         case IntrinsicKind::Alloc: {
             if (expr->args.empty()) {
                 ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                      "#alloc expects 2 arguments: (type, count)");
+                                    "#alloc expects 2 arguments: (type, count)");
                 return false;
             }
             
-            ExprAST* typeArg = expr->args[0];
-            TypeAST* elementType = nullptr;
-            
-            if (typeArg->isa<IdentifierExprAST>()) {
-                IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
-                if (id->isType) {
-                    elementType = id->resolvedTypeNode;
-                } else {
-                    TypeDeclAST* typeDecl = ctx.lookupType(id->name);
-                    if (typeDecl) {
-                        NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
-                        namedType->resolvedDecl = typeDecl;
-                        namedType->genericArgs = id->genericArgs;
-                        elementType = namedType;
-                        id->isType = true;
-                        id->resolvedTypeNode = elementType;
-                        id->resolvedType = elementType;
-                    } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                        PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
-                        elementType = ctx.arena.make<PrimitiveTypeAST>(kind);
-                        id->isType = true;
-                        id->resolvedTypeNode = elementType;
-                        id->resolvedType = elementType;
-                    }
-                }
-            }
+            TypeAST* elementType = resolveTypeArgument(expr->args[0], ctx);
             
             if (!elementType) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
-                                      "#alloc expects a type as the first argument");
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
+                                    "#alloc expects a type as the first argument");
                 return false;
             }
             
@@ -972,7 +1003,7 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             
             if (expr->args.size() < 2) {
                 ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                      "#alloc expects 2 arguments: (type, count)");
+                                    "#alloc expects 2 arguments: (type, count)");
                 return false;
             }
             
@@ -1004,35 +1035,10 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    ExprAST* typeArg = expr->args[0];
-    TypeAST* targetType = nullptr;
-    
-    if (typeArg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = typeArg->as<IdentifierExprAST>();
-        if (id->isType) {
-            targetType = id->resolvedTypeNode;
-        } else {
-            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
-            if (typeDecl) {
-                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
-                namedType->resolvedDecl = typeDecl;
-                namedType->genericArgs = id->genericArgs;
-                targetType = namedType;
-                id->isType = true;
-                id->resolvedTypeNode = targetType;
-                id->resolvedType = targetType;
-            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
-                targetType = ctx.arena.make<PrimitiveTypeAST>(kind);
-                id->isType = true;
-                id->resolvedTypeNode = targetType;
-                id->resolvedType = targetType;
-            }
-        }
-    }
+    TypeAST* targetType = resolveTypeArgument(expr->args[0], ctx);
     
     if (!targetType) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, typeArg,
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
                               "#bitcast expects a type as the first argument");
         return false;
     }
@@ -1123,35 +1129,10 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    ExprAST* arg = expr->args[0];
-    TypeAST* type = nullptr;
-    
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType) {
-            type = id->resolvedTypeNode;
-        } else {
-            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
-            if (typeDecl) {
-                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
-                namedType->resolvedDecl = typeDecl;
-                namedType->genericArgs = id->genericArgs;
-                type = namedType;
-            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
-                type = ctx.arena.make<PrimitiveTypeAST>(kind);
-            }
-            
-            if (type) {
-                id->isType = true;
-                id->resolvedTypeNode = type;
-                id->resolvedType = type;
-            }
-        }
-    }
+    TypeAST* type = resolveTypeArgument(expr->args[0], ctx);
     
     if (!type) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
                               "#sizeof expects a type, got an expression");
         return false;
     }
@@ -1173,35 +1154,10 @@ bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
-    ExprAST* arg = expr->args[0];
-    TypeAST* type = nullptr;
-    
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType) {
-            type = id->resolvedTypeNode;
-        } else {
-            TypeDeclAST* typeDecl = ctx.lookupType(id->name);
-            if (typeDecl) {
-                NamedTypeAST* namedType = ctx.arena.make<NamedTypeAST>(id->name);
-                namedType->resolvedDecl = typeDecl;
-                namedType->genericArgs = id->genericArgs;
-                type = namedType;
-            } else if (isPrimitiveTypeName(id->name, ctx.pool)) {
-                PrimitiveKind kind = primitiveKindFromName(id->name, ctx.pool);
-                type = ctx.arena.make<PrimitiveTypeAST>(kind);
-            }
-            
-            if (type) {
-                id->isType = true;
-                id->resolvedTypeNode = type;
-                id->resolvedType = type;
-            }
-        }
-    }
+    TypeAST* type = resolveTypeArgument(expr->args[0], ctx);
     
     if (!type) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
                               "#alignof expects a type, got an expression");
         return false;
     }
