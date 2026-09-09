@@ -10,7 +10,6 @@
 #include "core/memory/ArenaSpan.hpp"
 #include "core/memory/InternedString.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/context/TypeIdRegistry.hpp"
 
 #include <unordered_set>
 #include <functional>
@@ -63,10 +62,6 @@ struct GenericResolution {
     
     /// True if this resolved to a specialized declaration (@[specialize] path).
     bool isSpecialized = false;
-    
-    /// Runtime type id (only valid when isSpecialized == false).
-    /// 0 is reserved for "no id" (non-generic or specialized).
-    uint32_t typeId = 0;
 };
 
 // ─── Type Substitution Helpers (declarations) ──────────────────────────────

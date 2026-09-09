@@ -10,7 +10,6 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "sema/context/TypeIdRegistry.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -184,11 +183,6 @@ struct SemaContext {
         SpecializationKey key{templateDecl, typeArgs};
         specializationCache[key] = specialized;
     }
-    
-    // ─── Type Id Registry ────────────────────────────────────────────
-    /// @brief Registry for mapping concrete types to runtime type ids.
-    /// Used for type-erased generic dispatch.
-    TypeIdRegistry typeIdRegistry;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     std::vector<TypeDeclAST*> definingTypes;

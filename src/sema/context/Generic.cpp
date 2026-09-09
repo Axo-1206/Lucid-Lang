@@ -645,7 +645,6 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             // ─── Copy semantic fields ──────────────────────────────────────────────
             // Note: genericArgs is NOT stored on CallExprAST - it's on the callee
             newCall->isGenericCall = call->isGenericCall;
-            newCall->typeIds = call->typeIds;  // std::vector<uint32_t> - copy is fine
             newCall->loc = call->loc;
             
             return newCall;
@@ -703,7 +702,6 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             newStruct->resolvedDecl = structExpr->resolvedDecl;
             newStruct->isSpecialized = structExpr->isSpecialized;
             newStruct->isGenericInstantiation = structExpr->isGenericInstantiation;
-            newStruct->typeId = structExpr->typeId;
             newStruct->loc = structExpr->loc;
             return newStruct;
         }
@@ -1010,8 +1008,8 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst) {
 GenericResolution resolveGenericInstantiation(
     DeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx)
-{
+    SemaContext& ctx
+) {
     GenericResolution result;
     
     if (!templateDecl) {
@@ -1055,7 +1053,6 @@ GenericResolution resolveGenericInstantiation(
                                   "invalid generic argument (null)");
             return result;
         }
-        // If arg is a NamedTypeAST, ensure it's resolved
         if (arg->isa<NamedTypeAST>()) {
             NamedTypeAST* namedArg = arg->as<NamedTypeAST>();
             if (!namedArg->resolvedDecl) {
@@ -1067,7 +1064,6 @@ GenericResolution resolveGenericInstantiation(
                     return result;
                 }
             }
-            // TODO: Validate constraints against genericParams
         }
     }
 
@@ -1099,16 +1095,11 @@ GenericResolution resolveGenericInstantiation(
             result.resolvedDecl = specialized;
         }
         result.isSpecialized = true;
-        result.typeId = 0;
         
     } else {
         // ─── Type-erased path ──────────────────────────────────────────────────
         result.resolvedDecl = templateDecl;
         result.isSpecialized = false;
-        
-        // Compute canonical type for the type ID registry
-        TypeAST* canonicalType = ctx.getNamedType(templateDecl->name, typeArgs);
-        result.typeId = ctx.typeIdRegistry.getId(canonicalType);
     }
 
     return result;
