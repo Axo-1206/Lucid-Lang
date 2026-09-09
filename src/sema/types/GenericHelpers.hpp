@@ -7,13 +7,14 @@
 /// ─── Key Functions ──────────────────────────────────────────────────────────
 /// - isGenericParameterType()      - Check if a type is T, U, etc.
 /// - containsGenericParameter()    - Check if a type contains any generic params
-/// - isTypeErasedGeneric()         - Check if a type is in a type-erased context
+/// - isTypeErasedGeneric()         - Check if a type is in a type-erased context (@[erased])
 /// - isConcreteType()              - Check if a type is fully concrete
+/// - isCurrentContextErased()      - Check if the current context has @[erased]
 /// - validateConcreteTypeForReflection() - Validate for #sizeof/#alignof/#tostr
 /// - validateConcreteTypeForSimd() - Validate for Simd<T,N>
 /// - validateConcreteTypeForAlloc() - Validate for #alloc(T, count)
 /// - validateConcreteTypeForBitcast() - Validate for #bitcast(T, x)
-/// - validateTypeErasedEligibility() - Validate a generic declaration's body
+/// - validateTypeErasedEligibility() - Validate a generic declaration's body for @[erased]
 
 #pragma once
 
@@ -53,13 +54,11 @@ bool isGenericParameterType(TypeAST* type, SemaContext& ctx);
 /// @return true if the type contains any generic parameters.
 bool containsGenericParameter(TypeAST* type, SemaContext& ctx);
 
-/// @brief Check if a type is being used in a type-erased context.
+/// @brief Check if a type is being used in a type-erased context (@[erased]).
 ///
 /// A type is in a type-erased context if:
-/// - It's a generic parameter (T) being used in a function/struct that does NOT
-///   have @[specialize]
-/// - OR it's a type that contains a generic parameter, used in a non-specialized
-///   context
+/// - It's a generic parameter (T) being used in a function/struct that has @[erased]
+/// - OR it's a type that contains a generic parameter, used in an erased context
 ///
 /// @param type The type to check.
 /// @param ctx The semantic context.
@@ -83,10 +82,10 @@ bool isConcreteType(TypeAST* type, SemaContext& ctx);
 /// @return The generic declaration, or nullptr if not in one.
 DeclAST* getInnermostGenericDeclaration(SemaContext& ctx);
 
-/// @brief Check if the current context is specialized (@[specialize]).
+/// @brief Check if the current context has @[erased].
 /// @param ctx The semantic context.
-/// @return true if the current context has @[specialize].
-bool isCurrentContextSpecialized(SemaContext& ctx);
+/// @return true if the current context has @[erased].
+bool isCurrentContextErased(SemaContext& ctx);
 
 // ─── Reflection Validation ─────────────────────────────────────────────────
 
@@ -171,7 +170,7 @@ bool validateConcreteTypeForArenaSpace(
 
 // ─── Generic Declaration Validation ───────────────────────────────────────
 
-/// @brief Validate that a generic declaration is eligible for type-erasure.
+/// @brief Validate that a generic declaration is eligible for type-erasure (@[erased]).
 ///
 /// This walks the declaration's body/fields to check for forbidden constructs:
 ///   - #sizeof/#alignof/#tostr on the generic parameter
@@ -180,7 +179,7 @@ bool validateConcreteTypeForArenaSpace(
 ///   - arena::alloc<T> on the generic parameter
 ///   - Trait bounds on the generic parameter
 ///
-/// If any forbidden construct is found, an error is reported suggesting @[specialize].
+/// If any forbidden construct is found, an error is reported suggesting to remove @[erased].
 ///
 /// @param decl The generic declaration (FuncDeclAST or StructDeclAST).
 /// @param ctx The semantic context.
@@ -242,7 +241,7 @@ bool validateNestedGenericCompatibility(
 
 // ─── Diagnostic Helpers ────────────────────────────────────────────────────
 
-/// @brief Emit an error suggesting @[specialize] for a type-erased generic.
+/// @brief Emit an error suggesting to remove @[erased] for a type-erased generic.
 ///
 /// @param type The type that caused the error.
 /// @param node The AST node for error reporting.
