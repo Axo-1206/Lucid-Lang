@@ -36,8 +36,6 @@ bool isGenericStruct(StructDeclAST* decl) {
     return decl && !decl->genericParams.empty();
 }
 
-// SIMPLIFIED: Keep for informational/debug purposes only
-// CodeGen should NOT use this to make decisions.
 bool shouldSpecialize(DeclAST* decl) {
     if (!decl) return false;
     if (decl->isa<FuncDeclAST>()) {
@@ -47,6 +45,14 @@ bool shouldSpecialize(DeclAST* decl) {
         return decl->as<StructDeclAST>()->shouldSpecialize;
     }
     return false;
+}
+
+/// @brief Check if a type is a generic parameter (T, U, etc.)
+bool isGenericParameterType(TypeAST* type) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    return named->resolvedDecl && 
+           named->resolvedDecl->isa<GenericParamDeclAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

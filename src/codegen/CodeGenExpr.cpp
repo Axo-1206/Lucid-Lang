@@ -3,7 +3,6 @@
 
 #include "CodeGen.hpp"
 #include "core/ASTStrings.hpp"
-#include "generic/GenericMangledName.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
@@ -497,7 +496,7 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
     // ─── 2. Check if this is a type-erased generic struct ──────────────────
-    bool isErasedStruct = expr->isGenericInstantiation && expr->typeTag != 0;
+    bool isErasedStruct = expr->isGenericInstantiation && expr->isGenericInstantiation != 0;
 
     // ─── 3. Get the LLVM struct type ───────────────────────────────────────
     llvm::Type* structType = nullptr;
@@ -574,10 +573,22 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
             // Try to get the field's type tag from Sema
             // The field type might be generic, in which case we need its tag
             FieldDeclAST* field = structDecl->fields[fieldIndex];
+
             if (field && field->type) {
+                // For type-erased structs, field tags are no longer needed since we removed TypeIdRegistry.
+                // The sentinel tag (0 = nil, 1 = valid, 2 = err) is used instead.
+                // For generic parameters, we use a default tag of 0.
                 if (field->type->isa<NamedTypeAST>()) {
                     NamedTypeAST* fieldNamedType = field->type->as<NamedTypeAST>();
-                    fieldTag = fieldNamedType->typeTag;
+
+                    if (fieldNamedType->resolvedDecl && 
+                        fieldNamedType->resolvedDecl->isa<GenericParamDeclAST>()) {
+                        // Generic parameter - use default sentinel tag
+                        fieldTag = 0;
+                    } else {
+                        // Concrete type - use 0 (valid) as the sentinel tag
+                        fieldTag = 0;
+                    }
                 }
             }
             
@@ -972,7 +983,7 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     std::vector<llvm::Value*> args;
     
     // ─── Check if this is a type-erased generic call ──────────────────────
-    bool isTypeErasedCall = expr->isGenericCall && !expr->typeTags.empty();
+    bool isTypeErasedCall = expr->isGenericCall && !expr->isGenericCall;
     
     // ─── Get the callee's function type from Sema ──────────────────────────
     FuncTypeAST* calleeFuncType = expr->callee->resolvedType
@@ -1021,38 +1032,28 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
         bool needsBoxing = false;
         uint32_t tag = 0;
 
+        // For type-erased calls, we box everything with a default sentinel tag (0 = valid)
         if (isTypeErasedCall) {
-            // ─── Type-erased call: box EVERYTHING ──────────────────────────
             needsBoxing = true;
-            
-            // ─── Get the type tag for this argument ────────────────────────
-            if (tagIndex < expr->typeTags.size()) {
-                tag = expr->typeTags[tagIndex];
-            } else {
-                // Fallback: if we don't have a tag, use 0 (valid)
-                tag = 0;
-            }
-            tagIndex++;
+            // Since we removed type IDs, we use the default sentinel tag (0 = valid)
+            tag = 0;  // 0 = valid in TaggedSlot
         } else {
-            // ─── Non-generic call: check if parameter expects tagged slot ───
+            // Non-generic call: check if parameter expects tagged slot
             if (paramIndex < fixedParamCount) {
-                // Fixed parameter
                 ParamAST* param = calleeFuncType->params[paramIndex];
                 if (param && param->type) {
-                    // If the parameter type is a generic parameter (unresolved),
-                    // it should be boxed
-                    if (ctx.isUnresolvedGenericParameter(param->type)) {
+                    // Check if the parameter type is a generic parameter
+                    if (isGenericParameterType(param->type)) {
                         needsBoxing = true;
-                        tag = 0;  // Tag will be determined at runtime
+                        tag = 0;  // Default sentinel
                     }
                 }
             } else if (hasVariadic) {
-                // Variadic parameter - check if element type needs boxing
                 ParamAST* variadicParam = calleeFuncType->params.back();
                 if (variadicParam && variadicParam->type) {
                     if (variadicParam->type->isa<ArrayTypeAST>()) {
                         TypeAST* elemType = variadicParam->type->as<ArrayTypeAST>()->element;
-                        if (elemType && ctx.isUnresolvedGenericParameter(elemType)) {
+                        if (elemType && isGenericParameterType(elemType)) {
                             needsBoxing = true;
                             tag = 0;
                         }
@@ -1591,14 +1592,16 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    // ─── Find the target module ────────────────────────────────────────────
-    ModuleAST* targetModule = expr->resolvedModule;
-    if (!targetModule && ctx.currentModule) {
+    // ModuleAccessExprAST doesn't have resolvedModule field.
+    // We need to look it up from the current module's imports.
+    ModuleAST* targetModule = nullptr;
+    if (ctx.currentModule) {
         auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
         if (it != ctx.currentModule->resolvedImports.end()) {
             targetModule = it->second;
         }
     }
+
 
     if (!targetModule) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
@@ -1658,7 +1661,7 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
             return symbol;
         }
         
-        if (isGenericFunction(funcDecl)) {      
+        if (isGenericFunction(funcDecl)) {
             if (shouldSpecialize(funcDecl)) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
                     "cross-module specialized generic function '",
@@ -1666,24 +1669,25 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
                     "' not yet supported");
                 return nullptr;
             } else {
-                // ─── Type-erased: look up by mangled name ─────────────────────
-                // Use the target module's path, not the current module's path.
-                // The erased function is named {module}_{name}__erased in the
-                // target module.
-                std::string erasedName = getMangledModulePathForModule(targetLLVMModule) + "_" + 
-                                        ctx.pool.lookup(funcDecl->name) + "__erased";
+                // ─── Type-erased: Use Sema's cached erased name ─────────────────────
+                // Sema's computeErasedName() already generated the full erased name
+                // including module path and "__erased" suffix.
+                std::string erasedName = ctx.pool.lookup(funcDecl->erasedName);
+                if (erasedName.empty()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
+                        "type-erased generic function '", ctx.pool.lookup(funcDecl->name),
+                        "' has no erased name (Sema should have set this)");
+                    return nullptr;
+                }
+                
                 symbol = targetLLVMModule->getFunction(erasedName);
                 
                 if (!symbol) {
-                    // Try to generate the erased function in the target module
-                    // This would require a version of generateErasedGenericFunction
-                    // that takes a module parameter.
-                    //
-                    // For now, we need to ensure the target module's declarations
-                    // were processed first. If not, we could generate it here.
-                    //
-                    // Fallback: Check if the function exists in the current module
-                    // with a different name pattern.
+                    // Try to fall back to the current module's copy
+                    symbol = ctx.module->getFunction(erasedName);
+                }
+                
+                if (!symbol) {
                     ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
                         "type-erased generic function '", ctx.pool.lookup(funcDecl->name),
                         "' not found in module '", 

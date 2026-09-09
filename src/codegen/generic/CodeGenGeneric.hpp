@@ -47,6 +47,9 @@ bool isGenericStruct(StructDeclAST* decl);
 ///       this to make decisions - use decl->genericParams.empty() instead.
 bool shouldSpecialize(DeclAST* decl);
 
+/// @brief Check if a type is a generic parameter (T, U, etc.)
+bool isGenericParameterType(TypeAST* type);
+
 // ─── Type-Erased Generation ──────────────────────────────────────────────
 
 /// @brief Generate a type-erased generic function.
