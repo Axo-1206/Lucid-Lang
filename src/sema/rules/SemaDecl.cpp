@@ -289,15 +289,11 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // 5. Resolve generic parameters (if any)
-    // ─── Generic parameters are resolved in the OUTER scope ──────────────
-    // They should NOT be in the function's parameter scope because they're
-    // visible throughout the function body, not just as parameters.
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
     // ─── 6. Generate mangled name BEFORE pushing scopes ────────────────────
-    // Mangling doesn't depend on scopes, so do it early.
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
@@ -311,31 +307,23 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 8. Push function scopes using RAII guard ──────────────────────────
-    // This pushes:
-    //   1. A symbol scope for parameters
-    //   2. A function context (FuncBody) on the context stack
     ScopedFunction funcScope(ctx, decl, funcType->returnType);
 
-    // ─── 9. Resolve parameters of the OUTERMOST group only ────────────────
-    // Parameters are registered in the symbol scope pushed by ScopedFunction.
+    // ─── 9. Resolve parameters ────────────────────────────────────────────
     for (ParamAST* param : funcType->params) {
         resolveParam(param, ctx);
     }
 
     // ─── 10. Resolve the body ──────────────────────────────────────────────
-    // The parser has already desugared adjacent groups into nested
-    // ReturnStmtAST → AnonFuncExprAST chains.
     bool bodyReturns = false;
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
-        // Direct function reference body
         FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
         TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
-            // ─── ScopedFunction destructor automatically pops scopes ──────
             return;
         }
         bodyReturns = true;
@@ -343,7 +331,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' has invalid body type");
-        // ─── ScopedFunction destructor automatically pops scopes ──────────
         return;
     }
 
@@ -355,17 +342,19 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
                               "' does not return a value on all paths");
     }
 
-    validateTypeErasedEligibility(decl, ctx);
+    // ─── 12. Validate type-erased eligibility ONLY if @[erased] is present ──
+    // By default, generics are specialized, so eligibility checking is only
+    // needed when the user explicitly opts into type erasure with @[erased].
+    if (decl->isErased) {
+        validateTypeErasedEligibility(decl, ctx);
+    }
 
-    // ─── 12. Capture analysis (nested functions) ──────────────────────────
+    // ─── 13. Capture analysis (nested functions) ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(decl, ctx);
     }
 
-    // ─── 13. ScopedFunction destructor automatically pops:
-    //     1. Function context (FuncBody)
-    //     2. Parameter scope
-    // ──────────────────────────────────────────────────────────────────────────
+    // ─── 14. ScopedFunction destructor automatically pops scopes ──────────
 }
 
 // ─── resolveParam ─────────────────────────────────────────────────────────────
@@ -543,22 +532,14 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 
     validateAllAttributes(decl, ctx);
 
-    // ─── NOTE: Registration is handled by registerStructName() ────────────
-    // Do NOT call ctx.insertType() here.
-
     ScopedTypeDefinition defining(ctx, decl);
 
     // ─── 1. Resolve generic parameters FIRST ──────────────────────────────
-    // Generic parameters must be resolved before fields because field types
-    // may reference them (e.g., struct Box<T> { value T; })
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
     // ─── 2. Push a scope for struct fields ──────────────────────────────
-    // This scope exists only during struct resolution.
-    // Fields are registered here so they can be resolved during default
-    // body resolution (for function fields with default bodies).
     ctx.pushScope();
 
     // ─── 3. Register all fields in the struct scope ──────────────────────────
@@ -583,15 +564,20 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 
-    validateTypeErasedEligibility(decl, ctx);
+    // ─── 7. Validate type-erased eligibility ONLY if @[erased] is present ──
+    // By default, generics are specialized, so eligibility checking is only
+    // needed when the user explicitly opts into type erasure with @[erased].
+    if (decl->isErased) {
+        validateTypeErasedEligibility(decl, ctx);
+    }
 
-    // ─── 7. Generate mangled name ───────────────────────────────────────────
+    // ─── 8. Generate mangled name ───────────────────────────────────────────
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
 
-    // ─── 8. Pop the struct scope ─────────────────────────────────────────
+    // ─── 9. Pop the struct scope ─────────────────────────────────────────
     ctx.popScope();
 }
 
