@@ -1,517 +1,479 @@
 /// @file CodeGenDecl.cpp
-/// @brief Implementation of declaration lowering to LLVM IR.
+/// @brief Code generation for declarations (variables, functions, structs, enums).
 ///
-/// This file handles lowering of all declarations (functions, variables,
-/// structs, enums) to LLVM IR. It operates in two phases to support
-/// forward references.
+/// ─── Design Notes ─────────────────────────────────────────────────────────
+/// This file lowers Lucid declarations to LLVM IR. It handles:
+///   - Global variables (module-level `let`/`const`)
+///   - Local variables (function-scope `let`/`const`)
+///   - Function declarations (including foreign, generic, closure)
+///   - Struct declarations (LLVM struct type creation)
+///   - Enum declarations (LLVM integer type + variant constants)
 ///
-/// ─── Two-Phase Design ──────────────────────────────────────────────────────
-///   Phase 1 (lowerModuleDeclarations): Create all prototypes/types.
-///   Phase 2 (lowerModuleBodies): Generate function bodies.
-///
-/// ─── Generic Function Strategy ────────────────────────────────────────────
-///   1. DEFAULT (Type Erasure): One erased function with tagged slots.
-///   2. OPT-IN (@[specialize]): One specialized function per instantiation.
+/// ─── No Generic Substitution ─────────────────────────────────────────────
+/// Sema handles ALL specialization. By the time a declaration reaches CodeGen:
+///   - If it was specialized (default), it has concrete types and a mangledName
+///   - If it was @[erased], it has erasedName and will be lowered as TaggedSlot
 
 #include "CodeGen.hpp"
+#include "types/CodeGenType.hpp"
 #include "generic/CodeGenGeneric.hpp"
-#include "core/ast/DeclAST.hpp"
-#include "core/ast/StmtAST.hpp"
-#include "core/ast/ExprAST.hpp"
-#include "core/ast/TypeAST.hpp"
 #include "support/CodeGenAlloca.hpp"
+#include "support/CodeGenPanic.hpp"
+#include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Function.h>
+#include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/Verifier.h>
 
 namespace codegen {
 
 // =============================================================================
-// 1. Declaration Dispatch
+// Local Helpers
 // =============================================================================
 
-void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
+/// @brief Check if a local variable declaration owns a heap resource that
+///        needs cleanup when its scope exits.
+///
+/// ─── Which Declarations Reach This Function ─────────────────────────────
+/// Only `VarDeclAST`. Function-typed bindings are `FuncDeclAST`, not
+/// `VarDeclAST` — they are declared with a `func_decl` (which carries a
+/// `chain`), while `var_decl` only ever holds non-function types. So this
+/// function never sees a function-typed binding at all.
+///
+/// Function-typed bindings (closures) are tracked alive in
+/// `lowerFunctionDecl` / `lowerNormalFunctionDecl`, which handle the
+/// `FuncDeclAST` side. That path is where the `let`-vs-`const` and
+/// `hasClosure` decisions live.
+///
+/// ─── Rules for VarDeclAST ───────────────────────────────────────────────
+///   - string:  always owned (heap-allocated UTF-8 buffer)  → cleanup
+///   - [*]T:    always owned (heap-allocated dynamic array) → cleanup
+///   - everything else (primitives, structs, fixed arrays,
+///     pointers, references, nullable/fallible wrappers around
+///     non-resource types):                                 → no cleanup
+///
+/// ─── Why This Is Just an Optimization, Not a Correctness Requirement ────
+/// The cleanup machinery (`emitCleanupForTracker`, `ctx.reassign`) is
+/// already self-guarding: every release is emitted only after checking the
+/// resource type, and null pointers are skipped. Marking a non-resource
+/// variable alive would not produce incorrect IR — it would just cause
+/// extra no-op iterations at scope exit and reassignment. This helper
+/// keeps the `alive` set small so those paths do only the work that
+/// matters.
+static bool needsScopeCleanup(VarDeclAST* decl) {
+    if (!decl || !decl->type) return false;
 
-    switch (decl->kind) {
-        case ASTKind::ImportDecl: break;
-        case ASTKind::FuncDecl:   lowerFunctionDecl(decl->as<FuncDeclAST>(), ctx); break;
-        case ASTKind::StructDecl: lowerStructDecl(decl->as<StructDeclAST>(), ctx); break;
-        case ASTKind::EnumDecl:   lowerEnumDecl(decl->as<EnumDeclAST>(), ctx); break;
-        case ASTKind::VarDecl:    lowerVarDecl(decl->as<VarDeclAST>(), ctx); break;
-        default: break;
+    TypeAST* type = decl->type;
+
+    // ─── Strings: always owned ──────────────────────────────────────────
+    if (type->isa<PrimitiveTypeAST>()) {
+        return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
     }
+
+    // ─── Dynamic arrays: always owned ───────────────────────────────────
+    if (type->isa<ArrayTypeAST>()) {
+        return type->as<ArrayTypeAST>()->isDynamic();
+    }
+
+    // ─── Everything else: no cleanup ────────────────────────────────────
+    // Note: function types cannot appear here — a function-typed binding
+    // is a FuncDeclAST, not a VarDeclAST, and is handled separately in
+    // lowerFunctionDecl/lowerNormalFunctionDecl.
+    return false;
+}
+
+/// @brief Check if a declaration is exported, using the CodeGenContext's pool.
+/// 
+/// ─── Why This Takes the Context ─────────────────────────────────────────
+/// `DeclAST` intentionally has no StringPool reference — it's a pure data
+/// node. To compare an attribute name (an InternedString) against "export",
+/// we need the same pool that interned the attribute names. The context
+/// carries that pool.
+static bool isExported(DeclAST* decl, CodeGenContext& ctx) {
+    if (!decl) return false;
+    InternedString exportName = ctx.pool.intern("export");
+    for (AttributeAST* attr : decl->attributes) {
+        if (attr && attr->name == exportName) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // =============================================================================
-// 2. Function Declaration (Phase 1)
+// Struct Declaration
+// =============================================================================
+
+void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
+    if (!decl || decl->hasSyntaxError) return;
+
+    // ─── Check if Sema already generated the LLVM type ──────────────────
+    if (decl->llvmType) {
+        Trace::detail("Struct '", ctx.pool.lookup(decl->name),
+                      "' already lowered, skipping");
+        return;
+    }
+
+    // ─── Dispatch based on generic status ───────────────────────────────
+    // If the struct still has genericParams, Sema chose the @[erased] path.
+    // Otherwise, it's either non-generic or already specialized by Sema.
+    if (isGenericStruct(decl)) {
+        lowerGenericStructDecl(decl, ctx);
+    } else {
+        lowerNormalStructDecl(decl, ctx);
+    }
+}
+
+void lowerGenericStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
+    // ─── @[erased] path ─────────────────────────────────────────────────
+    // Sema kept the template with genericParams intact and set erasedName.
+    // Generate the type-erased version (fields become TaggedSlots).
+    //
+    // Empty type args: the erased struct representation is the same
+    // regardless of what concrete types are instantiated.
+    ArenaSpan<TypeAST*> emptyArgs{};
+    llvm::Type* erasedType = getOrCreateInstantiatedStruct(decl, emptyArgs, ctx);
+    if (!erasedType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "failed to generate erased struct '",
+                                ctx.pool.lookup(decl->name), "'");
+        return;
+    }
+    Trace::detail("Lowered @[erased] struct '", ctx.pool.lookup(decl->name), "'");
+}
+
+void lowerNormalStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
+    // ─── Specialized or non-generic path ────────────────────────────────
+    // Sema created a specialized StructDeclAST with concrete field types
+    // and a mangledName. Just create the LLVM struct type.
+    llvm::StructType* structType = getStructType(ctx, decl);
+    if (!structType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "failed to create LLVM struct for '",
+                                ctx.pool.lookup(decl->name), "'");
+        return;
+    }
+
+    Trace::detail("Lowered struct '", ctx.pool.lookup(decl->name),
+                  "' (", decl->fields.size(), " fields)");
+}
+
+// =============================================================================
+// Enum Declaration
+// =============================================================================
+
+void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
+    if (!decl || decl->hasSyntaxError) return;
+
+    if (decl->backingLLVMType) {
+        Trace::detail("Enum '", ctx.pool.lookup(decl->name),
+                      "' already lowered, skipping");
+        return;
+    }
+
+    // ─── 1. Get the backing integer type ────────────────────────────────
+    llvm::IntegerType* backingType = getEnumType(ctx, decl);
+    if (!backingType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "failed to determine backing type for enum '",
+                                ctx.pool.lookup(decl->name), "'");
+        return;
+    }
+    decl->backingLLVMType = backingType;
+
+    // ─── 2. Create LLVM constants for each variant ──────────────────────
+    decl->variantConstants.clear();
+    decl->variantConstants.reserve(decl->variants.size());
+
+    for (EnumVariantAST* variant : decl->variants) {
+        llvm::ConstantInt* constVal = llvm::ConstantInt::get(
+            backingType,
+            static_cast<uint64_t>(variant->value),
+            /*isSigned=*/true
+        );
+        variant->llvmValue = constVal;
+        decl->variantConstants.push_back(constVal);
+    }
+
+    // ─── 3. Store byte size for later use ───────────────────────────────
+    const llvm::DataLayout& dl = ctx.module->getDataLayout();
+    decl->byteSize = dl.getTypeAllocSize(backingType).getFixedValue();
+
+    Trace::detail("Lowered enum '", ctx.pool.lookup(decl->name),
+                  "' (", decl->variants.size(), " variants, ",
+                  decl->byteSize, " bytes)");
+}
+
+// =============================================================================
+// Function Declaration
 // =============================================================================
 
 void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
-    if (ctx.lookupFunction(decl)) return;
+    if (!decl || decl->hasSyntaxError) return;
 
-    // ─── Foreign functions ──────────────────────────────────────────────────
+    // ─── Check if already lowered ───────────────────────────────────────
+    if (ctx.lookupFunction(decl)) {
+        Trace::detail("Function '", ctx.pool.lookup(decl->name),
+                      "' already lowered, skipping");
+        return;
+    }
+
+    // ─── Foreign functions: declare external symbol ─────────────────────
     if (decl->isForeignFunction) {
         lowerForeignFunctionDecl(decl, ctx);
         return;
     }
 
-    // ─── Generic functions ─────────────────────────────────────────────────
+    // ─── Generic functions (@[erased]): generate erased prototype ───────
     if (isGenericFunction(decl)) {
         lowerGenericFunctionDecl(decl, ctx);
         return;
     }
 
-    // ─── Non-generic functions ─────────────────────────────────────────────
+    // ─── Normal functions (default): regular LLVM function ──────────────
     lowerNormalFunctionDecl(decl, ctx);
 }
 
-// ─── 2.1 Foreign Functions ─────────────────────────────────────────────────
-
 void lowerForeignFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
-    llvm::FunctionType* funcType = getFunctionType(ctx, decl->funcType, decl->hasClosure);
-    std::string funcName = ctx.pool.lookup(decl->name);
+    std::string symbolName = ctx.pool.lookup(decl->mangledName);
+    if (symbolName.empty()) {
+        symbolName = ctx.pool.lookup(decl->name);
+    }
+
+    // ─── Build the LLVM function type from the AST ──────────────────────
+    llvm::FunctionType* fnType = getFunctionType(ctx, decl->funcType, false);
+    if (!fnType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "foreign function '", ctx.pool.lookup(decl->name),
+                                "' has invalid signature");
+        return;
+    }
+
+    // ─── Create external declaration (no body) ──────────────────────────
     llvm::Function* func = llvm::Function::Create(
-        funcType,
+        fnType,
         llvm::Function::ExternalLinkage,
-        funcName,
+        symbolName,
         ctx.module
     );
-    ctx.storeFunction(decl, func);
+
     decl->llvmFunction = func;
+    ctx.storeFunction(decl, func);
 
-    Trace::detail("Lowered foreign function: ", funcName);
+    Trace::detail("Declared foreign function '", symbolName, "'");
 }
-
-// ─── 2.2 Generic Functions ─────────────────────────────────────────────────
 
 void lowerGenericFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (shouldSpecialize(decl)) {
-        // @[specialize]: Lazily generated on first use
-        Trace::detail("Registered specialized generic: ", ctx.pool.lookup(decl->name));
+    // ─── @[erased] path ─────────────────────────────────────────────────
+    // Sema kept the template with genericParams intact and set erasedName.
+    // Generate the type-erased function prototype.
+    llvm::Function* erasedFunc = generateErasedGenericFunction(decl, ctx);
+    if (!erasedFunc) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "failed to generate erased function '",
+                                ctx.pool.lookup(decl->name), "'");
         return;
     }
-
-    // Default: Type-erased function with tagged slots
-    llvm::Function* func = generateErasedGenericFunction(decl, ctx);
-    if (func) {
-        ctx.storeFunction(decl, func);
-        decl->llvmFunction = func;
-        Trace::detail("Created erased generic prototype: ", func->getName().str());
-    }
+    decl->erasedFunction = erasedFunc;
+    ctx.storeFunction(decl, erasedFunc);
+    Trace::detail("Lowered @[erased] function '", ctx.pool.lookup(decl->name), "'");
 }
 
-// ─── 2.3 Normal (Non-Generic) Functions ──────────────────────────────────
-
 void lowerNormalFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl->mangledName.isValid()) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, decl->loc,
-            "INTERNAL ERROR: function '", ctx.pool.lookup(decl->name),
-            "' has no mangled name");
+    // ─── 1. Get the mangled name ────────────────────────────────────────
+    std::string funcName = ctx.pool.lookup(decl->mangledName);
+    if (funcName.empty()) {
+        funcName = ctx.pool.lookup(decl->name);
+    }
+
+    // ─── 2. Build the LLVM function type ────────────────────────────────
+    bool hasClosure = decl->hasClosure;
+    llvm::FunctionType* fnType = getFunctionType(ctx, decl->funcType, hasClosure);
+    if (!fnType) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "function '", ctx.pool.lookup(decl->name),
+                                "' has invalid signature");
         return;
     }
 
-    std::string funcName = ctx.pool.lookup(decl->mangledName);
-    llvm::FunctionType* funcType = getFunctionType(ctx, decl->funcType, decl->hasClosure);
+    // ─── 3. Determine linkage ───────────────────────────────────────────
+    llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::InternalLinkage;
+    if (isExported(decl, ctx)) {
+        linkage = llvm::GlobalValue::ExternalLinkage;
+    }
+
+    // ─── 4. Create the LLVM function ────────────────────────────────────
     llvm::Function* func = llvm::Function::Create(
-        funcType,
-        llvm::Function::ExternalLinkage,
+        fnType,
+        linkage,
         funcName,
         ctx.module
     );
-
-    // ─── Set parameter names ──────────────────────────────────────────────
-    size_t paramIndex = 0;
-    if (decl->hasClosure) {
-        func->getArg(paramIndex++)->setName("env");
-    }
-    for (ParamAST* param : decl->funcType->params) {
-        if (paramIndex < func->arg_size()) {
-            func->getArg(paramIndex)->setName(ctx.pool.lookup(param->name));
-            paramIndex++;
-        }
-    }
-
-    ctx.storeFunction(decl, func);
     decl->llvmFunction = func;
-    ctx.module->getOrInsertFunction(funcName, funcType);
+    ctx.storeFunction(decl, func);
 
-    // ─── Track mutable closure functions ──────────────────────────────────
-    trackClosureFunction(decl, func, ctx);
+    // ─── 5. Name the parameters for debugging ───────────────────────────
+    size_t argIdx = 0;
+    if (hasClosure) {
+        func->getArg(argIdx++)->setName("env");
+    }
 
-    Trace::detail("Lowered function declaration: ", funcName,
-                " (", func->arg_size(), " params)");
-}
+    FuncTypeAST* paramTypeIter = decl->funcType;
+    while (paramTypeIter) {
+        for (ParamAST* param : paramTypeIter->params) {
+            if (argIdx < func->arg_size()) {
+                func->getArg(argIdx++)->setName(ctx.pool.lookup(param->name));
+            }
+        }
+        paramTypeIter = paramTypeIter->getNext();
+    }
 
-// ─── 2.4 Track Mutable Closure Functions ──────────────────────────────────
-
-void trackClosureFunction(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx) {
-    if (decl->keyword != DeclKeyword::Let || !decl->hasClosure) return;
-
-    ctx.markAlive(decl);
-
-    llvm::Type* closureType = ctx.getClosureType();
-    llvm::AllocaInst* alloca = createAlloca(
-        ctx.pool.lookup(decl->name) + "_closure",
-        closureType,
-        ctx
-    );
-
-    llvm::Value* closureVal = llvm::UndefValue::get(closureType);
-    llvm::Value* funcPtr = ctx.builder.CreatePointerCast(
-        func,
-        llvm::PointerType::get(ctx.llvmCtx, 0),
-        "func_ptr"
-    );
-    closureVal = ctx.builder.CreateInsertValue(closureVal, funcPtr, 0);
-    closureVal = ctx.builder.CreateInsertValue(
-        closureVal,
-        llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx.llvmCtx, 0)),
-        1
-    );
-
-    ctx.builder.CreateStore(closureVal, alloca);
-    ctx.storeValue(decl, alloca);
-
-    Trace::detail("Tracked mutable closure: ", ctx.pool.lookup(decl->name));
+    Trace::detail("Declared function '", funcName, "'");
 }
 
 // =============================================================================
-// 3. Function Body (Phase 2)
+// Function Body Lowering
 // =============================================================================
 
 void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
+    if (!decl || decl->hasSyntaxError) return;
+
+    // ─── Foreign functions have no body ─────────────────────────────────
     if (decl->isForeignFunction) return;
 
-    // ─── Generic functions ─────────────────────────────────────────────────
+    // ─── Dispatch based on generic status ───────────────────────────────
     if (isGenericFunction(decl)) {
         lowerGenericFunctionBody(decl, ctx);
-        return;
+    } else {
+        lowerNormalFunctionBody(decl, ctx);
     }
-
-    // ─── Non-generic functions ─────────────────────────────────────────────
-    lowerNormalFunctionBody(decl, ctx);
 }
-
-// ─── 3.1 Generic Function Bodies ──────────────────────────────────────────
 
 void lowerGenericFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (shouldSpecialize(decl)) {
-        // @[specialize]: Generated lazily on instantiation
-        Trace::detail("Specialized generic body deferred: ",
-                      ctx.pool.lookup(decl->name));
+    // ─── @[erased] path ─────────────────────────────────────────────────
+    // The erased function prototype was created in lowerGenericFunctionDecl.
+    // Now we generate its body with tagged-slot unpacking.
+    llvm::Function* erasedFunc = decl->erasedFunction;
+    if (!erasedFunc) {
+        erasedFunc = ctx.lookupFunction(decl);
+    }
+    if (!erasedFunc) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "erased function '", ctx.pool.lookup(decl->name),
+                                "' has no prototype");
         return;
     }
-
-    // Default: Type-erased function with tagged slots
-    llvm::Function* func = ctx.lookupFunction(decl);
-    if (!func) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, decl->loc,
-            "erased generic function '", ctx.pool.lookup(decl->name),
-            "' not created in Phase 1");
-        return;
-    }
-
-    if (!func->empty()) return;
-    lowerErasedFunctionBody(decl, func, ctx);
+    lowerErasedFunctionBody(decl, erasedFunc, ctx);
 }
-
-// ─── 3.2 Normal Function Bodies ───────────────────────────────────────────
 
 void lowerNormalFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     llvm::Function* func = ctx.lookupFunction(decl);
     if (!func) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, decl->loc,
-            "function '", ctx.pool.lookup(decl->name),
-            "' not found in symbol table");
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "function '", ctx.pool.lookup(decl->name),
+                                "' has no prototype");
         return;
     }
-
-    if (!func->empty()) return;
     lowerFunctionBodyInternal(decl, func, ctx);
 }
 
-// ─── 3.3 Erased Function Bodies (Type-Erased Generics) ────────────────────
+void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx) {
+    // ─── Skip if function already has a body (e.g., forward decl) ───────
+    if (!func->empty()) return;
 
-void lowerErasedFunctionBody(
-    FuncDeclAST* decl,
-    llvm::Function* func,
-    CodeGenContext& ctx
-) {
-    // ─── Get TaggedSlot type ──────────────────────────────────────────────
-    static const char* slotName = "TaggedSlot";
-    llvm::StructType* slotType = llvm::StructType::getTypeByName(ctx.llvmCtx, slotName);
-    if (!slotType) {
-        std::vector<llvm::Type*> slotFields = {
-            llvm::Type::getInt8Ty(ctx.llvmCtx),
-            llvm::PointerType::get(ctx.llvmCtx, 0)
-        };
-        slotType = llvm::StructType::create(ctx.llvmCtx, slotFields, slotName);
-    }
+    // ─── 1. Set up the entry block ──────────────────────────────────────
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(
+        ctx.llvmCtx, "entry", func
+    );
+    ctx.builder.SetInsertPoint(entry);
 
-    ctx.setCurrentFunction(func);
-    GenericSubstitution subst{decl->genericParams, {}};
-    ctx.currentGenericSubstitution = &subst;
+    // ─── 2. Save the previous function context ──────────────────────────
+    llvm::Function* prevFunc = ctx.currentFunction;
+    llvm::Value* prevEnv = ctx.currentEnvPtr;
+    ctx.currentFunction = func;
 
-    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", func);
-    ctx.builder.SetInsertPoint(entryBlock);
+    // ─── 3. Push a live scope for the function body ─────────────────────
+    ctx.pushLiveScope();
 
-    // ─── Unpack tagged slot parameters ────────────────────────────────────
-    size_t argIndex = 0;
-
+    // ─── 4. Handle closure environment ──────────────────────────────────
     if (decl->hasClosure) {
-        ctx.currentEnvPtr = func->getArg(argIndex++);
-        ctx.storeValue(nullptr, ctx.currentEnvPtr);
+        ctx.currentEnvPtr = func->getArg(0);
     }
 
-    FuncTypeAST* funcType = decl->funcType;
-    while (funcType) {
-        for (ParamAST* param : funcType->params) {
-            if (argIndex >= func->arg_size()) {
-                ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, param->loc,
-                    "too few arguments for erased function");
-                ctx.setCurrentFunction(nullptr);
-                ctx.currentGenericSubstitution = nullptr;
-                return;
+    // ─── 5. Allocate and store parameters ───────────────────────────────
+    size_t argIdx = decl->hasClosure ? 1 : 0;
+    FuncTypeAST* paramTypeIter = decl->funcType;
+    while (paramTypeIter) {
+        for (ParamAST* param : paramTypeIter->params) {
+            if (argIdx >= func->arg_size()) break;
+
+            llvm::Value* arg = func->getArg(argIdx++);
+            llvm::Type* paramType = getType(ctx, param->type);
+            if (paramType) {
+                llvm::AllocaInst* alloca = ctx.builder.CreateAlloca(
+                    paramType, nullptr, ctx.pool.lookup(param->name)
+                );
+                ctx.builder.CreateStore(arg, alloca);
+                param->llvmAlloca = alloca;
+                ctx.storeValue(param, alloca);
             }
-
-            llvm::Value* slotPtr = func->getArg(argIndex++);
-            slotPtr->setName(ctx.pool.lookup(param->name) + "_tagged");
-
-            llvm::Value* slot = ctx.builder.CreateLoad(slotType, slotPtr,
-                "slot_" + ctx.pool.lookup(param->name));
-            llvm::Value* tag = ctx.builder.CreateExtractValue(slot, 0,
-                "tag_" + ctx.pool.lookup(param->name));
-            llvm::Value* value = ctx.builder.CreateExtractValue(slot, 1,
-                "value_" + ctx.pool.lookup(param->name));
-
-            llvm::Type* opaquePtrType = llvm::PointerType::get(ctx.llvmCtx, 0);
-            llvm::AllocaInst* alloca = createAlloca(
-                ctx.pool.lookup(param->name),
-                opaquePtrType,
-                ctx
-            );
-            ctx.builder.CreateStore(value, alloca);
-            ctx.storeValue(param, alloca);
-            param->llvmAlloca = alloca;
-            param->llvmValue = value;
         }
-        funcType = funcType->getNext();
+        paramTypeIter = paramTypeIter->getNext();
     }
 
-    // ─── Lower body ──────────────────────────────────────────────────────
+    // ─── 6. Lower the body statements ───────────────────────────────────
     if (decl->body) {
-        lowerStatement(decl->body, ctx);
-    } else {
-        ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, decl->loc,
-            "function '", ctx.pool.lookup(decl->name), "' has no body");
-    }
-
-    ctx.setCurrentFunction(nullptr);
-    ctx.currentEnvPtr = nullptr;
-    ctx.currentGenericSubstitution = nullptr;
-
-    verifyFunction(func, decl->loc, ctx);
-    Trace::detail("Lowered erased generic body: ", func->getName().str());
-}
-
-// ─── 3.4 Internal Function Body Lowering ──────────────────────────────────
-
-void lowerFunctionBodyInternal(
-    FuncDeclAST* decl,
-    llvm::Function* func,
-    CodeGenContext& ctx
-) {
-    ctx.setCurrentFunction(func);
-
-    // Dummy substitution for generic parameter detection
-    GenericSubstitution subst{decl->genericParams, {}};
-    ctx.currentGenericSubstitution = &subst;
-
-    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", func);
-    ctx.builder.SetInsertPoint(entryBlock);
-
-    size_t argIndex = 0;
-
-    if (decl->hasClosure) {
-        ctx.currentEnvPtr = func->getArg(argIndex++);
-        ctx.storeValue(nullptr, ctx.currentEnvPtr);
-    }
-
-    for (ParamAST* param : decl->funcType->params) {
-        lowerParam(param, ctx);
-        argIndex++;
-    }
-
-    if (decl->body) {
-        lowerStatement(decl->body, ctx);
-    } else {
-        ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, decl->loc,
-            "function '", ctx.pool.lookup(decl->name), "' has no body");
-    }
-
-    ctx.setCurrentFunction(nullptr);
-    ctx.currentEnvPtr = nullptr;
-    ctx.currentGenericSubstitution = nullptr;
-
-    verifyFunction(func, decl->loc, ctx);
-    Trace::detail("Lowered function body: ", ctx.pool.lookup(decl->name));
-}
-
-// ─── 3.5 Specialized Function Bodies (@[specialize]) ──────────────────────
-
-void lowerSpecializedFunctionBody(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    llvm::Function* specializedFunc,
-    CodeGenContext& ctx
-) {
-    if (!funcDecl || !specializedFunc) return;
-
-    auto savedValues = std::move(ctx.values);
-    ctx.values.clear();
-
-    GenericSubstitution subst{funcDecl->genericParams, typeArgs};
-    ctx.currentGenericSubstitution = &subst;
-
-    ctx.setCurrentFunction(specializedFunc);
-
-    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", specializedFunc);
-    ctx.builder.SetInsertPoint(entryBlock);
-
-    size_t argIndex = 0;
-
-    if (funcDecl->hasClosure) {
-        ctx.currentEnvPtr = specializedFunc->getArg(argIndex++);
-    }
-
-    for (ParamAST* param : funcDecl->funcType->params) {
-        llvm::Type* llvmType = getType(ctx, param->type);
-        if (!llvmType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-                "parameter '", ctx.pool.lookup(param->name),
-                "' has invalid type in specialization");
-            ctx.currentGenericSubstitution = nullptr;
-            ctx.values = std::move(savedValues);
-            return;
-        }
-
-        llvm::AllocaInst* alloca = createAlloca(
-            ctx.pool.lookup(param->name),
-            llvmType,
-            ctx
-        );
-        llvm::Value* argValue = specializedFunc->getArg(argIndex);
-        ctx.builder.CreateStore(argValue, alloca);
-        ctx.storeValue(param, alloca);
-        param->llvmAlloca = alloca;
-        param->llvmValue = argValue;
-        argIndex++;
-    }
-
-    if (funcDecl->body) {
-        lowerStatement(funcDecl->body, ctx);
-    } else {
-        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, funcDecl->loc,
-            "specialized function '", specializedFunc->getName().str(),
-            "' has no body");
-    }
-
-    ctx.setCurrentFunction(nullptr);
-    ctx.currentEnvPtr = nullptr;
-    ctx.currentGenericSubstitution = nullptr;
-    ctx.values = std::move(savedValues);
-
-    verifyFunction(specializedFunc, funcDecl->loc, ctx);
-    Trace::detail("Lowered specialized body: ", specializedFunc->getName().str());
-}
-
-// =============================================================================
-// 4. Parameter Lowering
-// =============================================================================
-
-void lowerParam(ParamAST* param, CodeGenContext& ctx) {
-    if (!param) return;
-
-    llvm::Type* paramType = nullptr;
-    if (param->isVariadic) {
-        paramType = ctx.getSliceType();
-    } else if (param->type && param->type->isa<FuncTypeAST>()) {
-        paramType = getFunctionRuntimeType(ctx, param->type->as<FuncTypeAST>(), true);
-    } else {
-        paramType = getType(ctx, param->type);
-    }
-
-    if (!paramType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-            "parameter '", ctx.pool.lookup(param->name), "' has invalid type");
-        return;
-    }
-
-    llvm::Function* func = ctx.getCurrentFunction();
-    if (!func) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-            "parameter '", ctx.pool.lookup(param->name), "' has no current function");
-        return;
-    }
-
-    llvm::Value* argValue = nullptr;
-    for (auto& arg : func->args()) {
-        if (arg.getName() == ctx.pool.lookup(param->name)) {
-            argValue = &arg;
-            break;
+        if (decl->body->isa<BlockStmtAST>()) {
+            lowerBlockStmt(decl->body->as<BlockStmtAST>(), ctx);
+        } else if (decl->body->isa<ReturnStmtAST>()) {
+            lowerReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
         }
     }
 
-    if (!argValue) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
-            "parameter '", ctx.pool.lookup(param->name), "' not found");
-        return;
+    // ─── 7. Ensure a terminator exists (void functions) ─────────────────
+    if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        if (decl->funcType->returnType) {
+            llvm::Type* retType = getType(ctx, decl->funcType->returnType);
+            if (retType) {
+                ctx.builder.CreateRet(llvm::UndefValue::get(retType));
+            } else {
+                ctx.builder.CreateRetVoid();
+            }
+        } else {
+            ctx.builder.CreateRetVoid();
+        }
     }
 
-    llvm::AllocaInst* alloca = createAlloca(ctx.pool.lookup(param->name), paramType, ctx);
-    ctx.builder.CreateStore(argValue, alloca);
-    ctx.storeValue(param, alloca);
-    param->llvmAlloca = alloca;
-    param->llvmValue = argValue;
+    // ─── 8. Pop the function scope (emits cleanup) ──────────────────────
+    ctx.popLiveScope();
+
+    // ─── 9. Restore the previous function context ───────────────────────
+    ctx.currentFunction = prevFunc;
+    ctx.currentEnvPtr = prevEnv;
+
+    Trace::detail("Lowered body of function '", ctx.pool.lookup(decl->name), "'");
 }
 
 // =============================================================================
-// 5. Helper: Verify Function
-// =============================================================================
-
-void verifyFunction(llvm::Function* func, const SourceLocation& loc, CodeGenContext& ctx) {
-    std::string error;
-    llvm::raw_string_ostream errorStream(error);
-    if (llvm::verifyFunction(*func, &errorStream)) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
-            "function '", func->getName().str(), "' failed verification: ", error);
-    }
-}
-
-// =============================================================================
-// 6. Variable Declaration
+// Variable Declarations
 // =============================================================================
 
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
+    if (!decl || decl->hasSyntaxError) return;
 
     llvm::Type* varType = getType(ctx, decl->type);
     if (!varType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, decl->loc,
-            "variable '", ctx.pool.lookup(decl->name), "' has invalid type");
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "variable '", ctx.pool.lookup(decl->name),
+                                "' has unknown type");
         return;
     }
 
-    bool isModuleLevel = ctx.module && ctx.getCurrentFunction() == nullptr;
-
+    // ─── Dispatch: module-level vs local ────────────────────────────────
+    bool isModuleLevel = !ctx.currentFunction;
     if (isModuleLevel) {
         lowerGlobalVar(decl, varType, ctx);
     } else {
@@ -520,192 +482,130 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 }
 
 void lowerGlobalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
-    std::string varName = decl->mangledName.isValid()
-        ? ctx.pool.lookup(decl->mangledName)
-        : ctx.pool.lookup(decl->name);
+    if (!decl->mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                "global variable '", ctx.pool.lookup(decl->name),
+                                "' has no mangled name (Sema should have set this)");
+        return;
+    }
 
+    std::string name = ctx.pool.lookup(decl->mangledName);
+
+    // ─── Determine linkage ──────────────────────────────────────────────
+    llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::InternalLinkage;
+    if (isExported(decl, ctx)) {
+        linkage = llvm::GlobalValue::ExternalLinkage;
+    }
+
+    // ─── Create the global with a zero initializer ──────────────────────
+    // Runtime initialization is deferred to __init_globals for non-constant
+    // initializers.
+    llvm::Constant* zeroInit = llvm::Constant::getNullValue(varType);
     llvm::GlobalVariable* global = new llvm::GlobalVariable(
         *ctx.module,
         varType,
         decl->isConst(),
-        llvm::GlobalValue::ExternalLinkage,
-        llvm::Constant::getNullValue(varType),
-        varName
+        linkage,
+        zeroInit,
+        name
     );
-
-    ctx.storeValue(decl, global);
     decl->llvmGlobal = global;
+    ctx.storeValue(decl, global);
 
+    // ─── Queue for runtime initialization if needed ─────────────────────
     if (decl->init) {
-        if (decl->init->isConst) {
-            llvm::Value* initValue = lowerExpression(decl->init, ctx);
-            if (initValue) {
-                if (llvm::Constant* constInit = llvm::dyn_cast<llvm::Constant>(initValue)) {
-                    global->setInitializer(constInit);
-                }
-            }
-        } else {
-            ctx.pendingGlobals.push_back({
-                decl, 
-                decl->init, 
-                global, 
-                ctx.currentModule, 
-                decl->orderInModule
-            });
-        }
+        ctx.pendingGlobals.push_back({
+            decl,
+            decl->init,
+            global,
+            ctx.currentModule,
+            decl->orderInModule
+        });
+        Trace::detail("Global '", ctx.pool.lookup(decl->name),
+                      "' queued for runtime initialization");
     }
 }
 
 void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
-    llvm::AllocaInst* alloca = createAlloca(ctx.pool.lookup(decl->name), varType, ctx);
+    // ─── 1. Allocate the variable on the stack ──────────────────────────
+    llvm::AllocaInst* alloca = ctx.builder.CreateAlloca(
+        varType,
+        nullptr,
+        ctx.pool.lookup(decl->name)
+    );
+    decl->llvmAlloca = alloca;
+    ctx.storeValue(decl, alloca);
 
+    // ─── 2. Track as a live variable for scope cleanup ──────────────────
+    // Only variables that actually own a heap resource are tracked. The
+    // decision consults the declaration (not just the type) so that
+    // function-typed bindings are only tracked when they can actually hold
+    // a closure:
+    //   - `let`-bound functions      → tracked (may be reassigned)
+    //   - `const`-bound named fns    → tracked iff the fn captures
+    //   - `const`-bound anon fns     → tracked iff the fn captures
+    //
+    // The cleanup machinery (`emitCleanupForTracker`, `ctx.reassign`) is
+    // self-guarding, so tracking a non-resource variable would not produce
+    // incorrect IR — it would just cause extra no-op iterations at scope
+    // exit and reassignment. This helper keeps the `alive` set minimal.
+    if (needsScopeCleanup(decl)) {
+        ctx.markAlive(decl);
+    }
+
+    // ─── 3. Evaluate initializer (if any) ───────────────────────────────
     if (decl->init) {
         llvm::Value* initValue = lowerExpression(decl->init, ctx);
-        if (initValue) {
-            ctx.builder.CreateStore(initValue, alloca);
+        if (!initValue) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                                    "failed to lower initializer for '",
+                                    ctx.pool.lookup(decl->name), "'");
+            return;
         }
-    } else {
-        ctx.builder.CreateStore(llvm::Constant::getNullValue(varType), alloca);
-    }
 
-    ctx.storeValue(decl, alloca);
-    decl->llvmAlloca = alloca;
-
-    // Mark alive if it owns heap memory
-    if (decl->type) {
-        bool needsCleanup = false;
-        if (auto* array = decl->type->as<ArrayTypeAST>()) {
-            needsCleanup = array->isDynamic();
-        } else if (auto* prim = decl->type->as<PrimitiveTypeAST>()) {
-            needsCleanup = (prim->primitiveKind == PrimitiveKind::String);
+        // ─── Bitcast if pointer types differ (opaque pointer safety) ────
+        if (initValue->getType() != varType) {
+            if (initValue->getType()->isPointerTy() && varType->isPointerTy()) {
+                initValue = ctx.builder.CreateBitCast(initValue, varType);
+            }
         }
-        if (needsCleanup) ctx.markAlive(decl);
+
+        ctx.builder.CreateStore(initValue, alloca);
     }
+
+    Trace::detail("Lowered local var '", ctx.pool.lookup(decl->name), "'");
 }
 
 // =============================================================================
-// 7. Struct Declaration
+// Main Declaration Dispatch
 // =============================================================================
 
-void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
-    if (ctx.lookupStruct(decl)) return;
+void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
+    if (!decl || decl->hasSyntaxError) return;
 
-    if (isGenericStruct(decl)) {
-        lowerGenericStructDecl(decl, ctx);
-        return;
+    switch (decl->kind) {
+        case ASTKind::FuncDecl:
+            lowerFunctionDecl(decl->as<FuncDeclAST>(), ctx);
+            break;
+        case ASTKind::VarDecl:
+            lowerVarDecl(decl->as<VarDeclAST>(), ctx);
+            break;
+        case ASTKind::StructDecl:
+            lowerStructDecl(decl->as<StructDeclAST>(), ctx);
+            break;
+        case ASTKind::EnumDecl:
+            lowerEnumDecl(decl->as<EnumDeclAST>(), ctx);
+            break;
+        case ASTKind::TraitDecl:
+            // Traits are compile-time only — no runtime representation.
+            break;
+        case ASTKind::ImportDecl:
+            // Imports are handled by the module system — nothing to lower.
+            break;
+        default:
+            // Unknown declaration kind — Sema should have rejected it.
+            break;
     }
-
-    lowerNormalStructDecl(decl, ctx);
-}
-
-void lowerGenericStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
-    if (shouldSpecialize(decl)) {
-        // @[specialize]: Lazy generation
-        Trace::detail("Registered generic struct template: ", ctx.pool.lookup(decl->name));
-        return;
-    }
-
-    // Default: Type-erased struct with tagged slots
-    llvm::Type* erasedType = generateErasedGenericStruct(decl, ctx);
-    if (erasedType) {
-        ctx.cacheStruct(decl, llvm::cast<llvm::StructType>(erasedType));
-        decl->llvmType = llvm::cast<llvm::StructType>(erasedType);
-        Trace::detail("Lowered type-erased generic struct: ", ctx.pool.lookup(decl->name));
-    }
-}
-
-void lowerNormalStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl->mangledName.isValid()) {
-        llvm_unreachable("Struct has no mangled name - Sema bug");
-    }
-
-    std::string structName = ctx.pool.lookup(decl->mangledName);
-    llvm::StructType* structType = llvm::StructType::getTypeByName(ctx.llvmCtx, structName);
-
-    if (!structType) {
-        structType = llvm::StructType::create(ctx.llvmCtx, structName);
-    }
-
-    ctx.cacheStruct(decl, structType);
-
-    std::vector<llvm::Type*> fieldTypes;
-    for (FieldDeclAST* field : decl->fields) {
-        llvm::Type* fieldType = nullptr;
-        if (field->type && field->type->isa<FuncTypeAST>()) {
-            fieldType = getFunctionRuntimeType(ctx, field->type->as<FuncTypeAST>(), true);
-        } else {
-            fieldType = getType(ctx, field->type);
-        }
-        if (!fieldType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
-                "field '", ctx.pool.lookup(field->name), "' has invalid type");
-            fieldType = llvm::Type::getInt8Ty(ctx.llvmCtx);
-        }
-        fieldTypes.push_back(fieldType);
-    }
-
-    if (structType->isOpaque()) {
-        structType->setBody(fieldTypes);
-    }
-
-    ctx.cacheStruct(decl, structType);
-    decl->llvmType = structType;
-
-    Trace::detail("Lowered struct: ", structName, " (", fieldTypes.size(), " fields)");
-}
-
-// =============================================================================
-// 8. Enum Declaration
-// =============================================================================
-
-void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return;
-
-    llvm::IntegerType* backingType = getEnumType(ctx, decl);
-    if (!backingType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, decl->loc,
-            "enum '", ctx.pool.lookup(decl->name), "' has invalid backing type");
-        return;
-    }
-
-    std::string enumName = decl->mangledName.isValid()
-        ? ctx.pool.lookup(decl->mangledName)
-        : ctx.pool.lookup(decl->name);
-
-    decl->variantConstants.clear();
-    decl->variantConstants.reserve(decl->variants.size());
-
-    for (EnumVariantAST* variant : decl->variants) {
-        llvm::ConstantInt* constVal = llvm::ConstantInt::get(backingType, variant->value, true);
-        decl->variantConstants.push_back(constVal);
-        variant->llvmValue = constVal;
-
-        std::string varName = enumName + "." + ctx.pool.lookup(variant->name);
-        new llvm::GlobalVariable(*ctx.module, backingType, true,
-            llvm::GlobalValue::ExternalLinkage, constVal, varName);
-
-        Trace::detail("Lowered enum variant: ", varName, " = ", variant->value);
-    }
-
-    decl->backingLLVMType = backingType;
-    Trace::detail("Lowered enum: ", enumName, " (", decl->variantConstants.size(), " variants)");
-}
-
-// =============================================================================
-// 9. Specialized Function Body Instantiation (Public API)
-// =============================================================================
-
-void instantiateSpecializedFunctionBody(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    llvm::Function* specializedFunc,
-    CodeGenContext& ctx
-) {
-    if (!funcDecl || !specializedFunc) return;
-    if (!specializedFunc->empty()) return;
-
-    lowerSpecializedFunctionBody(funcDecl, typeArgs, specializedFunc, ctx);
 }
 
 } // namespace codegen

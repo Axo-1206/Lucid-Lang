@@ -496,13 +496,13 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
     // ─── 2. Check if this is a type-erased generic struct ──────────────────
-    bool isErasedStruct = expr->isGenericInstantiation && expr->isGenericInstantiation != 0;
+    bool isErasedStruct = expr->isErased;
 
     // ─── 3. Get the LLVM struct type ───────────────────────────────────────
     llvm::Type* structType = nullptr;
     
     if (isGenericStruct(structDecl)) {
-        structType = getOrCreateSpecializedStruct(structDecl, expr->genericArgs, ctx);
+        structType = getOrCreateInstantiatedStruct(structDecl, expr->genericArgs, ctx);
         if (!structType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
                 "failed to instantiate generic struct '", 
@@ -983,7 +983,7 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     std::vector<llvm::Value*> args;
     
     // ─── Check if this is a type-erased generic call ──────────────────────
-    bool isTypeErasedCall = expr->isGenericCall && !expr->isGenericCall;
+    bool isTypeErasedCall = expr->isErasedCall;
     
     // ─── Get the callee's function type from Sema ──────────────────────────
     FuncTypeAST* calleeFuncType = expr->callee->resolvedType
@@ -1662,16 +1662,15 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         }
         
         if (isGenericFunction(funcDecl)) {
-            if (shouldSpecialize(funcDecl)) {
+            if (!isErased(funcDecl)) {
+                // ─── Specialized (default): cross-module not yet supported ─────────
                 ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
                     "cross-module specialized generic function '",
                     ctx.pool.lookup(funcDecl->name),
                     "' not yet supported");
                 return nullptr;
             } else {
-                // ─── Type-erased: Use Sema's cached erased name ─────────────────────
-                // Sema's computeErasedName() already generated the full erased name
-                // including module path and "__erased" suffix.
+                // ─── Type-erased (@[erased]): Use Sema's cached erased name ────────
                 std::string erasedName = ctx.pool.lookup(funcDecl->erasedName);
                 if (erasedName.empty()) {
                     ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,

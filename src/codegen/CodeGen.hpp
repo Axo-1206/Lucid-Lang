@@ -267,7 +267,7 @@ void lowerSpecializedFunctionBody(
 
 /// @brief Instantiate a specialized function body for a generic function.
 ///
-/// This is called from getOrCreateSpecializedFunction() when a new
+/// This is called from getOrCreateInstantiatedFunction() when a new
 /// instantiation is needed. It creates the function body with substituted types.
 ///
 /// @param funcDecl The generic function declaration.
