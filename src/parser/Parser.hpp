@@ -188,7 +188,7 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx);
 
 // ─── Call & Index ──────────────────────────────────────────────────────────
 
-CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprAST* callee, ArenaSpan<TypeAST*> genericArgs);
+CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprAST* callee);
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx);
 IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target);
 SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target);

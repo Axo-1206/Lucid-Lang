@@ -850,41 +850,28 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs)
     
     // ─── Function call: f() or module:func() ────────────────────────────
     if (current == TokenType::LPAREN) {
-        ArenaSpan<TypeAST*> genericArgs;
-        
-        // Check if the callee already has generic arguments
-        if (lhs->isa<IdentifierExprAST>()) {
-            auto* idExpr = lhs->as<IdentifierExprAST>();
-            if (idExpr->genericArgs.size() > 0) {
-                genericArgs = idExpr->genericArgs;
-            }
-        } else if (lhs->isa<ModuleAccessExprAST>()) {
-            auto* moduleAccess = lhs->as<ModuleAccessExprAST>();
-            if (moduleAccess->genericArgs.size() > 0) {
-                genericArgs = moduleAccess->genericArgs;
-            }
-        }
-        // FieldAccessExprAST doesn't store genericArgs
-        
-        // ─── Parse generic args before the call (if present) ──────────────
-        if (genericArgs.empty() && stream.check(TokenType::LESS)) {
-            // Only IdentifierExprAST and ModuleAccessExprAST can have generic args
-            // FieldAccessExprAST cannot - generic args are resolved at struct declaration time
-            if (lhs->isa<FieldAccessExprAST>()) {
-                const FieldAccessExprAST* fieldAccess = lhs->as<FieldAccessExprAST>();
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "generic arguments are not allowed on field access '",
-                                        ctx.pool.lookup(fieldAccess->fieldName),
-                                        "<...>' - struct generic arguments are resolved at declaration time");
-                // Skip the generic args to recover
-                parseGenericArgs(stream, ctx);
-            } else {
-                // Valid: identifier or module access
-                genericArgs = parseGenericArgs(stream, ctx);
-            }
+        // ─── Reject generic args on field access ─────────────────────────
+        // FieldAccessExprAST has no genericArgs field — generic args belong
+        // at the struct *declaration*, not at the field access. If the user
+        // writes `obj.field<T>(...)`, emit an error and skip the `<...>` to
+        // recover.
+        //
+        // Note: IdentifierExprAST and ModuleAccessExprAST already consumed
+        // their own `<...>` (if any) inside parseIdentifierExpr /
+        // parseModuleAccessExpr — by the time we get here, `stream.check(LESS)`
+        // is false for them. Only the field-access path can still see a
+        // stray `<`.
+        if (lhs->isa<FieldAccessExprAST>() && stream.check(TokenType::LESS)) {
+            const FieldAccessExprAST* fieldAccess = lhs->as<FieldAccessExprAST>();
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "generic arguments are not allowed on field access '",
+                                    ctx.pool.lookup(fieldAccess->fieldName),
+                                    "<...>' - struct generic arguments are resolved at declaration time");
+            // Skip the generic args to recover
+            parseGenericArgs(stream, ctx);
         }
         
-        return parseCallExpr(stream, ctx, lhs, genericArgs);
+        return parseCallExpr(stream, ctx, lhs);
     }
     
     // ─── Index or slice: arr[0] or arr[1..3] ────────────────────────────
@@ -979,27 +966,13 @@ IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx) 
 // Call & Index
 // =============================================================================
 
-CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, 
-                            ExprAST* callee, ArenaSpan<TypeAST*> genericArgs) {
+CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprAST* callee) {
     SourceLocation loc = stream.currentLoc();
     
     if (!callee) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "expected callee");
         return nullptr;
-    }
-    
-    // ─── Defensive check: FieldAccessExprAST should never have generic args ──
-    // This is a safety net - parsePostfixExpr should have caught this already
-    // by skip all the generics
-    if (callee->isa<FieldAccessExprAST>() && !genericArgs.empty()) {
-        const FieldAccessExprAST* fieldAccess = callee->as<FieldAccessExprAST>();
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                                "generic arguments are not allowed on field access '",
-                                ctx.pool.lookup(fieldAccess->fieldName),
-                                "<...>' - struct generic arguments are resolved at declaration time");
-        // Clear generic args to continue parsing
-        genericArgs = ArenaSpan<TypeAST*>();
     }
     
     if (!stream.check(TokenType::LPAREN)) {
@@ -1020,9 +993,12 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     auto* call = ctx.arena.make<CallExprAST>(hasArgPack);
     call->loc = loc;
     call->callee = callee;
-    call->genericArgs = genericArgs;
     call->args = args;
-
+    // NOTE: generic args (if any) are stored on the callee itself:
+    //   - IdentifierExprAST::genericArgs  for `func<T>(...)`
+    //   - ModuleAccessExprAST::genericArgs for `module:func<T>(...)`
+    // There is intentionally no CallExprAST::genericArgs field.
+    
     return call;
 }
 
