@@ -143,8 +143,8 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
                               "cannot implicitly convert float to int");
         ctx.diagnostics.note(target, "Use one of these explicit conversion intrinsics:");
         ctx.diagnostics.note(target, "  #trunc(x) - truncate toward zero (C-style)");
-        ctx.diagnostics.note(target, "  #floor(x) - round toward -∞");
-        ctx.diagnostics.note(target, "  #ceil(x)  - round toward +∞");
+        ctx.diagnostics.note(target, "  #floor(x) - round toward negative infinity");
+        ctx.diagnostics.note(target, "  #ceil(x)  - round toward positive infinity");
         ctx.diagnostics.note(target, "  #round(x) - round to nearest, half away from zero");
         return false;
     }
