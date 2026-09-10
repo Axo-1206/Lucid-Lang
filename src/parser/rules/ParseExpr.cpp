@@ -55,75 +55,59 @@ ExprAST* parseRequiredExpr(TokenStream& stream, ParserContext& ctx, const char* 
 }
 
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
-    
     ExprAST* lhs = parsePrefixExpr(stream, ctx);
-    if (!lhs) {
-        return nullptr;
-    }
-    
+    if (!lhs) return nullptr;
+
     while (!stream.isAtEnd()) {
         TokenType current = stream.peekType();
-        int prec = infixPrec(current);
-        
-        if (prec < minPrec) {
-            break;
+
+        // ─── Postfix operators bind tighter than any infix ─────────────
+        // Check them BEFORE infixPrec()/minPrec, since infixPrec() returns
+        // the "not an infix operator" sentinel (-2) for these and minPrec
+        // at the top level is -1, which would break the loop prematurely.
+        if (current == TokenType::LPAREN ||
+            current == TokenType::LBRACKET ||
+            current == TokenType::PIPELINE ||
+            current == TokenType::DOT ||
+            current == TokenType::COLON_COLON) {
+            lhs = parsePostfixExpr(stream, ctx, lhs);
+            if (!lhs) return nullptr;
+            continue;
         }
-        
-        // Composition (+>) has highest precedence
+
+        int prec = infixPrec(current);
+        if (prec < minPrec) break;
+
         if (current == TokenType::COMPOSE) {
             lhs = parseComposeExpr(stream, ctx, lhs);
             if (!lhs) return nullptr;
             continue;
         }
-        
-        // Assignment operators (right-associative)
-        if (current == TokenType::ASSIGN ||
-            current == TokenType::PLUS_ASSIGN ||
-            current == TokenType::MINUS_ASSIGN ||
-            current == TokenType::MUL_ASSIGN ||
-            current == TokenType::DIV_ASSIGN ||
-            current == TokenType::MOD_ASSIGN ||
-            current == TokenType::POW_ASSIGN ||
-            current == TokenType::BIT_AND_ASSIGN ||
-            current == TokenType::BIT_OR_ASSIGN ||
-            current == TokenType::BIT_XOR_ASSIGN ||
-            current == TokenType::SHL_ASSIGN ||
-            current == TokenType::SHR_ASSIGN) {
-            
+
+        if (is_assignment_op(current)) {
             stream.consume();
             lhs = parseInfixAssign(stream, ctx, lhs, current);
             if (!lhs) return nullptr;
             continue;
         }
-        
-        // Null coalesce (??)
+
         if (current == TokenType::QUESTION_QUESTION) {
             stream.consume();
             lhs = parseInfixNullCoalesce(stream, ctx, lhs);
             if (!lhs) return nullptr;
             continue;
         }
-        
-        // Binary operators
+
         if (prec >= 0) {
             stream.consume();
             lhs = parseInfixBinary(stream, ctx, lhs, current, prec);
             if (!lhs) return nullptr;
             continue;
         }
-        
-        // Postfix expressions (call, index, slice, pipeline)
-        if (current == TokenType::LPAREN ||
-            current == TokenType::LBRACKET ||
-            current == TokenType::PIPELINE) {
-            lhs = parsePostfixExpr(stream, ctx, lhs);
-            if (!lhs) return nullptr;
-            continue;
-        }
-        
+
         break;
     }
-    
+
     return lhs;
 }
 
@@ -201,6 +185,12 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return parseIfExpr(stream, ctx);
     }
     
+    // ─── Anonymous function: (a int) -> int { ... } ────────────────────
+    // Check this before consuming '(' for a parenthesized expression.
+    if (looksLikeAnonFunc(stream, ctx)) {
+        return parseAnonFuncExpr(stream, ctx);
+    }
+
     // ─── Parenthesized expression: (expr) ──────────────────────────────
     if (current == TokenType::LPAREN) {
         stream.consume(); // Consume '('
@@ -224,11 +214,6 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         }
         stream.consume(); // Consume ')'
         return expr;
-    }
-    
-    // ─── Anonymous function: (a int) -> int { ... } ────────────────────
-    if (looksLikeAnonFunc(stream, ctx)) {
-        return parseAnonFuncExpr(stream, ctx);
     }
     
     // ─── Arena static access: Arena::create ──────────────────────────────

@@ -175,13 +175,19 @@ void resolveDecl(DeclAST* decl, SemaContext& ctx) {
         if (!decl->name.isEmpty()) {
             switch (decl->kind) {
             case ASTKind::VarDecl:
+                ctx.insertValue(decl->as<VarDeclAST>());
+                break;
             case ASTKind::FuncDecl:
-                ctx.insertValue(decl->as<ValueDeclAST>());
+                ctx.insertValue(decl->as<FuncDeclAST>());
                 break;
             case ASTKind::StructDecl:
+                ctx.insertType(decl->as<StructDeclAST>());
+                break;
             case ASTKind::EnumDecl:
+                ctx.insertType(decl->as<EnumDeclAST>());
+                break;
             case ASTKind::TraitDecl:
-                ctx.insertType(decl->as<TypeDeclAST>());
+                ctx.insertType(decl->as<TraitDeclAST>());
                 break;
             default:
                 // Other declaration kinds don't need registration
