@@ -528,11 +528,11 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     // ─── Step 8: Set isLValue and isConst ──────────────────────────────────
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = decl->as<VarDeclAST>();
-        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
+        expr->isLValue = true;
         expr->isConst = (varDecl->keyword == DeclKeyword::Const) && (state == ValueState::Definite);
     } else if (decl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
+        expr->isLValue = true;
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<ParamAST>()) {
         ParamAST* param = decl->as<ParamAST>();
@@ -2936,42 +2936,32 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType,
 // =============================================================================
 
 TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Resolve LHS ─────────────────────────────────────────────────
+    // ─── Step 1: Resolve LHS ─────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->lhs, ctx);
-    if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
+    bool lhsUsable = lhsType && !lhsType->isa<UnknownTypeAST>();
+
+    if (!lhsUsable) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr->lhs,
                               "LHS has unknown type");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Check if LHS is an l-value ─────────────────────────────────
-    if (!expr->lhs->isLValue) {
+    // ─── Step 2: L-value check ───────────────────────────────────────────
+    if (lhsUsable && !expr->lhs->isLValue) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr->lhs,
                               "cannot assign to non-l-value expression");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+        lhsUsable = false;
     }
 
-    // ─── Step 3: Check if LHS is const ──────────────────────────────────────
-    if (expr->lhs->isConst) {
+    // ─── Step 3: Const check ─────────────────────────────────────────────
+    if (lhsUsable && expr->lhs->isConst) {
         ctx.diagnostics.error(DiagCode::Sem_ConstAssignment, expr->lhs,
                               "cannot assign to const expression");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+        lhsUsable = false;
     }
 
-    // ─── Step 4: Resolve RHS against LHS type ──────────────────────────────
-    TypeAST* rhsType = resolveExprWithTarget(expr->rhs, lhsType, ctx);
-    if (!rhsType || rhsType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExprWithTarget
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
+    // ─── Step 4: Resolve RHS unconditionally ─────────────────────────────
+    TypeAST* rhsTarget = lhsUsable ? lhsType : nullptr;
+    TypeAST* rhsType = resolveExprWithTarget(expr->rhs, rhsTarget, ctx);
 
     // ─── Step 5: Compound assignment operator validation ───────────────────
     if (expr->op != AssignOp::Assign) {
@@ -3031,15 +3021,13 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext
         }
     }
 
-    expr->resolvedType = lhsType;
-    expr->valueState = expr->rhs->valueState;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    // Assignment expressions are never l-values (the result is a value)
+    // ─── Step 6: Result type ─────────────────────────────────────────────
+    expr->resolvedType = lhsUsable ? lhsType : ctx.getUnknownType();
+    expr->valueState = (lhsUsable && rhsType) ? expr->rhs->valueState
+                                              : ValueState::Unknown;
     expr->isLValue = false;
     expr->isConst = false;
-    
-    return lhsType;
+    return expr->resolvedType;
 }
 
 // =============================================================================
