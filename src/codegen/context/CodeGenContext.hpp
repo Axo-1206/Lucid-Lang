@@ -109,7 +109,7 @@ struct CodeGenContext {
     /// 
     /// TaggedSlot is used for two purposes:
     ///   1. **Nil/Err State** (T?, T!, T?!): sentinel = 0 (nil), 1 (valid), 2 (err)
-    ///   2. **Type-Erased Generics**: All values are boxed as TaggedSlot* 
+    ///   2. **Type-Erased Generics** (@[erased]): All values are boxed as TaggedSlot* 
     ///      to allow uniform handling of different types.
     llvm::StructType* taggedSlotType_ = nullptr;
 
@@ -120,14 +120,13 @@ struct CodeGenContext {
     ///   - value: The opaque pointer to the actual value
     /// 
     /// ─── Usage ──────────────────────────────────────────────────────────────
-    /// This is used in the type-erased path (non-@[specialize] generics):
+    /// This is used only in the type-erased path (@[erased] generics):
     ///   - Function arguments: Boxing before calling an erased generic function
     ///   - Struct fields: Boxing before storing in an erased generic struct
     /// 
     /// ─── NOT Used for ──────────────────────────────────────────────────────
-    ///   - @[specialize] path: All types are concrete, no boxing needed
+    ///   - Specialized path (default): All types are concrete, no boxing needed
     ///   - Non-generic code: No boxing needed
-    /// 
     /// @param value The value to box (will be bitcast to i8*).
     /// @param sentinel The state (0 = nil, 1 = valid, 2 = err). 
     ///        Default is 1 (valid).

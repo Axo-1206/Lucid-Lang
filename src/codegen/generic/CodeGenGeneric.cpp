@@ -1,13 +1,13 @@
 /// @file CodeGenGeneric.cpp
 /// @brief Implementation of generic instantiation.
 ///
-/// Sema now handles ALL specialization and erased name generation.
+/// Sema now handles ALL instantiation decisions and erased name generation.
 /// CodeGen's job is now:
 ///   1. Detect if a decl is generic (has genericParams)
 ///   2. If genericParams is empty: Sema already specialized it → lookup by mangled name
-///   3. If genericParams is non-empty: type-erased path → use cached erasedName
+///   3. If genericParams is non-empty: type-erased path (@[erased]) → use cached erasedName
 ///
-/// The createSpecializedFunction/createSpecializedStruct functions have been
+/// The createInstantiatedFunction/createInstantiatedStruct functions have been
 /// REMOVED because Sema already does this work.
 
 #include "CodeGenGeneric.hpp"
@@ -36,13 +36,13 @@ bool isGenericStruct(StructDeclAST* decl) {
     return decl && !decl->genericParams.empty();
 }
 
-bool shouldSpecialize(DeclAST* decl) {
+bool isErased(DeclAST* decl) {
     if (!decl) return false;
     if (decl->isa<FuncDeclAST>()) {
-        return decl->as<FuncDeclAST>()->shouldSpecialize;
+        return decl->as<FuncDeclAST>()->isErased;
     }
     if (decl->isa<StructDeclAST>()) {
-        return decl->as<StructDeclAST>()->shouldSpecialize;
+        return decl->as<StructDeclAST>()->isErased;
     }
     return false;
 }
@@ -154,18 +154,7 @@ llvm::Type* generateErasedGenericStruct(
     }
 
     // ─── Get or create the canonical TaggedSlot type ──────────────────────
-    static const char* slotName = "TaggedSlot";
-    llvm::StructType* slotType = llvm::StructType::getTypeByName(
-        ctx.llvmCtx,
-        slotName
-    );
-    if (!slotType) {
-        std::vector<llvm::Type*> slotFields = {
-            llvm::Type::getInt8Ty(ctx.llvmCtx),              // tag (0 = valid, 1 = nil, 2 = err)
-            llvm::PointerType::get(ctx.llvmCtx, 0)          // value (opaque pointer)
-        };
-        slotType = llvm::StructType::create(ctx.llvmCtx, slotFields, slotName);
-    }
+    llvm::StructType* slotType = ctx.getTaggedSlotType();
 
     // ─── Check if this erased struct already exists ──────────────────────
     llvm::StructType* existingType = llvm::StructType::getTypeByName(
@@ -200,7 +189,7 @@ llvm::Type* generateErasedGenericStruct(
 // 3. Public Registry API (SIMPLIFIED)
 // ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* getOrCreateSpecializedFunction(
+llvm::Function* getOrCreateInstantiatedFunction(
     FuncDeclAST* funcDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     CodeGenContext& ctx
@@ -236,13 +225,14 @@ llvm::Function* getOrCreateSpecializedFunction(
         return func;
     }
 
-    // ─── Type-erased path (default) ──────────────────────────────────────
+    // ─── Type-erased path (@[erased]) ────────────────────────────────────
     // The function is still generic (genericParams not empty), so we use
-    // the type-erased version.
+    // the type-erased version. This only happens when the user explicitly
+    // marked the declaration with @[erased].
     return generateErasedGenericFunction(funcDecl, ctx);
 }
 
-llvm::Type* getOrCreateSpecializedStruct(
+llvm::Type* getOrCreateInstantiatedStruct(
     StructDeclAST* structDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
     CodeGenContext& ctx
@@ -285,9 +275,10 @@ llvm::Type* getOrCreateSpecializedStruct(
         return structType;
     }
 
-    // ─── Type-erased path (default) ──────────────────────────────────────
+    // ─── Type-erased path (@[erased]) ────────────────────────────────────
     // The struct is still generic (genericParams not empty), so we use
-    // the type-erased version.
+    // the type-erased version. This only happens when the user explicitly
+    // marked the declaration with @[erased].
     return generateErasedGenericStruct(structDecl, ctx);
 }
 
@@ -320,8 +311,10 @@ llvm::Value* resolveGenericCall(
     }
 
     // ─── Get or create specialized/erased function ──────────────────────
-    // The function handles both paths internally
-    return getOrCreateSpecializedFunction(funcDecl, genericArgs, ctx);
+    // The function handles both paths internally:
+    //   - Specialized (default): Sema already created the decl
+    //   - Type-erased (@[erased]): Generates the erased version
+    return getOrCreateInstantiatedFunction(funcDecl, genericArgs, ctx);
 }
 
 } // namespace codegen
