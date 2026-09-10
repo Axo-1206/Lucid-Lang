@@ -62,9 +62,6 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         TokenType current = stream.peekType();
 
         // ─── Postfix operators bind tighter than any infix ─────────────
-        // Check them BEFORE infixPrec()/minPrec, since infixPrec() returns
-        // the "not an infix operator" sentinel (-2) for these and minPrec
-        // at the top level is -1, which would break the loop prematurely.
         if (current == TokenType::LPAREN ||
             current == TokenType::LBRACKET ||
             current == TokenType::PIPELINE ||
@@ -75,15 +72,17 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
 
-        int prec = infixPrec(current);
-        if (prec < minPrec) break;
-
+        // ─── Composition (right-associative, higher than any binary) ───
         if (current == TokenType::COMPOSE) {
             lhs = parseComposeExpr(stream, ctx, lhs);
             if (!lhs) return nullptr;
             continue;
         }
 
+        // ─── Assignment (right-associative, looser than any binary) ────
+        // Checked before the precedence cutoff because infixPrec() returns
+        // the -2 sentinel for every assignment op; letting the cutoff run
+        // first would terminate the loop before we ever see them.
         if (is_assignment_op(current)) {
             stream.consume();
             lhs = parseInfixAssign(stream, ctx, lhs, current);
@@ -91,12 +90,17 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
 
+        // ─── Null-coalesce (right-associative) ─────────────────────────
         if (current == TokenType::QUESTION_QUESTION) {
             stream.consume();
             lhs = parseInfixNullCoalesce(stream, ctx, lhs);
             if (!lhs) return nullptr;
             continue;
         }
+
+        // ─── Standard binary operators (precedence climbing) ───────────
+        int prec = infixPrec(current);
+        if (prec < minPrec) break;
 
         if (prec >= 0) {
             stream.consume();
