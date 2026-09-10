@@ -406,7 +406,6 @@ inline bool is_operator(TokenType type) {
         case TokenType::LESS_EQUAL:
         case TokenType::GREATER:
         case TokenType::GREATER_EQUAL:
-        case TokenType::ARROW:
         case TokenType::COMPOSE:
         case TokenType::PIPELINE:
         case TokenType::RANGE:
