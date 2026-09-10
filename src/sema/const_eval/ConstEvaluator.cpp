@@ -564,6 +564,25 @@ ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, RangeExprAST* expr
 
 // ─── evalCall ────────────────────────────────────────────────────────────
 
+/// @brief Check whether a call callee carries explicit generic arguments.
+///
+/// Generic args are stored on the callee (IdentifierExprAST or
+/// ModuleAccessExprAST), never on CallExprAST itself — the AST's design
+/// keeps a single source of truth for them, on the node that names the
+/// declaration being instantiated.
+static bool calleeHasGenericArgs(ExprAST* callee) {
+    if (!callee) return false;
+
+    if (callee->isa<IdentifierExprAST>()) {
+        return !callee->as<IdentifierExprAST>()->genericArgs.empty();
+    }
+    if (callee->isa<ModuleAccessExprAST>()) {
+        return !callee->as<ModuleAccessExprAST>()->genericArgs.empty();
+    }
+    // Other callee shapes (FieldAccessExprAST, etc.) don't carry generic args.
+    return false;
+}
+
 ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, CallExprAST* expr) {
     FuncDeclAST* func = resolveCalleeOrError(expr->callee, ctx);
     if (!func) {
@@ -574,7 +593,13 @@ ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, CallExprAST* expr) {
         return ConstantValue::unknown();
     }
 
-    if (!func->genericParams.empty() && expr->genericArgs.empty()) {
+    // ─── Check generic instantiation ─────────────────────────────────────
+    // Generic args live on the callee, not on CallExprAST:
+    //   - IdentifierExprAST::genericArgs  for `func<T>(...)`
+    //   - ModuleAccessExprAST::genericArgs for `module:func<T>(...)`
+    // A generic const function that isn't instantiated cannot be evaluated
+    // at compile time — the compiler doesn't know which concrete type T is.
+    if (!func->genericParams.empty() && !calleeHasGenericArgs(expr->callee)) {
         return ConstantValue::unknown();
     }
 
