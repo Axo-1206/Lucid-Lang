@@ -46,6 +46,7 @@
 #include "../memory/ASTArena.hpp"
 #include "../memory/InternedString.hpp"
 #include "../memory/ArenaSpan.hpp"
+#include "../diagnostics/StackTrace.hpp"
 
 #include <string>
 #include <optional>
@@ -291,6 +292,39 @@ struct DocComment {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AST_ASSERT_MSG — invariant check for compiler bugs.
+//
+// Unlike assert(), this:
+//   - always fires (not disabled by NDEBUG), because a violated AST invariant
+//     means the compiler is broken, not the user's program
+//   - prints file, line, function, and a caller-supplied message
+//   - prints a stack trace before aborting
+//
+// Use ONLY for conditions that indicate a bug in the compiler itself.
+// User-facing diagnostics still go through DiagnosticEngine.
+//
+// Usage:
+//   AST_ASSERT_MSG(kind == T::staticKind,
+//                  "ASTKind mismatch in as<T>()");
+//
+// The message is a string literal — no allocation, no formatting.
+// ─────────────────────────────────────────────────────────────────────────────
+#define AST_ASSERT_MSG(cond, msg)                                              \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            std::fprintf(stderr,                                               \
+                "\nAssertion failed: %s\n"                                     \
+                "  File:     %s\n"                                             \
+                "  Line:     %d\n"                                             \
+                "  Function: %s\n"                                             \
+                "  Message:  %s\n",                                            \
+                #cond, __FILE__, __LINE__, __func__, (msg));                   \
+            ::lucid::diag::printStackTrace(/*skipFrames=*/2);                  \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (0)
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BaseAST — root of the entire AST hierarchy.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -309,13 +343,15 @@ struct BaseAST {
 
     template<typename T>
     T* as() {
-        assert(kind == T::staticKind && "ASTKind mismatch in as<T>()");
+        AST_ASSERT_MSG(kind == T::staticKind,
+                    "ASTKind mismatch in as<T>() - caller assumed the wrong node type");
         return static_cast<T*>(this);
     }
 
     template<typename T>
-    T* as() const {
-        assert(kind == T::staticKind && "ASTKind mismatch in as<T>()");
+    const T* as() const {
+        AST_ASSERT_MSG(kind == T::staticKind,
+                    "ASTKind mismatch in as<T>() - caller assumed the wrong node type");
         return static_cast<const T*>(this);
     }
 };
