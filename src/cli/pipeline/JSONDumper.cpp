@@ -85,6 +85,7 @@ void JSONDumper::serializeModule(JSONWriter& json, ModuleAST* module) {
     json.endArray();
     
     json.kv("hasErrors", module->hasErrors);
+    json.kv("dependencyOrder", static_cast<int64_t>(module->dependencyOrder));
     
     json.key("declarations");
     json.beginArray();
@@ -116,7 +117,6 @@ void JSONDumper::serializeDecl(JSONWriter& json, DeclAST* decl) {
         case ASTKind::GenericParamDecl: serializeGenericParam(json, decl->as<GenericParamDeclAST>()); break;
         default:
             json.beginObject();
-            // Explicitly call core::astKindToString and pass the result as a string literal
             json.kv("kind", std::string(astKindToString(decl->kind)));
             json.kv("name", str(decl->name));
             json.endObject();
@@ -195,9 +195,30 @@ void JSONDumper::serializeFuncDecl(JSONWriter& json, FuncDeclAST* decl) {
         serializeStmt(json, decl->body);
     }
     
+    // ─── Semantic flags ──────────────────────────────────────────────
     json.kv("isForeignFunction", decl->isForeignFunction);
+    json.kv("isErased", decl->isErased);          // renamed from shouldSpecialize
     json.kv("isInline", decl->isInline);
+    json.kv("isNoInline", decl->isNoInline);
     json.kv("hasClosure", decl->hasClosure);
+    json.kv("isReturned", decl->isReturned);
+    
+    // ─── Capture list ───────────────────────────────────────────────
+    json.key("captures");
+    json.beginArray();
+    for (const auto& cap : decl->captures) {
+        json.beginObject();
+        if (cap.decl) {
+            json.kv("decl", str(cap.decl->name));
+        } else {
+            json.kvNull("decl");
+        }
+        json.kv("byReference", cap.byReference);
+        json.kv("isClosureValue", cap.isClosureValue);
+        json.kv("index", static_cast<uint64_t>(cap.index));
+        json.endObject();
+    }
+    json.endArray();
     
     json.key("location");
     serializeLocation(json, decl->loc);
@@ -231,6 +252,8 @@ void JSONDumper::serializeStructDecl(JSONWriter& json, StructDeclAST* decl) {
     json.endArray();
     
     json.kv("isPacked", decl->isPacked);
+    json.kv("isErased", decl->isErased);          // renamed from shouldSpecialize
+    
     json.key("location");
     serializeLocation(json, decl->loc);
     json.endObject();
@@ -296,6 +319,12 @@ void JSONDumper::serializeFieldDecl(JSONWriter& json, FieldDeclAST* field) {
         json.key("defaultVal");
         serializeExpr(json, field->defaultVal);
     }
+    if (field->defaultBody) {
+        json.key("defaultBody");
+        serializeStmt(json, field->defaultBody);
+    }
+    
+    json.kv("fieldIndex", static_cast<uint64_t>(field->fieldIndex));
     
     json.key("location");
     serializeLocation(json, field->loc);
@@ -384,6 +413,10 @@ void JSONDumper::serializeBlockStmt(JSONWriter& json, BlockStmtAST* stmt) {
         if (s) serializeStmt(json, s);
     }
     json.endArray();
+    
+    // ─── Scope exit registrations (semantic metadata) ──────────────────
+    json.kv("scopeExitCount", static_cast<uint64_t>(stmt->scopeExits.size()));
+    
     json.key("location");
     serializeLocation(json, stmt->loc);
     json.endObject();
@@ -449,6 +482,10 @@ void JSONDumper::serializeSwitchStmt(JSONWriter& json, SwitchStmtAST* stmt) {
     if (stmt->defaultBody) {
         json.key("defaultBody");
         serializeStmt(json, stmt->defaultBody);
+    }
+    if (stmt->defaultLoc.has_value()) {
+        json.key("defaultLoc");
+        serializeLocation(json, stmt->defaultLoc.value());
     }
     json.key("location");
     serializeLocation(json, stmt->loc);
@@ -716,6 +753,26 @@ void JSONDumper::serializeIdentifierExpr(JSONWriter& json, IdentifierExprAST* ex
     json.kv("valueState", valueStateToString(expr->valueState));
     json.kv("isConst", expr->isConst);
     json.kv("isLValue", expr->isLValue);
+    
+    // ─── Implicit self-field access ─────────────────────────────────────
+    json.kv("isImplicitFieldAccess", expr->isImplicitFieldAccess);
+    if (expr->isImplicitFieldAccess) {
+        json.kv("fieldIndex", static_cast<uint64_t>(expr->fieldIndex));
+        json.key("selfObject");
+        if (expr->selfObject) {
+            serializeExpr(json, expr->selfObject);
+        } else {
+            json.null();
+        }
+    }
+    
+    // ─── Type-context flags (for intrinsics) ────────────────────────────
+    json.kv("isType", expr->isType);
+    if (expr->resolvedTypeNode) {
+        json.key("resolvedTypeNode");
+        serializeType(json, expr->resolvedTypeNode);
+    }
+    
     json.key("location");
     serializeLocation(json, expr->loc);
     json.endObject();
@@ -762,6 +819,15 @@ void JSONDumper::serializeStructLiteralExpr(JSONWriter& json, StructLiteralExprA
         if (init) serializeFieldInit(json, init);
     }
     json.endArray();
+    
+    // ─── Resolved decl + erased flag ────────────────────────────────────
+    json.key("resolvedDecl");
+    if (expr->resolvedDecl) {
+        json.string(str(expr->resolvedDecl->name));
+    } else {
+        json.null();
+    }
+    json.kv("isErased", expr->isErased);
     
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
@@ -844,12 +910,6 @@ void JSONDumper::serializeCallExpr(JSONWriter& json, CallExprAST* expr) {
         json.key("callee");
         serializeExpr(json, expr->callee);
     }
-    json.key("genericArgs");
-    json.beginArray();
-    for (auto* arg : expr->genericArgs) {
-        if (arg) serializeType(json, arg);
-    }
-    json.endArray();
     json.key("args");
     json.beginArray();
     for (auto* arg : expr->args) {
@@ -857,6 +917,7 @@ void JSONDumper::serializeCallExpr(JSONWriter& json, CallExprAST* expr) {
     }
     json.endArray();
     json.kv("hasArgPack", expr->hasArgPack);
+    json.kv("isErasedCall", expr->isErasedCall);      // renamed from isTypeErasedCall
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
     if (expr->hasType()) {
@@ -1190,8 +1251,13 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
     json.beginArray();
     for (const auto& cap : expr->captures) {
         json.beginObject();
-        json.kv("decl", str(cap.decl->name));
+        if (cap.decl) {
+            json.kv("decl", str(cap.decl->name));
+        } else {
+            json.kvNull("decl");
+        }
         json.kv("byReference", cap.byReference);
+        json.kv("isClosureValue", cap.isClosureValue);
         json.kv("index", static_cast<uint64_t>(cap.index));
         json.endObject();
     }
@@ -1281,6 +1347,37 @@ void JSONDumper::serializeType(JSONWriter& json, TypeAST* type) {
         case ASTKind::FuncType:         serializeFuncType(json, type->as<FuncTypeAST>()); break;
         case ASTKind::FutureType:       serializeFutureType(json, type->as<FutureTypeAST>()); break;
         case ASTKind::ThreadType:       serializeThreadType(json, type->as<ThreadTypeAST>()); break;
+        case ASTKind::SimdType: {
+            // Simd type is a compiler-builtin — serialize inline
+            auto* simd = type->as<SimdTypeAST>();
+            json.beginObject();
+            json.kv("kind", "SimdType");
+            json.kv("laneCount", static_cast<uint64_t>(simd->laneCount));
+            json.key("elementType");
+            if (simd->elementType) {
+                serializeType(json, simd->elementType);
+            } else {
+                json.null();
+            }
+            json.key("location");
+            serializeLocation(json, type->loc);
+            json.endObject();
+            break;
+        }
+        case ASTKind::ArenaType:
+            json.beginObject();
+            json.kv("kind", "ArenaType");
+            json.key("location");
+            serializeLocation(json, type->loc);
+            json.endObject();
+            break;
+        case ASTKind::ArenaDescriptorType:
+            json.beginObject();
+            json.kv("kind", "ArenaDescriptorType");
+            json.key("location");
+            serializeLocation(json, type->loc);
+            json.endObject();
+            break;
         default:
             json.beginObject();
             json.kv("kind", astKindToString(type->kind));
@@ -1316,6 +1413,9 @@ void JSONDumper::serializeNamedType(JSONWriter& json, NamedTypeAST* type) {
     } else {
         json.null();
     }
+    
+    // ─── Erased flag (replaced isSpecialized/isGenericInstantiation) ────
+    json.kv("isErased", type->isErased);
     
     json.key("location");
     serializeLocation(json, type->loc);
@@ -1443,6 +1543,7 @@ void JSONDumper::serializeFuncType(JSONWriter& json, FuncTypeAST* type) {
     } else {
         json.null();
     }
+    json.kv("isCurried", type->isCurried());
     json.key("location");
     serializeLocation(json, type->loc);
     json.endObject();
