@@ -50,6 +50,14 @@ struct LiveVariableTracker {
 
     /// @brief Mark a variable as consumed.
     /// @param decl The variable declaration.
+    /// @note This is genuine ownership-transfer bookkeeping (move, await,
+    ///       join, ...) — it must NOT be called as a side effect of
+    ///       *emitting* cleanup IR (see CodeGenContext::emitCleanupForTracker
+    ///       and emitUnwindTo). A tracker can be read by more than one
+    ///       divergent exit edge before its scope truly ends (e.g. an early
+    ///       `return` inside an `if`, with more code following the `if` in
+    ///       the same enclosing block); mutating it as a side effect of one
+    ///       edge's cleanup would corrupt bookkeeping for the other edge.
     void markConsumed(ValueDeclAST* decl) {
         if (!decl) return;
         alive.erase(decl);

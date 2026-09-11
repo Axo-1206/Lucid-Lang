@@ -634,7 +634,14 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     llvm::Function* func = ctx.getCurrentFunction();
     assert(func && "Return statement outside of function");
 
-    llvm::Type* returnType = func->getReturnType();
+    // ─── Determine the type this statement is actually producing ─────────
+    // Normally func->getReturnType() is correct. But when a caller has
+    // installed a unified exit block (ctx.returnBlock != nullptr — used by
+    // lowerErasedFunctionBody for @[erased] functions), func's declared
+    // return type is the ABI-transformed type (e.g. TaggedSlot* for the
+    // erased ABI), NOT what this return statement's expression produces.
+    // ctx.returnValueType carries the real (concrete) type in that case.
+    llvm::Type* returnType = ctx.returnBlock ? ctx.returnValueType : func->getReturnType();
 
     // ─── Check if this is the main function ──────────────────────────────
     bool isMain = false;
@@ -652,8 +659,9 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
         ctx.builder.CreateCall(shutdownFn, {});
     }
 
+    llvm::Value* returnVal = nullptr;
     if (stmt->value) {
-        llvm::Value* returnVal = lowerExpression(stmt->value, ctx);
+        returnVal = lowerExpression(stmt->value, ctx);
         if (!returnVal) return;
 
         if (stmt->value->isLValue) {
@@ -680,7 +688,22 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
                 returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
             }
         }
+    }
 
+    // ─── Unified-exit mode: stash + branch instead of ret directly ───────
+    // Lets one caller-installed exit block do ABI-specific work (e.g.
+    // boxing into a TaggedSlot for @[erased]) exactly once, no matter how
+    // many return sites the body has (early returns in if/match/loops all
+    // funnel through here).
+    if (ctx.returnBlock) {
+        if (returnVal && ctx.returnValueAlloca) {
+            ctx.builder.CreateStore(returnVal, ctx.returnValueAlloca);
+        }
+        ctx.builder.CreateBr(ctx.returnBlock);
+        return;
+    }
+
+    if (returnVal) {
         ctx.builder.CreateRet(returnVal);
     } else {
         assert(returnType->isVoidTy() && "Void return in non-void function");

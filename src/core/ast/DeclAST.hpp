@@ -228,7 +228,58 @@ struct FuncDeclAST : ValueDeclAST {
     ArenaSpan<CapturedVariable> captures;
     bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
     bool isReturned = false;    /// True if this function is returned from its parent
-    
+
+    /// ─── Closure View (set by Sema during capture analysis) ────────────────
+    /// When this function captures variables from outer scopes
+    /// (`hasClosure == true`), Sema synthesizes an AnonFuncExprAST that
+    /// shares this function's funcType, body, and captures, and stores it
+    /// here. CodeGen reads it and hands it to lowerClosure — lowerClosure's
+    /// signature accepts AnonFuncExprAST*, and CodeGen has no arena to
+    /// allocate one.
+    ///
+    /// ─── Invariants ────────────────────────────────────────────────────────
+    ///   - `closureView != nullptr` iff `hasClosure == true`.
+    ///   - `closureView->funcType  == this->funcType`
+    ///   - `closureView->body      == this->body`
+    ///   - `closureView->captures` is the same ArenaSpan as `this->captures`
+    ///     (pointer-equal, not a copy — see below).
+    ///   - `closureView->hasClosure == true`
+    ///   - `closureView->isReturned == this->isReturned` at synthesis time
+    ///     (may diverge later if `isReturned` changes; CodeGen does not read
+    ///     it from the view).
+    ///
+    /// ─── Why "View" and Not "SynthesizedNode" ──────────────────────────────
+    /// The name reflects that this is a *view* of the same logical closure
+    /// data, shaped for a different consumer:
+    ///   - The FuncDeclAST remains the source of truth.
+    ///   - The view shares the underlying CapturedVariable span with the
+    ///     FuncDeclAST — there is exactly one capture list, reachable from
+    ///     either node.
+    ///   - Only the CodeGen output slots on the view (closureFunction,
+    ///     environmentType, llvmValue) are distinct, because they belong to
+    ///     the lowering, not the declaration.
+    ///
+    /// ─── Why Sema Builds It (Not CodeGen) ──────────────────────────────────
+    /// CodeGen has no ASTArena — AST nodes are allocated by the parser and
+    /// Sema. Sema has the arena, and it is already walking the exact captures
+    /// at exactly the right moment (in analyzeCaptures, below). Building the
+    /// view here avoids plumbing an arena into CodeGenContext, which would
+    /// break the "AST is immutable after Sema" invariant.
+    ///
+    /// ─── Generic Instantiation Caveat ──────────────────────────────────────
+    /// createInstantiatedFunction (in sema/context/Generic.cpp) currently
+    /// does NOT propagate closureView across instantiation. A specialized
+    /// generic function whose template captured will end up with
+    /// `hasClosure == true` and `closureView == nullptr`. CodeGen's
+    /// lowerNormalFunctionDecl treats this as an unsupported case and emits
+    /// a clear diagnostic (task 1.2b). Handling capturing generics is a
+    /// follow-up phase.
+    ///
+    /// @see analyzeCaptures(FuncDeclAST*, SemaContext&) in
+    ///      src/sema/support/CaptureAnalysis.cpp
+    /// @see lowerNormalFunctionDecl in src/codegen/CodeGenDecl.cpp
+    AnonFuncExprAST* closureView = nullptr;
+
     // ─── Type-Erased Generic Support (only used when isErased == true) ──
     /// @brief The erased function name for type-erased generics (@[erased]).
     InternedString erasedName;

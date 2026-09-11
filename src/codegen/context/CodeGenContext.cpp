@@ -151,7 +151,7 @@ llvm::Function* CodeGenContext::getOrInsertFunction(const std::string& name, llv
 
 // ─── Live Variable Helpers ────────────────────────────────────────────────
 
-void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
+void CodeGenContext::emitCleanupForTracker(const LiveVariableTracker& tracker) {
     if (!getCurrentFunction()) return;
 
     // ─── Phase 1: user #scope_exit callbacks ──────────────────────────
@@ -163,6 +163,15 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
     }
 
     // ─── Phase 2: implicit cleanup ──────────────────────────────────────
+    // NOTE: this is intentionally read-only w.r.t. `tracker`. It used to
+    // call tracker.markConsumed(decl) after releasing each resource, but
+    // that mutated the tracker in place — which is only safe if this call
+    // is the tracker's ONE true, structural close (popLiveScope). It is
+    // also called non-destructively by emitUnwindTo for early-exit edges
+    // (return/break/continue) that do NOT own the tracker's lifetime, so
+    // it must never leave a visible mark on it. Each call site (a single
+    // basic block, emitted once during codegen) only ever runs this once
+    // for itself, so no in-tracker idempotency bookkeeping is needed here.
     llvm::Function* releaseFn = getRuntimeFn(RuntimeFn::ReleaseEnv);
     llvm::Function* freeFn = getRuntimeFn(RuntimeFn::Free);
     std::vector<ValueDeclAST*> declarations = tracker.getAliveVariables();
@@ -198,8 +207,6 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
                 builder.CreateCall(releaseFn, {envPtr});
                 builder.CreateBr(continueBlock);
                 builder.SetInsertPoint(continueBlock);
-
-                tracker.markConsumed(decl);
             }
             continue;
         }
@@ -224,8 +231,6 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
                     builder.CreateCall(freeFn, {dataPtr});
                     builder.CreateBr(continueBlock);
                     builder.SetInsertPoint(continueBlock);
-
-                    tracker.markConsumed(decl);
                 }
             }
             continue;
@@ -247,7 +252,6 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
                     }
 
                     if (isStaticString) {
-                        tracker.markConsumed(decl);
                         continue;
                     }
 
@@ -263,8 +267,6 @@ void CodeGenContext::emitCleanupForTracker(LiveVariableTracker& tracker) {
                     builder.CreateCall(freeFn, {dataPtr});
                     builder.CreateBr(continueBlock);
                     builder.SetInsertPoint(continueBlock);
-
-                    tracker.markConsumed(decl);
                 }
             }
             continue;
@@ -276,21 +278,24 @@ void CodeGenContext::emitUnwindTo(size_t targetDepth) {
     if (!getCurrentFunction()) {
         return;
     }
-    
+
     // ─── Guard against invalid target depth ──────────────────────────────
     if (targetDepth >= liveTrackers.size()) {
         return;
     }
-    
+
     // ─── Unwind scopes ────────────────────────────────────────────────────
-    while (liveTrackers.size() > targetDepth) {
-        LiveVariableTracker& tracker = liveTrackers.back();
-        
-        // Emit cleanup (scope_exit callbacks + implicit cleanup)
-        emitCleanupForTracker(tracker);
-        
-        // Pop the scope
-        liveTrackers.pop_back();
+    // Non-destructive: emit cleanup for each scope from innermost down to
+    // (but not including) targetDepth, using a snapshot of whatever is
+    // currently alive in it — but do NOT pop or mutate liveTrackers. This
+    // is one divergent exit edge (the return/break/continue statement that
+    // called us); it does not own these scopes' lifetimes. Only each
+    // tracker's own structurally-paired popLiveScope() call — reached when
+    // its owning lowerBlockStmt/lowerFunctionBody/loop frame actually
+    // finishes — may remove it from the stack. See the doc comment on this
+    // function's declaration in CodeGenContext.hpp for the full rationale.
+    for (size_t i = liveTrackers.size(); i > targetDepth; --i) {
+        emitCleanupForTracker(liveTrackers[i - 1]);
     }
 }
 

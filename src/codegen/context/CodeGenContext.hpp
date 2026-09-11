@@ -167,7 +167,18 @@ struct CodeGenContext {
     
     // ─── Current Function ───────────────────────────────────────────────
     llvm::Function* currentFunction = nullptr;
+
+    // ─── Unified Exit Block (for ABI transforms like @[erased] boxing) ───
+    // When returnBlock is non-null, lowerReturnStmt stores the return value
+    // into returnValueAlloca (typed as returnValueType, NOT necessarily
+    // func->getReturnType()) and branches to returnBlock instead of
+    // emitting `ret` directly. This lets a single caller-installed exit
+    // block do ABI-specific work (e.g. boxing into a TaggedSlot for
+    // @[erased] functions) exactly once, regardless of how many return
+    // sites exist in the body. See lowerErasedFunctionBody.
     llvm::BasicBlock* returnBlock = nullptr;
+    llvm::Value* returnValueAlloca = nullptr;
+    llvm::Type*  returnValueType   = nullptr;
 
     // ─── Null Coalesce Context Stack ──────────────────────────────────
     struct NullCoalesceContext {
@@ -304,12 +315,29 @@ struct CodeGenContext {
     /// @brief Emit cleanup for exactly one tracker, in two ordered phases:
     ///   1. User #scope_exit callbacks (BEFORE implicit cleanup)
     ///   2. Implicit cleanup (closure releases, array frees, string frees)
-    void emitCleanupForTracker(LiveVariableTracker& tracker);
+    /// @note Read-only w.r.t. the tracker: does NOT mark anything consumed
+    ///       and does NOT remove the tracker from ctx.liveTrackers. Callers
+    ///       decide separately whether the tracker's scope is actually done
+    ///       (popLiveScope) or whether this is just one of possibly several
+    ///       divergent exit edges through it (emitUnwindTo) — see the note
+    ///       on emitUnwindTo below for why that distinction matters.
+    void emitCleanupForTracker(const LiveVariableTracker& tracker);
 
     /// @brief Pop the current live scope and emit cleanup.
+    /// @note If the current block already ends in a terminator, this
+    ///       scope's cleanup was already emitted by whatever produced that
+    ///       terminator: return/break/continue all call emitUnwindTo
+    ///       (non-destructively) through this depth before creating their
+    ///       own terminator. Emitting again here would insert instructions
+    ///       after a terminator (invalid IR) and double-release resources.
+    ///       We still pop — this scope truly is done on this path — we
+    ///       just skip the redundant emission.
     void popLiveScope() {
         if (!liveTrackers.empty()) {
-            emitCleanupForTracker(liveTrackers.back());
+            llvm::BasicBlock* block = builder.GetInsertBlock();
+            if (!block || !block->getTerminator()) {
+                emitCleanupForTracker(liveTrackers.back());
+            }
             liveTrackers.pop_back();
         }
     }
@@ -350,6 +378,28 @@ struct CodeGenContext {
     ///   - `break` exits a loop (unwind to the loop's scope depth)
     ///   - `continue` jumps to next iteration (unwind to loop body's scope depth)
     ///   - `return` exits the function (unwind to scope 0)
+    ///
+    /// @note DELIBERATELY NON-DESTRUCTIVE. This does NOT pop from
+    ///       liveTrackers and does NOT mutate the trackers it cleans up
+    ///       (see emitCleanupForTracker). A return/break/continue is only
+    ///       ONE of possibly several divergent exit edges out of the scopes
+    ///       it's unwinding through — e.g. `if (cond) { return x; }` followed
+    ///       by more code in the same enclosing block. That later code is
+    ///       reached via a *different* basic block, but still needs those
+    ///       same enclosing scopes' trackers intact: to keep registering
+    ///       new declarations (markAlive) correctly, and so their OWN
+    ///       eventual natural close (popLiveScope, reached only via that
+    ///       other edge) still emits cleanup for whatever's alive on ITS
+    ///       path. Popping or mutating a tracker here previously caused
+    ///       cleanup to be silently dropped for sibling code (a leak), and
+    ///       for `break`/`continue` (which unwind to a non-zero depth,
+    ///       leaving the stack non-empty) could cause a LATER structurally
+    ///       -paired popLiveScope() to pop the wrong (ancestor) tracker
+    ///       instead — running that ancestor's cleanup early, inside a loop,
+    ///       on the taken-break path, which can free a resource the
+    ///       function is still using afterward (use-after-free). Only the
+    ///       tracker's own structurally-paired popLiveScope() may ever
+    ///       remove it from liveTrackers.
     void emitUnwindTo(size_t targetDepth);
     
     // ─── Resource Reassignment Helper ─────────────────────────────────────

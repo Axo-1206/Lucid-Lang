@@ -15,6 +15,7 @@
 ///   - If it was @[erased], it has erasedName and will be lowered as TaggedSlot
 
 #include "CodeGen.hpp"
+#include "codegen/runtime/closure/CodeGenClosure.hpp"
 #include "types/CodeGenType.hpp"
 #include "generic/CodeGenGeneric.hpp"
 #include "support/CodeGenAlloca.hpp"
@@ -283,15 +284,95 @@ void lowerGenericFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
 }
 
 void lowerNormalFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
-    // ─── 1. Get the mangled name ────────────────────────────────────────
+    // ─── 0. Idempotency guard ───────────────────────────────────────────
+    // If this function was already lowered, skip. For a non-capturing
+    // function, ctx.lookupFunction(decl) holds the bare prototype; for a
+    // capturing function, ctx.hasValue(decl) holds the fat pointer. Check
+    // both so the guard fires in either case.
+    if (ctx.lookupFunction(decl) || ctx.hasValue(decl)) {
+        Trace::detail("Function '", ctx.pool.lookup(decl->name),
+                      "' already lowered, skipping");
+        return;
+    }
+
+    // ─── 1. Capturing function: route through lowerClosure ──────────────
+    // A capturing named function is a closure. Its value is a
+    // { func, env } fat pointer, not a bare llvm::Function. lowerClosure
+    // is the single place that builds a correct closure value; route
+    // through it instead of duplicating the environment allocation,
+    // capture binding, and fat-pointer construction here.
+    //
+    // See src/codegen/support/CodeGenOwnership.hpp for the ownership
+    // model that governs the resulting fat pointer, and
+    // FuncDeclAST::closureView for why Sema synthesizes the node
+    // lowerClosure accepts.
+    if (decl->hasClosure) {
+        // ─── 1a. Closure view presence check ────────────────────────────
+        // A capturing function must have a closure view: Sema synthesizes
+        // one in analyzeCaptures whenever captures are found. If it's
+        // missing here, the function is likely a specialized generic
+        // instantiation (Sema's createInstantiatedFunction does not
+        // propagate closureView across instantiation yet), or there's a
+        // Sema bug. Either way, refuse to compile rather than silently
+        // miscompile.
+        AnonFuncExprAST* view = decl->closureView;
+        if (!view) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
+                "capturing function '", ctx.pool.lookup(decl->name),
+                "' has no closure view — "
+                "capturing generic functions are not yet supported, "
+                "or Sema failed to synthesize the view");
+            return;
+        }
+
+        // ─── 1b. Lower through lowerClosure ─────────────────────────────
+        // lowerClosure does the real work:
+        //   - builds the environment struct type from view->captures
+        //   - creates the closure function (env as first param)
+        //   - allocates the env via __lucid_alloc_env
+        //   - stores each captured variable into its env slot
+        //   - constructs the { func, env } fat pointer
+        //
+        // The env allocation and capture stores are emitted at the
+        // current insertion point, which is inside the enclosing
+        // function's body (for a nested function) — this is correct:
+        // each call to the enclosing function must produce a fresh env.
+        llvm::Value* closureValue = lowerClosure(view, ctx);
+        if (!closureValue) {
+            // lowerClosure already emitted a diagnostic; nothing more to do.
+            return;
+        }
+
+        // ─── 1c. Store the fat pointer ──────────────────────────────────
+        // ctx.storeValue puts the closure value into ctx.values[decl],
+        // which is what lowerIdentifierExpr reads (task 1.4) and what
+        // emitCleanupForTracker's emitRelease path walks.
+        //
+        // Note: ctx.functions[decl] is deliberately NOT set for a
+        // capturing function. The two maps have different value types
+        // (ctx.functions holds llvm::Function*, ctx.values holds
+        // llvm::Value*), and the closure value is a struct, not a
+        // function. Keeping the maps' contents disjoint by category
+        // makes the idempotency guard and lookup logic unambiguous.
+        ctx.storeValue(decl, closureValue);
+
+        Trace::detail("Lowered capturing function '",
+                      ctx.pool.lookup(decl->name),
+                      "' as a closure (",
+                      decl->captures.size(), " captures)");
+        return;
+    }
+
+    // ─── 2. Non-capturing: bare-function path (unchanged) ──────────────
+
+    // ─── 2.1. Get the mangled name ──────────────────────────────────────
     std::string funcName = ctx.pool.lookup(decl->mangledName);
     if (funcName.empty()) {
         funcName = ctx.pool.lookup(decl->name);
     }
 
-    // ─── 2. Build the LLVM function type ────────────────────────────────
-    bool hasClosure = decl->hasClosure;
-    llvm::FunctionType* fnType = getFunctionType(ctx, decl->funcType, hasClosure);
+    // ─── 2.2. Build the LLVM function type ──────────────────────────────
+    llvm::FunctionType* fnType = getFunctionType(ctx, decl->funcType, false);
     if (!fnType) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
                                 "function '", ctx.pool.lookup(decl->name),
@@ -299,13 +380,13 @@ void lowerNormalFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── 3. Determine linkage ───────────────────────────────────────────
+    // ─── 2.3. Determine linkage ─────────────────────────────────────────
     llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::InternalLinkage;
     if (isExported(decl, ctx)) {
         linkage = llvm::GlobalValue::ExternalLinkage;
     }
 
-    // ─── 4. Create the LLVM function ────────────────────────────────────
+    // ─── 2.4. Create the LLVM function ──────────────────────────────────
     llvm::Function* func = llvm::Function::Create(
         fnType,
         linkage,
@@ -315,12 +396,8 @@ void lowerNormalFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     decl->llvmFunction = func;
     ctx.storeFunction(decl, func);
 
-    // ─── 5. Name the parameters for debugging ───────────────────────────
+    // ─── 2.5. Name the parameters for debugging ─────────────────────────
     size_t argIdx = 0;
-    if (hasClosure) {
-        func->getArg(argIdx++)->setName("env");
-    }
-
     FuncTypeAST* paramTypeIter = decl->funcType;
     while (paramTypeIter) {
         for (ParamAST* param : paramTypeIter->params) {
@@ -343,6 +420,27 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
 
     // ─── Foreign functions have no body ─────────────────────────────────
     if (decl->isForeignFunction) return;
+
+    // ─── Capturing functions: body was lowered by lowerClosure ──────────
+    // A capturing named function's body is lowered into a separate
+    // closure function by lowerClosure, called from
+    // lowerNormalFunctionDecl. The body's IR belongs in that closure
+    // function (which takes env as its first parameter), not in a bare
+    // function with the same mangled name.
+    //
+    // Note the !decl->isErased guard. An @[erased] generic function can
+    // have hasClosure == true (if it captures), and its body must still
+    // go through lowerErasedFunctionBody — the erased ABI's tagged-slot
+    // boxing has to be applied to the body regardless of whether the
+    // function captures. Capturing erased generics are Phase 4 territory;
+    // until then, we let them through to the existing (broken but
+    // not-worse) erased body path rather than skipping them entirely.
+    if (decl->hasClosure && !decl->isErased) {
+        Trace::detail("Skipping body lowering for capturing function '",
+                      ctx.pool.lookup(decl->name),
+                      "' (body lowered by lowerClosure)");
+        return;
+    }
 
     // ─── Dispatch based on generic status ───────────────────────────────
     if (isGenericFunction(decl)) {
@@ -367,6 +465,184 @@ void lowerGenericFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
     lowerErasedFunctionBody(decl, erasedFunc, ctx);
+}
+
+/// @brief Lower the body of a type-erased generic function.
+///
+/// ─── Erased Function ABI ────────────────────────────────────────────────
+/// An @[erased] function takes all parameters as TaggedSlot* and returns a
+/// TaggedSlot* (or void). The body generated here:
+///
+///   1. Reads each TaggedSlot* parameter (the slot struct, not the payload).
+///   2. Unboxes the payload from each slot into its concrete LLVM type.
+///   3. Runs the original function body against those concrete values.
+///   4. Boxes the return value back into a fresh TaggedSlot*.
+///
+/// ─── Why Unbox Here, Not at Every Call Site ─────────────────────────────
+/// The call-site side of erased dispatch (lowerCallExpr / lowerModuleAccessExpr)
+/// already boxes arguments into TaggedSlots before the call. This function
+/// is the matching receiver: it unpacks once, at the top of the erased
+/// function body, so the rest of the body can be lowered exactly like a
+/// normal function body would be — with concrete values in concrete allocas.
+void lowerErasedFunctionBody(
+    FuncDeclAST* decl,
+    llvm::Function* func,
+    CodeGenContext& ctx
+) {
+    if (!decl || !func) return;
+    if (!func->empty()) return;   // already lowered
+
+    llvm::LLVMContext& C = ctx.llvmCtx;
+
+    // ─── 1. Set up the entry block ───────────────────────────────────────
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(C, "entry", func);
+    ctx.builder.SetInsertPoint(entry);
+
+    // ─── 2. Save the previous function context ───────────────────────────
+    llvm::Function* prevFunc = ctx.currentFunction;
+    llvm::Value*    prevEnv  = ctx.currentEnvPtr;
+    ctx.currentFunction = func;
+
+    // ─── 3. Push a live scope for the function body ──────────────────────
+    ctx.pushLiveScope();
+
+    // ─── 4. Handle closure environment (same as normal body) ─────────────
+    size_t argIdx = 0;
+    if (decl->hasClosure) {
+        ctx.currentEnvPtr = func->getArg(argIdx++);
+    }
+
+    // ─── 5. Unbox each TaggedSlot* parameter into a concrete alloca ──────
+    // The concrete type comes from the ParamAST's declared type. For a
+    // generic parameter T, the declared type is the NamedTypeAST referring
+    // to the GenericParamDeclAST — which has no LLVM lowering on its own.
+    //
+    // That is exactly why @[erased] functions cannot use #sizeof(T) etc. —
+    // the erased body has no way to reconstruct T's concrete layout. But
+    // the body can still pass T's slot around opaquely, and if it never
+    // needs T's concrete representation, the erased lowering works.
+    //
+    // For now: unbox to i8* (opaque) for generic-parameter params, and to
+    // the concrete type for fully concrete params. This matches the
+    // "opaque pass-through" restriction Sema enforces.
+    FuncTypeAST* paramIter = decl->funcType;
+    while (paramIter) {
+        for (ParamAST* param : paramIter->params) {
+            if (argIdx >= func->arg_size()) break;
+
+            llvm::Value* slotArg = func->getArg(argIdx++);
+
+            // Determine the concrete (or opaque) LLVM type for this param.
+            llvm::Type* concreteType = nullptr;
+            if (param->type && !isGenericParameterType(param->type)) {
+                concreteType = getType(ctx, param->type);
+            }
+            if (!concreteType) {
+                // Generic parameter T — treat as opaque.
+                concreteType = llvm::PointerType::get(C, 0);
+            }
+
+            // Unbox: read the payload pointer out of the slot, bitcast to
+            // concreteType, and store in an alloca.
+            llvm::Value* payloadPtr = nullptr;
+            if (slotArg->getType()->isPointerTy()) {
+                // Slot is a { i8 tag, i8* value } struct, loaded via the
+                // CodeGenContext's unbox helper. For a generic parameter,
+                // the payload is *already* an i8* the caller boxed, so the
+                // unbox target is i8* and the result is the payload pointer
+                // itself (no extra load).
+                if (isGenericParameterType(param->type)) {
+                    payloadPtr = ctx.unboxFromTaggedSlot(
+                        slotArg,
+                        llvm::PointerType::get(C, 0)
+                    );
+                    // unboxFromTaggedSlot with a pointer target returns the
+                    // bitcast payload directly; that's what we want here.
+                } else {
+                    payloadPtr = ctx.unboxFromTaggedSlot(slotArg, concreteType);
+                }
+            } else {
+                // Defensive: the erased ABI is expected to pass slot pointers.
+                payloadPtr = slotArg;
+            }
+
+            // Alloca + store, matching the normal-param lowering shape.
+            llvm::AllocaInst* alloca = ctx.builder.CreateAlloca(
+                concreteType, nullptr, ctx.pool.lookup(param->name)
+            );
+            ctx.builder.CreateStore(payloadPtr, alloca);
+            param->llvmAlloca = alloca;
+            ctx.storeValue(param, alloca);
+        }
+        paramIter = paramIter->getNext();
+    }
+
+    // ─── 6. Install a unified exit block for this body ────────────────────
+    // The erased ABI returns TaggedSlot* (or void), but the body's `return`
+    // statements produce the concrete type. Rather than intercepting every
+    // `ret` the body might emit (fragile — early returns in if/match/loops
+    // each end in their own block), lowerReturnStmt is routed through this
+    // single exit block whenever ctx.returnBlock is set: every return site
+    // stores its (already-cast-to-concrete) value into returnValueAlloca
+    // and branches here instead of emitting `ret` directly. That makes
+    // this the ONE place that needs to know about boxing, regardless of
+    // how many return statements or how deeply nested they are.
+    llvm::Type* concreteRetType = decl->funcType->returnType
+        ? getType(ctx, decl->funcType->returnType)
+        : nullptr;
+
+    llvm::BasicBlock* exitBlock = createBlock("erased.exit", ctx);
+
+    llvm::BasicBlock* prevReturnBlock  = ctx.returnBlock;
+    llvm::Value*      prevReturnAlloca = ctx.returnValueAlloca;
+    llvm::Type*       prevReturnType   = ctx.returnValueType;
+
+    ctx.returnBlock     = exitBlock;
+    ctx.returnValueType = concreteRetType ? concreteRetType : llvm::Type::getVoidTy(C);
+    ctx.returnValueAlloca = concreteRetType
+        ? createAlloca("erased.retslot", concreteRetType, ctx)
+        : nullptr;
+
+    // ─── 6b. Lower the body using the normal statement machinery ─────────
+    // Every `return`, at any nesting depth, now funnels into exitBlock
+    // instead of emitting `ret` directly (see lowerReturnStmt).
+    if (decl->body) {
+        if (decl->body->isa<BlockStmtAST>()) {
+            lowerBlockStmt(decl->body->as<BlockStmtAST>(), ctx);
+        } else if (decl->body->isa<ReturnStmtAST>()) {
+            lowerReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
+        }
+    }
+
+    // Fallthrough (a path with no explicit return) also needs to reach
+    // the exit block.
+    if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.builder.CreateBr(exitBlock);
+    }
+
+    // ─── 7. Exit block: the ONE place that boxes and emits the real ret ──
+    ctx.builder.SetInsertPoint(exitBlock);
+    if (concreteRetType) {
+        llvm::Value* retVal = ctx.builder.CreateLoad(concreteRetType, ctx.returnValueAlloca);
+        llvm::Value* boxed  = ctx.boxIntoTaggedSlot(retVal, 1u, concreteRetType);
+        ctx.builder.CreateRet(boxed);
+    } else {
+        ctx.builder.CreateRetVoid();
+    }
+
+    ctx.returnBlock       = prevReturnBlock;
+    ctx.returnValueAlloca = prevReturnAlloca;
+    ctx.returnValueType   = prevReturnType;
+
+    // ─── 8. Pop the function scope (emits cleanup) ───────────────────────
+    ctx.popLiveScope();
+
+    // ─── 9. Restore the previous function context ────────────────────────
+    ctx.currentFunction = prevFunc;
+    ctx.currentEnvPtr   = prevEnv;
+
+    Trace::detail("Lowered @[erased] body of function '",
+                  ctx.pool.lookup(decl->name), "'");
 }
 
 void lowerNormalFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {

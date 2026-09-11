@@ -1013,10 +1013,34 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
         func->captures = builder.build();
         func->hasClosure = true;
 
+        // ─── Synthesize the closure view ─────────────────────────────────
+        // CodeGen's lowerClosure accepts AnonFuncExprAST, not FuncDeclAST,
+        // and CodeGen has no arena to allocate one. Build the view here,
+        // where the arena is available and the captures were just computed.
+        //
+        // The view shares this function's funcType, body, and captures —
+        // only the CodeGen output slots (closureFunction, environmentType,
+        // llvmValue) are distinct, and those are default-initialized to
+        // nullptr by AnonFuncExprAST's constructor.
+        //
+        // Note that `func->captures` is already assigned above, so
+        // `view->captures = func->captures` copies the same ArenaSpan
+        // (pointer + size), not the underlying CapturedVariable array. There
+        // is exactly one capture list; both nodes point at it.
+        AnonFuncExprAST* view = ctx.arena.make<AnonFuncExprAST>(
+            func->funcType, func->body);
+        view->captures   = func->captures;
+        view->hasClosure = true;
+        view->isReturned = func->isReturned;
+        view->loc        = func->loc;
+        func->closureView = view;
+
         Trace::detail("analyzeCaptures: function '", ctx.pool.lookup(func->name),
-                 "' captures ", func->captures.size(), " variables");
+                 "' captures ", func->captures.size(), " variables",
+                 " (closure view synthesized)");
     } else {
         func->hasClosure = false;
+        func->closureView = nullptr;   // explicit: no captures means no view
         Trace::detail("analyzeCaptures: no captures detected for function '",
                  ctx.pool.lookup(func->name), "'");
     }

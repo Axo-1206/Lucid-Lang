@@ -4,6 +4,7 @@
 #include "CodeGen.hpp"
 #include "core/ASTStrings.hpp"
 #include "support/CodeGenAlloca.hpp"
+#include "support/CodeGenCategory.hpp"
 #include "support/CodeGenHelpers.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/ArenaHelpers.hpp"
@@ -364,11 +365,38 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
 
     if (decl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        
-        // ─── Use the generic resolution helper ──────────────────────────────
+
+        // ─── Capturing function: fat pointer in ctx.values ──────────────
+        // A capturing named function's value is a { func, env } fat
+        // pointer produced by lowerClosure in lowerNormalFunctionDecl. It
+        // lives in ctx.values, NOT ctx.functions — see the note in
+        // lowerNormalFunctionDecl for why the two maps are kept disjoint
+        // by category.
+        //
+        // Dispatch on the declaration's category, not on the LLVM value's
+        // shape, so a capturing function is always read from ctx.values
+        // regardless of what happened to be stored there.
+        if (isClosureCategory(categorizeFunction(funcDecl))) {
+            llvm::Value* closureVal = ctx.lookupValue(funcDecl);
+            if (!closureVal) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                    "capturing function '", ctx.pool.lookup(funcDecl->name),
+                    "' has no fat-pointer value in ctx.values — "
+                    "lowerNormalFunctionDecl should have stored it");
+                return nullptr;
+            }
+
+            // For a capturing function, the fat pointer is the value.
+            // No load is needed — ctx.values holds the SSA value directly
+            // (lowerClosure returns it; storeValue stores it).
+            expr->llvmValue = closureVal;
+            return closureVal;
+        }
+
+        // ─── Non-capturing: bare function via resolveGenericCall ────────
         llvm::Value* func = resolveGenericCall(funcDecl, expr->genericArgs, ctx, expr->loc);
         if (!func) return nullptr;
-        
+
         expr->llvmValue = func;
         return func;
     }
