@@ -115,40 +115,15 @@ bool containsGenericParameter(TypeAST* type, SemaContext& ctx) {
 }
 
 bool isTypeErasedGeneric(TypeAST* type, SemaContext& ctx) {
-    if (!type) return false;
-    
-    // ─── Step 1: Check if the type itself is a generic parameter ──────────
-    if (isGenericParameterType(type, ctx)) {
-        // Check if we're inside a generic declaration
-        DeclAST* genericDecl = getInnermostGenericDeclaration(ctx);
-        if (!genericDecl) return false;  // Not in a generic context
-        
-        // Check if the innermost generic declaration has @[erased]
-        bool isErased = isCurrentContextErased(ctx);
-        return isErased;  // Only true if explicitly @[erased]
-    }
-    
-    // ─── Step 2: Check if the type contains generic parameters ────────────
-    if (containsGenericParameter(type, ctx)) {
-        bool isErased = isCurrentContextErased(ctx);
-        return isErased;  // Only true if explicitly @[erased]
-    }
-    
+    (void)type;
+    (void)ctx;
     return false;
 }
 
 bool isConcreteType(TypeAST* type, SemaContext& ctx) {
     if (!type) return false;
-    
-    // If it's a generic parameter, it's not concrete
     if (isGenericParameterType(type, ctx)) return false;
-    
-    // If it contains generic parameters, it's not concrete
     if (containsGenericParameter(type, ctx)) return false;
-    
-    // If it's being used in a type-erased context, it's not concrete
-    if (isTypeErasedGeneric(type, ctx)) return false;
-    
     return true;
 }
 
@@ -174,23 +149,7 @@ DeclAST* getInnermostGenericDeclaration(SemaContext& ctx) {
 }
 
 bool isCurrentContextErased(SemaContext& ctx) {
-    BaseAST* innermost = ctx.getInnermostFunctionNode();
-    if (!innermost) {
-        // Check if we're inside a struct definition
-        TypeDeclAST* typeDecl = ctx.currentDefiningType();
-        if (typeDecl && typeDecl->isa<StructDeclAST>()) {
-            return typeDecl->as<StructDeclAST>()->isErased;
-        }
-        return false;
-    }
-    
-    if (innermost->isa<FuncDeclAST>()) {
-        return innermost->as<FuncDeclAST>()->isErased;
-    } else if (innermost->isa<AnonFuncExprAST>()) {
-        // Anonymous functions are always specialized (they're concrete)
-        return false;
-    }
-    
+    (void)ctx;
     return false;
 }
 
@@ -204,60 +163,38 @@ bool validateConcreteTypeForReflection(
     SemaContext& ctx,
     const std::string& intrinsicName
 ) {
-    if (!type) return false;
-    
-    // ─── Check: Is this a type-erased generic (@[erased])? ──────────────────
-    // This correctly allows #sizeof(T) by default and only rejects it
-    // when the context has @[erased].
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, intrinsicName, DiagCode::Sem_TypeErasedGenericReflection);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
+    (void)intrinsicName;
     return true;
 }
 
 bool validateConcreteTypeForSimd(TypeAST* type, BaseAST* node, SemaContext& ctx) {
-    if (!type) return false;
-    
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, "simd", DiagCode::Sem_TypeErasedGenericSimd);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
     return true;
 }
 
 bool validateConcreteTypeForAlloc(TypeAST* type, BaseAST* node, SemaContext& ctx) {
-    if (!type) return false;
-    
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, "alloc", DiagCode::Sem_TypeErasedGenericAlloc);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
     return true;
 }
 
 bool validateConcreteTypeForBitcast(TypeAST* type, BaseAST* node, SemaContext& ctx) {
-    if (!type) return false;
-    
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, "bitcast", DiagCode::Sem_TypeErasedGenericBitcast);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
     return true;
 }
 
 bool validateConcreteTypeForArenaAlloc(TypeAST* type, BaseAST* node, SemaContext& ctx) {
-    if (!type) return false;
-    
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, "arena::alloc", DiagCode::Sem_TypeErasedGenericAlloc);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
     return true;
 }
 
@@ -267,13 +204,10 @@ bool validateConcreteTypeForArenaSpace(
     SemaContext& ctx,
     const std::string& methodName
 ) {
-    if (!type) return false;
-    
-    if (isTypeErasedGeneric(type, ctx)) {
-        emitTypeErasedError(type, node, ctx, "arena::" + methodName, DiagCode::Sem_TypeErasedGenericAlloc);
-        return false;
-    }
-    
+    (void)type;
+    (void)node;
+    (void)ctx;
+    (void)methodName;
     return true;
 }
 
@@ -282,137 +216,9 @@ bool validateConcreteTypeForArenaSpace(
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool validateTypeErasedEligibility(DeclAST* decl, SemaContext& ctx) {
-    if (!decl) return false;
-    
-    // ─── Get generic parameter names ──────────────────────────────────────
-    std::unordered_set<InternedString> genericParamNames = getGenericParamNames(decl, ctx);
-    if (genericParamNames.empty()) {
-        return true;  // Not generic, always eligible
-    }
-    
-    // ─── Check if the declaration has @[erased] ────────────────────────────
-    bool isErased = false;
-    if (decl->isa<FuncDeclAST>()) {
-        isErased = decl->as<FuncDeclAST>()->isErased;
-    } else if (decl->isa<StructDeclAST>()) {
-        isErased = decl->as<StructDeclAST>()->isErased;
-    }
-    
-    // If it's not erased, it's always eligible (specialized by default)
-    if (!isErased) {
-        return true;
-    }
-    
-    bool hasForbiddenConstructs = false;
-    
-    // ─── Check trait bounds on generic parameters ────────────────────
-    // Grammar restriction: Trait bounds are forbidden on type-erased generics (@[erased])
-    if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        for (GenericParamDeclAST* param : funcDecl->genericParams) {
-            if (!param->constraints.empty()) {
-                // Build a list of trait names for the error message
-                std::string traitNames;
-                for (size_t i = 0; i < param->constraints.size(); ++i) {
-                    if (i > 0) traitNames += " + ";
-                    traitNames += ctx.pool.lookup(param->constraints[i]->name);
-                }
-                
-                ctx.diagnostics.error(DiagCode::Sem_TypeErasedGenericReflection, param,
-                                      "generic parameter '", ctx.pool.lookup(param->name),
-                                      "' has trait bound '", traitNames,
-                                      "' in type-erased context");
-                ctx.diagnostics.note(param,
-                                     "Trait bounds require specialization to resolve the concrete type");
-                ctx.diagnostics.note(param,
-                                     "Remove @[erased] from the enclosing function '",
-                                     ctx.pool.lookup(funcDecl->name), "'");
-                hasForbiddenConstructs = true;
-            }
-        }
-    } else if (decl->isa<StructDeclAST>()) {
-        StructDeclAST* structDecl = decl->as<StructDeclAST>();
-        for (GenericParamDeclAST* param : structDecl->genericParams) {
-            if (!param->constraints.empty()) {
-                // Build a list of trait names for the error message
-                std::string traitNames;
-                for (size_t i = 0; i < param->constraints.size(); ++i) {
-                    if (i > 0) traitNames += " + ";
-                    traitNames += ctx.pool.lookup(param->constraints[i]->name);
-                }
-                
-                ctx.diagnostics.error(DiagCode::Sem_TypeErasedGenericReflection, param,
-                                      "generic parameter '", ctx.pool.lookup(param->name),
-                                      "' has trait bound '", traitNames,
-                                      "' in type-erased context");
-                ctx.diagnostics.note(param,
-                                     "Trait bounds require specialization to resolve the concrete type");
-                ctx.diagnostics.note(param,
-                                     "Remove @[erased] from the enclosing struct '",
-                                     ctx.pool.lookup(structDecl->name), "'");
-                hasForbiddenConstructs = true;
-            }
-        }
-    }
-    
-    // ─── Check the body/fields for forbidden constructs ──────────────────
-    if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        if (funcDecl->body) {
-            if (containsForbiddenConstructs(funcDecl->body, genericParamNames, ctx)) {
-                hasForbiddenConstructs = true;
-            }
-        }
-        
-        // Check return type for Simd
-        if (funcDecl->funcType && funcDecl->funcType->returnType) {
-            if (typeContainsGenericParam(funcDecl->funcType->returnType, genericParamNames, ctx)) {
-                // Generic return type is allowed (pass-through)
-                // But check if it's Simd
-                if (funcDecl->funcType->returnType->isa<SimdTypeAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeErasedGenericSimd, funcDecl,
-                                          "Simd<", typeToString(funcDecl->funcType->returnType, ctx.pool),
-                                          ", N> cannot be used as a return type in a type-erased generic function");
-                    ctx.diagnostics.note(funcDecl,
-                                         "Remove @[erased] from the function to enable SIMD support");
-                    hasForbiddenConstructs = true;
-                }
-            }
-        }
-        
-    } else if (decl->isa<StructDeclAST>()) {
-        StructDeclAST* structDecl = decl->as<StructDeclAST>();
-        
-        for (FieldDeclAST* field : structDecl->fields) {
-            // Check field type for Simd
-            if (typeContainsGenericParam(field->type, genericParamNames, ctx)) {
-                if (field->type->isa<SimdTypeAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeErasedGenericSimd, field,
-                                          "Simd<", typeToString(field->type, ctx.pool),
-                                          ", N> cannot be used in a type-erased generic struct");
-                    ctx.diagnostics.note(field,
-                                         "Remove @[erased] from the struct to enable SIMD support");
-                    hasForbiddenConstructs = true;
-                }
-            }
-            
-            // Check default value
-            if (field->defaultVal) {
-                if (containsForbiddenConstructs(field->defaultVal, genericParamNames, ctx)) {
-                    hasForbiddenConstructs = true;
-                }
-            }
-            
-            // Check default body
-            if (field->defaultBody) {
-                if (containsForbiddenConstructs(field->defaultBody, genericParamNames, ctx)) {
-                    hasForbiddenConstructs = true;
-                }
-            }
-        }
-    }
-    
-    return !hasForbiddenConstructs;
+    (void)decl;
+    (void)ctx;
+    return true;
 }
 
 // ─── containsForbiddenConstructs ──────────────────────────────────────────
@@ -714,43 +520,9 @@ bool typeContainsGenericParam(TypeAST* type, const std::unordered_set<InternedSt
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool validateNestedGenericCompatibility(DeclAST* outerDecl, const ArenaSpan<TypeAST*>& typeArgs, SemaContext& ctx) {
-    if (!outerDecl || typeArgs.empty()) return true;
-    
-    // Check if the outer declaration is type-erased (@[erased])
-    bool outerIsErased = false;
-    if (outerDecl->isa<FuncDeclAST>()) {
-        outerIsErased = outerDecl->as<FuncDeclAST>()->isErased;
-    } else if (outerDecl->isa<StructDeclAST>()) {
-        outerIsErased = outerDecl->as<StructDeclAST>()->isErased;
-    }
-    
-    // If the outer is not erased (specialized by default), no restrictions
-    if (!outerIsErased) return true;
-    
-    // Outer is type-erased - check each type argument
-    for (TypeAST* arg : typeArgs) {
-        if (!arg) continue;
-        
-        if (arg->isa<NamedTypeAST>()) {
-            NamedTypeAST* namedArg = arg->as<NamedTypeAST>();
-            if (namedArg->resolvedDecl && namedArg->resolvedDecl->isa<StructDeclAST>()) {
-                StructDeclAST* innerStruct = namedArg->resolvedDecl->as<StructDeclAST>();
-                // If the inner struct is specialized (default), it's a shape mismatch
-                if (!innerStruct->isErased) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeErasedNestedMismatch, outerDecl,
-                                          "type-erased '", ctx.pool.lookup(outerDecl->name),
-                                          "' cannot use specialized inner type '",
-                                          ctx.pool.lookup(innerStruct->name), "'");
-                    ctx.diagnostics.note(outerDecl,
-                                         "Remove @[erased] from '", ctx.pool.lookup(outerDecl->name),
-                                         "' to use specialized types, or add @[erased] to '",
-                                         ctx.pool.lookup(innerStruct->name), "'");
-                    return false;
-                }
-            }
-        }
-    }
-    
+    (void)outerDecl;
+    (void)typeArgs;
+    (void)ctx;
     return true;
 }
 

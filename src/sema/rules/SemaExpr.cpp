@@ -491,21 +491,11 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
 
         FuncDeclAST* resolvedFunc = resolution.resolvedDecl->as<FuncDeclAST>();
 
-        if (resolution.isErased) {
-            // ─── Type-erased path (@[erased]) ──────────────────────────────────
-            // Keep the template. The CallExprAST will handle runtime dispatch.
-            // We store the generic args on the identifier for the call site.
-            expr->resolvedDecl = resolvedFunc;
-            // genericArgs remain on the identifier for the call site
-            declType = resolvedFunc->funcType;
-        } else {
-            // ─── Specialized path (default) ────────────────────────────────────
-            // Store specialized declaration and clear generic args
-            expr->resolvedDecl = resolvedFunc;
-            expr->genericArgs = {};  // Clear generic args - they're now in the specialized decl
-            decl = resolvedFunc;
-            declType = resolvedFunc->funcType;
-        }
+        // ─── Specialized path (the only path) ─────────────────────────────────
+        expr->resolvedDecl = resolvedFunc;
+        expr->genericArgs = {};
+        decl = resolvedFunc;
+        declType = resolvedFunc->funcType;
     } else {
         expr->resolvedDecl = decl;
         declType = decl->type;
@@ -963,18 +953,10 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
 
         FuncDeclAST* resolvedFunc = resolution.resolvedDecl->as<FuncDeclAST>();
 
-        if (resolution.isErased) {
-            // ─── Type-erased path (@[erased]): Keep template ────────────────
-            // The generic arguments remain on the ModuleAccessExprAST.
-            // The CallExprAST will use them to set isErasedCall.
-            expr->resolvedDecl = resolvedFunc;
-            declType = resolvedFunc->funcType;
-        } else {
-            // ─── Specialized path (default): Store specialized declaration ──
-            expr->resolvedDecl = resolvedFunc;
-            expr->genericArgs = {};  // Clear generic args - they're now in the specialized decl
-            declType = resolvedFunc->funcType;
-        }
+        // ─── Specialized path (the only path) ─────────────────────────────────
+        expr->resolvedDecl = resolvedFunc;
+        expr->genericArgs = {};
+        declType = resolvedFunc->funcType;
     }
 
     // ─── Step 8: Determine value state ──────────────────────────────────────
@@ -1591,7 +1573,6 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
 
     // ─── Step 2: Check and validate generic arguments ────────────────────
     StructDeclAST* targetStruct = structDecl;
-    bool isErased = false;
 
     if (!expr->genericArgs.empty()) {
         // ─── 2a. Check arity ─────────────────────────────────────────────
@@ -1654,7 +1635,6 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         }
 
         targetStruct = resolution.resolvedDecl->as<StructDeclAST>();
-        isErased = resolution.isErased;
     } else if (!structDecl->genericParams.empty()) {
         // ─── 2e. Struct has generic parameters but no arguments provided ──
         ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, expr,
@@ -1667,9 +1647,8 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Store resolved struct declaration and flags ───────────────
+    // ─── Step 3: Store resolved struct declaration ───────────────────────
     expr->resolvedDecl = targetStruct;
-    expr->isErased = isErased;
 
     // ─── Step 4: Build field map from target struct ────────────────────────
     std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
@@ -2206,41 +2185,18 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
     
     FuncDeclAST* funcDecl = nullptr;
     ArenaSpan<TypeAST*> genericArgs;
-    bool isErasedCall = false;
 
     if (expr->callee->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = expr->callee->as<IdentifierExprAST>();
         if (id->resolvedDecl && id->resolvedDecl->isa<FuncDeclAST>()) {
             funcDecl = id->resolvedDecl->as<FuncDeclAST>();
             genericArgs = id->genericArgs;
-            
-            // Read the cached state from the callee
-            // The callee already has resolvedDecl set to either:
-            //   - A specialized FuncDeclAST (default path)
-            //   - The template FuncDeclAST (if @[erased])
-            // 
-            // We determine isErasedCall by checking if this is a type-erased call:
-            //   - If the callee is the template AND it has generic args -> type-erased
-            //   - If the callee is specialized -> not generic
-            if (funcDecl && !funcDecl->genericParams.empty() && !genericArgs.empty()) {
-                // Check if this is a type-erased call (template kept)
-                if (funcDecl->isErased) {
-                    isErasedCall = true;
-                }
-            }
         }
     } else if (expr->callee->isa<ModuleAccessExprAST>()) {
         ModuleAccessExprAST* mod = expr->callee->as<ModuleAccessExprAST>();
         if (mod->resolvedDecl && mod->resolvedDecl->isa<FuncDeclAST>()) {
             funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
             genericArgs = mod->genericArgs;
-            
-            // Same logic as above
-            if (funcDecl && !funcDecl->genericParams.empty() && !genericArgs.empty()) {
-                if (funcDecl->isErased) {
-                    isErasedCall = true;
-                }
-            }
         }
     }
     
@@ -2383,12 +2339,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ct
         }
     }
 
-    // ─── Step 7: Store generic call info for type-erased path ──────────────
-    // isErasedCall is set to indicate that this is a type-erased call (@[erased]),
-    // which CodeGen may use to box arguments or handle dispatch differently.
-    expr->isErasedCall = isErasedCall;
-
-    // ─── Step 8: Propagate value state ──────────────────────────────────────
+    // ─── Step 7: Propagate value state ──────────────────────────────────────
     ValueState state;
     if (hasErrArg && isFallibleType(expectedReturnType)) {
         state = ValueState::Err;

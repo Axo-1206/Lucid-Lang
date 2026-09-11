@@ -10,24 +10,6 @@
 namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: Compute Erased Name
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Compute the erased name for a declaration in the type-erased path.
-/// @param decl The declaration (function or struct).
-/// @param ctx The semantic context.
-/// @return The erased name as an InternedString.
-static InternedString computeErasedName(DeclAST* decl, SemaContext& ctx) {
-    if (!decl) return InternedString(0);
-    
-    std::string path = getMangledModulePath(ctx);
-    std::string name = ctx.pool.lookup(decl->name);
-    std::string erasedName = path + "_" + name + "__erased";
-    
-    return ctx.pool.intern(erasedName);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Helper: Create a shell struct and register it in the cache
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -61,7 +43,6 @@ static StructDeclAST* createInstantiatedStructShell(
         templateDecl->traitRefs,                      // Traits are unchanged
         templateDecl->isPacked
     );
-    shell->isErased = false;  // This is a specialized instantiation (default)
     shell->mangledName = mangledName;
     shell->loc = templateDecl->loc;
 
@@ -150,7 +131,6 @@ static StructDeclAST* finalizeInstantiatedStruct(
         templateDecl->traitRefs,
         templateDecl->isPacked
     );
-    finalStruct->isErased = false;  // This is a specialized instantiation
     finalStruct->mangledName = shell->mangledName;
     finalStruct->loc = shell->loc;
 
@@ -197,7 +177,6 @@ static FuncDeclAST* createInstantiatedFunctionShell(
         nullptr,                                       // funcType (will be filled later)
         nullptr                                        // body (will be filled later)
     );
-    shell->isErased = false;  // This is a specialized instantiation (default)
     shell->mangledName = mangledName;
     shell->isForeignFunction = templateDecl->isForeignFunction;
     shell->isInline = templateDecl->isInline;
@@ -256,7 +235,6 @@ static FuncDeclAST* finalizeInstantiatedFunction(
         substitutedFuncType->as<FuncTypeAST>(),
         substitutedBody
     );
-    finalFunc->isErased = false;  // This is a specialized instantiation
     finalFunc->mangledName = shell->mangledName;
     finalFunc->isForeignFunction = shell->isForeignFunction;
     finalFunc->isInline = shell->isInline;
@@ -317,7 +295,6 @@ TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaCon
                     NamedTypeAST* newNamed = ctx.arena.make<NamedTypeAST>(named->name);
                     newNamed->genericArgs = subArgs;
                     newNamed->resolvedDecl = named->resolvedDecl;
-                    newNamed->isErased = named->isErased;  // Preserve erased flag
                     newNamed->loc = named->loc;
                     return newNamed;
                 }
@@ -647,7 +624,6 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             
             // ─── Copy semantic fields ──────────────────────────────────────────────
             // Note: genericArgs is NOT stored on CallExprAST - it's on the callee
-            newCall->isErasedCall = call->isErasedCall;
             newCall->loc = call->loc;
             
             return newCall;
@@ -703,7 +679,6 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
                 subInits
             );
             newStruct->resolvedDecl = structExpr->resolvedDecl;
-            newStruct->isErased = structExpr->isErased;
             newStruct->loc = structExpr->loc;
             return newStruct;
         }
@@ -1073,52 +1048,21 @@ GenericResolution resolveGenericInstantiation(
         }
     }
 
-    // ─── Check if this declaration has @[erased] ────────────────────────────
-    bool isErased = false;
+    // ─── Specialized path (default) ──────────────────────────────────────
     if (isFunction) {
-        isErased = templateDecl->as<FuncDeclAST>()->isErased;
-    } else {
-        isErased = templateDecl->as<StructDeclAST>()->isErased;
-    }
-
-    // ─── Branch: @[erased] vs specialized (default) ─────────────────────────
-    if (isErased) {
-        // ─── Type-erased path (@[erased]) ──────────────────────────────────────
-        // Keep the template and compute the erased name
-        result.resolvedDecl = templateDecl;
-        result.isErased = true;
-        
-        // Ensure the erased name is set
-        if (isFunction) {
-            FuncDeclAST* funcDecl = templateDecl->as<FuncDeclAST>();
-            if (!funcDecl->erasedName.isValid()) {
-                funcDecl->erasedName = computeErasedName(templateDecl, ctx);
-            }
-        } else {
-            StructDeclAST* structDecl = templateDecl->as<StructDeclAST>();
-            if (!structDecl->erasedName.isValid()) {
-                structDecl->erasedName = computeErasedName(templateDecl, ctx);
-            }
+        FuncDeclAST* instantiated = createInstantiatedFunction(
+            templateDecl->as<FuncDeclAST>(), typeArgs, ctx);
+        if (!instantiated) {
+            return result;
         }
+        result.resolvedDecl = instantiated;
     } else {
-        // ─── Specialized path (default) ──────────────────────────────────────
-        // Use the cache-aware creation functions
-        if (isFunction) {
-            FuncDeclAST* instantiated = createInstantiatedFunction(
-                templateDecl->as<FuncDeclAST>(), typeArgs, ctx);
-            if (!instantiated) {
-                return result;
-            }
-            result.resolvedDecl = instantiated;
-        } else {
-            StructDeclAST* instantiated = createInstantiatedStruct(
-                templateDecl->as<StructDeclAST>(), typeArgs, ctx);
-            if (!instantiated) {
-                return result;
-            }
-            result.resolvedDecl = instantiated;
+        StructDeclAST* instantiated = createInstantiatedStruct(
+            templateDecl->as<StructDeclAST>(), typeArgs, ctx);
+        if (!instantiated) {
+            return result;
         }
-        result.isErased = false;
+        result.resolvedDecl = instantiated;
     }
 
     return result;

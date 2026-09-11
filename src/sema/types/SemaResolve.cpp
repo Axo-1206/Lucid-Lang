@@ -237,17 +237,11 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             
             // Store the resolution result on the NamedTypeAST
             type->resolvedDecl = resolvedTypeDecl;
-            type->isErased = resolution.isErased;
-            
-            // Note: isSpecialized is implied by !isErased, but we keep it for clarity
-            // and backward compatibility. In the future, we can remove isSpecialized.
-            
             return type;
         }
         
         // Non-generic struct - just store the declaration
         type->resolvedDecl = structDecl;
-        type->isErased = false;
         return type;
     }
 
@@ -260,15 +254,8 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
         type->resolvedDecl = decl;
-        type->isErased = false;
-        return type;
     }
 
-    // ─── Step 5: Handle trait type (already validated) ─────────────────────
-    if (decl->isa<TraitDeclAST>()) {
-        type->resolvedDecl = decl;
-        return type;
-    }
 
     return type;
 }

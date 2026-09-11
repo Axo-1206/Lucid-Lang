@@ -342,14 +342,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
                               "' does not return a value on all paths");
     }
 
-    // ─── 12. Validate type-erased eligibility ONLY if @[erased] is present ──
-    // By default, generics are specialized, so eligibility checking is only
-    // needed when the user explicitly opts into type erasure with @[erased].
-    if (decl->isErased) {
-        validateTypeErasedEligibility(decl, ctx);
-    }
-
-    // ─── 13. Capture analysis (nested functions) ──────────────────────────
+    // ─── 12. Capture analysis (nested functions) ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(decl, ctx);
     }
@@ -564,14 +557,7 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 
-    // ─── 7. Validate type-erased eligibility ONLY if @[erased] is present ──
-    // By default, generics are specialized, so eligibility checking is only
-    // needed when the user explicitly opts into type erasure with @[erased].
-    if (decl->isErased) {
-        validateTypeErasedEligibility(decl, ctx);
-    }
-
-    // ─── 8. Generate mangled name ───────────────────────────────────────────
+    // ─── 7. Generate mangled name ───────────────────────────────────────────
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;

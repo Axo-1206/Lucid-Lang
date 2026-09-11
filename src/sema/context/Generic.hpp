@@ -53,15 +53,10 @@ struct GenericSubstitution {
 
 /// @brief Result of resolving a generic instantiation.
 /// 
-/// Contains either:
-///   - A specialized declaration (default path) with genericParams empty
-///   - The template declaration with an erased name (type-erased path, @[erased])
+/// Always resolves to the specialized declaration for the concrete type args.
 struct GenericResolution {
-    /// The resolved declaration (specialized or template).
+    /// The resolved declaration for the concrete instantiation.
     DeclAST* resolvedDecl = nullptr;
-    
-    /// True if this resolved to a type-erased declaration (@[erased] path).
-    bool isErased = false;
 };
 
 // ─── Type Substitution Helpers (declarations) ──────────────────────────────
@@ -80,21 +75,16 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 
 // ─── Generic Resolution (declaration) ─────────────────────────────────────
 
-/// @brief Resolve a generic instantiation, choosing between specialization and type-erasure.
+/// @brief Resolve a generic instantiation.
 /// 
-/// This is the SINGLE decision point for generic instantiation. It handles:
-///   - Arity validation
-///   - Specialized (default) vs type-erased (@[erased]) path selection
-///   - Specialized declaration creation (if needed)
+/// This is the single decision point for generic instantiation: validate
+/// arity, then create and return the specialized declaration for the concrete
+/// type arguments.
 /// 
 /// @param templateDecl The generic declaration (FuncDeclAST* or StructDeclAST*).
 /// @param typeArgs The concrete type arguments provided at the use site.
 /// @param ctx The semantic context.
-/// @return A GenericResolution containing the resolved declaration and strategy.
-/// 
-/// @note This function should be called ONCE per instantiation. Call sites
-///       should store the result on the AST node (e.g., resolvedDecl, isErased)
-///       rather than re-deriving it.
+/// @return A GenericResolution containing the resolved declaration.
 GenericResolution resolveGenericInstantiation(
     DeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,

@@ -153,7 +153,7 @@ struct SemaContext {
     TypeCache typeCache;
 
     // ─── Instantiation Cache ──────────────────────────────────────────────
-    /// @brief Cache for instantiated declarations (both specialized and erased).
+    /// @brief Cache for instantiated declarations.
     /// 
     /// Tracks both in-progress and completed instantiations to:
     ///   1. Prevent infinite recursion for self-referential types
@@ -161,11 +161,11 @@ struct SemaContext {
     /// 
     /// Key: (templateDecl, typeArgs) → instantiated DeclAST*
     /// 
-    /// For specialized (default) path: stores the specialized StructDeclAST/FuncDeclAST.
-    /// For erased (@[erased]) path: stores the template itself (no specialization needed).
+    /// All generic instantiations follow the specialization-only path: the cache
+    /// stores the specialized StructDeclAST/FuncDeclAST shell or finalized decl.
     /// 
-    /// IMPORTANT: For specialized path, a declaration is inserted BEFORE its fields
-    /// are substituted, breaking recursive cycles. This is the "register before recursing" pattern.
+    /// IMPORTANT: A declaration is inserted BEFORE its fields are substituted,
+    /// breaking recursive cycles. This is the "register before recursing" pattern.
     std::unordered_map<InstantiationKey, DeclAST*, InstantiationKeyHash> instantiationCache;
 
     /// @brief Check if an instantiation is already in progress or completed.
@@ -183,10 +183,8 @@ struct SemaContext {
 
     /// @brief Register an instantiation BEFORE filling its fields.
     /// 
-    /// For specialized (default) path: registers a shell declaration that will be
-    /// filled later. This breaks recursive cycles.
-    /// 
-    /// For erased (@[erased]) path: registers the template itself.
+    /// Registers a shell declaration that will be filled later. This breaks
+    /// recursive cycles during specialization.
     void registerInstantiation(DeclAST* templateDecl, const ArenaSpan<TypeAST*>& typeArgs, DeclAST* instantiated) {
         InstantiationKey key{templateDecl, typeArgs};
         instantiationCache[key] = instantiated;

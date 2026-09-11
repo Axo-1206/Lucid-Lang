@@ -101,9 +101,6 @@ bool validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     if (name == "inline" || name == "noinline") {
         return validateInlineHint(attr, owner, ctx);
     }
-    if (name == "erased") {
-        return validateErased(attr, owner, ctx);
-    }
 
     // ─── Generic validation for unknown attributes ─────────────────────────
     if (!validateArgCount(attr, info->minArgs, info->maxArgs, ctx)) {
@@ -316,50 +313,6 @@ bool validateInlineHint(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
         func->isInline = true;
     } else {
         func->isNoInline = true;
-    }
-
-    return true;
-}
-
-bool validateErased(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
-    // ─── 1. The registry already verified this is on FuncDecl or StructDecl ──
-    // So we just need to verify it's generic
-    
-    bool isGeneric = false;
-    if (owner->isa<FuncDeclAST>()) {
-        isGeneric = !owner->as<FuncDeclAST>()->genericParams.empty();
-    } else if (owner->isa<StructDeclAST>()) {
-        isGeneric = !owner->as<StructDeclAST>()->genericParams.empty();
-    }
-    
-    if (!isGeneric) {
-        ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
-                              "attribute '@[erased]' can only be applied to generic declarations");
-        ctx.diagnostics.note(attr,
-                             "Add generic parameters to '", ctx.pool.lookup(owner->name),
-                             "' or remove '@[erased]'");
-        return false;
-    }
-
-    // ─── 2. Validate argument count ──────────────────────────────────────────
-    if (!attr->args.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
-                              "attribute '@[erased]' takes no arguments");
-        return false;
-    }
-
-    // ─── 3. Check: The declaration must be eligible for type erasure ──────────
-    // This checks that the generic body doesn't contain features that require
-    // specialization (e.g., #sizeof(T), #tostr(T), Simd<T,N>, trait bounds, etc.)
-    if (!validateTypeErasedEligibility(owner, ctx)) {
-        return false;
-    }
-
-    // ─── 4. Mark as erased ──────────────────────────────────────────────────
-    if (owner->isa<FuncDeclAST>()) {
-        owner->as<FuncDeclAST>()->isErased = true;
-    } else if (owner->isa<StructDeclAST>()) {
-        owner->as<StructDeclAST>()->isErased = true;
     }
 
     return true;

@@ -54,37 +54,17 @@ bool isGenericParameterType(TypeAST* type, SemaContext& ctx);
 /// @return true if the type contains any generic parameters.
 bool containsGenericParameter(TypeAST* type, SemaContext& ctx);
 
-/// @brief Check if a type is being used in a type-erased context (@[erased]).
-///
-/// A type is in a type-erased context if:
-/// - It's a generic parameter (T) being used in a function/struct that has @[erased]
-/// - OR it's a type that contains a generic parameter, used in an erased context
-///
-/// @param type The type to check.
-/// @param ctx The semantic context.
-/// @return true if the type is a type-erased generic.
+/// @brief Legacy erased-generic gate; type-erasure was removed from the AST and
+/// Sema, so these checks are always false.
 bool isTypeErasedGeneric(TypeAST* type, SemaContext& ctx);
 
-/// @brief Check if a type is fully concrete (not generic or fully specialized).
-///
-/// A type is concrete if:
-/// - It is not a generic parameter
-/// - It contains no generic parameters
-/// - It is not being used in a type-erased context
-///
-/// @param type The type to check.
-/// @param ctx The semantic context.
-/// @return true if the type is concrete.
+/// @brief All generic instantiations are specialized and concrete.
 bool isConcreteType(TypeAST* type, SemaContext& ctx);
 
-/// @brief Get the innermost generic declaration containing the current context.
-/// @param ctx The semantic context.
-/// @return The generic declaration, or nullptr if not in one.
+/// @brief Deprecated compatibility shim for the old erased-generic model.
 DeclAST* getInnermostGenericDeclaration(SemaContext& ctx);
 
-/// @brief Check if the current context has @[erased].
-/// @param ctx The semantic context.
-/// @return true if the current context has @[erased].
+/// @brief Legacy compatibility shim; type erasure is no longer a Sema concept.
 bool isCurrentContextErased(SemaContext& ctx);
 
 // ─── Reflection Validation ─────────────────────────────────────────────────
