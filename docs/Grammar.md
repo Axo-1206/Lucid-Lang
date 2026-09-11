@@ -2390,6 +2390,95 @@ const n int    = unbox<int>(b);
 const s Box<string> = rebox<int, string>(b)(stringFromInt);
 ```
 
+### Alternatives to Type-Erased Generics
+
+Lucid generics are specialization-only — there is no erased/boxed/tagged-slot
+representation, and no way to write a generic function or struct that works
+against an unresolved `T`. This section is the reference for the three
+situations a type-erased generic is normally reached for, and what to use
+instead. None of these require a compiler feature beyond what's already in
+this document — each is an existing Lucid mechanism applied to this problem.
+
+**1. "I don't know which concrete type I'll have until runtime."**
+
+This is almost always a *bounded* set of possible shapes, not truly open-
+ended — a JSON value is a number, a string, an array, or an object; never
+"literally anything." A closed `enum`, dispatched with an exhaustive
+`switch`, covers this completely and is checked by the compiler at compile
+time (see **Enum Declaration**, **Security Considerations for
+Function-Typed Fields** for the same pattern applied to behavior):
+
+```lucid
+enum JsonValue {
+    Num(float)
+    Str(string)
+    Arr([_]JsonValue)
+    Obj([_]KeyValue)
+}
+
+const describe (v JsonValue) -> string = {
+    switch v {
+        case Num(n): return "number";
+        case Str(s): return "string";
+        case Arr(a): return "array";
+        case Obj(o): return "object";
+    }
+};
+```
+
+An `Array<JsonValue>` — an ordinary specialized generic — then holds
+genuinely heterogeneous-looking data with no erasure involved anywhere.
+
+**2. "I don't want N copies of this container's implementation for N types."**
+
+Split the container into a shared, non-generic backend that operates on raw
+bytes, and a thin generic wrapper that's the only part actually duplicated
+per instantiation. The heavy logic (grow/copy/free/bounds-check) compiles
+once, ever; the per-`T` part is small enough that its duplication costs
+about as much as ordinary inlining does:
+
+```lucid
+-- compiled ONCE, regardless of how many T's use it
+const arrayPushRaw (arr *RawArray)(elemSize uint64)(elemAlign uint64)(valuePtr *void) -> () = {
+    -- grow/copy/bump logic against raw bytes, no T anywhere
+};
+
+-- the only thing duplicated per instantiation — a handful of instructions
+const push<T> (arr *Array<T>)(value T) -> () = {
+    arrayPushRaw(arr.raw, #sizeof(T), #alignof(T), #addrof(value));
+};
+```
+
+This is the pattern the standard library's own `Array<T>`, `Optional<T>`,
+and `Result<T, E>` use internally — they are ordinary generic structs, not
+compiler-blessed built-ins, and this split is why they don't bloat the
+binary per element type used. LLVM's function-merging/identical-code-folding
+pass (enabled in the AOT optimization pipeline) collapses any remaining
+byte-identical specializations (e.g. `Array<int32>` and `Array<uint32>`) at
+the object level, at no cost to the language design.
+
+**3. "I genuinely need to call something whose type isn't known until runtime,
+with no bounded set of possibilities" — plugin-style dynamic dispatch.**
+
+This is the one case with no generics-shaped answer, because there is
+nothing for the compiler to check against — the same is true of any
+statically-typed, specialization-only language. The explicit, opt-in escape
+hatch is `*void` plus `#bitcast`, the same mechanism used at the FFI
+boundary (see **The Sealed Conduit Model**) and for self-referential
+structs that must share one implementation across unrelated types:
+
+```lucid
+let raw *void? = dynlib:symbol(handle, "process");
+if raw == nil { return err("symbol not found") };
+const process (int)(int) -> int = #bitcast((int)(int) -> int, raw);
+-- process(3, 4) is undefined behavior if the real symbol's signature
+-- doesn't actually match — same trade-off as C's dlsym
+```
+
+This is deliberately rare and visible in the source wherever it's used —
+never hidden behind ordinary `<T>` syntax — because it is the one place the
+compiler cannot verify anything on the caller's behalf.
+
 ---
 
 ## Nullable `?` / Fallible `!`
@@ -5083,7 +5172,6 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 | `@[deprecated("msg")]` | any declaration                                                      | Compiler warning at use sites                            |
 | `@[inline]`            | function declaration                                                 | Hint to inline at call sites                             |
 | `@[noinline]`          | function declaration                                                 | Prevent inlining                                         |
-| `@[erased]`            | generic function/struct                                              | Force type erasure (tagged slots) instead of specialization |
 
 
 **Rules:**
@@ -5092,89 +5180,18 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 - Attributes are a **fixed, closed set** — there is no user-defined or
   namespaced attribute form.
 
-`@[erased]` — Generic Implementation Strategy
-is valid on generic functions and generic structs only.
-
-Meaning: Forces the compiler to use type erasure (tagged slots) for the
-annotated generic declaration instead of the default specialization strategy.
-
-By default, Lucid implements generics using monomorphization (specialization):
-
-```lucid
--- Default: specialization (monomorphization)
-const identity<T> (v T) -> T = { return v }
-
--- One function copy per concrete type instantiation
--- Zero runtime overhead, compile-time type information available
--- #sizeof(T), #tostr(T), Simd<T,N>, and trait bounds work normally
-```
-
-When `@[erased]` is applied, the compiler generates a single shared version
-of the function/struct for all type instantiations:
-
-```lucid
-@[erased]
-const identity<T> (v T) -> T = { return v }
-
--- One shared function for all types
--- Values passed as tagged slots { tag, value }
--- Reduced code size at the cost of runtime overhead
-```
-
-#### Type-Erased Generics — Restrictions (only applies with `@[erased]`)
-
-Type erasure only works because the compiler never needs `T`'s identity
-inside the shared function/struct body — every value is handled through
-one uniform tagged-slot representation. A handful of features fundamentally
-need `T`'s concrete identity at compile time, and no amount of clever
-codegen against that uniform representation can supply it. Using any of the
-following on an unresolved (type-erased) generic parameter is a **compile
-error**, not a runtime cost:
-
-| Feature                                       | Why it needs a concrete `T`                                |
-| --------------------------------------------- | ---------------------------------------------------------- |
-| `#sizeof(T)` / `#alignof(T)`                  | Needs `T`'s byte size/alignment                            |
-| `#tostr(T)`                                   | Needs `T`'s field layout to emit per-field formatting code |
-| `Simd<T, N>`                                  | Must lower to a genuine, fixed-shape LLVM vector type      |
-| `#alloc(T, count)` / `arena::alloc<T>(count)` | Need `T`'s byte size to compute the allocation             |
-| Trait bounds (`<T : Trait>`)                  | Needs `T`'s concrete method set resolved at compile time   |
-
-**The fix:** Remove `@[erased]` from the declaration, or use explicit
-monomorphization by instantiating with concrete types.
-
-```lucid
--- ❌ Type-erased — compile error
-@[erased]
-const boxedSize<T> (v T) -> uint64 = {
-    return #sizeof(T);   -- ERROR: T is type-erased; remove @[erased]
-};
-
--- ✅ Default (specialized) — T is concrete in every generated copy
-const boxedSize<T> (v T) -> uint64 = {
-    return #sizeof(T);   -- OK
-};
-```
-
-**Nested composition follows the same rule.** A type-erased generic may
-only use *other* type-erased generics as its own type arguments. If a
-nested type argument is itself specialized (the default), referencing it from
-a type-erased context is also a compile error — a specialized type no
-longer has the uniform boxed shape a type-erased container needs to store
-it generically:
-
-```lucid
-struct Box<T> { value: T }    -- default: specialized
-
--- ❌ Wrapper is type-erased, but Box<T> is specialized — shape mismatch
-@[erased]
-struct Wrapper<T> { inner: Box<T> }
-
--- ✅ Erase Wrapper too, so both sides agree on layout
-@[erased]
-struct Box<T> { value: T }
-@[erased]
-struct Wrapper<T> { inner: Box<T> }
-```
+> [!NOTE]
+> **Type erasure was removed.** Lucid generics are specialization
+> (monomorphization) only — there is no `@[erased]` attribute, no tagged-slot
+> runtime representation, and no way to opt out of a concrete `T` inside a
+> generic body. Every generic function/struct is compiled to one copy per
+> concrete type instantiation; `#sizeof(T)`, `#tostr(T)`, `Simd<T,N>`,
+> `#alloc(T, count)`, `arena::alloc<T>(count)`, and trait bounds all just
+> work, unconditionally, because `T` is always concrete by the time any of
+> them run. See **Alternatives to Type-Erased Generics** (under **Generic
+> Functions and Generic Structs**) for how the use cases type erasure used
+> to cover — runtime-unknown types, avoiding duplicated code, and genuinely
+> open-ended dynamic dispatch — are handled instead.
 
 ### 2. Intrinsics `#`
 
@@ -5225,12 +5242,23 @@ else, or nowhere at all?" without guessing from the name.
 | `LLVMIntrinsic`        | `call @llvm.*` — a genuine LLVM intrinsic function                                                                                                                                      | `#sqrt`, `#memcpy`, `#clz`, `#fma`, `#bswap`      |
 | `LLVMInstruction`      | A raw LLVM IR instruction — LLVM itself does not call these "intrinsics"                                                                                                                | `#bitcast`, `#ptrOffset`, `#atomic_add`, `#fence` |
 | `CompileTimeConst`     | No codegen call at all — resolved to a literal during Sema/lowering                                                                                                                     | `#sizeof`, `#alignof`, `#nameof`, `#typeof`       |
-| `RuntimeCall`          | `call` against a symbol exported by `runtime/` — not an LLVM intrinsic, not a raw instruction, and not backend-specific: both the JIT and the AOT-linked binary resolve the same symbol | `#alloc`, `#free`                                 |
+| `RuntimeCall`          | `call` against a symbol exported by `runtime/` — not an LLVM intrinsic, not a raw instruction, and not backend-specific: both the JIT and the AOT-linked binary resolve the same symbol | `#alloc`, `#free`, `#tostr`                       |
 | `ControlFlowTransform` | No call at the intrinsic's own call site — the compiler records a pending callback and emits ordinary calls at every exit edge of the enclosing block                                   | `#scope_exit`                                     |
 
 Only the first two strategies correspond to the "maps to an LLVM intrinsic or
 instruction" claim in the overview section above; the rest are genuinely
 different implementation shapes hiding behind the same `#name(...)` syntax.
+
+`#tostr` and `#typeof` are easy to conflate — both can be called on a value
+and both return a `string` — but they sit in different rows for a real
+reason, not just a table-organization choice: `#typeof(x)` only ever needs
+`x`'s *static type*, known entirely at compile time, so it resolves to a
+literal and never emits a call. `#tostr(x)` needs `x`'s *runtime value* —
+formatting an actual float bit-pattern or struct field contents into text
+can't be precomputed at compile time — so it's a genuine runtime call into
+`StringRuntime`. This is also exactly why `#typeof` can be used freely on a
+generic parameter while `#tostr` cannot — see **`#typeof` and Generic
+Parameters**, below, and **`#tostr` — Detailed Behavior**.
 
 ---
 
@@ -5240,21 +5268,24 @@ Available everywhere — these are read-only observations and carry no safety
 concern. They do not manipulate memory, dereference pointers, or escape any
 safety boundary.
 
-| Intrinsic     | Returns  | Notes                                                                                                                                                |
-| ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `#tostr(x)`   | `string` | Human-readable value of a **fully concrete type only** — see **`#tostr` — Detailed Behavior** below. Calls the `str` field if the struct defines one |
-| `#typeof(x)`  | `string` | For any value: its type name. For function types: full signature e.g. `(int, string) -> bool`                                                        |
-| `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                           |
-| `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                          |
-| `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                         |
-| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant; `T` must be concrete, see **`#sizeof` / `#alignof` — Generic Behavior** below                         |
-| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant; same rule as `#sizeof`                                                                         |
+| Intrinsic                   | Returns  | Notes                                                                                                                                                                                                                                                  |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `#tostr(x)`                 | `string` | Human-readable value of a **fully concrete type only** — see **`#tostr` — Detailed Behavior** below. Calls the `str` field if the struct defines one                                                                                                   |
+| `#typeof(x)` / `#typeof(T)` | `string` | Value form: `x`'s type name (function types return the full signature, e.g. `(int, string) -> bool`). Type form: the type name directly, no value needed — accepts a generic parameter unconditionally, see **`#typeof` and Generic Parameters** below |
+| `#nameof(x)`                | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                                                                                                                             |
+| `#ptrstr(x)`                | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                                                                                                                            |
+| `#addrof(x)`                | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                                                                                                                           |
+| `#sizeof(T)`                | `uint64` | Byte size of type `T` — compile-time constant; `T` must be concrete, see **`#sizeof` / `#alignof` — Generic Behavior** below                                                                                                                           |
+| `#alignof(T)`               | `uint64` | Alignment requirement of `T` — compile-time constant; same rule as `#sizeof`                                                                                                                                                                           |
 
 ```lucid
 -- Generic logger: works on any type T, given a formatter for it
 -- (calling #tostr(v) directly here would be a compile error — v's type
---  T is generic, and #tostr requires a fully concrete type; see below)
+--  T is generic, and #tostr requires a fully concrete type; see below.
+--  #typeof(T) is fine even here — it needs no value and no field layout,
+--  just the concrete type each specialized copy was instantiated with)
 const Log<T> (prefix string, values ...T)(toStr (T) -> string) = {
+    io:printl("logging " ++ #typeof(T) ++ " values");    -- e.g. "logging int values"
     for v in values {
         io:printl(prefix ++ ": " ++ toStr(v));
     }
@@ -5289,11 +5320,17 @@ io:printl(#nameof(p));    -- "p"
 
 `#tostr` requires a **fully concrete type**. Generic parameters (`T`) and any
 type containing one (`Box<T>`, `[*]T` where `T` is generic) are rejected at
-compile time. Under the default type-erasure strategy (see `@[specialize]`
-under **Compiler Directives**), a generic function body only has a tagged
-runtime slot to work with — not a known field layout — and `#tostr` needs
-the layout at compile time to emit the right sequence of per-field
-formatting calls:
+compile time — even though generics are specialization-only and `T` is
+concrete by the time codegen runs for any given instantiation, `#tostr`
+would need to recursively walk `T`'s field list and emit a different
+sequence of per-field formatting calls depending on that shape. That's
+exactly the kind of "branch on `T`'s identity inside the generic body"
+logic the generics rules already forbid (see **Rules**, under **Generic
+Functions and Generic Structs**) — type-specific behavior belongs in a
+callback the caller supplies, not baked into an intrinsic's generic-body
+behavior. `#sizeof(T)`/`#alignof(T)` don't have this problem: they only
+ever produce one number, not a variable-shaped sequence of instructions,
+so there's no per-field branching for the rule to forbid.
 
 ```lucid
 -- ❌ Generic parameter
@@ -5350,42 +5387,65 @@ const logGeneric<T> (v T)(toStr (T) -> string) -> string = {
 
 #### `#sizeof` / `#alignof` — Generic Behavior
 
-`#sizeof(T)` and `#alignof(T)` follow the same rule as `#tostr` (see
-**Type-Erased Generics — Restrictions**): both require a concrete `T`, and
-using either on an unresolved, type-erased generic parameter is a compile
-error. The underlying reason differs from `#tostr` — they only ever
-produce **one number**, not a variable-shaped sequence of formatting
-instructions — but that number still isn't recoverable from a type-erased
-value's uniform tagged-slot representation, which carries no size or
-alignment information at all, only the value itself:
+`#sizeof(T)` and `#alignof(T)` work unconditionally on a generic parameter
+`T`, the same as they do on a fully-named type (`#sizeof(int)`,
+`#sizeof(Particle)`). Since generics are specialization-only, every generic
+function body that mentions `#sizeof(T)` is compiled once per concrete
+instantiation — `T` is a literal, known type in each generated copy, never
+an unresolved placeholder:
 
 ```lucid
--- ❌ Type-erased (default)
 const boxedSize<T> (v T) -> uint64 = {
-    return #sizeof(T);   -- ERROR: T is type-erased here; add @[specialize]
-};
-
--- ✅ Specialized — T is a literal in every generated copy
-@[specialize]
-const boxedSize<T> (v T) -> uint64 = {
-    return #sizeof(T);   -- OK
+    return #sizeof(T);   -- OK — T is concrete in every specialized copy
 };
 ```
 
-`#sizeof(T)`/`#alignof(T)` on a **concrete** type (`#sizeof(int)`,
-`#sizeof(Particle)`) is always fine regardless of context — this rule only
-concerns an unresolved generic parameter, never a fully-named type.
+`arena::space<T>()` (`arena::remaining() / #sizeof(T)`, see **Arena**)
+follows the same rule: `Arena`'s methods are compiler-builtin, not ordinary
+generic Lucid code, and are always resolved with a concrete `T` at each
+call site (`arena::space<int>()`).
 
-`arena::space<T>()` (`arena::remaining() / #sizeof(T)`, see **Arena**) is
-not an exception to this rule: `Arena`'s methods are compiler-builtin, not
-ordinary generic Lucid code, and are always resolved with a concrete `T`
-at each call site (`arena::space<int>()`) — they never go through the
-type-erasure-by-default path at all, so there's no unresolved `T` for the
-restriction to apply to.
+`#alloc(T, count)` and `#simd_splat`'s `type` argument work the same way,
+for the same reason — see **SIMD / Vector**.
 
-`#alloc(T, count)` and `#simd_splat`'s `type` argument follow the identical
-rule for the identical reason — see **Type-Erased Generics — Restrictions**
-and **SIMD / Vector**.
+---
+
+#### `#typeof` and Generic Parameters
+
+`#typeof` accepts either a value (`#typeof(x)`) or a bare type
+(`#typeof(T)`) — the second form follows the same `intrinsic_arg = expr |
+type` grammar `#sizeof(T)` already uses. Both forms are unconditionally
+allowed on a generic parameter, with no restriction, for the same reason
+`#sizeof(T)`/`#alignof(T)` are unrestricted: `#typeof` produces exactly one
+thing — a type-name string — never a field-shaped sequence of calls that
+would need `T`'s layout to emit, which is the actual reason `#tostr` is
+restricted (see **`#tostr` — Detailed Behavior**, above). Naming a type is
+not the same problem as formatting one.
+
+```lucid
+const describe<T> (v T) -> string = {
+    return "got a " ++ #typeof(T);    -- OK, no restriction, no value needed
+};
+
+describe<int>(42);       -- "got a int"
+describe<Player>(hero);  -- "got a Player"
+```
+
+**Resolution happens per specialized copy, not once for the generic
+declaration.** Since codegen only runs once per concrete instantiation
+(generics are specialization-only), `#typeof(T)` inside a generic body
+prints the *actual concrete type that copy was instantiated with* —
+`"int"`, `"Player"` — never the literal parameter name `"T"`. This matches
+`#sizeof(T)`'s own per-copy behavior and is the more useful form for
+debugging: a log line inside `Log<T>` tells you which concrete type is
+actually flowing through at that call site, not the name of the type
+parameter as written in the declaration.
+
+This is the intended tool for "I just want to know the generic's type
+name for a log/debug message, without a formatter and without needing an
+actual value in hand" — see **Alternatives to Type-Erased Generics** for
+the related case of formatting a generic *value* (case 2, the callback
+pattern `Log<T>` already uses for that).
 
 ---
 
@@ -5880,10 +5940,10 @@ desc.size = 8192;                -- ERROR: ArenaDescriptor's fields are read-onl
 | `Arena`                         | Yes — compiler        | Scope exit — automatic, no user call | Yes — via `::descriptor()` (Rule 4) |
 | C `malloc` / foreign library    | No                    | Matching C free function             | N/A — C owns it entirely            |
 
-| Intrinsic          | Args           | Returns | Notes                                                                                             |
-| ------------------ | -------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation; `T` must be concrete — see **Type-Erased Generics — Restrictions** |
-| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free                                                                 |
+| Intrinsic          | Args           | Returns | Notes                                                                                    |
+| ------------------ | -------------- | ------- | ---------------------------------------------------------------------------------------- |
+| `#alloc(T, count)` | type, `uint64` | `*T`    | Lucid-tracked heap allocation; `T` is always concrete (generics are specialization-only) |
+| `#free(ptr)`       | `*T`           | —       | Rejects double-free and null-free                                                        |
 
 | `Arena` operation         | Args                 | Returns           | Notes                                                      |
 | ------------------------- | -------------------- | ----------------- | ---------------------------------------------------------- |
@@ -6209,13 +6269,13 @@ the concrete `Simd<T,N>` return type at the call site, the exact same
 requirement `Arena::alloc<T>` already has for its own type argument — the
 difference is only that `Simd`'s type argument is resolved the same way
 `#sizeof(T)` resolves `T`, rather than through a generic `<T>`. `type` must
-be genuinely concrete — never an unresolved, type-erased generic parameter
-(see **Type-Erased Generics — Restrictions**): `#simd_splat`'s return type
-`Simd<T,N>` must lower to an actual fixed-shape LLVM vector type, and there
-is no erased or boxed representation for `Simd<T,N>` to fall back on if `T`
-isn't known at compile time — the same restriction `#sizeof(T)` and
-`#alignof(T)` are now under, for a related but distinct reason (see
-**`#sizeof` / `#alignof` — Generic Behavior**).
+be genuinely concrete at the call site — since generics are
+specialization-only (see **Generic Functions and Generic Structs**), a
+generic parameter `T` used as `type` here is always concrete by the time
+this intrinsic lowers, the same guarantee `#sizeof(T)` and `#alignof(T)`
+rely on (see **`#sizeof` / `#alignof` — Generic Behavior**): `#simd_splat`'s
+return type `Simd<T,N>` lowers directly to a fixed-shape LLVM vector type,
+with no boxed or erased fallback needed.
 
 | Intrinsic                          | Args                      | Returns     | Notes                                                                                                                                                                |
 | ---------------------------------- | ------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

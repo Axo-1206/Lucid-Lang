@@ -29,10 +29,17 @@
     - [Threading (`threading.hpp/cpp`)](#threading-threadinghppcpp)
     - [FFI (`ffi/`)](#ffi-ffi)
   - [8. Standard Library](#8-standard-library)
-  - [9. CLI and LSP](#9-cli-and-lsp)
+  - [9. Distribution — File Extensions, Libraries, and Module Merging](#9-distribution--file-extensions-libraries-and-module-merging)
+    - [9.1 File Extensions](#91-file-extensions)
+    - [9.2 `.luci` — the Library Interface File](#92-luci--the-library-interface-file)
+    - [9.3 Static vs. Shared Libraries](#93-static-vs-shared-libraries)
+    - [9.4 `.bc` — Portable Bitcode Distribution](#94-bc--portable-bitcode-distribution)
+    - [9.5 Whole-Program Module Merging](#95-whole-program-module-merging)
+    - [9.6 Calling Another Lucid Library at Runtime](#96-calling-another-lucid-library-at-runtime)
+  - [10. CLI and LSP](#10-cli-and-lsp)
     - [CLI (`src/cli/`)](#cli-srccli)
     - [LSP (`src/lsp/`)](#lsp-srclsp)
-  - [10. File Structure](#10-file-structure)
+  - [11. File Structure](#11-file-structure)
 
 ---
 
@@ -319,6 +326,21 @@ it emits a `declare` statement naming the external C symbol. The JIT resolves
 this at runtime via `dlopen`; the AOT linker resolves it at link time. Neither
 path needs `libffi` — LLVM's own codegen handles calling conventions.
 
+**`ModuleEmitOptions` — the one narrow input `build` needs here.** IR
+Lowering stays identical between `run` and `build` for every Lucid
+construct in the table above. The only per-build-mode input it takes is a
+small struct (`{ OutputKind kind; TargetOS targetOS; }`, `OutputKind` being
+`Executable`/`StaticLib`/`SharedLib`) consulted at exactly two points, never
+branching the AST walk itself:
+- whether an `@[export] const main` entry is required (`Executable`) or
+  disallowed (`StaticLib`/`SharedLib`),
+- whether an `@[export]`ed function needs `dllexport` linkage — only
+  relevant for `SharedLib` targeting Windows.
+
+Everything else that distinguishes a static archive from a shared library
+from an executable happens downstream, after `IRLowering` has already
+produced its one unchanged `llvm::Module` — see **Distribution**, below.
+
 **Key files:**
 - `IRLowering.hpp/cpp` — AST → LLVM IR; main entry point
 - `TypeMapping.hpp/cpp` — Lucid types → LLVM types
@@ -383,7 +405,20 @@ The AOT backend receives the same LLVM IR module and produces a native
 binary or shared library via the system linker. It runs the full LLVM
 optimisation pipeline before emitting.
 
-`AOT` sets up an `llvm::TargetMachine` for the target platform, runs
+`IRLowering` still produces one `llvm::Module` per source file, the same as
+the JIT path — but unlike the JIT (which keeps modules separate so
+hot-reload has something granular to swap), `AOT` first merges every
+per-file module into a single whole-program `llvm::Module` via
+`llvm::Linker::linkModules`, before running any optimisation pass. This
+unlocks cross-file inlining and whole-program dead-code elimination that
+per-file boundaries would otherwise block (a `declare`d cross-file call
+can't be inlined; an ordinary in-module call can). See **Distribution §9.5**
+for the full rationale.
+
+`AOT` sets up an `llvm::TargetMachine` for the target platform — selecting
+`Reloc::PIC_` when `ModuleEmitOptions.kind == SharedLib`, the platform
+default otherwise, since position-independent codegen is a `TargetMachine`
+concern, not something `IRLowering` needs to know about — runs
 `llvm::PassManager` with the requested optimisation level (`-O0` through
 `-O3`), and writes the object file via `llvm::raw_fd_ostream`.
 
@@ -467,20 +502,229 @@ who never need to see the C boundary.
 
 ---
 
-## 9. CLI and LSP
+## 9. Distribution — File Extensions, Libraries, and Module Merging
+
+This section covers what happens once a Lucid file needs to leave the
+project it was written in — as a library another project links against, or
+as a portable compiled artifact handed to someone without the `.luc`
+source. None of this changes the frontend or `IRLowering`; it's entirely
+about what happens to the `llvm::Module`(s) they produce, downstream.
+
+### 9.1 File Extensions
+
+| Extension                         | What it is                                                                                             | Produced by                                         | Consumed by                                                                                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.luc`                            | Lucid source                                                                                           | the developer                                       | frontend (lexer → parser → sema)                                                                                                                                                      |
+| `.o`                              | Object file — one translation unit's machine code, unlinked                                            | AOT backend, internal intermediate                  | system linker only; not a first-class CLI output                                                                                                                                      |
+| `.a`                              | Static library archive                                                                                 | `lucid build --lib` (default / `--static`)          | system linker only, at build time. Cannot be `dlopen`'d — code is copied into the consumer at link time                                                                               |
+| `.so` / `.dylib` / `.dll`         | Shared/dynamic library                                                                                 | `lucid build --lib --shared`                        | system linker (if linked against at build time) **or** dynamic linker (`dlopen`/`LoadLibrary`) at run time — either `DynLink` at JIT startup, or a user's own `dynlib:load(...)` call |
+| `.lib` (Windows only)             | Import stub for a `.dll`                                                                               | alongside `.dll`, on Windows shared builds          | system linker (`link.exe`) only — never loaded at runtime itself                                                                                                                      |
+| `.luci`                           | Lucid interface file — exported signatures, types, struct layouts, doc comments; no bodies             | `lucid build --lib` (any static/shared combination) | Sema's `import` resolution, and the LSP (one format, two consumers — see §9.2)                                                                                                        |
+| `.bc`                             | LLVM bitcode — a serialized `llvm::Module`, target-agnostic, frozen before any target-specific codegen | `lucid build --emit-bc` (see §9.4)                  | `lucid run <file>.bc` — same `JITSession`/`JITCompiler` path as source, just skipping lexer/parser/sema/`IRLowering`                                                                  |
+| `.lfi` (existing — `lge_ffi.lfi`) | C-side symbol table for `@[foreign("C")]` validation                                                   | shipped with the Engine SDK                         | `FFIValidator` only, at Sema time — describes *C* symbols Lucid calls into, the mirror image of `.luci`                                                                               |
+
+### 9.2 `.luci` — the Library Interface File
+
+Compiled machine code carries no types — a `.o`/`.a`/`.so` gives you a
+symbol table at best, never parameter types, struct layouts, or which
+symbols are meant to be called externally versus internal names that
+happen to leak. `.luci` is the Lucid-native equivalent of a C header,
+generated by the compiler instead of hand-written: a serialized projection
+of the typed AST's exported subset (everything the module system already
+tracks via `@[export]`), including doc comments (per **Doc Comment
+Attachment Rules** in the grammar), so hover/autocomplete work without
+source.
+
+Both of `.luci`'s consumers read the exact same file, deliberately — the
+same design constraint as TypeScript's `.d.ts`, which serves `tsc` and
+every editor's language server identically. A new Sema pass, `LibValidator`
+(parallel in shape to the existing `FFIValidator`, just checking against
+`.luci` instead of `lge_ffi.lfi`), validates `import lib;` call sites
+against it; `luc_langserver` reads it for autocomplete/hover on an
+imported library whose source isn't present. Neither ever inspects the
+compiled binary itself.
+
+### 9.3 Static vs. Shared Libraries
+
+`--lib` alone determines *what's exported*; `--static`/`--shared` is a
+separate, orthogonal choice about *how it's linked* — and it isn't free to
+produce both, so it isn't the default:
+
+- **`.so`/`.dylib`/`.dll` require position-independent codegen (PIC)**,
+  set via `Reloc::PIC_` on the `TargetMachine` (see §6). `.a` typically
+  doesn't need it. Producing both means a second codegen pass through
+  `AOT`, not just re-archiving the same `.o`s.
+- **Default is `--static`.** Case A below (importing a known library at
+  compile time) is the overwhelmingly common case, and static is cheaper.
+  Shared is opt-in, the same way every other more-powerful, more-dangerous
+  capability in this design is opt-in rather than default.
+- **Generics crossing this boundary use Option B: closed, pre-instantiated
+  concrete types only** (`extern template`-style), not "ship the generic
+  body and let the consumer instantiate" (what Rust's `.rlib` metadata
+  does). This keeps the library's ABI stable across compiler versions —
+  `lib.a`/`lib.so` is plain machine code with concrete symbols, same
+  guarantee C libraries have always had. A library author who wants
+  `Array<T>` usable across the boundary picks the concrete `T`s they
+  support (`Array<int>`, `Array<Player>`, ...) and only those show up in
+  `.luci` — a consumer requesting an unlisted `T` gets a compile error,
+  the same as it would trying to use a type `libfoo.a` never anticipated
+  in C.
+
+| Flag                                          | Produces                                                                                             |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `lucid build --lib lib.luc`                   | `lib.a` + `lib.luci` (default)                                                                       |
+| `lucid build --lib --static lib.luc`          | `lib.a` + `lib.luci` (explicit spelling of the default)                                              |
+| `lucid build --lib --shared lib.luc`          | `lib.so`/`.dylib`/`.dll` (+ `.lib` stub on Windows) + `lib.luci`                                     |
+| `lucid build --lib --static --shared lib.luc` | all of the above, one shared `.luci` — only when genuinely needed, accepting the double-codegen cost |
+
+### 9.4 `.bc` — Portable Bitcode Distribution
+
+`.bc` is not a new execution engine — it's `llvm::BitcodeWriter` serializing
+the exact same `llvm::Module` type `IRLowering` already produces, frozen at
+the point *before* either backend makes any target-specific decision
+(instruction selection, register allocation). That's what makes it
+portable: nothing CPU-specific has happened to it yet.
+
+The usual objection to distributing raw LLVM bitcode — that `.bc` isn't
+guaranteed stable across LLVM versions — doesn't apply here, because LLVM
+is statically bundled into `lucid` at a single pinned version (see the
+size-budget note in §1); the producer and the consumer of any `.bc` Lucid
+ever writes are always the same LLVM version, by construction.
+
+```
+lucid build --emit-bc main.luc   -- target-independent opt passes, then
+                                     BitcodeWriter → main.bc (no target
+                                     codegen — still portable)
+
+lucid run main.bc                -- BitcodeReader reconstructs the Module,
+                                     skips lexer/parser/sema/IRLowering
+                                     entirely, hands it to the same
+                                     JITSession used for source
+```
+
+Running LLVM's target-independent optimisation passes (dead code
+elimination, inlining, constant folding — the parts of `-O2`/`-O3` that
+don't depend on a specific CPU) before writing `.bc` means every
+recipient's JIT only has to pay for fast, target-specific codegen at load
+time, not the expensive analysis work too — that was already paid for once
+by whoever built the `.bc`.
+
+This gives Lucid a third distribution tier, alongside source and a fully
+standalone AOT binary:
+
+| Tier              | Command                | Needs on target machine |
+| ----------------- | ---------------------- | ----------------------- |
+| Source            | `lucid run main.luc`   | `lucid` binary          |
+| Portable compiled | `lucid run main.bc`    | `lucid` binary          |
+| Standalone native | `lucid build main.luc` | nothing                 |
+
+### 9.5 Whole-Program Module Merging
+
+`IRLowering` always produces one `llvm::Module` per file — that part is
+identical everywhere. What differs is whether anything merges them
+afterward, and it's a deliberate split, not an oversight:
+
+- **`lucid run` keeps modules separate**, one per file, each added to the
+  `JITSession` individually. This is the unit hot-reload swaps — see §5,
+  "Hot-Reload" — and merging would remove the granularity that mechanism
+  depends on. The cost: a call across a file boundary is a `declare`
+  resolved through the JIT's symbol table, which LLVM cannot inline
+  through. Acceptable here, since fast iteration is the actual goal, not
+  peak throughput, and `run` already favors low optimisation levels.
+- **`lucid build` and `lucid build --emit-bc` merge first**, via
+  `llvm::Linker::linkModules`, into one whole-program `Module`, before
+  optimisation or codegen. Nothing swaps a function mid-execution in a
+  shipped binary or bitcode file, so there's no reason to keep the
+  fragmentation — merging unlocks cross-file inlining and true
+  whole-program dead-code elimination (a private helper unused by the
+  *program*, not just unused within its own file, can now be proven dead
+  and stripped), which also produces a smaller, denser `.bc`.
+
+### 9.6 Calling Another Lucid Library at Runtime
+
+Two distinct cases, handled by different mechanisms:
+
+**Case A — `import lib;`, known at compile time.** Not a new mechanism:
+`IRLowering` emits a `declare` for each imported symbol exactly as it does
+for `@[foreign("C")]`; at JIT time, `DynLink` (§5) `dlopen`s the library
+and registers its symbols with the JIT's `DynamicLibrarySearchGenerator`,
+same as any `@[link(...)]` target; at AOT time, `Linker` (§6) passes it as
+a normal `-l` flag. The only new work is `LibValidator` (§9.2) checking the
+call site against `.luci` instead of `lge_ffi.lfi` — everything downstream
+of Sema is unchanged.
+
+**Case B — genuinely dynamic (plugin-style) loading, where the library's
+identity isn't known until runtime.** No `.luci` can be checked against,
+because which file to load is itself a runtime value — this needs an
+explicit, visible, unsafe-flavored API, the same idiom C's `dlsym` uses:
+`dynlib:load(path) -> DynLibrary!` / `dynlib:symbol(handle, name) -> *void?`,
+with the caller responsible for `#bitcast`ing the result to whatever
+function-pointer type they believe is correct (see **Alternatives to
+Type-Erased Generics**, case 3, in the grammar reference — this is the same
+escape hatch). Implementation-wise, this is a thin `extern "C"` pair
+(`__lucid_dynlib_load` / `__lucid_dynlib_symbol`) wrapping the *existing*
+`interpreter/dynlink/DynamicLinker` + `LibraryHandle` machinery, exposed as
+a `stdlib/dynlib.luc` module the same way `io.luc`/`math.luc` wrap their
+own runtime entry points.
+
+**This needs to work under AOT too, which is a real gap today.**
+`compiler/aot/Linker.hpp/cpp` currently only does compile-time linking —
+it has no runtime `dlopen` capability at all, because nothing has needed
+one before. For `dynlib:load(...)` to work inside a `lucid build`-produced
+binary (not just under `lucid run`, where the JIT's `DynLink` already
+exists), the `__lucid_dynlib_*` entry points need to be part of the Lucid
+runtime statically linked into every AOT binary — a sibling to
+`MemoryRuntime`/`ConcurrencyRuntime` under `codegen/runtime/`, not
+something reachable only through the interpreter. Worth testing under AOT
+specifically once built, not just assumed to follow from the JIT path
+working.
+
+---
+
+## 10. CLI and LSP
 
 ### CLI (`src/cli/`)
 
-The `lucid` binary exposes three commands:
+Each command is a thin wrapper that drives the shared pipeline: `main.cpp`
+dispatches to the frontend commands (`run.hpp`, `cli/frontend/parse.hpp`,
+`cli/frontend/sema.hpp`) or the AOT backend (`build.hpp`). `parse` and
+`sema` exist to stop the pipeline early, at the `Parse` and `Sema` stages
+respectively (see **Execution Pipeline**), for debugging and tooling —
+they don't produce an executable or library artifact.
+
+**Target command surface** (this is the authoritative reference; see the
+note below on `main.cpp`'s current state relative to it):
 
 ```
-lucid run   <file.luc>          -- JIT interpret and execute
-lucid build <file.luc> -o out   -- AOT compile to native binary
-lucid repl                        -- interactive REPL (run mode per line)
+lucid run   <file.luc>                      -- JIT interpret and execute; no file output
+lucid run   <file.bc>                       -- JIT-execute portable bitcode (§9.4);
+                                                skips lexer/parser/sema/IRLowering
+lucid parse <file.luc> [--json|--json-pretty] [-o out]   -- stop after AST
+lucid sema  <file.luc> [--json|--json-pretty] [-o out]   -- stop after semantic analysis
+lucid build <file.luc> [-o out] [-O<0-3>] [--target <triple>]
+                                             -- AOT compile to a native executable
+lucid build --lib <file.luc> [--static] [--shared] [-O<0-3>] [--target <triple>]
+                                             -- produce a library: .a and/or .so/.dylib/.dll,
+                                                always alongside a .luci (§9.1–9.3)
+lucid build --emit-bc <file.luc> [-o out.bc] -- produce portable bitcode (§9.4)
+lucid repl                                  -- interactive REPL (run mode per line)
 ```
 
-Each command is a thin wrapper that drives the shared pipeline:
-`commands.cpp` dispatches to `run.hpp`, `build.hpp`, or `repl.hpp`.
+Flags relevant to `run` (`--verbose`, `--trace`, `--no-hot-reload`,
+`-O<level>`, `--entry <name>`) apply unchanged to both the `.luc` and
+`.bc` forms of `run`.
+
+> [!NOTE]
+> **Current implementation status.** `main.cpp` today implements `run`,
+> `parse`, and `sema` against `CLIOptions`; `build` is recognized but not
+> yet implemented (`repl` likewise). It does not yet know about
+> `--lib`, `--static`, `--shared`, `--emit-bc`, or `ModuleEmitOptions` —
+> those are captured here as the target design this document describes,
+> not as already-wired CLI flags. `main.cpp` is expected to be refactored
+> to match this section once `build` is implemented; until then, this
+> table is the source of truth for what the CLI *should* accept, and
+> `main.cpp`'s own header comment reflects only what it *currently*
+> accepts.
 
 ### LSP (`src/lsp/`)
 
@@ -497,7 +741,7 @@ process and communicates with the editor via stdin/stdout JSON-RPC.
 
 ---
 
-## 10. File Structure
+## 11. File Structure
 
 ```
 lucid/
@@ -573,7 +817,8 @@ lucid/
     │   ├── rules/                          # Analysis rules
     │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
     │   │   ├── SemaStmt.cpp                # if, for, while, switch, return, block
-    │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
+    │   │   ├── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
+    │   │   └── LibValidator.hpp/cpp        # validates `import lib;` against lib.luci (see Architecture §9.2)
     │   │
     │   ├── types/
     │   │   ├── SemaResolve.cpp             # Resolves type annotations to their semantic representations.
@@ -650,10 +895,19 @@ lucid/
     │   │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
     │   │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
     │   │   │
-    │   │   └── concurrency/
-    │   │       ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
-    │   │       ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
-    │   │       └── ConcurrencyEntry.cpp     # extern "C" entry points
+    │   │   ├── concurrency/
+    │   │   │   ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
+    │   │   │   ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
+    │   │   │   └── ConcurrencyEntry.cpp     # extern "C" entry points
+    │   │   │
+    │   │   └── dynlib/
+    │   │       └── DynlibEntry.cpp          # extern "C" __lucid_dynlib_load /
+    │   │                                    # __lucid_dynlib_symbol; wraps
+    │   │                                    # interpreter/dynlink's DynamicLinker +
+    │   │                                    # LibraryHandle so dynlib:load/symbol
+    │   │                                    # (Architecture §9.6) also works when
+    │   │                                    # statically linked into an AOT binary,
+    │   │                                    # not just under the JIT
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API
@@ -692,8 +946,21 @@ lucid/
     │
     ├── compiler/                       # AOT backend (lucid build)
     │   └── aot/                        # AOT-only backend
-    │       ├── AOT.hpp/cpp             # optimisation pipeline + object file emission
-    │       └── Linker.hpp/cpp          # system linker invocation
+    │       ├── ModuleMerge.hpp/cpp     # llvm::Linker::linkModules — per-file
+    │       │                           # Modules → one whole-program Module
+    │       │                           # (Architecture §9.5; run path skips this)
+    │       ├── AOT.hpp/cpp             # TargetMachine + Reloc model, optimisation
+    │       │                           # pipeline, object file emission
+    │       ├── Linker.hpp/cpp          # system linker invocation; branches on
+    │       │                           # ModuleEmitOptions.kind: archive (.a),
+    │       │                           # `-shared` link (.so/.dll + .lib stub),
+    │       │                           # or normal executable link
+    │       ├── BitcodeIO.hpp/cpp       # BitcodeWriter/BitcodeReader — .bc
+    │       │                           # emit (--emit-bc) and load (`lucid run *.bc`)
+    │       └── LuciWriter.hpp/cpp      # serializes exported subset of the typed
+    │                                   # AST to .luci (Architecture §9.2);
+    │                                   # driven by --lib, independent of
+    │                                   # --static/--shared
     │
     ├── stdlib/                         # standard library (written in Lucid)
     │   ├── io.luc
@@ -715,8 +982,9 @@ lucid/
     │   ├── FileWatcher.hpp             # File watcher for hot‑reload.
     │   ├── RunOptions.hpp/cpp
     │   ├── Trace.hpp/cpp
-    │   ├── run.hpp/cpp                 # lucid run
-    │   └── build.hpp                   # lucid build (not implemented)
+    │   ├── run.hpp/cpp                 # lucid run (.luc source or .bc bitcode)
+    │   └── build.hpp                   # lucid build [--lib [--static] [--shared]] [--emit-bc]
+    │                                   # (not implemented yet — see Architecture §10)
     │
     └── debug/                          # developer tools (not user-facing)
 
