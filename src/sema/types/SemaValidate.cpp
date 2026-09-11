@@ -487,7 +487,7 @@ bool validateForeignFunction(FuncDeclAST* decl,
     }
 
     // ─── 2. Check: Function must have no body ────────────────────────────────
-    if (decl->body) {
+    if (decl->init) {
         ctx.diagnostics.error(DiagCode::Sem_ForeignInvalid, decl,
                               "foreign function '", ctx.pool.lookup(decl->name),
                               "' must have no body (implementation is external)");

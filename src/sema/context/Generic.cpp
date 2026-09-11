@@ -3,7 +3,6 @@
 
 #include "Generic.hpp"
 #include "sema/support/MangledName.hpp"
-#include "sema/types/GenericHelpers.hpp"
 #include "core/trace/Trace.hpp"
 #include "sema/types/SemaType.hpp"
 
@@ -242,6 +241,37 @@ static FuncDeclAST* finalizeInstantiatedFunction(
     finalFunc->hasClosure = shell->hasClosure;
     finalFunc->isReturned = shell->isReturned;
     finalFunc->loc = shell->loc;
+
+    // ─── Propagate closure captures (Option A from MigrationPlan) ─────────
+    // A specialized generic whose template captured variables needs its
+    // own capture list and its own closure view. Without this, CodeGen
+    // sees `hasClosure == true` but `closureView == nullptr` and cannot
+    // lower the function.
+    //
+    // KNOWN LIMITATION: the CapturedVariable::decl pointers in
+    // templateDecl->captures point at the *template's* ParamAST /
+    // FieldDeclAST nodes, not the substituted ones now living in
+    // finalFunc->funcType. Remapping them requires either re-running
+    // capture analysis against the substituted body (which needs Sema
+    // scope state that isn't set up during instantiation), or walking
+    // the substituted funcType and rewriting each decl pointer by
+    // matching parameter position. Neither is implemented yet — see
+    // FuncDeclAST's "Generic Instantiation Caveat" for the current
+    // contract. The closure view itself is structurally valid; only the
+    // decl pointers inside its capture list are stale.
+    if (shell->hasClosure) {
+        finalFunc->captures = templateDecl->captures;
+
+        AnonFuncExprAST* view = ctx.arena.make<AnonFuncExprAST>(
+            finalFunc->funcType, finalFunc->body);
+        view->captures   = finalFunc->captures;
+        view->hasClosure = true;
+        view->isReturned = finalFunc->isReturned;
+        view->loc        = finalFunc->loc;
+        finalFunc->closureView = view;
+    } else {
+        finalFunc->closureView = nullptr;   // explicit: no captures, no view
+    }
 
     // ─── Update the cache entry to point to the final function ────────────
     InstantiationKey key{templateDecl, typeArgs};
@@ -1043,9 +1073,6 @@ GenericResolution resolveGenericInstantiation(
             }
         }
 
-        if (!validateNestedGenericCompatibility(templateDecl, typeArgs, ctx)) {
-            return result;
-        }
     }
 
     // ─── Specialized path (default) ──────────────────────────────────────
