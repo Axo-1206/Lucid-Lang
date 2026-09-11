@@ -116,51 +116,6 @@ struct DeclStmtAST : StmtAST {
     bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
-/// @brief A statement that references another *named, non-capturing* function.
-/// Used for function declarations that delegate directly to a plain function
-/// pointer — never a closure.
-/// 
-/// @example
-///   const add (a int)(b int) -> int = math:add
-///   const process = module:process
-/// 
-/// ─── Valid Targets (enforced by the parser, not just Sema) ─────────────────
-/// `target` must be an `IdentifierExprAST` or `ModuleAccessExprAST` that
-/// resolves to a named `FuncDeclAST`. Per **Function Values and Closures**
-/// in the grammar, a named function is always a plain function pointer with
-/// no captured state — which is exactly what `resolvedFunction` below is
-/// able to hold.
-/// 
-/// `FieldAccessExprAST` (e.g. `c.getter`) and `CallExprAST` (e.g.
-/// `getHandler("double")`) must **not** be routed through this node, even
-/// though both are valid `func_body` expressions and both may legally
-/// produce a function value. Either can evaluate to a genuine closure — a
-/// `{ func, env }` pair — and `resolvedFunction` is a bare `llvm::Function*`
-/// with no field to hold an environment pointer. The parser must wrap those
-/// two cases in `ReturnStmtAST` instead, whose value flows through ordinary
-/// `ExprAST` codegen (`llvmValue` is a generic `llvm::Value*`, capable of
-/// holding a full closure aggregate or a pointer to one).
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. This is used when a function declaration has an expression body that
-///    is a pure function reference (IdentifierExprAST or ModuleAccessExprAST
-///    only — see above).
-/// 2. The semantic pass validates that the target resolves to a FuncDeclAST
-///    and that the types match.
-struct FuncRefStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
-    
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    ExprAST* target = nullptr;  // IdentifierExprAST or ModuleAccessExprAST only — see above
-    
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    llvm::Function* resolvedFunction = nullptr;  // The resolved LLVM function —
-                                                  // always a plain function pointer,
-                                                  // never a closure with an environment
-
-    FuncRefStmtAST() : StmtAST(ASTKind::FuncRefStmt) {}
-};
-
 /// @brief The statement form of `if` – `else` is optional, no value is produced.
 /// 
 /// @example

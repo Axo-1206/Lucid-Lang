@@ -186,112 +186,74 @@ using ParamGroup = std::vector<ParamAST*>;
 
 // ─── FuncDeclAST ──────────────────────────────────────────────────────────
 
-/// @brief Represents a function declaration.
-/// 
-/// @example
-///   const add (a int)(b int) -> int = { return a + b }
-///   const makeAdder (base int) -> (int) -> int = { ... }
-///   const sum (nums ...int) -> int = { ... }
-/// 
-/// ─── Closures ──────────────────────────────────────────────────────────────
-/// A FuncDeclAST can also be a closure if it captures variables from its
-/// enclosing scope. When this happens, the function behaves like an
-/// anonymous function with a name.
-/// 
-/// Example of a nested function that forms a closure:
-/// ```lucid
-/// const makeCounter () -> () -> int = {
-///     let count int = 0;
-///     const counter () -> int = {   ← This is a FuncDeclAST that captures 'count'
-///         count = count + 1;
-///         return count;
-///     };
-///     return counter;
-/// }
-/// ```
+/// @brief A named function declaration — a binding whose value is a function.
+///
+/// ─── Design: Init Is an Expression, Not a Body ─────────────────────────
+///
+/// A `FuncDeclAST` is structurally similar to a `VarDeclAST`: it binds a
+/// name to a value of a declared type. The differences are:
+///
+///   1. The declared type is always a `FuncTypeAST` (never nullable,
+///      never fallible — see grammar: `?`/`!` on function types is
+///      forbidden).
+///   2. It carries `genericParams`.
+///   3. Its initializer may be an `AnonFuncExprAST` (for a block body),
+///      a reference expression (for a body that names another function),
+///      or any other expression producing a value of the function type.
+///
+/// Earlier revisions stored the body directly on this node as a
+/// `StmtAST*`, which forced three workarounds: a second node type
+/// (`FuncRefStmtAST`) to represent a reference body, a synthesized
+/// `closureView` node to feed the body to CodeGen's closure-lowering
+/// path, and a duplicated set of capture fields (`captures`, `hasClosure`,
+/// `isReturned`) that had to be kept in sync with the corresponding
+/// fields on `AnonFuncExprAST`. All three are removed by the current shape.
+///
+/// ─── Reassignment ──────────────────────────────────────────────────────
+/// `f = expr;` replaces `init` with the new expression. It follows the
+/// ordinary `assign_stmt` rules: `f` must be `let`, and the expression
+/// must evaluate to a value assignable to the declared `funcType`.
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────────
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
+
+    /// The declared function type — parsed from the declaration header.
+    /// Remains fixed across reassignment; only `init` changes.
     FuncTypeAST* funcType = nullptr;
-    StmtAST* body;
-    
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
-    bool isForeignFunction = false;    // True if @[foreign] attribute is present
-    bool isInline = false;             // from @[inline]
-    bool isNoInline = false;           // from @[noinline]
-    
-    /// Variables captured by this function (if it's a closure).
-    /// Populated by capture analysis during semantic analysis.
-    ArenaSpan<CapturedVariable> captures;
-    bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
-    bool isReturned = false;    /// True if this function is returned from its parent
 
-    /// ─── Closure View (set by Sema during capture analysis) ────────────────
-    /// When this function captures variables from outer scopes
-    /// (`hasClosure == true`), Sema synthesizes an AnonFuncExprAST that
-    /// shares this function's funcType, body, and captures, and stores it
-    /// here. CodeGen reads it and hands it to lowerClosure — lowerClosure's
-    /// signature accepts AnonFuncExprAST*, and CodeGen has no arena to
-    /// allocate one.
+    /// The initializer — an expression producing a value of `funcType`.
     ///
-    /// ─── Invariants ────────────────────────────────────────────────────────
-    ///   - `closureView != nullptr` iff `hasClosure == true`.
-    ///   - `closureView->funcType  == this->funcType`
-    ///   - `closureView->body      == this->body`
-    ///   - `closureView->captures` is the same ArenaSpan as `this->captures`
-    ///     (pointer-equal, not a copy — see below).
-    ///   - `closureView->hasClosure == true`
-    ///   - `closureView->isReturned == this->isReturned` at synthesis time
-    ///     (may diverge later if `isReturned` changes; CodeGen does not read
-    ///     it from the view).
-    ///
-    /// ─── Why "View" and Not "SynthesizedNode" ──────────────────────────────
-    /// The name reflects that this is a *view* of the same logical closure
-    /// data, shaped for a different consumer:
-    ///   - The FuncDeclAST remains the source of truth.
-    ///   - The view shares the underlying CapturedVariable span with the
-    ///     FuncDeclAST — there is exactly one capture list, reachable from
-    ///     either node.
-    ///   - Only the CodeGen output slots on the view (closureFunction,
-    ///     environmentType, llvmValue) are distinct, because they belong to
-    ///     the lowering, not the declaration.
-    ///
-    /// ─── Why Sema Builds It (Not CodeGen) ──────────────────────────────────
-    /// CodeGen has no ASTArena — AST nodes are allocated by the parser and
-    /// Sema. Sema has the arena, and it is already walking the exact captures
-    /// at exactly the right moment (in analyzeCaptures, below). Building the
-    /// view here avoids plumbing an arena into CodeGenContext, which would
-    /// break the "AST is immutable after Sema" invariant.
-    ///
-    /// ─── Generic Instantiation Caveat ──────────────────────────────────────
-    /// createInstantiatedFunction (in sema/context/Generic.cpp) currently
-    /// does NOT propagate closureView across instantiation. A specialized
-    /// generic function whose template captured will end up with
-    /// `hasClosure == true` and `closureView == nullptr`. CodeGen's
-    /// lowerNormalFunctionDecl treats this as an unsupported case and emits
-    /// a clear diagnostic (task 1.2b). Handling capturing generics is a
-    /// follow-up phase.
-    ///
-    /// @see analyzeCaptures(FuncDeclAST*, SemaContext&) in
-    ///      src/sema/support/CaptureAnalysis.cpp
-    /// @see lowerNormalFunctionDecl in src/codegen/CodeGenDecl.cpp
-    AnonFuncExprAST* closureView = nullptr;
+    ///   - Block-body declaration: an `AnonFuncExprAST` wrapping the block,
+    ///     its `funcType` set from this declaration's `funcType`.
+    ///   - Reference body: the reference expression itself
+    ///     (`IdentifierExprAST`, `ModuleAccessExprAST`, `CallExprAST`, ...).
+    ///   - Reassignment: replaced with the new expression.
+    /// NOTE: init != nullptr for all non-foreign functions.
+    ExprAST* init = nullptr;
 
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
-    InternedString mangledName;        // Mangled name for AOT compilation
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    bool isForeignFunction = false;   // @[foreign] isForeignFunction == false implies init != nullptr
+    bool isInline = false;            // @[inline]
+    bool isNoInline = false;          // @[noinline]
+
+    // No `captures`, `hasClosure`, `isReturned`, or `closureView`.
+    // Those live on `init` when `init` is an `AnonFuncExprAST`.
+
+    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
+    InternedString mangledName;
     llvm::Function* llvmFunction = nullptr;
 
-    // ─── Constructor ─────────────────────────────────────────────────────
-    FuncDeclAST(InternedString n, DeclKeyword kw, 
+    // ─── Constructor ────────────────────────────────────────────────────
+    FuncDeclAST(InternedString n, DeclKeyword kw,
                 ArenaSpan<GenericParamDeclAST*> params,
-                FuncTypeAST* ft, StmtAST* b)
+                FuncTypeAST* ft, ExprAST* i)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
-        , funcType(ft)
         , genericParams(params)
-        , body(b) {}
-        
+        , funcType(ft)
+        , init(i) {}
+
     bool isGeneric() const { return !genericParams.empty(); }
 };
 
@@ -328,45 +290,54 @@ struct EnumVariantAST : ValueDeclAST {
 
 // ─── FieldDeclAST ─────────────────────────────────────────────────────────
 
-/// @brief Represents a struct field, optionally with a default value and const-ness.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// The semantic pass must enforce the following rules:
-/// 1. **No Nullable/Fallible**: If `isConst` is true, `type` must not be
-///    `NullableTypeAST` or `FallibleTypeAST`. Emit a compile error if it is.
-/// 2. **Assignment Rejection**: Any assignment to a `const` field through
-///    field access (`struct.field = value`) must be rejected with a compile error.
-/// 3. **Deep Immutability**: `const` on struct declaration is not transitive 
-///    to inner struct fields.
-/// 
-/// NOTE: the default value rule is the same for both const/let keywords.
-///       The const keyword enforces immutability after declaration, but the
-///       default value will override the default value. The declared keyword
-///       does not matter for default values.
+/// @brief A struct field — a typed slot, optionally with a default value.
+///
+/// ─── Design: Same Shape as FuncDeclAST, for the Same Reason ────────────
+///
+/// A struct field is not a declaration — it's a *slot* in the struct's
+/// layout. It has no generic parameters of its own (the grammar forbids
+/// this: a field may only be generic over the struct's own parameters).
+/// When a field's type is a function type and the field supplies a
+/// block-body default, that block is parsed into an `AnonFuncExprAST`
+/// (with a synthesized `self` parameter prepended by the parser) and
+/// stored as `defaultVal`. This is the same pattern as `FuncDeclAST`:
+/// the block body becomes an expression, and everything downstream
+/// treats it uniformly.
+///
+/// Earlier revisions stored block-body defaults separately as a
+/// `StmtAST* defaultBody`, forcing a split between "value default" and
+/// "body default" that duplicated the same machinery `FuncDeclAST` had
+/// before its own redesign. The current shape removes that split.
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    StmtAST* defaultBody;   // Block body default (for function fields)
-    const bool isConstField;      // True if field is marked `const` in struct
-
+    /// The field's initializer, if any.
+    ///
+    ///   - Non-function field: any expression producing a value of `type`.
+    ///   - Function field, block-body default: an `AnonFuncExprAST` whose
+    ///     `funcType` is `type` with a synthesized `self: &StructName`
+    ///     parameter prepended.
+    ///   - Function field, expression default: any expression producing
+    ///     a value of `type`.
+    ///   - No default: `nullptr`.
     ExprAST* defaultVal = nullptr;
 
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    size_t fieldIndex = 0;        // Position in struct layout
-    
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::Type* llvmType = nullptr;   // LLVM type of this field
-    uint64_t byteOffset = 0;          // Byte offset (from LLVM DataLayout)
+    const bool isConstField;   // `const` modifier on the field
 
-    // ─── Constructor ─────────────────────────────────────────────────────
-    FieldDeclAST(InternedString n, TypeAST* t, ExprAST* dv, 
-                 StmtAST* db, bool isConstField)
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    size_t fieldIndex = 0;     // position in struct layout
+
+    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
+    llvm::Type* llvmType = nullptr;
+    uint64_t byteOffset = 0;
+
+    // ─── Constructor ────────────────────────────────────────────────────
+    FieldDeclAST(InternedString n, TypeAST* t, ExprAST* dv, bool isConstField)
         : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let, t)
-        , defaultBody(db)
-        , isConstField(isConstField)
-        , defaultVal(dv) {}
-    
+        , defaultVal(dv)
+        , isConstField(isConstField) {}
+
     bool isConst() const { return isConstField; }
 };
 

@@ -721,14 +721,30 @@ struct ComposeExprAST : ExprAST {
 
 // ─── AnonFuncExprAST ─────────────────────────────────────────────────────
 
-/// @brief An anonymous function expression – a function value without a name.
-/// 
-/// @example
-///   (x int) -> int { return x * 2 }
-///   (a int)(b int) -> int { return a + b }   – adjacent groups in bound_cluster
-/// 
-/// Like FuncDeclAST, the bound_cluster groups are tracked separately from the
-/// function type.
+//// @brief An anonymous function expression — the only node that holds a
+///        function body.
+///
+/// ─── Design: The Sole Body-Holder ──────────────────────────────────────
+/// A function body exists in exactly one place in the AST: here. A named
+/// function declaration (`FuncDeclAST`) with a block body is parsed into
+/// an `AnonFuncExprAST` and stored as the declaration's initializer. A
+/// field with a block-body default is parsed the same way. This node is
+/// what CodeGen's closure-lowering machinery consumes directly, with no
+/// adapter and no synthesized "view" node.
+///
+/// ─── Type Comes From the Node Itself ───────────────────────────────────
+/// This node is self-typed: `funcType` is the signature. When a body is
+/// borrowed from a declaration header (a block-body function declaration),
+/// the parser sets `funcType` from that header. When a body is written
+/// inline (a `func_literal`), the node carries its own signature.
+///
+/// Sema checks compatibility (`funcType` vs. the declaration site's
+/// declared type) as an ordinary assignment, not an inference step.
+///
+/// ─── Captures Are Lexical ──────────────────────────────────────────────
+/// `captures` holds `CapturedVariable` entries — see that struct for why
+/// they identify captures by name + lexical depth rather than by a
+/// declaration pointer.
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
@@ -736,18 +752,24 @@ struct AnonFuncExprAST : ExprAST {
     FuncTypeAST* funcType = nullptr;
     StmtAST* body = nullptr;
 
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    /// Variables captured by this closure, if any. Empty for a
+    /// non-capturing function.
+    ///
+    /// Invariant: `hasClosure == (captures.size() > 0)`.
     ArenaSpan<CapturedVariable> captures;
     bool hasClosure = false;
+
+    /// True if this closure is returned from its enclosing function, and
+    /// therefore must be heap-allocated rather than scope-confined.
     bool isReturned = false;
-    
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+
+    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
     llvm::Function* closureFunction = nullptr;
     llvm::StructType* environmentType = nullptr;
 
     bool hasParams() const { return funcType && !funcType->params.empty(); }
 
-    // ─── Constructor ─────────────────────────────────────────────────────
     AnonFuncExprAST(FuncTypeAST* ft, StmtAST* b)
         : ExprAST(ASTKind::AnonFuncExpr), funcType(ft), body(b) {}
 };

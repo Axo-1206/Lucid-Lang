@@ -145,7 +145,6 @@ struct DoWhileStmtAST;
 struct ReturnStmtAST;
 struct BreakStmtAST;
 struct ContinueStmtAST;
-struct FuncRefStmtAST;
 
 // Root
 struct ModuleAST;
@@ -465,46 +464,72 @@ enum class ValueState {
 // CapturedVariable — Information about a variable captured by a closure.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a variable captured by a closure.
-/// 
-/// This struct is populated by Sema during capture analysis and used by
-/// CodeGen to generate the closure environment.
-/// 
-/// ─── Why This Is a Distinct Struct, Not `ArenaSpan<ValueDeclAST*>` ─────────
-/// Every field below (`byReference`, `index`, `envSlot`) is a property of the
-/// *(this closure, this declaration)* pair, not of the declaration alone —
-/// the same `ValueDeclAST` may be captured mutably by one closure and
-/// read-only by another, and will generally have a different `index`/
-/// `envSlot` in each closure's own environment struct. None of this can be
-/// hoisted onto `ValueDeclAST` itself without either storing a list keyed by
-/// capturing closure on every declaration (worse: declarations vastly
-/// outnumber closures, and most are never captured by anything) or losing
-/// the information outright.
-/// 
-/// @field decl          The declaration of the captured variable.
-/// @field byReference   True if this closure may write to the captured
-///                      variable, and therefore must share one heap slot
-///                      with every other holder (the enclosing frame, and
-///                      any other closure capturing the same declaration).
-///                      False if this closure only reads it, in which case
-///                      it may instead be snapshot-copied into the
-///                      environment at construction time — see the Capture
-///                      Rules note on `AnonFuncExprAST` for when that
-///                      optimization is safe.
-/// @field index         Index in the closure environment (set by Sema).
+/// @brief A variable captured by a closure.
+///
+/// ─── Design: Lexical Identity, Not Pointer Identity ─────────────────────
+///
+/// Earlier revisions identified a captured variable by storing a
+/// `ValueDeclAST*` pointing at the declaration node it resolved to. That
+/// pointer went stale the moment a generic template was substituted: the
+/// specialized body contains freshly-built declaration nodes, but the
+/// capture list still pointed at the template's originals.
+///
+/// This struct now identifies a capture by two purely lexical facts:
+///
+///   - `name`        — the variable's source identifier
+///   - `lexicalDepth`— how many enclosing function scopes up it lives,
+///                     counted from the closure's own function scope
+///
+/// Both are invariant under generic substitution. Substitution rewrites
+/// type references and rebuilds expression nodes, but it never renames a
+/// variable and never changes scope structure. A capture list built
+/// against the template is therefore byte-identical to the one the
+/// specialized function needs — `substituteExpr`'s AnonFuncExprAST branch
+/// copies it verbatim, and that copy is correct.
+///
+/// CodeGen resolves a capture by walking `lexicalDepth` function scopes
+/// up from the closure's own scope and looking up `name` there, in the
+/// *current* lowering context. There is no fixed node to go stale.
+///
+/// ─── Why This Is a Distinct Struct, Not `ArenaSpan<ValueDeclAST*>` ──────
+/// Every field is a property of the *(this closure, this declaration)*
+/// pair, not of the declaration alone — the same variable may be captured
+/// mutably by one closure and read-only by another, and will generally
+/// have a different `index`/`envSlot` in each closure's own environment
+/// struct.
 struct CapturedVariable {
-    ValueDeclAST* decl = nullptr;
+    // ─── Lexical Identity (invariant under generic substitution) ───────
+    InternedString name;
+    uint32_t lexicalDepth = 0;
+
+    // ─── Capture Flags (computed once by capture analysis) ─────────────
+    /// True if this closure may write to the captured variable, and
+    /// therefore must share one heap slot with every other holder (the
+    /// enclosing frame, and any other closure capturing the same
+    /// declaration). False if the closure only reads it, in which case
+    /// it may instead be snapshot-copied into the environment at
+    /// construction time.
     bool byReference = false;
+
+    /// True if the *value* being captured is itself a closure — meaning
+    /// the environment slot must hold a fat pointer `{ func, env }` and
+    /// the closure's environment must be retained, rather than holding
+    /// a bare function pointer.
+    ///
+    /// Conservative: `true` for function-typed parameters and struct
+    /// fields where the actual value isn't known at compile time, so
+    /// CodeGen can emit a runtime shape check.
+    bool isClosureValue = false;
+
+    // ─── Environment Layout (set by Sema, per closure) ─────────────────
+    /// Index of this capture's slot in the owning closure's environment
+    /// struct. Assigned on insert; distinct for each closure that
+    /// captures the same variable.
     size_t index = 0;
 
-    // | Field                                           | Purpose                                                                 |
-    // | ----------------------------------------------- | ----------------------------------------------------------------------- |
-    // | `hasClosure` on `FuncDeclAST`/`AnonFuncExprAST` | "This function is a closure (it has captures)"                          |
-    // | `isClosureValue` on `CapturedVariable`          | "The value we're capturing is a closure (it needs environment storage)" |
-    bool isClosureValue = false;
-    
-    // ─── CodeGen Annotations ──────────────────────────────────────────
-    llvm::Value* envSlot = nullptr;   // LLVM slot in the environment
+    // ─── CodeGen Annotation (set during lowering) ──────────────────────
+    /// The LLVM value holding this capture's slot in the environment.
+    llvm::Value* envSlot = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
