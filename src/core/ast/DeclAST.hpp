@@ -219,7 +219,6 @@ struct FuncDeclAST : ValueDeclAST {
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────────
     bool isForeignFunction = false;    // True if @[foreign] attribute is present
-    bool isErased = false;             // true = type-erased (@[erased]), false = specialized (default)
     bool isInline = false;             // from @[inline]
     bool isNoInline = false;           // from @[noinline]
     
@@ -280,15 +279,9 @@ struct FuncDeclAST : ValueDeclAST {
     /// @see lowerNormalFunctionDecl in src/codegen/CodeGenDecl.cpp
     AnonFuncExprAST* closureView = nullptr;
 
-    // ─── Type-Erased Generic Support (only used when isErased == true) ──
-    /// @brief The erased function name for type-erased generics (@[erased]).
-    InternedString erasedName;
-    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
     llvm::Function* llvmFunction = nullptr;
-    llvm::Function* erasedFunction = nullptr;      // set by CodeGen
-    llvm::FunctionType* erasedFunctionType = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
@@ -410,14 +403,9 @@ struct StructDeclAST : TypeDeclAST {
     ArenaSpan<NamedTypeAST*> traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
     
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
-    bool isErased = false; // true = type-erased (@[erased]), false = specialized (default)
-    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
     llvm::StructType* llvmType = nullptr;
     InternedString mangledName;        // Mangled name for AOT compilation
-    InternedString erasedName;
-    llvm::StructType* erasedStructType = nullptr;  // set by CodeGen
     
     // Physical layout - computed by CodeGen using LLVM DataLayout
     uint64_t totalSize = 0;

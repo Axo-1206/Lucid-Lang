@@ -176,9 +176,6 @@ struct StructLiteralExprAST : ExprAST {
     /// @brief The resolved struct declaration (template or specialized).
     StructDeclAST* resolvedDecl = nullptr;
 
-    /// @brief True if this is a type-erased instantiation (@[erased]).
-    bool isErased = false;
-
     // ─── Constructor ─────────────────────────────────────────────────────
     StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
         : ExprAST(ASTKind::StructLiteralExpr), typeName(n), genericArgs(args), inits(in) {}
@@ -339,10 +336,6 @@ struct CallExprAST : ExprAST {
     // REMOVED: ArenaSpan<TypeAST*> genericArgs;  // redundant – callee already has them
     ArenaSpan<ExprAST*> args;
     const bool hasArgPack = false;    // true for `fn(args)!`
-
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────────
-    /// @brief True if this is a type-erased generic call (@[erased]).
-    bool isErasedCall = false;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     CallExprAST(bool a) 
