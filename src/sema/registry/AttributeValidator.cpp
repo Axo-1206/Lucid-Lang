@@ -62,27 +62,6 @@ bool validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 2. Check: Is this attribute only for generic declarations? ──────
-    if (info->appliesToGenericOnly) {
-        bool isGeneric = false;
-        if (owner->isa<FuncDeclAST>()) {
-            isGeneric = !owner->as<FuncDeclAST>()->genericParams.empty();
-        } else if (owner->isa<StructDeclAST>()) {
-            isGeneric = !owner->as<StructDeclAST>()->genericParams.empty();
-        }
-        
-        if (!isGeneric) {
-            ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
-                                  "attribute '@", ctx.pool.lookup(attr->name),
-                                  "' can only be applied to generic declarations");
-            ctx.diagnostics.note(attr,
-                                 "'", ctx.pool.lookup(owner->name),
-                                 "' has no generic parameters. Remove '@", 
-                                 ctx.pool.lookup(attr->name), "'.");
-            return false;
-        }
-    }
-
     std::string name = ctx.pool.lookup(attr->name);
 
     // ─── Dispatch to specific validator ────────────────────────────────────

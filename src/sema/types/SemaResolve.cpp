@@ -223,9 +223,10 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
             }
             
             // ─── Safely cast the resolved declaration ──────────────────────────
-            // The resolvedDecl should be either:
-            //   - For specialized (default): a specialized StructDeclAST
-            //   - For type-erased (@[erased]): the original StructDeclAST (template)
+            // The resolvedDecl is always a specialized StructDeclAST — the
+            // specialization-only path in resolveGenericInstantiation guarantees
+            // it. The isa check is defensive against future changes to
+            // GenericResolution.
             if (!resolution.resolvedDecl->isa<TypeDeclAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
                                       "generic instantiation of '", ctx.pool.lookup(type->name),

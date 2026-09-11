@@ -41,10 +41,6 @@ bool validateDeprecated(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
 /// @brief Validate @[inline] and @[noinline] attributes.
 bool validateInlineHint(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
 
-/// @brief Validate @[erased] attribute (only on generic functions/structs).
-/// This forces type erasure (tagged slots) instead of the default specialization.
-bool validateErased(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
-
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 /// @brief Validate attribute argument count.

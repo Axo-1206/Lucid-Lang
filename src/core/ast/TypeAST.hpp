@@ -210,15 +210,6 @@ struct PrimitiveTypeAST : TypeAST {
 /// The semantic pass resolves the name against the symbol table and verifies
 /// the argument count matches the declaration.
 /// 
-/// ## Semantic Annotation: `isGenericParam`
-/// 
-/// Set to `true` by `TypeResolver` when the name matches a generic type parameter
-/// declared on the enclosing declaration (e.g., `T` in `struct Box<T>` or `const process<T>`).
-/// This distinguishes abstract parameters like `T` from concrete types like `Circle`.
-/// 
-/// Codegen uses this flag to skip instantiation collection for abstract uses –
-/// `InstKey{"Box", ["T"]}` is meaningless and must not be recorded.
-/// 
 /// @note Named types hold generic arguments, not generic parameters.
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
@@ -232,9 +223,14 @@ struct NamedTypeAST : TypeAST {
     /// 
     /// This is set by `resolveNamedType()` during semantic analysis.
     /// It can be:
-    ///   - For @[specialize]: a specialized StructDeclAST (e.g., Box_int)
-    ///   - For type-erased: the template StructDeclAST (e.g., Box<T>)
-    ///   - For non-generic: the original StructDeclAST
+    ///   - For a generic instantiation: the specialized StructDeclAST
+    ///     produced by resolveGenericInstantiation (e.g., Box_int).
+    ///   - For a non-generic type: the original StructDeclAST / EnumDeclAST /
+    ///     TraitDeclAST.
+    ///
+    /// A generic parameter reference (e.g. `T` inside `struct Box<T>`) is
+    /// resolved to the GenericParamDeclAST itself; Sema treats that case
+    /// separately from a concrete named type — see resolveNamedType.
     TypeDeclAST* resolvedDecl = nullptr;
 
     explicit NamedTypeAST(InternedString n)

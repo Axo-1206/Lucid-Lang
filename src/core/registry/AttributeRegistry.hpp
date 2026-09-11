@@ -18,16 +18,14 @@ struct AttributeInfo {
     bool requiresStringArgs = true;
     size_t minArgs = 0;
     size_t maxArgs = 0;
-    bool appliesToGenericOnly = false;  // For the generic-specific validation
     std::unordered_set<ASTKind> allowedKinds;  // set of allowed declaration kinds
     
     AttributeInfo() = default;
-    AttributeInfo(InternedString n, bool hasArgs, bool reqStrArgs,
-                  size_t min, size_t max, bool genericOnly,
+        AttributeInfo(InternedString n, bool hasArgs, bool reqStrArgs,
+                                    size_t min, size_t max,
                   std::initializer_list<ASTKind> kinds)
         : name(n), canHaveArgs(hasArgs), requiresStringArgs(reqStrArgs),
-          minArgs(min), maxArgs(max), appliesToGenericOnly(genericOnly),
-          allowedKinds(kinds) {}
+                    minArgs(min), maxArgs(max), allowedKinds(kinds) {}
 };
 
 /// @brief Attribute entry for the data table.
@@ -50,7 +48,6 @@ public:
     size_t getMinArgs(InternedString name) const;
     size_t getMaxArgs(InternedString name) const;
     bool requiresStringArgs(InternedString name) const;
-    bool appliesToGenericOnly(InternedString name) const;
 
     /// @brief Check if an attribute can be applied to a declaration kind.
     bool isAllowedOnDecl(InternedString attrName, ASTKind declKind) const {

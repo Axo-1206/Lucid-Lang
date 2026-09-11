@@ -50,12 +50,6 @@ static const AttributeEntry ATTRIBUTE_TABLE[] = {
         ASTKind::FuncDecl
     }},
     
-    // Erased on generic functions and generic structs
-    // This forces type erasure (tagged slots) instead of the default specialization
-    {"erased",     false, true, 0, 0, {
-        ASTKind::FuncDecl,
-        ASTKind::StructDecl
-    }},
 };
 
 static constexpr size_t ATTRIBUTE_COUNT = sizeof(ATTRIBUTE_TABLE) / sizeof(ATTRIBUTE_TABLE[0]);
@@ -78,7 +72,6 @@ AttributeRegistry::AttributeRegistry(StringPool& pool) : m_pool(pool) {
             entry.requiresStringArgs,
             entry.minArgs,
             entry.maxArgs,
-            false,  // appliesToGenericOnly - handled separately in validator
             entry.allowedKinds
         );
     }

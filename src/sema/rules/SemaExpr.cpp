@@ -1233,22 +1233,6 @@ TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx) {
             expr->isConst = false;
             return ctx.getUnknownType();
         }
-
-        bool validGenericArg = true;
-        if (method == builtins::ArenaMethodKind::Alloc) {
-            validGenericArg = validateConcreteTypeForArenaAlloc(genericArg, expr, ctx);
-        } else if (method == builtins::ArenaMethodKind::Space ||
-                   method == builtins::ArenaMethodKind::CanFit) {
-            validGenericArg = validateConcreteTypeForArenaSpace(
-                genericArg, expr, ctx, ctx.pool.lookup(expr->methodName));
-        }
-        if (!validGenericArg) {
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->isLValue = false;
-            expr->isConst = false;
-            return ctx.getUnknownType();
-        }
     }
     
     // ─── Step 5: For instance methods, validate LHS ────────────────────

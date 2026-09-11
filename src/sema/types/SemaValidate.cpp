@@ -384,14 +384,6 @@ bool validateGenericArguments(ArenaSpan<TypeAST*> args,
         }
     }
 
-    if (allValid && useSite && useSite->isa<NamedTypeAST>()) {
-        NamedTypeAST* namedUseSite = useSite->as<NamedTypeAST>();
-        if (namedUseSite->resolvedDecl &&
-            !validateNestedGenericCompatibility(namedUseSite->resolvedDecl, args, ctx)) {
-            allValid = false;
-        }
-    }
-
     return allValid;
 }
 
