@@ -53,32 +53,10 @@ InternedString generateMangledNameForGeneric(
     SemaContext& ctx
 );
 
-/// @brief Generate a mangled name for a generic instantiation from a base name.
-/// 
-/// This is a CONVENIENCE helper that extends an already-mangled base name
-/// with generic arguments. Used internally or for simple cases where the
-/// full declaration context isn't available.
-///
-/// @param baseName The already-mangled base name.
-/// @param typeArgs The concrete type arguments.
-/// @param ctx The semantic context.
-/// @return The extended mangled name.
-InternedString extendMangledNameWithGenericArgs(
-    InternedString baseName,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx
-);
-
 // ─── Core Encoding Functions ─────────────────────────────────────────────
 
 /// @brief Encode a type to a mangled string.
 std::string typeToMangleString(TypeAST* type, SemaContext& ctx);
-
-/// @brief Encode a type to a mangled string with optional substitution.
-/// 
-/// @note This overload uses GenericSubstitution as a const pointer.
-///       The full definition is only required in MangledName.cpp.
-std::string typeToMangleString(TypeAST* type, SemaContext& ctx, const GenericSubstitution* subst);
 
 /// @brief Sanitize a string for use in a mangled name.
 std::string sanitizeForMangledName(const std::string& str);

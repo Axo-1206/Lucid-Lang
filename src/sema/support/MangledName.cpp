@@ -91,26 +91,6 @@ InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx) {
     return buildMangledName(result, ctx);
 }
 
-InternedString generateMangledNameForGeneric(
-    InternedString baseName,
-    const std::vector<TypeAST*>& typeArgs,
-    SemaContext& ctx
-) {
-    if (typeArgs.empty() || !baseName.isValid()) {
-        return baseName;
-    }
-    
-    std::string result = ctx.pool.lookup(baseName);
-    result += "_G";
-    
-    for (size_t i = 0; i < typeArgs.size(); ++i) {
-        if (i > 0) result += "_";
-        result += typeToMangleString(typeArgs[i], ctx);
-    }
-    
-    return ctx.pool.intern(result);
-}
-
 InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
     
@@ -391,22 +371,6 @@ InternedString generateMangledNameForGeneric(DeclAST* decl, const ArenaSpan<Type
     }
     
     return ctx.pool.intern("_L" + result);
-}
-
-InternedString extendMangledNameWithGenericArgs(InternedString baseName, const ArenaSpan<TypeAST*>& typeArgs, SemaContext& ctx) {
-    if (!baseName.isValid() || typeArgs.empty()) {
-        return baseName;
-    }
-    
-    std::string result = ctx.pool.lookup(baseName);
-    result += "_G";
-    
-    for (size_t i = 0; i < typeArgs.size(); ++i) {
-        if (i > 0) result += "_";
-        result += typeToMangleString(typeArgs[i], ctx);
-    }
-    
-    return ctx.pool.intern(result);
 }
 
 } // namespace sema
