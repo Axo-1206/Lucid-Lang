@@ -3,7 +3,6 @@
 
 #include "CodeGenType.hpp"
 #include "core/ASTStrings.hpp"
-#include "../generic/CodeGenGeneric.hpp"
 #include "core/ast/DeclAST.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -180,14 +179,9 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named) {
         if (named->resolvedDecl->isa<StructDeclAST>()) {
             StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();
             
-            // ─── Generic struct (@[erased] path) ──────────────────────────
-            // Sema kept the template with genericParams intact.
-            // CodeGen generates the type-erased version.
-            if (isGenericStruct(structDecl)) {
-                return getOrCreateInstantiatedStruct(structDecl, named->genericArgs, ctx);
-            }
-            
-            // ─── Non-generic struct (or Sema-specialized) ────────────────
+            // Under the specialization-only design, CodeGen receives
+            // concrete StructDeclAST nodes after Sema resolves the type.
+            // Generic instantiation is no longer a CodeGen responsibility.
             return getStructType(ctx, structDecl);
         }
         if (named->resolvedDecl->isa<EnumDeclAST>()) {
@@ -639,11 +633,9 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type) 
                     if (typeDecl->isa<StructDeclAST>()) {
                         StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
                         
-                        if (isGenericStruct(structDecl)) {
-                            // @[erased] path — CodeGen generates erased version
-                            return getOrCreateInstantiatedStruct(structDecl, type->genericArgs, ctx);
-                        }
-                        
+                        // Generic instantiation happens before CodeGen sees this
+                        // declaration; the lowered type is simply the concrete
+                        // struct type for the resolved declaration.
                         return getStructType(ctx, structDecl);
                     }
                     
