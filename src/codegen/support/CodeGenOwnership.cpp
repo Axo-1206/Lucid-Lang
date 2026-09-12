@@ -125,65 +125,66 @@ static bool isStaticStringData(llvm::Value* dataPtr) {
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ownsResource
+// classifyResource
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool ownsResource(ValueDeclAST* decl) {
-    if (!decl || !decl->type) return false;
+ResourceKind classifyResource(ValueDeclAST* decl) {
+    if (!decl || !decl->type) return ResourceKind::None;
 
     TypeAST* type = decl->type;
 
     // ─── Function-typed bindings ─────────────────────────────────────────
-    // A FuncDeclAST with hasClosure owns its env. A FuncDeclAST without
-    // hasClosure is a bare function pointer and owns nothing. A VarDeclAST
-    // never holds a FuncTypeAST in Lucid (the parser's looksLikeFuncDecl
-    // guarantees it), so we don't need a separate VarDeclAST branch.
+    // A FuncDeclAST with hasClosure owns its env (refcounted). A FuncDeclAST
+    // without hasClosure is a bare function pointer and owns nothing. A
+    // VarDeclAST never holds a FuncTypeAST in Lucid (the parser's
+    // looksLikeFuncDecl guarantees it), so no separate VarDeclAST branch.
     if (type->isa<FuncTypeAST>()) {
         if (decl->isa<FuncDeclAST>()) {
-            return decl->as<FuncDeclAST>()->hasClosure;
+            FuncDeclAST* func = decl->as<FuncDeclAST>();
+            bool capturing = func->init
+                && func->init->isa<AnonFuncExprAST>()
+                && func->init->as<AnonFuncExprAST>()->hasClosure;
+            return capturing ? ResourceKind::Refcounted : ResourceKind::None;
         }
-        return false;
+        return ResourceKind::None;
     }
 
     // ─── Strings ─────────────────────────────────────────────────────────
     if (type->isa<PrimitiveTypeAST>()) {
         PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
-        return prim->primitiveKind == PrimitiveKind::String;
+        return prim->primitiveKind == PrimitiveKind::String
+            ? ResourceKind::OwnedBuffer : ResourceKind::None;
     }
 
     // ─── Dynamic arrays ──────────────────────────────────────────────────
-    // Slice ([_]T) and fixed ([N]T) arrays are non-owning; only the
-    // dynamic kind ([*]T) has a heap buffer to release.
     if (type->isa<ArrayTypeAST>()) {
-        return type->as<ArrayTypeAST>()->isDynamic();
+        return type->as<ArrayTypeAST>()->isDynamic()
+            ? ResourceKind::OwnedBuffer : ResourceKind::None;
     }
 
     // ─── Named types (structs) ───────────────────────────────────────────
-    // Phase 5 will add recursive structOwnsResources(StructDeclAST*) here.
-    // Until then, a struct-typed binding is treated as owning nothing, which
-    // matches the current behavior of emitCleanupForTracker and reassign.
-    //
-    // TODO(Phase 5): replace this with structOwnsResources once it exists.
+    // TODO(Phase 5): recurse into fields once structOwnsResources exists.
     if (type->isa<NamedTypeAST>()) {
-        return false;
+        return ResourceKind::None;
     }
 
     // ─── TaggedSlot-wrapped resources (erased path) ──────────────────────
-    // Phase 4 will extend this. Until then, an erased binding is treated as
-    // owning nothing, which matches the current behavior.
-    //
-    // TODO(Phase 4): unwrap the TaggedSlot and recurse on the payload type.
+    // TODO(Phase 4): unwrap the payload type and recurse.
     if (type->isa<NullableTypeAST>() ||
         type->isa<FallibleTypeAST>() ||
         type->isa<CombinedTypeAST>()) {
-        return false;
+        return ResourceKind::None;
     }
 
-    // ─── Everything else ─────────────────────────────────────────────────
-    // Primitives (int, bool, float, char), enums, raw pointers, references,
-    // function types without hasClosure, fixed arrays, slices. None of
-    // these own a heap resource.
-    return false;
+    return ResourceKind::None;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ownsResource
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool ownsResource(ValueDeclAST* decl) {
+    return classifyResource(decl) != ResourceKind::None;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,77 +199,40 @@ void emitRelease(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx) {
     value = loadIfAlloca(value, ctx);
     if (!value) return;
 
-    TypeAST* type = decl->type;
+    switch (classifyResource(decl)) {
+        case ResourceKind::None:
+            return;
 
-    // ─── Closures ────────────────────────────────────────────────────────
-    if (type->isa<FuncTypeAST>()) {
-        // Only a FuncDeclAST with hasClosure owns a fat pointer. A bare
-        // function pointer has no env to release.
-        if (!decl->isa<FuncDeclAST>()) return;
-        if (!decl->as<FuncDeclAST>()->hasClosure) return;
-
-        if (!isClosureShaped(value)) {
-            // The AST says this is a capturing function, but the LLVM
-            // value isn't a fat pointer. That's a CodeGen invariant
-            // violation — every capturing function's value must be
-            // closure-shaped by the time it's marked alive.
-            //
-            // Not asserting here because Phase 1 may produce this state
-            // transiently during the transition. Phase 8 tightens it to
-            // an assert once all call sites are updated.
+        case ResourceKind::Refcounted: {
+            // Closure env: extract field 1, null-checked release.
+            if (!isClosureShaped(value)) {
+                // AST says capturing function; LLVM value isn't a fat
+                // pointer. CodeGen invariant violation. Not asserting yet
+                // (see the original comment for the transition rationale).
+                return;
+            }
+            llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                value, 1, "closure_env_to_release");
+            llvm::Function* releaseFn = ctx.getRuntimeFn(RuntimeFn::ReleaseEnv);
+            emitNullCheckedRelease(envPtr, releaseFn, ctx, "release_env");
             return;
         }
 
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
-            value, 1, "closure_env_to_release");
+        case ResourceKind::OwnedBuffer: {
+            // String or dynamic array: field 0 is the data pointer.
+            if (!isStringOrArrayShaped(value)) return;
+            llvm::Value* dataPtr = ctx.builder.CreateExtractValue(
+                value, 0, "buffer_data_to_release");
 
-        llvm::Function* releaseFn = ctx.getRuntimeFn(RuntimeFn::ReleaseEnv);
-        emitNullCheckedRelease(envPtr, releaseFn, ctx, "release_env");
-        return;
+            // Static string literals are globals, not heap allocations.
+            // Freeing them would corrupt the allocator.
+            if (isStaticStringData(dataPtr)) return;
+
+            llvm::Function* freeFn = ctx.getRuntimeFn(RuntimeFn::Free);
+            emitNullCheckedRelease(dataPtr, freeFn, ctx, "release_buffer");
+            return;
+        }
     }
-
-    // ─── Strings ─────────────────────────────────────────────────────────
-    if (type->isa<PrimitiveTypeAST>()) {
-        PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
-        if (prim->primitiveKind != PrimitiveKind::String) return;
-
-        if (!isStringOrArrayShaped(value)) return;
-
-        llvm::Value* dataPtr = ctx.builder.CreateExtractValue(
-            value, 0, "string_data_to_release");
-
-        // Static string literals are global variables, not heap allocations.
-        // Freeing them would corrupt the allocator.
-        if (isStaticStringData(dataPtr)) return;
-
-        llvm::Function* freeFn = ctx.getRuntimeFn(RuntimeFn::Free);
-        emitNullCheckedRelease(dataPtr, freeFn, ctx, "release_string");
-        return;
-    }
-
-    // ─── Dynamic arrays ──────────────────────────────────────────────────
-    if (type->isa<ArrayTypeAST>()) {
-        if (!type->as<ArrayTypeAST>()->isDynamic()) return;
-
-        if (!isStringOrArrayShaped(value)) return;
-
-        llvm::Value* dataPtr = ctx.builder.CreateExtractValue(
-            value, 0, "array_data_to_release");
-
-        llvm::Function* freeFn = ctx.getRuntimeFn(RuntimeFn::Free);
-        emitNullCheckedRelease(dataPtr, freeFn, ctx, "release_array");
-        return;
-    }
-
-    // ─── Structs with resource fields ────────────────────────────────────
-    // TODO(Phase 5): walk the struct's fields, GEP to each resource-owning
-    // one, load its value, and recurse into emitRelease.
-    //
-    // ─── TaggedSlot-wrapped resources ────────────────────────────────────
-    // TODO(Phase 4): extract the payload pointer, load it as the concrete
-    // resource type, recurse into emitRelease.
-    //
-    // Nothing to do for other types.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,40 +246,24 @@ void emitRetain(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx) {
     value = loadIfAlloca(value, ctx);
     if (!value) return;
 
-    TypeAST* type = decl->type;
+    switch (classifyResource(decl)) {
+        case ResourceKind::None:
+            return;
 
-    // ─── Closures ────────────────────────────────────────────────────────
-    if (type->isa<FuncTypeAST>()) {
-        if (!decl->isa<FuncDeclAST>()) return;
-        if (!decl->as<FuncDeclAST>()->hasClosure) return;
+        case ResourceKind::Refcounted: {
+            if (!isClosureShaped(value)) return;
+            llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                value, 1, "closure_env_to_retain");
+            llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+            emitNullCheckedRelease(envPtr, retainFn, ctx, "retain_env");
+            return;
+        }
 
-        if (!isClosureShaped(value)) return;
-
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
-            value, 1, "closure_env_to_retain");
-
-        llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
-        emitNullCheckedRelease(envPtr, retainFn, ctx, "retain_env");
-        return;
+        case ResourceKind::OwnedBuffer:
+            // Deep-copy semantics: the destination already owns a fresh
+            // allocation. No retain needed. Documented, not omitted.
+            return;
     }
-
-    // ─── Strings, dynamic arrays ─────────────────────────────────────────
-    // No retain needed. When a string or array is copied into a new binding,
-    // the copy is a deep copy (a fresh allocation), not a refcount increment.
-    // The new binding owns its own independent buffer and will release it
-    // through its own emitRelease. No shared state, no retain call.
-    //
-    // This branch is documented rather than omitted so future readers
-    // understand why there's no code here, not just that there isn't.
-
-    // ─── Structs with resource fields ────────────────────────────────────
-    // TODO(Phase 5): copy the struct value, walk its fields, and for each
-    // resource-owning field whose value is refcounted (closures), recurse
-    // into emitRetain. Strings and arrays inside structs are deep-copied
-    // when the struct is copied, so no retain is needed for those.
-    //
-    // ─── TaggedSlot-wrapped resources ────────────────────────────────────
-    // TODO(Phase 4): unwrap and recurse.
 }
 
 } // namespace codegen

@@ -188,6 +188,37 @@
 
 namespace codegen {
 
+// ─── ResourceKind ─────────────────────────────────────────────────────────
+
+/// @brief What kind of heap resource, if any, a declaration's value owns.
+///
+/// See the file header's OWNERSHIP MODEL section for the patterns. This
+/// enum is the single classification result: every call site that used to
+/// ask "does this own a resource?" or "which kind?" now asks this one
+/// function and switches on the result.
+///
+/// Phase 4 will add TaggedResource (for T?/T!/T?! wrapping a resource).
+/// Phase 5 will add CompositeStruct (or, more likely, a separate
+/// classification of the struct's fields — see the file header's note).
+/// For now the set is exactly what emitRelease/emitRetain handle.
+enum class ResourceKind {
+    None,          ///< Owns nothing. Release/retain are no-ops.
+    Refcounted,    ///< Closure env. Retain increments; release decrements.
+    OwnedBuffer,   ///< String / dynamic array. Release frees; retain no-op.
+};
+
+/// @brief Classify a declaration's value into one of the resource kinds.
+///
+/// This is the single source of truth for "does this binding own a heap
+/// resource, and if so, which kind?". ownsResource is a one-liner on top
+/// of it; emitRelease and emitRetain switch on it. Adding a new resource
+/// kind means adding an enum value and one case in each of those two
+/// functions — not touching five call sites.
+///
+/// @param decl The declaration. May be null.
+/// @return The resource kind. Null returns None.
+ResourceKind classifyResource(ValueDeclAST* decl);
+
 // ─── ownsResource ─────────────────────────────────────────────────────────
 
 /// @brief Does this declaration's value own a heap resource that must be

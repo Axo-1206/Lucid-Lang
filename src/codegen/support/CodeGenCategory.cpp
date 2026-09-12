@@ -2,6 +2,7 @@
 /// @brief Implementation of the function-category classifier.
 
 #include "CodeGenCategory.hpp"
+#include "core/ast/ExprAST.hpp"
 
 namespace codegen {
 
@@ -11,9 +12,10 @@ FunctionCategory categorizeFunction(ValueDeclAST* decl) {
     // ─── Named functions (FuncDeclAST) ───────────────────────────────────
     if (decl->isa<FuncDeclAST>()) {
         FuncDeclAST* func = decl->as<FuncDeclAST>();
-        return func->hasClosure
-            ? FunctionCategory::NamedCapturing
-            : FunctionCategory::NamedNonCapturing;
+        bool capturing = func->init && func->init->isa<AnonFuncExprAST>() &&
+            func->init->as<AnonFuncExprAST>()->hasClosure;
+        return capturing ? FunctionCategory::NamedCapturing
+                         : FunctionCategory::NamedNonCapturing;
     }
 
     // ─── Anonymous functions (AnonFuncExprAST) ───────────────────────────
