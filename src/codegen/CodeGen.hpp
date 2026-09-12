@@ -116,10 +116,9 @@ void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx);
 //   4. Store in context
 //
 // ─── Generic Strategy ─────────────────────────────────────────────────────
-// Generic declarations use a hybrid strategy:
-//   - DEFAULT: Type-erased (one version with tagged slots)
-//   - OPT-IN (@[specialize]): Monomorphized (one per instantiation)
-// See CodeGenGeneric.hpp for the full generic pipeline.
+// Generics are specialization-only. Sema produces specialized declarations
+// before CodeGen runs; CodeGen never sees an unspecialized generic. There
+// is no type-erased or hybrid path.
 
 // ─── 1. Main Dispatch ──────────────────────────────────────────────────────
 
@@ -143,9 +142,8 @@ void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx);
 ///
 /// ─── Dispatch ────────────────────────────────────────────────────────────
 ///   - Foreign functions:  ExternalLinkage with raw name
-///   - Generic + specialize: Nothing (lazy generation)
-///   - Generic + default:   Erased function with tagged slots
-///   - Normal functions:    Regular function with mangled name
+///   - Capturing fns:      Lowered as a closure via lowerClosure
+///   - Normal functions:   Regular function with mangled name
 ///
 /// @param decl The function declaration.
 /// @param ctx The code generation context.
@@ -162,35 +160,6 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx);
 /// @param ctx The code generation context.
 void lowerForeignFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx);
 
-/// @brief Lower a generic function declaration.
-///
-/// Generic functions are handled differently based on @[specialize]:
-///   - With @[specialize]: Registered for lazy instantiation (Phase 2)
-///   - Without @[specialize]: Type-erased function with tagged slots
-///
-/// @param decl The generic function declaration.
-/// @param ctx The code generation context.
-void lowerGenericFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Lower a normal (non-generic) function declaration.
-///
-/// Creates a regular LLVM function with mangled name and parameter names.
-/// Also sets up closure tracking for `let` functions with captures.
-///
-/// @param decl The function declaration (must not be generic).
-/// @param ctx The code generation context.
-void lowerNormalFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Track a mutable closure function.
-///
-/// For `let` functions that hold closures, creates an alloca to store
-/// the closure value { func_ptr, env_ptr } and marks it alive for cleanup.
-///
-/// @param decl The function declaration (must be `let` with closure).
-/// @param func The LLVM function.
-/// @param ctx The code generation context.
-void trackClosureFunction(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx);
-
 // ─── 3. Function Bodies ───────────────────────────────────────────────────
 
 /// @brief Lower a function body (Phase 2).
@@ -200,86 +169,15 @@ void trackClosureFunction(FuncDeclAST* decl, llvm::Function* func, CodeGenContex
 ///
 /// ─── Dispatch ────────────────────────────────────────────────────────────
 ///   - Foreign functions:  Skipped (no body)
-///   - Generic + specialize: Deferred (lazy instantiation)
-///   - Generic + default:   Erased body with tagged slots
-///   - Normal functions:    Regular body with typed parameters
+///   - Capturing fns:      Skipped (body lowered by lowerClosure)
+///   - Reference-body fns: Skipped (no body of their own)
+///   - Normal functions:   Regular body with typed parameters
 ///
 /// @param decl The function declaration.
 /// @param ctx The code generation context.
 ///
 /// @note Called during Phase 2 (lowerModuleBodies).
 void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Lower a generic function body.
-///
-/// Handles body lowering for generic functions:
-///   - With @[specialize]: Deferred to instantiation time
-///   - Without @[specialize]: Erased body with tagged slot unpacking
-///
-/// @param decl The generic function declaration.
-/// @param ctx The code generation context.
-void lowerGenericFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Lower a normal (non-generic) function body.
-///
-/// Lowers a regular function body with typed parameters.
-///
-/// @param decl The function declaration (must not be generic).
-/// @param ctx The code generation context.
-void lowerNormalFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Internal function to lower a function body.
-///
-/// This is the core body lowering function called for non-generic functions.
-/// It creates the entry block, lowers parameters, and generates the body.
-///
-/// @param decl The function declaration.
-/// @param func The LLVM function.
-/// @param ctx The code generation context.
-void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx);
-
-/// @brief Lower the body of a type-erased generic function.
-///
-/// Type-erased generic functions use opaque pointers for all parameters.
-/// Each parameter is a tagged slot { i8 tag, ptr value }.
-/// This function unpacks the tagged slots and lowers the body.
-///
-/// @param decl The generic function declaration.
-/// @param func The type-erased LLVM function.
-/// @param ctx The code generation context.
-void lowerErasedFunctionBody(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx);
-
-/// @brief Lower a specialized function body for a specific instantiation.
-///
-/// This is called when @[specialize] is used and a concrete instantiation
-/// is needed. It clones the generic function body with type substitutions.
-///
-/// @param funcDecl The generic function declaration.
-/// @param typeArgs The concrete type arguments for this instantiation.
-/// @param specializedFunc The specialized LLVM function.
-/// @param ctx The code generation context.
-void lowerSpecializedFunctionBody(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    llvm::Function* specializedFunc,
-    CodeGenContext& ctx
-);
-
-/// @brief Instantiate a specialized function body for a generic function.
-///
-/// This is called from getOrCreateInstantiatedFunction() when a new
-/// instantiation is needed. It creates the function body with substituted types.
-///
-/// @param funcDecl The generic function declaration.
-/// @param typeArgs The concrete type arguments for this instantiation.
-/// @param specializedFunc The specialized LLVM function to generate the body for.
-/// @param ctx The code generation context.
-void instantiateSpecializedFunctionBody(
-    FuncDeclAST* funcDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    llvm::Function* specializedFunc,
-    CodeGenContext& ctx
-);
 
 // ─── 4. Parameter Lowering ─────────────────────────────────────────────────
 
@@ -350,25 +248,6 @@ void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx);
 /// @param ctx The code generation context.
 void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx);
 
-/// @brief Lower a generic struct declaration.
-///
-/// Handles generic structs based on @[specialize]:
-///   - With @[specialize]: Registered for lazy instantiation
-///   - Without @[specialize]: Type-erased with tagged slots
-///
-/// @param decl The generic struct declaration.
-/// @param ctx The code generation context.
-void lowerGenericStructDecl(StructDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Lower a normal (non-generic) struct declaration.
-///
-/// Creates an LLVM struct type with the mangled name.
-/// Handles self-referential structs via opaque type creation.
-///
-/// @param decl The struct declaration (must not be generic).
-/// @param ctx The code generation context.
-void lowerNormalStructDecl(StructDeclAST* decl, CodeGenContext& ctx);
-
 // ─── 7. Enum Declarations ─────────────────────────────────────────────────
 
 /// @brief Lower an enum declaration to integer constants.
@@ -433,9 +312,6 @@ void lowerExprStmt(ExprStmtAST* stmt, CodeGenContext& ctx);
 
 /// @brief Lower a declaration statement.
 void lowerDeclStmt(DeclStmtAST* stmt, CodeGenContext& ctx);
-
-/// @brief Lower a function reference statement.
-void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx);
 
 // ─── Concurrency Statements ─────────────────────────────────────────────
 

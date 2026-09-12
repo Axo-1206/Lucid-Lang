@@ -102,83 +102,9 @@ struct CodeGenContext {
         size_t scopeDepth = 0;
     };
     std::vector<LoopInfo> loops;
-
-    // ─── TaggedSlot Helpers ──────────────────────────────────────────────
-
-    /// @brief Cached TaggedSlot type.
-    /// 
-    /// TaggedSlot is used for two purposes:
-    ///   1. **Nil/Err State** (T?, T!, T?!): sentinel = 0 (nil), 1 (valid), 2 (err)
-    ///   2. **Type-Erased Generics** (@[erased]): All values are boxed as TaggedSlot* 
-    ///      to allow uniform handling of different types.
-    llvm::StructType* taggedSlotType_ = nullptr;
-
-    /// @brief Box a value into a TaggedSlot for type-erased generic dispatch.
-    /// 
-    /// Creates a TaggedSlot struct with:
-    ///   - sentinel: The state (0 = nil, 1 = valid, 2 = err) — DEFAULT IS 1 (valid)
-    ///   - value: The opaque pointer to the actual value
-    /// 
-    /// ─── Usage ──────────────────────────────────────────────────────────────
-    /// This is used only in the type-erased path (@[erased] generics):
-    ///   - Function arguments: Boxing before calling an erased generic function
-    ///   - Struct fields: Boxing before storing in an erased generic struct
-    /// 
-    /// ─── NOT Used for ──────────────────────────────────────────────────────
-    ///   - Specialized path (default): All types are concrete, no boxing needed
-    ///   - Non-generic code: No boxing needed
-    /// @param value The value to box (will be bitcast to i8*).
-    /// @param sentinel The state (0 = nil, 1 = valid, 2 = err). 
-    ///        Default is 1 (valid).
-    /// @param valueType The LLVM type of the value (for debugging).
-    /// @return A pointer to the allocated TaggedSlot.
-    llvm::Value* boxIntoTaggedSlot(
-        llvm::Value* value,
-        llvm::Value* sentinel,
-        llvm::Type* valueType
-    );
-
-    /// @brief Box a value with a known sentinel (compile-time constant).
-    /// 
-    /// Convenience overload for when the sentinel is known at compile time.
-    /// @param value The value to box.
-    /// @param sentinel The state (0 = nil, 1 = valid, 2 = err).
-    /// @param valueType The LLVM type of the value.
-    /// @return A pointer to the allocated TaggedSlot.
-    llvm::Value* boxIntoTaggedSlot(
-        llvm::Value* value,
-        uint32_t sentinel,
-        llvm::Type* valueType
-    );
-
-    /// @brief Unbox a value from a TaggedSlot.
-    /// 
-    /// @param slotPtr Pointer to the TaggedSlot.
-    /// @param targetType The expected LLVM type of the unboxed value.
-    /// @return The unboxed value, or nullptr on error.
-    llvm::Value* unboxFromTaggedSlot(
-        llvm::Value* slotPtr,
-        llvm::Type* targetType
-    );
-
-    /// @brief Get or create the TaggedSlot type.
-    /// @return The TaggedSlot struct type.
-    llvm::StructType* getTaggedSlotType();
     
     // ─── Current Function ───────────────────────────────────────────────
     llvm::Function* currentFunction = nullptr;
-
-    // ─── Unified Exit Block (for ABI transforms like @[erased] boxing) ───
-    // When returnBlock is non-null, lowerReturnStmt stores the return value
-    // into returnValueAlloca (typed as returnValueType, NOT necessarily
-    // func->getReturnType()) and branches to returnBlock instead of
-    // emitting `ret` directly. This lets a single caller-installed exit
-    // block do ABI-specific work (e.g. boxing into a TaggedSlot for
-    // @[erased] functions) exactly once, regardless of how many return
-    // sites exist in the body. See lowerErasedFunctionBody.
-    llvm::BasicBlock* returnBlock = nullptr;
-    llvm::Value* returnValueAlloca = nullptr;
-    llvm::Type*  returnValueType   = nullptr;
 
     // ─── Null Coalesce Context Stack ──────────────────────────────────
     struct NullCoalesceContext {
