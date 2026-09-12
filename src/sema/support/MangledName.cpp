@@ -5,7 +5,6 @@
 #include "../context/Generic.hpp"
 #include "core/ASTStrings.hpp"
 
-#include <sstream>
 #include <algorithm>
 #include <cctype>
 
