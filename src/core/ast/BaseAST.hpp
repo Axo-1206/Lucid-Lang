@@ -476,8 +476,8 @@ enum class ValueState {
 ///
 /// This struct now identifies a capture by two purely lexical facts:
 ///
-///   - `name`        — the variable's source identifier
-///   - `lexicalDepth`— how many enclosing function scopes up it lives,
+///   - `name`          — the variable's source identifier
+///   - `functionDepth` — how many enclosing function scopes up it lives,
 ///                     counted from the closure's own function scope
 ///
 /// Both are invariant under generic substitution. Substitution rewrites
@@ -487,7 +487,7 @@ enum class ValueState {
 /// specialized function needs — `substituteExpr`'s AnonFuncExprAST branch
 /// copies it verbatim, and that copy is correct.
 ///
-/// CodeGen resolves a capture by walking `lexicalDepth` function scopes
+/// CodeGen resolves a capture by walking `functionDepth` function scopes
 /// up from the closure's own scope and looking up `name` there, in the
 /// *current* lowering context. There is no fixed node to go stale.
 ///
@@ -500,7 +500,7 @@ enum class ValueState {
 struct CapturedVariable {
     // ─── Lexical Identity (invariant under generic substitution) ───────
     InternedString name;
-    uint32_t lexicalDepth = 0;
+    uint32_t functionDepth = 0;
 
     // ─── Capture Flags (computed once by capture analysis) ─────────────
     /// True if this closure may write to the captured variable, and

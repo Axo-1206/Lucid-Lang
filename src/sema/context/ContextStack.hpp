@@ -246,6 +246,22 @@ struct ContextFrame {
     ContextKind kind;
     BaseAST* node = nullptr;
 
+    // ─── Scope Correlation ────────────────────────────────────────────────
+    /// Index into SemaContext::scopes identifying the symbol-table scope
+    /// this frame corresponds to, or SIZE_MAX if this frame has no scope.
+    ///
+    /// Set at push time by pushAnonFunction(), which are called by 
+    /// ScopedFunction after its SymbolScope member has pushed 
+    /// the function's parameter scope. Only function frames
+    /// currently carry a scope index; other frame kinds leave this at
+    /// SIZE_MAX.
+    ///
+    /// Used by capture analysis to correlate a function context on this
+    /// stack with the symbols declared in that function's scope, so it can
+    /// determine which function a captured name belongs to and how many
+    /// function boundaries are between that function and the closure.
+    size_t scopeDepth = SIZE_MAX;
+
     // ─── Return Type (FuncBody) ──────────────────────────────────────────
     TypeAST* expectedReturnType = nullptr;
 
@@ -317,11 +333,19 @@ struct ContextFrame {
 ///    before falling back to the declaration's type.
 class ContextStack {
 public:
+
+    /// @brief Direct read-only access to the frame stack, innermost last.
+    ///
+    /// Used by capture analysis to walk function contexts for function-depth
+    /// computation. Callers should filter by `frame.kind` themselves — this
+    /// accessor exposes the raw stack so any future caller with a different
+    /// filtering need can use it too.
+    const std::vector<ContextFrame>& frames() const { return m_stack; }
+
     // ─── Push/Pop ────────────────────────────────────────────────────────
 
     void push(ContextKind kind, BaseAST* node);
-    void pushFunction(FuncDeclAST* node, TypeAST* returnType);
-    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType);
+    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType, size_t scopeDepth);
     void pushLoop(StmtAST* loopStmt);
     void pushSwitch(SwitchStmtAST* switchStmt);
     void pushBlock(BlockStmtAST* block);
@@ -388,7 +412,6 @@ public:
 
     /// @brief Get the innermost function node (FuncDeclAST or AnonFuncExprAST).
     BaseAST* getInnermostFunctionNode() const;
-
 
 private:
     // ─── Members ──────────────────────────────────────────────────────────

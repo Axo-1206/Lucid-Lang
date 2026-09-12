@@ -2,9 +2,8 @@
 /// @brief Analyzes closures to detect captured variables and escape analysis.
 ///
 /// Capture analysis is performed during semantic analysis of anonymous functions
-/// (closures) and nested function declarations. It walks the function body's AST
-/// and identifies all IdentifierExprAST nodes that reference variables from outer
-/// scopes, marking them as captures.
+/// It walks the function body's AST and identifies all IdentifierExprAST 
+// nodes that reference variables from outer scopes, marking them as captures.
 ///
 /// ## Key Responsibilities
 ///
@@ -33,7 +32,6 @@
 ///
 /// @related_files
 ///   - src/sema/rules/SemaExpr.cpp - resolveAnonFuncExpr calls analyzeCaptures
-///   - src/sema/rules/SemaDecl.cpp - resolveFuncDecl calls analyzeCaptures
 ///   - src/sema/rules/SemaStmt.cpp - resolveReturnStmt calls markClosureIfEscaping
 ///   - src/codegen/CodeGenClosure.cpp - consumes CapturedVariable list
 
@@ -59,16 +57,6 @@ namespace sema {
 /// @param expr The anonymous function expression to analyze.
 /// @param ctx The semantic context (contains scope information).
 void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx);
-
-/// @brief Analyzes a nested function's body to detect captured variables.
-///
-/// This function walks the AST of the function body, finds all identifier
-/// references, and determines which ones reference variables from outer scopes.
-/// Nested functions (closureDepth > 0) that capture variables become closures.
-///
-/// @param func The function declaration to analyze.
-/// @param ctx The semantic context (contains scope information).
-void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx);
 
 /// @brief Detects if a returned expression contains a closure that escapes.
 ///

@@ -1693,7 +1693,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         }
 
         // ─── 5d. Special validation for function fields ──────────────────
-        if (isFunctionType && field->defaultBody) {
+        if (isFunctionType && field->defaultVal) {
             if (!isFunctionValue(init->value, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, init,
                                       "field '", ctx.pool.lookup(field->name),
@@ -1726,7 +1726,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         }
 
         // ─── 6a. Check if field has a default value or default body ──────
-        if (field->defaultVal || field->defaultBody) {
+        if (field->defaultVal) {
             continue;
         }
 
@@ -3783,7 +3783,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // 1. Resolve the function type (nested)
+    // ─── 1. Resolve the function type (nested) ────────────────────────────
     FuncTypeAST* funcType = expr->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         expr->resolvedType = ctx.getUnknownType();
@@ -3791,18 +3791,32 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // 2. Store the resolved type
+    // ─── 2. Store the resolved type ───────────────────────────────────────
     expr->resolvedType = funcType;
 
-    // ─── 3. Push function scopes using RAII guard ──────────────────────────
+    // ─── 3. Push the function scope ───────────────────────────────────────
+    //
+    // This is THE function scope for this anon. No other node pushes a
+    // scope on its behalf — FuncDeclAST doesn't, and neither does any
+    // enclosing expression. So the context stack has exactly one function
+    // context per user-written function boundary (each block body, each
+    // func_literal, each nested decl's init anon).
+    //
+    // This 1:1 correspondence is what makes functionDepth computation
+    // correct: counting function contexts from here outward counts
+    // user-written function boundaries, no more and no less.
     ScopedFunction funcScope(ctx, expr, funcType->returnType);
 
-    // ─── 4. Resolve parameters ─────────────────────────────────────────────
+    // ─── 4. Resolve the anon's own parameters ─────────────────────────────
+    //
+    // The anon owns these parameters. They're declared on its funcType and
+    // they're registered in the scope that ScopedFunction just pushed.
+    // Any reference to them from inside the body resolves here.
     for (ParamAST* param : funcType->params) {
         resolveParam(param, ctx);
     }
 
-    // 5. Validate body exists
+    // ─── 5. Validate body exists ──────────────────────────────────────────
     if (!expr->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function has no body");
@@ -3811,7 +3825,13 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // 6. Resolve the body
+    // ─── 6. Resolve the body ──────────────────────────────────────────────
+    //
+    // For a curried desugaring, the body may be a block wrapping a return
+    // of another AnonFuncExprAST. resolveBlock recursively resolves that
+    // inner anon, which pushes its own ScopedFunction. Each curry stage
+    // gets its own scope, so each stage's parameters are visible only to
+    // its own body (and its nested anons).
     bool bodyReturns = false;
     if (expr->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(expr->body->as<BlockStmtAST>(), ctx);
@@ -3825,21 +3845,35 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // 7. Verify return paths
+    // ─── 7. Verify return paths ───────────────────────────────────────────
     TypeAST* expectedReturn = funcType->returnType;
     if (expectedReturn && !bodyReturns) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function does not return a value on all paths");
     }
 
-    // 8. Capture analysis
+    // ─── 8. Capture analysis ──────────────────────────────────────────────
+    //
+    // Runs on this anon only, while its ScopedFunction is still pushed
+    // (we're inside step 3's guard scope). The analyzer walks the body
+    // and records any name that resolves to a scope outside this anon's
+    // own parameters and locals. Each such name becomes a CapturedVariable
+    // with its functionDepth computed by walking the context stack outward.
+    //
+    // The `getClosureDepth() > 0` guard is a defensive check: every
+    // AnonFuncExprAST is inside a function context (either the outer
+    // function's, or another anon's), so this is normally true. If a
+    // future language feature makes an anon reachable from a non-function
+    // context (a module-level initializer, say), the check would correctly
+    // skip capture analysis — there'd be no enclosing scope to capture
+    // from anyway.
     if (ctx.getClosureDepth() > 0) {
         analyzeCaptures(expr, ctx);
     }
 
-    // ─── 9. ScopedFunction destructor automatically pops scopes ────────────
+    // ─── 9. ScopedFunction destructor pops the scope ──────────────────────
 
-    // 10. Determine value state
+    // ─── 10. Determine value state ────────────────────────────────────────
     ValueState state = ValueState::Definite;
     if (expectedReturn) {
         if (isNullableType(expectedReturn)) state = ValueState::Unknown;
@@ -3852,7 +3886,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     expr->isLValue = false;
     expr->isConst = false;
 
-    // 11. Validate against target type if provided
+    // ─── 11. Validate against target type if provided ─────────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, funcType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,

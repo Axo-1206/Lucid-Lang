@@ -763,18 +763,11 @@ ScopedTypeDefinition::~ScopedTypeDefinition() {
 
 // ─── ScopedFunction Implementation ────────────────────────────────────────
 
-ScopedFunction::ScopedFunction(SemaContext& ctx, FuncDeclAST* decl, TypeAST* returnType)
-    : ctx_(ctx)
-    , paramScope_(ctx) {  // SymbolScope is constructed FIRST (pushes parameter scope)
-    // ─── Then push the function context ─────────────────────────────────────
-    ctx_.stack.pushFunction(decl, returnType);
-}
-
 ScopedFunction::ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType)
     : ctx_(ctx)
-    , paramScope_(ctx) {  // SymbolScope is constructed FIRST (pushes parameter scope)
-    // ─── Then push the anonymous function context ───────────────────────────
-    ctx_.stack.pushAnonFunction(expr, returnType);
+    , paramScope_(ctx) {                      // pushes a symbol scope
+    size_t scopeIdx = ctx_.scopes.size() - 1;
+    ctx_.stack.pushAnonFunction(expr, returnType, scopeIdx);
 }
 
 ScopedFunction::~ScopedFunction() {

@@ -14,6 +14,26 @@
 /// - Use a runtime API (e.g., `__lucid_is_closure(value)`) to check
 /// - Store 1 word for plain function, 2 words for closure
 /// - Handle refcounting for closure environments
+///
+/// # Design: Lexical Capture Identity
+///
+/// Captured variables are identified by (name, functionDepth), not by a
+/// pointer to a ValueDeclAST. The pointer approach broke under generic
+/// substitution: the specialized body contains freshly-built declaration
+/// nodes, but the capture list still pointed at the template's originals.
+///
+/// (name, functionDepth) is invariant under substitution — substitution
+/// rewrites types and rebuilds expression nodes, but never renames a
+/// variable and never changes scope structure. So a capture list built
+/// against the template is byte-identical to the one the specialized
+/// function needs.
+///
+/// functionDepth is the number of enclosing function scopes between the
+/// closure's own body and the declaration's scope. A depth of 1 means the
+/// captured variable lives in the immediately enclosing function; a depth
+/// of 2 means two function scopes up; and so on. Depth 0 is never a
+/// capture (the variable is local to the closure's own body or is one of
+/// its own parameters).
 
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaType.hpp"
@@ -42,34 +62,37 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
             if (!id->resolvedDecl) return false;
 
             // ─── Case 1: Function declaration ──────────────────────────────
-            // We know at compile time if this function captures variables.
+            // Under the new design, a FuncDeclAST is never itself a closure.
+            // Any closure it produces lives on its init's AnonFuncExprAST.
+            // So the question "is this function a closure?" is answered by
+            // inspecting the init.
             if (id->resolvedDecl->isa<FuncDeclAST>()) {
                 auto* funcDecl = id->resolvedDecl->as<FuncDeclAST>();
-                return funcDecl->hasClosure;
+                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
+                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+                }
+                // A function whose init is a reference or a call producing a
+                // function value: conservative, we don't know the shape.
+                // CodeGen must emit a runtime check.
+                return funcDecl->init != nullptr;
             }
 
             // ─── Case 2: Struct field ──────────────────────────────────────
-            // Fields can hold function values. Sema cannot know at compile time
-            // if the field will hold a plain function or a closure when the
-            // struct literal is created. Conservative: return `true` so CodeGen
-            // can emit a runtime check.
+            // Fields can hold function values. Sema cannot know at compile
+            // time if the field will hold a plain function or a closure when
+            // the struct literal is created. Conservative: return `true` so
+            // CodeGen can emit a runtime check.
             if (id->resolvedDecl->isa<FieldDeclAST>()) {
                 auto* fieldDecl = id->resolvedDecl->as<FieldDeclAST>();
                 if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                    // If the field has a default value, check if we can determine
-                    // at compile time whether it's a closure.
+                    // If the field has a default value, check if we can
+                    // determine at compile time whether it's a closure.
                     if (fieldDecl->defaultVal) {
-                        // Recursively check the default value.
                         return isClosureValue(fieldDecl->defaultVal, ctx);
                     }
-                    if (fieldDecl->defaultBody) {
-                        // Function field with block body - we could analyze
-                        // the body, but for simplicity we're conservative.
-                        // CodeGen will handle the runtime check.
-                        return true;
-                    }
-                    // No default value - will be initialized at struct literal site.
-                    // Sema cannot know the actual value. Conservative: `true`.
+                    // No default value — will be initialized at struct
+                    // literal site. Sema cannot know the actual value.
+                    // Conservative: `true`.
                     return true;
                 }
                 // Non-function fields are not closures.
@@ -77,9 +100,10 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
             }
 
             // ─── Case 3: Function parameter ───────────────────────────────
-            // Parameters are passed by the caller. Sema cannot know at compile
-            // time if the caller will pass a plain function or a closure.
-            // Conservative: `true` so CodeGen can emit a runtime check.
+            // Parameters are passed by the caller. Sema cannot know at
+            // compile time if the caller will pass a plain function or a
+            // closure. Conservative: `true` so CodeGen can emit a runtime
+            // check.
             if (id->resolvedDecl->isa<ParamAST>()) {
                 auto* param = id->resolvedDecl->as<ParamAST>();
                 if (param->type && param->type->isa<FuncTypeAST>()) {
@@ -101,7 +125,10 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
             // ─── Module member function declaration ────────────────────────
             if (mod->resolvedDecl->isa<FuncDeclAST>()) {
                 auto* funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
-                return funcDecl->hasClosure;
+                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
+                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+                }
+                return funcDecl->init != nullptr;
             }
 
             // ─── Module member field ────────────────────────────────────────
@@ -111,9 +138,6 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
                 if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
                     if (fieldDecl->defaultVal) {
                         return isClosureValue(fieldDecl->defaultVal, ctx);
-                    }
-                    if (fieldDecl->defaultBody) {
-                        return true;  // Conservative: runtime check in CodeGen
                     }
                     return true;  // Conservative: runtime check in CodeGen
                 }
@@ -135,9 +159,6 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
                     if (fieldDecl->defaultVal) {
                         return isClosureValue(fieldDecl->defaultVal, ctx);
                     }
-                    if (fieldDecl->defaultBody) {
-                        return true;  // Conservative: runtime check in CodeGen
-                    }
                     return true;  // Conservative: runtime check in CodeGen
                 }
                 return false;
@@ -145,7 +166,11 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
 
             // ─── Field access to a function field (resolved to FuncDeclAST) ──
             if (field->resolvedDecl && field->resolvedDecl->isa<FuncDeclAST>()) {
-                return field->resolvedDecl->as<FuncDeclAST>()->hasClosure;
+                auto* funcDecl = field->resolvedDecl->as<FuncDeclAST>();
+                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
+                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+                }
+                return funcDecl->init != nullptr;
             }
 
             return false;
@@ -153,14 +178,13 @@ bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
 
         case ASTKind::CallExpr: {
             // ─── Call expression returning a function value ──────────────
-            // A call expression returns a value. If the return type is a function
-            // type, we don't know at compile time if the callee returns a plain
-            // function or a closure. Conservative: `true` so CodeGen can emit a
-            // runtime check.
+            // A call expression returns a value. If the return type is a
+            // function type, we don't know at compile time if the callee
+            // returns a plain function or a closure. Conservative: `true`
+            // so CodeGen can emit a runtime check.
             auto* call = expr->as<CallExprAST>();
             if (call->resolvedType && call->resolvedType->isa<FuncTypeAST>()) {
-                // Conservative: CodeGen must do runtime check
-                return true;
+                return true;  // Conservative: runtime check in CodeGen
             }
             return false;
         }
@@ -176,7 +200,7 @@ namespace {
 
 /// @brief Internal state for capture analysis.
 ///
-/// This analyzer walks the AST of a function/closure body and detects
+/// This analyzer walks the AST of an AnonFuncExprAST body and detects
 /// which variables from outer scopes are captured.
 ///
 /// # Key Design Decisions
@@ -192,19 +216,25 @@ namespace {
 /// 3. **By-reference vs by-value**: Uses mutation analysis to decide.
 ///    Read-only captures are by-value (snapshot copy), mutated captures
 ///    are by-reference.
+///
+/// 4. **Lexical depth**: Each captured variable is recorded with the
+///    number of function scopes between the closure body and the
+///    declaration. This replaces the old `ValueDeclAST* decl` pointer,
+///    which broke under generic substitution.
+///
+/// # Only one node kind is analyzed
+///
+/// Under the new design, a FuncDeclAST is never itself a closure — the
+/// closure lives on the AnonFuncExprAST stored in the function's `init`.
+/// So this analyzer only ever operates on AnonFuncExprAST. There is no
+/// FuncDeclAST overload.
 struct CaptureAnalyzer {
     SemaContext& ctx;
 
-    /// The closure being analyzed (if analyzing an anonymous function).
+    /// The closure being analyzed.
     AnonFuncExprAST* closure = nullptr;
 
-    /// The function being analyzed (if analyzing a named function).
-    FuncDeclAST* function = nullptr;
-
-    /// The innermost function node (FuncDeclAST or AnonFuncExprAST).
-    BaseAST* innermostFunction = nullptr;
-
-    /// Current closure depth (from ContextStack).
+    /// Current closure depth (from ContextStack). Used for tracing.
     size_t currentClosureDepth = 0;
 
     /// Variables declared in the closure's own parameter list.
@@ -229,26 +259,13 @@ struct CaptureAnalyzer {
     ///       then used during the second pass (validateAndAddCapture).
     std::unordered_set<InternedString> mutatedVariables;
 
-    // ─── Constructors ──────────────────────────────────────────────────────
+    // ─── Constructor ───────────────────────────────────────────────────────
 
-    /// Constructor for anonymous function analysis.
     CaptureAnalyzer(SemaContext& c, AnonFuncExprAST* e)
         : ctx(c)
         , closure(e)
-        , function(nullptr)
-        , innermostFunction(e)
         , currentClosureDepth(ctx.getClosureDepth()) {
         localScopes.emplace_back();   // top-level frame for the closure's own body
-    }
-
-    /// Constructor for named function analysis.
-    CaptureAnalyzer(SemaContext& c, FuncDeclAST* f)
-        : ctx(c)
-        , closure(nullptr)
-        , function(f)
-        , innermostFunction(f)
-        , currentClosureDepth(ctx.getClosureDepth()) {
-        localScopes.emplace_back();   // top-level frame for the function's own body
     }
 
     // ─── Capture Detection ──────────────────────────────────────────────────
@@ -311,6 +328,90 @@ struct CaptureAnalyzer {
         return ctx.lookupValue(name);
     }
 
+    /// @brief Compute how many function scopes separate the closure's own
+    ///        function from the scope that declares a captured name.
+    ///
+    /// A captured variable's *function depth* is the number of user-written
+    /// function boundaries between the closure's body and the function that
+    /// declares the variable. Depth 1 means the variable lives in the
+    /// immediately enclosing function's body (or in a block nested inside it);
+    /// depth 2 means two functions up; and so on. Depth 0 is never a capture
+    /// (the variable is local to the closure itself or is one of its own
+    /// parameters), and `isCapture` filters that case out before this runs.
+    ///
+    /// The name deliberately says "function depth" and not "lexical depth":
+    /// block scopes (a `{ }`, a loop body, an if branch) do not count toward
+    /// this number. Only function boundaries do — because only function
+    /// boundaries matter for capturing, and only function boundaries
+    /// correspond to entries on the context stack that capture analysis cares
+    /// about.
+    ///
+    /// @param name The captured variable's name.
+    /// @return The function depth, or 0 if the name cannot be located on the
+    ///         scope stack (defensive — indicates an internal inconsistency).
+    uint32_t computeFunctionDepth(InternedString name) const {
+        const auto& frames = ctx.stack.frames();
+
+        // ─── Step A: Find the innermost scope declaring `name`. ───────────────
+        //
+        // Walks ctx.scopes, which includes every scope pushed during analysis:
+        // function param scopes, block scopes, loop body scopes, etc. We don't
+        // care which kind; we just want the innermost one containing the name.
+        size_t declaringScopeIndex = SIZE_MAX;
+        for (size_t i = ctx.scopes.size(); i-- > 0; ) {
+            if (ctx.scopes[i].values.find(name) != ctx.scopes[i].values.end()) {
+                declaringScopeIndex = i;
+                break;
+            }
+        }
+        if (declaringScopeIndex == SIZE_MAX) return 0;
+
+        // ─── Step B: Find which function frame encloses that scope. ───────────
+        //
+        // The declaring scope may be a block scope rather than a function's own
+        // param scope. Either way, some function frame on the stack "contains"
+        // it: the innermost function frame whose scopeDepth is at or below the
+        // declaring scope's index. Walking frames bottom-to-top and keeping the
+        // last match gives that innermost enclosing function.
+        size_t declaringFunctionFrame = SIZE_MAX;
+        for (size_t i = 0; i < frames.size(); ++i) {
+            if (frames[i].kind == ContextKind::FuncBody &&
+                frames[i].scopeDepth != SIZE_MAX &&
+                frames[i].scopeDepth <= declaringScopeIndex) {
+                declaringFunctionFrame = i;
+            }
+        }
+        if (declaringFunctionFrame == SIZE_MAX) return 0;
+
+        // ─── Step C: Count function frames from declaring to closure. ─────────
+        //
+        // The closure's own function is the innermost FuncBody frame. Counting
+        // function frames from declaringFunctionFrame (inclusive) up to but not
+        // including the closure's own frame gives the number of function
+        // boundaries crossed.
+        size_t closureFrameIndex = SIZE_MAX;
+        for (size_t i = frames.size(); i-- > 0; ) {
+            if (frames[i].kind == ContextKind::FuncBody) {
+                closureFrameIndex = i;
+                break;
+            }
+        }
+        if (closureFrameIndex == SIZE_MAX) return 0;
+
+        // If the declaring function is the closure's own function, the name is
+        // local (or an own parameter) and should not have been classified as a
+        // capture by isCapture. Return 0 as a defensive "no depth".
+        if (declaringFunctionFrame >= closureFrameIndex) return 0;
+
+        uint32_t depth = 0;
+        for (size_t i = declaringFunctionFrame; i < closureFrameIndex; ++i) {
+            if (frames[i].kind == ContextKind::FuncBody) {
+                depth++;
+            }
+        }
+        return depth;
+    }
+
     // ─── Validate + Add Capture ──────────────────────────────────────────────
 
     /// @brief Validate capture rules for `decl` and add it to the capture list.
@@ -321,16 +422,11 @@ struct CaptureAnalyzer {
     /// at compile time, this function sets `isClosureValue = true`. CodeGen
     /// must emit a runtime check to determine the actual value's shape.
     ///
-    /// The runtime check should:
-    /// 1. Inspect the function value to determine if it's a closure
-    ///    (e.g., using `__lucid_is_closure(value)`)
-    /// 2. Store the appropriate representation:
-    ///    - Plain function: 1 word (function pointer)
-    ///    - Closure: 2 words (function pointer + environment pointer)
-    ///
-    /// This approach is safe but may result in a small memory overhead
-    /// (2 words allocated instead of 1) for plain functions.
-    void validateAndAddCapture(ValueDeclAST* decl, BaseAST* diagLoc) {
+    /// @param decl         The captured variable's declaration.
+    /// @param functionDepth Number of function scopes between the closure
+    ///                     body and the declaration's scope.
+    /// @param diagLoc      AST node to anchor diagnostics on.
+    void validateAndAddCapture(ValueDeclAST* decl, uint32_t functionDepth, BaseAST* diagLoc) {
         if (!decl) return;
         InternedString name = decl->name;
 
@@ -384,9 +480,16 @@ struct CaptureAnalyzer {
         }
 
         // Case 2: It's a FuncDeclAST (named function)
-        // We know at compile time if this function captures variables.
+        // Inspect its init — under the new design, the closure (if any)
+        // lives there, not on the FuncDeclAST itself.
         else if (decl->isa<FuncDeclAST>()) {
-            isClosureVal = decl->as<FuncDeclAST>()->hasClosure;
+            auto* funcDecl = decl->as<FuncDeclAST>();
+            if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
+                isClosureVal = funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+            } else if (funcDecl->init) {
+                // Reference or call body — conservative: runtime check.
+                isClosureVal = true;
+            }
         }
 
         // Case 3: It's a FieldDeclAST (struct field)
@@ -397,17 +500,11 @@ struct CaptureAnalyzer {
         else if (decl->isa<FieldDeclAST>()) {
             auto* fieldDecl = decl->as<FieldDeclAST>();
             if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                // If the field has a default value, check if we can determine
-                // at compile time whether it's a closure.
                 if (fieldDecl->defaultVal) {
                     isClosureVal = isClosureValue(fieldDecl->defaultVal, ctx);
-                } else if (fieldDecl->defaultBody) {
-                    // Function field with block body - conservative: `true`.
-                    // CodeGen will handle the runtime check.
-                    isClosureVal = true;
                 } else {
-                    // No default value - will be initialized at struct literal site.
-                    // Sema cannot know the actual value. Conservative: `true`.
+                    // No default value — will be initialized at struct
+                    // literal site. Conservative: `true`.
                     isClosureVal = true;
                 }
             }
@@ -421,7 +518,6 @@ struct CaptureAnalyzer {
         else if (decl->isa<ParamAST>()) {
             auto* param = decl->as<ParamAST>();
             if (param->type && param->type->isa<FuncTypeAST>()) {
-                // Conservative: CodeGen must do runtime check
                 isClosureVal = true;
             }
         }
@@ -439,7 +535,8 @@ struct CaptureAnalyzer {
 
         // ─── Create the capture entry ──────────────────────────────────────
         CapturedVariable capture;
-        capture.decl = decl;
+        capture.name = name;
+        capture.functionDepth = functionDepth;
         capture.byReference = byRef;
         capture.isClosureValue = isClosureVal;
         capture.index = captures.size();
@@ -450,7 +547,8 @@ struct CaptureAnalyzer {
         Trace::info("CaptureAnalysis: captured '", ctx.pool.lookup(name),
                  "' by ", byRef ? "reference" : "value",
                  " (closure value: ", isClosureVal ? "yes (conservative)" : "no",
-                 ") at depth ", currentClosureDepth);
+                 ", depth: ", functionDepth,
+                 ") at closure depth ", currentClosureDepth);
     }
 
     // ─── Propagate Capture ────────────────────────────────────────────────────
@@ -462,11 +560,22 @@ struct CaptureAnalyzer {
     /// never captures it itself, CodeGen would end up reusing a stale value
     /// from a different function. Propagating the capture upward closes this gap.
     ///
+    /// # Depth adjustment
+    ///
+    /// The child capture records the depth from the *child's* body. From
+    /// *our* body, the declaration is one function scope closer, because
+    /// the child's body is nested one function scope inside ours. So we
+    /// decrement the depth by 1.
+    ///
+    /// If the adjusted depth would be 0, the declaration lives in our own
+    /// body — which means it should have been caught by `isLocallyDeclared`
+    /// or `isOwnParam`. Skip it as a defensive measure; the real capture
+    /// for it will be added when we walk the actual reference to it.
+    ///
     /// @param childCapture The capture from the nested closure.
     /// @param diagLoc AST node to anchor diagnostics on.
     void propagateCapture(const CapturedVariable& childCapture, BaseAST* diagLoc) {
-        if (!childCapture.decl) return;
-        InternedString name = childCapture.decl->name;
+        InternedString name = childCapture.name;
 
         // Already ours - own param or locally declared
         if (isOwnParam(name) || isLocallyDeclared(name)) return;
@@ -475,7 +584,22 @@ struct CaptureAnalyzer {
         if (ctx.isModuleMember(name)) return;
         if (ctx.isGenericParam(name)) return;
 
-        validateAndAddCapture(childCapture.decl, diagLoc);
+        // Look up the declaration so we can run the type-based capture checks
+        // (Arena, borrowed, linear).
+        ValueDeclAST* decl = ctx.lookupValue(name);
+        if (!decl) return;
+
+        // Compute the adjusted depth: the child saw the name at
+        // childCapture.functionDepth from its own body. From our body, it's
+        // one function scope closer.
+        if (childCapture.functionDepth <= 1) {
+            // The declaration would be in our own body. This shouldn't
+            // happen for a real propagated capture — defensive skip.
+            return;
+        }
+        uint32_t adjustedDepth = childCapture.functionDepth - 1;
+
+        validateAndAddCapture(decl, adjustedDepth, diagLoc);
     }
 
     // ─── Process Identifier ──────────────────────────────────────────────────
@@ -510,7 +634,8 @@ struct CaptureAnalyzer {
             return;
         }
 
-        validateAndAddCapture(decl, id);
+        uint32_t depth = computeFunctionDepth(name);
+        validateAndAddCapture(decl, depth, id);
     }
 
     // ─── Mutation Detection ──────────────────────────────────────────────────
@@ -906,7 +1031,7 @@ struct CaptureAnalyzer {
 
     // ─── Store Captures ──────────────────────────────────────────────────────
 
-    /// @brief Store the captured variables on the appropriate AST node.
+    /// @brief Store the captured variables on the closure.
     void storeCaptures() {
         if (captures.empty()) {
             return;
@@ -917,21 +1042,12 @@ struct CaptureAnalyzer {
         for (const auto& capture : captures) {
             builder.push_back(capture);
         }
-        ArenaSpan<CapturedVariable> captureSpan = builder.build();
 
-        // Store on the appropriate node
-        if (closure) {
-            closure->captures = captureSpan;
-            closure->hasClosure = true;
-            Trace::detail("analyzeCaptures: anonymous closure captures ",
-                     captures.size(), " variables");
-        } else if (function) {
-            function->captures = captureSpan;
-            function->hasClosure = true;
-            Trace::detail("analyzeCaptures: function '",
-                     ctx.pool.lookup(function->name),
-                     "' captures ", captures.size(), " variables");
-        }
+        closure->captures = builder.build();
+        closure->hasClosure = true;
+
+        Trace::detail("analyzeCaptures: anonymous closure captures ",
+                 captures.size(), " variables");
     }
 };
 
@@ -961,88 +1077,11 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     // ─── Step 2: Walk the body to find captures ─────────────────────────────
     analyzer.walkStmt(expr->body);
 
-    // ─── Step 3: Store the captures on the AST node ─────────────────────────
+    // ─── Step 3: Store the captures on the closure ─────────────────────────
     analyzer.storeCaptures();
 
     if (!expr->hasClosure) {
         Trace::detail("analyzeCaptures: no captures detected for anonymous closure");
-    }
-}
-
-// ─── analyzeCaptures (FuncDeclAST) ──────────────────────────────────────────
-
-void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
-    if (!func || !func->body) {
-        return;
-    }
-
-    // ─── Only nested functions can capture variables ──────────────────────
-    size_t currentDepth = ctx.getClosureDepth();
-    if (currentDepth == 0) {
-        // Top-level function - cannot capture anything
-        Trace::detail("analyzeCaptures: top-level function '",
-                 ctx.pool.lookup(func->name),
-                 "' cannot capture variables");
-        return;
-    }
-
-    Trace::detail("analyzeCaptures: analyzing nested function '",
-             ctx.pool.lookup(func->name),
-             "' at depth ", currentDepth);
-
-    CaptureAnalyzer analyzer(ctx, func);
-
-    // ─── Step 1: Collect the function's own parameters ──────────────────────
-    if (func->funcType) {
-        for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
-            for (ParamAST* param : group->params) {
-                analyzer.ownParams.insert(param->name);
-            }
-        }
-    }
-
-    // ─── Step 2: Walk the body to find captures ─────────────────────────────
-    analyzer.walkStmt(func->body);
-
-    // ─── Step 3: Store the captures on the AST node ─────────────────────────
-    if (!analyzer.captures.empty()) {
-        auto builder = ctx.arena.makeBuilder<CapturedVariable>();
-        for (const auto& capture : analyzer.captures) {
-            builder.push_back(capture);
-        }
-        func->captures = builder.build();
-        func->hasClosure = true;
-
-        // ─── Synthesize the closure view ─────────────────────────────────
-        // CodeGen's lowerClosure accepts AnonFuncExprAST, not FuncDeclAST,
-        // and CodeGen has no arena to allocate one. Build the view here,
-        // where the arena is available and the captures were just computed.
-        //
-        // The view shares this function's funcType, body, and captures —
-        // only the CodeGen output slots (closureFunction, environmentType,
-        // llvmValue) are distinct, and those are default-initialized to
-        // nullptr by AnonFuncExprAST's constructor.
-        //
-        // Note that `func->captures` is already assigned above, so
-        // `view->captures = func->captures` copies the same ArenaSpan
-        // (pointer + size), not the underlying CapturedVariable array. There
-        // is exactly one capture list; both nodes point at it.
-        AnonFuncExprAST* view = ctx.arena.make<AnonFuncExprAST>(
-            func->funcType, func->body);
-        view->captures   = func->captures;
-        view->hasClosure = true;
-        view->isReturned = func->isReturned;
-        view->loc        = func->loc;
-        func->closureView = view;
-
-        Trace::detail("analyzeCaptures: function '", ctx.pool.lookup(func->name),
-                 "' captures ", func->captures.size(), " variables",
-                 " (closure view synthesized)");
-    } else {
-        func->hasClosure = false;
-        func->closureView = nullptr;   // explicit: no captures means no view
-        Trace::detail("analyzeCaptures: no captures detected for function '",
-                 ctx.pool.lookup(func->name), "'");
     }
 }
 
@@ -1074,10 +1113,15 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             if (decl->isa<FuncDeclAST>()) {
                 FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
                 if (!ctx.isModuleMember(funcDecl->name)) {
-                    funcDecl->isReturned = true;
-                    Trace::detail("markClosureIfEscaping: nested function '",
-                            ctx.pool.lookup(id->name),
-                            "' returned - marking as closure");
+                    // Under the new design, the FuncDeclAST is not itself a
+                    // closure — the closure lives on its init. Mark the
+                    // init's AnonFuncExprAST, if it has one.
+                    if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
+                        funcDecl->init->as<AnonFuncExprAST>()->isReturned = true;
+                        Trace::detail("markClosureIfEscaping: nested function '",
+                                ctx.pool.lookup(id->name),
+                                "' returned - marking its init's anon as escaping");
+                    }
                 }
                 return;
             }

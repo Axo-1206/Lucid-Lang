@@ -43,20 +43,12 @@ void ContextStack::push(ContextKind kind, BaseAST* node) {
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushFunction(FuncDeclAST* node, TypeAST* returnType) {
+void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType, size_t scopeDepth) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
     frame.expectedReturnType = returnType;
-    m_stack.push_back(std::move(frame));
-    m_returnStack.push(returnType);
-}
-
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType) {
-    ContextFrame frame;
-    frame.kind = ContextKind::FuncBody;
-    frame.node = node;
-    frame.expectedReturnType = returnType;
+    frame.scopeDepth = scopeDepth;
     m_stack.push_back(std::move(frame));
     m_returnStack.push(returnType);
 }

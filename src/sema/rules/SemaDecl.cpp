@@ -263,10 +263,10 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // 1. Validate attributes
+    // ─── 1. Validate attributes ───────────────────────────────────────────
     validateAllAttributes(decl, ctx);
 
-    // 2. Check @[foreign]
+    // ─── 2. Check @[foreign] ──────────────────────────────────────────────
     InternedString foreignName = ctx.pool.intern("foreign");
     for (AttributeAST* attr : decl->attributes) {
         if (attr->name == foreignName) {
@@ -274,13 +274,13 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // 3. Resolve the function type (nested FuncTypeAST)
+    // ─── 3. Resolve the declared function type ────────────────────────────
     FuncTypeAST* funcType = decl->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // 4. Foreign functions – use original name as symbol
+    // ─── 4. Foreign functions: no body, no init ───────────────────────────
     if (decl->isForeignFunction) {
         decl->mangledName = decl->name;
         Trace::info("Foreign function '", ctx.pool.lookup(decl->name),
@@ -288,66 +288,80 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // 5. Resolve generic parameters (if any)
+    // ─── 5. Resolve generic parameters (if any) ───────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 6. Generate mangled name BEFORE pushing scopes ────────────────────
+    // ─── 6. Generate mangled name ─────────────────────────────────────────
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
 
-    // 7. Foreign functions have no body – skip body resolution
-    if (!decl->body) {
+    // ─── 7. Non-foreign functions must have an init ───────────────────────
+    if (!decl->init) {
         ctx.diagnostics.error(DiagCode::Sem_MissingFuncBody, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
         return;
     }
 
-    // ─── 8. Push function scopes using RAII guard ──────────────────────────
-    ScopedFunction funcScope(ctx, decl, funcType->returnType);
-
-    // ─── 9. Resolve parameters ────────────────────────────────────────────
-    for (ParamAST* param : funcType->params) {
-        resolveParam(param, ctx);
-    }
-
-    // ─── 10. Resolve the body ──────────────────────────────────────────────
-    bool bodyReturns = false;
-    if (decl->body->isa<BlockStmtAST>()) {
-        bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
-    } else if (decl->body->isa<ReturnStmtAST>()) {
-        bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
-    } else if (decl->body->isa<FuncRefStmtAST>()) {
-        FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
-        TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
-        if (!refType || refType->isa<UnknownTypeAST>()) {
-            return;
-        }
-        bodyReturns = true;
-    } else {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, decl,
-                              "function '", ctx.pool.lookup(decl->name),
-                              "' has invalid body type");
+    // ─── 8. Resolve the init against the declared function type ───────────
+    //
+    // ─── Design Note: No ScopedFunction Here ─────────────────────────────
+    //
+    // A FuncDeclAST is a *binding*, not a function. It owns no body and no
+    // parameters — those belong to the AnonFuncExprAST its init points to.
+    // So this function does NOT:
+    //   - push a ScopedFunction
+    //   - register the declared funcType's parameters
+    //   - run capture analysis
+    //
+    // All of those happen inside resolveAnonFuncExpr, which is called via
+    // resolveExprWithTarget when the init is an AnonFuncExprAST.
+    //
+    // For an init that is *not* an AnonFuncExprAST (a reference, a call, a
+    // compose), no function scope is pushed at all. That's correct: those
+    // inits don't reference the declared function's parameters, so there's
+    // nothing to register and nothing to capture. The reference value
+    // already carries its own scope story from wherever it was defined.
+    //
+    // ─── Why Not Register Parameters Here ────────────────────────────────
+    //
+    // If we pushed a ScopedFunction here AND the init is an anon, that anon
+    // would push its own ScopedFunction too, registering the same
+    // parameters twice. The outer (phantom) registration would be shadowed
+    // by the inner one for name lookup, but it would still consume a
+    // function-context slot on the stack — corrupting functionDepth
+    // computation for any nested declaration whose capture needs to look
+    // past the phantom scope.
+    //
+    // ─── What the Init Can Be ────────────────────────────────────────────
+    //
+    //   - AnonFuncExprAST      — block body wrapped by the parser; its own
+    //                            resolveAnonFuncExpr pushes scope, registers
+    //                            params, resolves the body, and runs
+    //                            capture analysis.
+    //   - IdentifierExprAST    — reference to a named function; resolveExpr
+    //                            looks it up and validates its type.
+    //   - ModuleAccessExprAST  — reference to a module-level function.
+    //   - FieldAccessExprAST   — reference to a struct field holding a function.
+    //   - CallExprAST          — call that returns a function value.
+    //   - ComposeExprAST       — composition of functions.
+    //
+    // All of these are ordinary ExprASTs; resolveExprWithTarget dispatches
+    // to the right resolver and validates the result against funcType.
+    TypeAST* initType = resolveExprWithTarget(decl->init, funcType, ctx);
+    if (!initType || initType->isa<UnknownTypeAST>()) {
+        // resolveExprWithTarget already emitted a diagnostic
         return;
     }
 
-    // ─── 11. Check return paths ────────────────────────────────────────────
-    TypeAST* expectedReturn = funcType->returnType;
-    if (!bodyReturns && expectedReturn) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
-                              "function '", ctx.pool.lookup(decl->name),
-                              "' does not return a value on all paths");
-    }
-
-    // ─── 12. Capture analysis (nested functions) ──────────────────────────
-    if (ctx.getClosureDepth() > 0) {
-        analyzeCaptures(decl, ctx);
-    }
-
-    // ─── 14. ScopedFunction destructor automatically pops scopes ──────────
+    // ─── 9. Done ──────────────────────────────────────────────────────────
+    //
+    // No cleanup needed — if the init was an anon, its ScopedFunction
+    // popped when resolveAnonFuncExpr returned. If it wasn't, no scope
+    // was ever pushed.
 }
 
 // ─── resolveParam ─────────────────────────────────────────────────────────────
@@ -609,51 +623,34 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
             }
         }
 
-        // ─── 5. Handle default value (NO self synthesis needed!) ──────────
-        bool isFunctionType = fieldType->isa<FuncTypeAST>();
-
-        if (isFunctionType && field->defaultBody) {
-            // ─── The parser already synthesized self as the first parameter ──
-            // We just need to resolve the parameters and the body.
-            FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
-            
-            // ─── Push scope for parameters ──────────────────────────────────
-            ctx.pushScope();
-            
-            // Resolve all parameters (including self)
-            for (ParamAST* param : funcType->params) {
-                resolveParam(param, ctx);
-            }
-            
-            // ─── Resolve the body ──────────────────────────────────────────
-            if (field->defaultBody->isa<BlockStmtAST>()) {
-                resolveBlock(field->defaultBody->as<BlockStmtAST>(), ctx);
-            } else {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, field,
-                                      "function field body must be a block");
-            }
-            
-            ctx.popScope();
-            
-        } else if (isFunctionType && field->defaultVal) {
-            // ─── Expression default (function reference) ────────────────────
-            // The self parameter must already be in the signature
-            // (the user wrote it explicitly)
+        // ─── 5. Handle default value ────────────────────────────────────────
+        //
+        // Under the new AST design, `defaultVal` is the single field that
+        // holds a default, regardless of whether the user wrote it as a
+        // value or as a block. A block default was wrapped by the parser
+        // into an AnonFuncExprAST whose funcType is `fieldType` (with
+        // `self: &StructName` prepended, if the field is function-typed).
+        //
+        // So there is exactly one case here: resolve `defaultVal` against
+        // `fieldType`. The block-vs-expression distinction the old code
+        // made has been eliminated — it's all just expressions now.
+        if (field->defaultVal) {
             TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
             if (!initType || initType->isa<UnknownTypeAST>()) {
+                // resolveExprWithTarget already emitted a diagnostic
                 continue;
             }
 
-            if (!isFunctionValue(field->defaultVal, ctx)) {
+            // ─── Semantic check: function-typed fields need function values ──
+            // Even though the type system should have caught this (a
+            // non-function value isn't assignable to a function type),
+            // we check explicitly because the error message is clearer.
+            // This mirrors the old code's expression-default branch.
+            bool isFunctionType = fieldType->isa<FuncTypeAST>();
+            if (isFunctionType && !isFunctionValue(field->defaultVal, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
                                       "field '", ctx.pool.lookup(field->name),
                                       "' default value must be a function value");
-                continue;
-            }
-        } else if (!isFunctionType && field->defaultVal) {
-            // ─── Non-function field with default value ────────────────────
-            TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
-            if (!initType || initType->isa<UnknownTypeAST>()) {
                 continue;
             }
         }
