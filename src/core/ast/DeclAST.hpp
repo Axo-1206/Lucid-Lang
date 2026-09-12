@@ -118,17 +118,35 @@ struct ImportDeclAST : DeclAST {
 // ─── VarDeclAST ───────────────────────────────────────────────────────────
 
 /// @brief Represents a variable declaration with an explicit type annotation.
-/// 
+///
 /// @example
 ///   let count int     = 0
 ///   const PI float    = 3.14159
 ///   let name string?  = nil
-/// 
+///
 /// Type annotation is always required in Lucid – `type` is never null.
 /// `init` is null when no initialiser was written (valid for `let` only;
 /// `const` must always have an initialiser – enforced by semantic pass).
-/// 
+///
 /// @note `@[export]` on a variable makes it read-only from outside the module.
+///
+/// ─── No Function Types ────────────────────────────────────────────────
+/// A `VarDeclAST` never holds a `FuncTypeAST`. Function-typed bindings
+/// are always `FuncDeclAST` — the parser's `looksLikeFuncDecl` dispatch
+/// guarantees this before construction. A variable declared `let f ...`
+/// with a function-typed initialiser is parsed as a `FuncDeclAST`, not a
+/// `VarDeclAST`; the two node kinds are disjoint by declared type, not by
+/// initialiser shape.
+///
+/// This is why `classifyResource`, `ownsResource` in codegen, and every other
+/// binding-classification site treats the "FuncDeclAST" and "VarDeclAST"
+/// branches as mutually exclusive: a `VarDeclAST`'s type is never a
+/// `FuncTypeAST`, so the function-typed branch of any classifier fires
+/// only for `FuncDeclAST`.
+///
+/// Unlike a function type, a variable's type *may* be nullable or
+/// fallible: `let x int? = nil`, `let y string! = ...`. Those wrap
+/// non-function value types, never a function type.
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
@@ -209,10 +227,50 @@ using ParamGroup = std::vector<ParamAST*>;
 /// `isReturned`) that had to be kept in sync with the corresponding
 /// fields on `AnonFuncExprAST`. All three are removed by the current shape.
 ///
+/// ─── Two `funcType` Fields, Only One Has Runtime Parameters ───────────
+///
+/// A `FuncDeclAST` has *two* `FuncTypeAST` nodes in play:
+///
+///   - `this->funcType` (this struct's field) — the *declared* signature.
+///     Parsed from the declaration header (`const add (a int) -> int = ...`
+///     yields a `FuncTypeAST` with param `a`). Used for type comparison at
+///     call sites, generic substitution, and diagnostics. Its `ParamAST`
+///     nodes are **type-only**: `llvmAlloca`, `llvmValue`, and `llvmType`
+///     on them are never set, and CodeGen never registers them as
+///     bindings.
+///
+///   - `init->as<AnonFuncExprAST>()->funcType` — the *runtime* signature.
+///     Parsed from the block body (`{ return a + 1; }` yields an
+///     `AnonFuncExprAST` whose `funcType` is a copy of the declared
+///     signature). Its `ParamAST` nodes are the **real parameters**:
+///     CodeGen allocates a stack slot for each, stores the LLVM argument
+///     into it, and registers it as a binding in the function's scope.
+///
+/// The parser produces both, and the two signatures match by construction.
+/// CodeGen must iterate `init->as<AnonFuncExprAST>()->funcType` when
+/// registering parameters — iterating `this->funcType` would bind the
+/// type-only `ParamAST` nodes, and body identifiers (whose `resolvedDecl`
+/// points at the runtime `ParamAST` nodes) would find no LLVM binding.
+///
+/// When `init` is a reference expression (an `IdentifierExprAST`,
+/// `ModuleAccessExprAST`, call, or compose) rather than an
+/// `AnonFuncExprAST`, there are no runtime parameters for *this*
+/// declaration — the reference target's own `AnonFuncExprAST` carries
+/// them, and this declaration is a pure alias.
+///
 /// ─── Reassignment ──────────────────────────────────────────────────────
 /// `f = expr;` replaces `init` with the new expression. It follows the
 /// ordinary `assign_stmt` rules: `f` must be `let`, and the expression
 /// must evaluate to a value assignable to the declared `funcType`.
+///
+/// On reassignment, `this->funcType` is unchanged (it's the declaration's
+/// declared type). The *new* `init` supplies a new runtime signature: if
+/// the RHS is `(n int) -> int { ... }`, that `AnonFuncExprAST`'s `funcType`
+/// has param `n`, and `n` is what CodeGen will bind when the new body is
+/// lowered. The declared signature and the runtime signature still match
+/// by the assignment's type check, but the `ParamAST` nodes are different
+/// objects — this is why CodeGen always reads parameters from `init`, never
+/// from `this->funcType`.
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 

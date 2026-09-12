@@ -721,7 +721,7 @@ struct ComposeExprAST : ExprAST {
 
 // ─── AnonFuncExprAST ─────────────────────────────────────────────────────
 
-//// @brief An anonymous function expression — the only node that holds a
+/// @brief An anonymous function expression — the only node that holds a
 ///        function body.
 ///
 /// ─── Design: The Sole Body-Holder ──────────────────────────────────────
@@ -740,6 +740,28 @@ struct ComposeExprAST : ExprAST {
 ///
 /// Sema checks compatibility (`funcType` vs. the declaration site's
 /// declared type) as an ordinary assignment, not an inference step.
+///
+/// ─── The Runtime Parameters Live Here ──────────────────────────────────
+/// For a block-body `FuncDeclAST` (`const add (a int) -> int = { ... }`),
+/// the AST contains two `FuncTypeAST` nodes with `ParamAST` children:
+///
+///   - `FuncDeclAST::funcType` — the *declared* signature, parsed from
+///     the declaration header. Its `ParamAST` nodes are type-only: never
+///     allocated, never bound, used only for signature comparison.
+///
+///   - `AnonFuncExprAST::funcType` (this node's field) — the *runtime*
+///     signature, parsed from the block body. Its `ParamAST` nodes are
+///     the real parameters. CodeGen iterates *this* field to allocate
+///     each parameter's stack slot and register it as a binding. Body
+///     identifiers resolve against these nodes.
+///
+/// Reassignment reinforces the point: `f = (n int) -> int { ... };`
+/// replaces the declaration's `init` with a *new* `AnonFuncExprAST` that
+/// carries its *own* `ParamAST` for `n`. The declared `FuncDeclAST::funcType`
+/// is unchanged and still lists the original parameter; the runtime
+/// parameter is the one on the new `AnonFuncExprAST::funcType`. CodeGen
+/// reads parameters from this field on the *current* init, every time it
+/// lowers a body.
 ///
 /// ─── Captures Are Lexical ──────────────────────────────────────────────
 /// `captures` holds `CapturedVariable` entries — see that struct for why

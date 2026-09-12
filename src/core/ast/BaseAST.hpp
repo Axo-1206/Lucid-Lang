@@ -500,6 +500,17 @@ enum class ValueState {
 struct CapturedVariable {
     // ─── Lexical Identity (invariant under generic substitution) ───────
     InternedString name;
+
+    /// How many enclosing *function* scopes up the captured variable lives,
+    /// counted from the closure's own function scope.
+    ///
+    /// A "function scope" here is an `AnonFuncExprAST` — the only node
+    /// that holds a function body and therefore the only node that
+    /// contributes a function boundary to this count. `FuncDeclAST` does
+    /// not contribute: it is a declaration whose body (when it has one)
+    /// is the `AnonFuncExprAST` at `init`, and that body is what the count
+    /// sees. See `AnonFuncExprAST::enclosingFunction` for the pointer
+    /// chain this count is defined against.
     uint32_t functionDepth = 0;
 
     // ─── Capture Flags (computed once by capture analysis) ─────────────
