@@ -538,10 +538,29 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         StmtAST* innermostBody = nullptr;
 
         if (parsedBlock) {
+            // Block body: the block has no inherent type, so it borrows
+            // the header's signature. Wrap it in an AnonFuncExprAST per
+            // group (see the loop below).
             innermostBody = parsedBlock;
         } else {
-            // Expression body: is it a pure reference to a function value,
-            // or an expression whose result must be returned?
+            // Expression body.
+            //
+            // ─── Pure function reference ──────────────────────────────
+            // A reference to another function value — an identifier,
+            // a module member, a field access, a call returning a
+            // function, or a composition. The reference already has its
+            // own fully-curried function type, which Sema will check
+            // against the declared funcType. It IS the init; there is
+            // nothing to wrap.
+            //
+            // This applies regardless of the number of parameter groups:
+            // a multi-group declaration like (a int)(b int) -> int has
+            // the same funcType as (a int) -> (b int) -> int, and the
+            // reference matches it directly. Wrapping it in an anon
+            // chain would try to *rebuild* the currying, which fails
+            // because the innermost anon's declared return type (the
+            // base type of the chain) does not match the reference's
+            // function type.
             bool isPureFunctionRef =
                 parsedExpr->isa<IdentifierExprAST>() ||
                 parsedExpr->isa<ModuleAccessExprAST>() ||
@@ -549,16 +568,15 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 parsedExpr->isa<ComposeExprAST>() ||
                 parsedExpr->isa<CallExprAST>();
 
-            if (isPureFunctionRef && groups.size() == 1) {
-                // Single-group function whose body names another function:
-                // the reference IS the init. No wrapping needed.
+            if (isPureFunctionRef) {
                 finalInit = parsedExpr;
-                innermostBody = nullptr;   // nothing to wrap
+                innermostBody = nullptr;
             } else {
-                // Either a non-reference expression, or a curried function
-                // whose body must be returned from the innermost group.
-                // Wrap the expression in a ReturnStmtAST so it can serve
-                // as the innermost anon's body.
+                // A non-reference expression body (e.g. a literal, a
+                // binary expression). The expression's value must be
+                // returned from the innermost group. Wrap it in a
+                // ReturnStmtAST so it can serve as the innermost anon's
+                // body, then wrap that in the anon chain.
                 auto* ret = ctx.arena.make<ReturnStmtAST>();
                 ret->loc = parsedExpr ? parsedExpr->loc : stream.currentLoc();
                 ret->value = parsedExpr;
@@ -570,7 +588,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             // Wrap the innermost group's body in an AnonFuncExprAST, then
             // walk outward wrapping each intermediate group in a return
             // statement around another AnonFuncExprAST.
-            FuncTypeAST* innermostType = groupTypes[groups.size() - 1];
             StmtAST* currentInnerBody = innermostBody;
 
             for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
@@ -582,13 +599,10 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                     ctx);
 
                 if (i == 0) {
-                    // The outermost group: the anon IS the init.
                     finalInit = anon;
                     break;
                 }
 
-                // Wrap the anon in a return statement for the next outer
-                // group's body.
                 auto* ret = ctx.arena.make<ReturnStmtAST>();
                 ret->loc = anon->loc;
                 ret->value = anon;
