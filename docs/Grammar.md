@@ -2043,6 +2043,99 @@ clamp0to100(42);    -- 42
 clamp0to100(200);    -- 100
 ```
 
+### Curried Functions and `&T` Parameters
+
+A curried function's earlier parameter groups become captures of the later groups' anonymous functions — that is what makes partial application work. Because closures cannot capture borrowed types (see **The Downward Flow Rule**), a `&T` parameter in any group *before the last group in a curry chain* is a compile error.
+
+This applies whether the source uses adjacent groups (which the compiler desugars automatically) or spells out the curried form explicitly. The two forms produce the same AST, so they are rejected for the same reason.
+
+```lucid
+-- ❌ ERROR: 'a' is captured by the inner function
+const add (a &int)(b &int) -> int = { return a + b;
+};
+
+-- ❌ ERROR: same reason — writing the curry chain explicitly doesn't help
+const add (a &int) -> (b &int) -> int = {
+    return (b &int) -> int {
+        return a + b;
+    };
+};
+```
+
+Both forms are rejected with the same diagnostic: the desugaring (whether implicit or explicit) makes `a` a capture of the anonymous function that takes `b`, and `&int` is a borrowed type that closures cannot capture.
+
+#### Why this is not just a desugaring limitation
+
+It is tempting to think the rule only applies to the sugar form — that writing `(a &int) -> (b &int) -> int` by hand should work because the user "wrote the closure themselves." It does not work, for the same reason the sugar form does not: a `&int` capture is a `&int` capture regardless of who wrote the closure. The implicit desugaring and the explicit form produce the same AST, hit the same capture rule, and are rejected identically.
+
+The underlying reason is that `add(x)` for `x &int` returns a function value that captures a reference to the caller's data. If that returned function outlives the referenced data — because it was stored, returned, or captured by something else — it becomes a dangling reference. Lucid's Downward Flow Rule forecloses this category of bug entirely by refusing the capture at compile time. There is no partial version of the rule that permits currying but forbids escape; either references can be captured (and can dangle) or they cannot (and currying must give them up).
+
+#### What to write instead
+
+Three options, depending on what the earlier parameter is for.
+
+**Option 1 — Flatten the parameter groups.** Put all parameters in one group. This removes the currying, so there is no inner closure and no capture.
+
+```lucid
+-- ✅ OK: single parameter group, no currying, no capture
+const add (a &int, b &int) -> int = { return a + b;
+};
+```
+
+The trade-off: `add` is no longer partially applicable. `add(x)` does not produce a function waiting for `b` — it's a call with the wrong number of arguments. When partial application is not needed, this is the simplest fix.
+
+**Option 2 — Pass the reference by value.** Make the earlier parameter an owned value instead of a borrowed reference. The value is copied into the closure's environment, so the closure is self-contained.
+
+```lucid
+-- ✅ OK: 'a' is owned, copied into the closure's environment
+const add (a int)(b &int) -> int = { return a + b;
+};
+```
+
+The trade-off: `a` is copied. If `a` is a large struct, the copy is expensive. If `a`'s identity matters — for example, if the caller expects mutations through `a` to be visible inside the closure — the copy breaks that expectation.
+
+**Option 3 — Use a shared-ownership type.** Wrap the referenced data in a refcounted handle so the closure can hold a valid reference for as long as it lives.
+
+```lucid
+-- ✅ OK: Shared<T> is a Shared, refcounted type — closures may capture it
+const add (a Shared<int>)(b &int) -> int = { return a.get() + b;
+};
+```
+
+The trade-off: `Shared<T>` has runtime cost (allocation and refcounting), and it is not the same thing as a borrow. It is the right tool when the closure genuinely needs to outlive the caller's scope, and the wrong tool when the user only wanted a borrow to avoid a copy. See **Shared, refcounted** under **Value and Reference Semantics** for the full category description.
+
+#### Where the error surfaces
+
+The error is reported at the parameter in the earlier group. For `(a &int)(b &int)`, the error points at `a`. The message names the parameter, explains that it is captured by the anonymous function generated for the later group, and suggests the three workarounds above.
+
+If both parameters are `&T`, only the first is reported. Fixing it (by any of the three options) will surface the same error on the second, if the user chose Option 2 and left `b` as `&int`.
+
+#### This does not apply to non-curried functions
+
+A single-group function with `&T` parameters is fine:
+
+```lucid
+-- ✅ OK: no currying, no inner closure, no capture
+const add (a &int, b &int) -> int = { return a + b;
+};
+```
+
+This is the same as Option 1 above, just stated as the general case. The rule is: `&T` parameters are fine in a single non-curried group, or in the final group of a curry chain, or in any position where they are not captured by a later closure. The only forbidden positions are the ones that get captured — which, in a curry chain, is every group before the last.
+
+```lucid
+-- ✅ OK: 'b' is in the final group, never captured
+const add (a int) -> (b &int) -> int = {
+    return (b &int) -> int { return a + b;
+    };
+};
+```
+
+Here `a` is captured (fine, it's `int`), and `b` is a parameter of the innermost anon — it is never captured, because there is no closure after it. So `b` being `&int` is not a problem.
+
+#### Note on `[_]T`
+
+The same rule applies to `[_]T` slice parameters. A slice is a borrowed view for the same reason a `&T` is, and it is subject to the same Downward Flow Rule. `(a [_]int)(b int) -> int` is rejected identically, and has the same three workarounds.
+
 ### Entry Point
 
 ```lucid
@@ -4723,6 +4816,8 @@ that created it, which is exactly the one guarantee a borrowed type (`&T`,
 reference or slice must capture an owned copy of it instead — `p Player`
 (by value) rather than `p &Player`, or the relevant owned elements out of a
 slice rather than the slice itself.
+
+> See **Curried Functions and `&T` Parameters** under **Function Declaration** for the consequence of this rule on curried functions.
 
 `*T` is **not** included in this restriction. A raw pointer is a **sealed
 conduit** (see **The Sealed Conduit Model**, below), not a borrowed view —
