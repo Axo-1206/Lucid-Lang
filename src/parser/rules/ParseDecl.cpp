@@ -460,6 +460,15 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
 
     // ─── 7. Build the nested function type chain ───────────────────────────
     //
+    // Curried desugaring. The surface syntax (a int)(b int) -> int desugars 
+    // into (a int) -> (b int) -> int — one nested anon per adjacent group. 
+    // The user's block becomes the innermost anon's body; each outer anon 
+    // wraps the next in { return <inner>; }. Earlier parameters therefore 
+    // become captures of inner anons. This is the mechanism behind partial 
+    // application (add(5) returns a closure that captured a = 5), and it is 
+    // intentional. The parser does not compute captures — Sema's scope chain 
+    // and analyzeCaptures handle that when the nested anons are resolved.
+    //
     // `groupTypes` is hoisted to this scope so step 8 can reach the inner
     // group's type when wrapping each curried stage. This replaces the
     // ad-hoc `innermostFuncType` tracking from the previous version.
