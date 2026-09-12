@@ -4,8 +4,8 @@
 #include "CodeGen.hpp"
 #include "core/ASTStrings.hpp"
 #include "support/CodeGenAlloca.hpp"
-#include "support/CodeGenCategory.hpp"
 #include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenOwnership.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/ArenaHelpers.hpp"
 #include "types/LLVMTypeHelpers.hpp"
@@ -16,7 +16,6 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "generic/CodeGenGeneric.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -367,36 +366,41 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
         // ─── Capturing function: fat pointer in ctx.values ──────────────
-        // A capturing named function's value is a { func, env } fat
-        // pointer produced by lowerClosure in lowerNormalFunctionDecl. It
-        // lives in ctx.values, NOT ctx.functions — see the note in
-        // lowerNormalFunctionDecl for why the two maps are kept disjoint
-        // by category.
+        // A capturing named function's value is a { func, env } fat pointer
+        // produced by lowerClosure in lowerFunctionDecl. It lives in
+        // ctx.values, NOT ctx.functions — the two maps hold different
+        // value types (llvm::Function* vs llvm::Value*), and the closure
+        // fat pointer is a struct value, not a function. Keeping them
+        // disjoint by category makes lookup unambiguous.
         //
-        // Dispatch on the declaration's category, not on the LLVM value's
-        // shape, so a capturing function is always read from ctx.values
-        // regardless of what happened to be stored there.
-        if (isClosureCategory(categorizeFunction(funcDecl))) {
+        // Under the redesign, "is this a capturing function" is answered by
+        // looking at the init: if init is an AnonFuncExprAST with
+        // hasClosure, the function captures.
+        bool isCapturing = funcDecl->init
+            && funcDecl->init->isa<AnonFuncExprAST>()
+            && funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+
+        if (isCapturing) {
             llvm::Value* closureVal = ctx.lookupValue(funcDecl);
             if (!closureVal) {
                 ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
                     "capturing function '", ctx.pool.lookup(funcDecl->name),
                     "' has no fat-pointer value in ctx.values — "
-                    "lowerNormalFunctionDecl should have stored it");
+                    "lowerFunctionDecl should have stored it");
                 return nullptr;
             }
-
-            // For a capturing function, the fat pointer is the value.
-            // No load is needed — ctx.values holds the SSA value directly
-            // (lowerClosure returns it; storeValue stores it).
             expr->llvmValue = closureVal;
             return closureVal;
         }
 
-        // ─── Non-capturing: bare function via resolveGenericCall ────────
-        llvm::Value* func = resolveGenericCall(funcDecl, expr->genericArgs, ctx, expr->loc);
-        if (!func) return nullptr;
-
+        // ─── Non-capturing: look up the already-specialized bare function ────
+        llvm::Function* func = ctx.lookupFunction(funcDecl);
+        if (!func) {
+            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                "function '", ctx.pool.lookup(funcDecl->name),
+                "' has no LLVM prototype");
+            return nullptr;
+        }
         expr->llvmValue = func;
         return func;
     }
@@ -523,33 +527,16 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
-    // ─── 2. Check if this is a type-erased generic struct ──────────────────
-    bool isErasedStruct = expr->isErased;
-
-    // ─── 3. Get the LLVM struct type ───────────────────────────────────────
-    llvm::Type* structType = nullptr;
-    
-    if (isGenericStruct(structDecl)) {
-        structType = getOrCreateInstantiatedStruct(structDecl, expr->genericArgs, ctx);
-        if (!structType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
-                "failed to instantiate generic struct '", 
-                ctx.pool.lookup(structDecl->name), "'");
-            return nullptr;
-        }
-    } else {
-        structType = ctx.lookupStruct(structDecl);
-        if (!structType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                    "struct type '", ctx.pool.lookup(structDecl->name), 
-                                    "' has no LLVM type");
-            return nullptr;
-        }
+    // ─── 2. Get the LLVM struct type ───────────────────────────────────────
+    llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
+    if (!llvmStructType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
+                                "struct type '", ctx.pool.lookup(structDecl->name), 
+                                "' has no LLVM type");
+        return nullptr;
     }
-    
-    llvm::StructType* llvmStructType = llvm::cast<llvm::StructType>(structType);
 
-    // ─── 4. Map field names to indices ─────────────────────────────────────
+    // ─── 3. Map field names to indices ─────────────────────────────────────
     std::unordered_map<InternedString, size_t> fieldIndexMap;
     for (size_t i = 0; i < structDecl->fields.size(); ++i) {
         fieldIndexMap[structDecl->fields[i]->name] = i;
@@ -557,10 +544,10 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
 
     std::vector<bool> initialized(structDecl->fields.size(), false);
 
-    // ─── 5. Build the struct value ──────────────────────────────────────────
+    // ─── 4. Build the struct value ──────────────────────────────────────────
     llvm::Value* result = llvm::UndefValue::get(llvmStructType);
 
-    // ─── 6. Process each field initializer ─────────────────────────────────
+    // ─── 5. Process each field initializer ─────────────────────────────────
     for (FieldInitAST* init : expr->inits) {
         if (!init) continue;
 
@@ -592,91 +579,41 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         // ─── Get the expected field type from the LLVM struct ──────────────
         llvm::Type* expectedType = llvmStructType->getElementType(fieldIndex);
 
-        // ─── ✅ Phase 4.2: BOX THE FIELD for type-erased structs ────────────
-        if (isErasedStruct) {
-            // For type-erased structs, every field is a TaggedSlot*
-            // Each field needs its own type tag
-            uint32_t fieldTag = 0;
-            
-            // Try to get the field's type tag from Sema
-            // The field type might be generic, in which case we need its tag
-            FieldDeclAST* field = structDecl->fields[fieldIndex];
-
-            if (field && field->type) {
-                // For type-erased structs, field tags are no longer needed since we removed TypeIdRegistry.
-                // The sentinel tag (0 = nil, 1 = valid, 2 = err) is used instead.
-                // For generic parameters, we use a default tag of 0.
-                if (field->type->isa<NamedTypeAST>()) {
-                    NamedTypeAST* fieldNamedType = field->type->as<NamedTypeAST>();
-
-                    if (fieldNamedType->resolvedDecl && 
-                        fieldNamedType->resolvedDecl->isa<GenericParamDeclAST>()) {
-                        // Generic parameter - use default sentinel tag
-                        fieldTag = 0;
-                    } else {
-                        // Concrete type - use 0 (valid) as the sentinel tag
-                        fieldTag = 0;
-                    }
-                }
-            }
-            
-            // ─── Box the field value into a TaggedSlot ──────────────────────
-            fieldValue = ctx.boxIntoTaggedSlot(
-                fieldValue,
-                fieldTag,
-                fieldValue->getType()
-            );
-            if (!fieldValue) {
-                return nullptr;
-            }
-            
-            // The boxed value is a pointer to TaggedSlot
-            // It should match the expected type (which is also a pointer)
-            if (fieldValue->getType() != expectedType) {
-                fieldValue = ctx.builder.CreateBitCast(
-                    fieldValue,
-                    expectedType,
-                    "field_box_cast"
+        if (fieldValue->getType() != expectedType) {
+            if (fieldValue->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
+                fieldValue = ctx.builder.CreateIntCast(
+                    fieldValue, 
+                    expectedType, 
+                    true,
+                    "field_cast"
                 );
-            }
-        } else {
-            // ─── Normal struct: cast if needed ──────────────────────────────
-            if (fieldValue->getType() != expectedType) {
-                if (fieldValue->getType()->isIntegerTy() && expectedType->isIntegerTy()) {
-                    fieldValue = ctx.builder.CreateIntCast(
+            } else if (fieldValue->getType()->isFloatingPointTy() && 
+                        expectedType->isFloatingPointTy()) {
+                if (fieldValue->getType()->isFloatTy() && expectedType->isDoubleTy()) {
+                    fieldValue = ctx.builder.CreateFPExt(
                         fieldValue, 
                         expectedType, 
-                        true,
-                        "field_cast"
+                        "field_fpext"
                     );
-                } else if (fieldValue->getType()->isFloatingPointTy() && 
-                           expectedType->isFloatingPointTy()) {
-                    if (fieldValue->getType()->isFloatTy() && expectedType->isDoubleTy()) {
-                        fieldValue = ctx.builder.CreateFPExt(
-                            fieldValue, 
-                            expectedType, 
-                            "field_fpext"
-                        );
-                    } else if (fieldValue->getType()->isDoubleTy() && expectedType->isFloatTy()) {
-                        fieldValue = ctx.builder.CreateFPTrunc(
-                            fieldValue, 
-                            expectedType, 
-                            "field_fptrunc"
-                        );
-                    }
-                } else if (fieldValue->getType()->isPointerTy() && 
-                           expectedType->isPointerTy()) {
-                    fieldValue = ctx.builder.CreatePointerCast(
+                } else if (fieldValue->getType()->isDoubleTy() && expectedType->isFloatTy()) {
+                    fieldValue = ctx.builder.CreateFPTrunc(
                         fieldValue, 
                         expectedType, 
-                        "field_ptr_cast"
+                        "field_fptrunc"
                     );
-                } else {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, init->loc,
-                                            "field '", ctx.pool.lookup(init->name), 
-                                            "' type mismatch");
-                    return nullptr;
                 }
+            } else if (fieldValue->getType()->isPointerTy() && 
+                        expectedType->isPointerTy()) {
+                fieldValue = ctx.builder.CreatePointerCast(
+                    fieldValue, 
+                    expectedType, 
+                    "field_ptr_cast"
+                );
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, init->loc,
+                                        "field '", ctx.pool.lookup(init->name), 
+                                        "' type mismatch");
+                return nullptr;
             }
         }
 
@@ -1010,9 +947,6 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     // ─── Lower arguments ───────────────────────────────────────────────────
     std::vector<llvm::Value*> args;
     
-    // ─── Check if this is a type-erased generic call ──────────────────────
-    bool isTypeErasedCall = expr->isErasedCall;
-    
     // ─── Get the callee's function type from Sema ──────────────────────────
     FuncTypeAST* calleeFuncType = expr->callee->resolvedType
         ? expr->callee->resolvedType->as<FuncTypeAST>()
@@ -1054,57 +988,7 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             if (!argVal) return nullptr;
         }
 
-        // ─── Determine if this argument needs boxing ───────────────────────
-        // 1. Type-erased generic call: box all arguments
-        // 2. Function parameter expects TaggedSlot* (opaque pointer)
-        bool needsBoxing = false;
-        uint32_t tag = 0;
-
-        // For type-erased calls, we box everything with a default sentinel tag (0 = valid)
-        if (isTypeErasedCall) {
-            needsBoxing = true;
-            // Since we removed type IDs, we use the default sentinel tag (0 = valid)
-            tag = 0;  // 0 = valid in TaggedSlot
-        } else {
-            // Non-generic call: check if parameter expects tagged slot
-            if (paramIndex < fixedParamCount) {
-                ParamAST* param = calleeFuncType->params[paramIndex];
-                if (param && param->type) {
-                    // Check if the parameter type is a generic parameter
-                    if (isGenericParameterType(param->type)) {
-                        needsBoxing = true;
-                        tag = 0;  // Default sentinel
-                    }
-                }
-            } else if (hasVariadic) {
-                ParamAST* variadicParam = calleeFuncType->params.back();
-                if (variadicParam && variadicParam->type) {
-                    if (variadicParam->type->isa<ArrayTypeAST>()) {
-                        TypeAST* elemType = variadicParam->type->as<ArrayTypeAST>()->element;
-                        if (elemType && isGenericParameterType(elemType)) {
-                            needsBoxing = true;
-                            tag = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        // ─── Box the argument if needed ─────────────────────────────────────
-        if (needsBoxing) {
-            argVal = ctx.boxIntoTaggedSlot(
-                argVal,
-                tag,
-                argVal->getType()
-            );
-            if (!argVal) {
-                return nullptr;
-            }
-            // The boxed value is a pointer to TaggedSlot
-            args.push_back(argVal);
-        } else {
-            args.push_back(argVal);
-        }
+        args.push_back(argVal);
 
         paramIndex++;
     }
@@ -1659,6 +1543,23 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
                                     "' has no mangled name");
             return nullptr;
         }
+
+        // Capturing functions cannot be accessed cross-module — their value
+        // is a closure fat pointer produced at the defining module's lowering
+        // time, and there's no bare symbol for the importing module to look
+        // up. This is the same limitation as capturing generic functions.
+        bool isCapturing = funcDecl->init
+            && funcDecl->init->isa<AnonFuncExprAST>()
+            && funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
+        if (isCapturing) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
+                "cross-module access to capturing function '",
+                ctx.pool.lookup(funcDecl->name),
+                "' is not supported — its value is a runtime-constructed fat pointer "
+                "tied to the defining module's frame. Export a non-capturing factory "
+                "function (e.g. makeCounter() -> () -> int) that returns the closure.");
+            return nullptr;
+        }
     } else if (resolvedDecl->isa<VarDeclAST>()) {
         VarDeclAST* varDecl = resolvedDecl->as<VarDeclAST>();
         if (varDecl->mangledName.isValid()) {
@@ -1687,47 +1588,6 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         if (symbol) {
             expr->llvmValue = symbol;
             return symbol;
-        }
-        
-        if (isGenericFunction(funcDecl)) {
-            if (!isErased(funcDecl)) {
-                // ─── Specialized (default): cross-module not yet supported ─────────
-                ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
-                    "cross-module specialized generic function '",
-                    ctx.pool.lookup(funcDecl->name),
-                    "' not yet supported");
-                return nullptr;
-            } else {
-                // ─── Type-erased (@[erased]): Use Sema's cached erased name ────────
-                std::string erasedName = ctx.pool.lookup(funcDecl->erasedName);
-                if (erasedName.empty()) {
-                    ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
-                        "type-erased generic function '", ctx.pool.lookup(funcDecl->name),
-                        "' has no erased name (Sema should have set this)");
-                    return nullptr;
-                }
-                
-                symbol = targetLLVMModule->getFunction(erasedName);
-                
-                if (!symbol) {
-                    // Try to fall back to the current module's copy
-                    symbol = ctx.module->getFunction(erasedName);
-                }
-                
-                if (!symbol) {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                        "type-erased generic function '", ctx.pool.lookup(funcDecl->name),
-                        "' not found in module '", 
-                        ctx.pool.lookup(expr->moduleName), 
-                        "'. Did you forget to compile the target module?");
-                    return nullptr;
-                }
-                
-                // ─── Cache in current context ─────────────────────────────────
-                ctx.storeFunction(funcDecl, llvm::cast<llvm::Function>(symbol));
-                expr->llvmValue = symbol;
-                return symbol;
-            }
         }
         
         // ─── Non-generic: look up by mangled name ────────────────────────────
@@ -2438,34 +2298,15 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         ctx.markAlive(decl);
     }
 
-    // ─── Step 9: Retain new closure environment (if assigning to a let function) ──
-    // When assigning a closure to a `let` function slot, the new environment
-    // needs to be retained because the slot now owns it.
-    if (decl && !isFieldAssignment && decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        if (funcDecl->keyword == DeclKeyword::Let && funcDecl->hasClosure) {
-            // Check if the RHS is a closure (fat pointer {ptr, ptr})
-            if (rhsValue->getType()->isStructTy() &&
-                rhsValue->getType()->getStructNumElements() == 2) {
-                
-                llvm::Value* newEnvPtr = ctx.builder.CreateExtractValue(rhsValue, 1, "new_env");
-                llvm::Value* isNull = ctx.builder.CreateIsNull(newEnvPtr, "new_env_is_null");
-                
-                llvm::Function* func = ctx.getCurrentFunction();
-                llvm::BasicBlock* retainBlock = llvm::BasicBlock::Create(
-                    ctx.llvmCtx, "retain_new_env", func);
-                llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
-                    ctx.llvmCtx, "retain_continue", func);
-                
-                ctx.builder.CreateCondBr(isNull, continueBlock, retainBlock);
-                
-                ctx.builder.SetInsertPoint(retainBlock);
-                llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
-                ctx.builder.CreateCall(retainFn, {newEnvPtr});
-                ctx.builder.CreateBr(continueBlock);
-                
-                ctx.builder.SetInsertPoint(continueBlock);
-            }
+    // ─── Step 9: Transfer-vs-copy for the new value ────────────────────────
+    // Applies whether this was a first assignment or a reassignment: the
+    // slot ends up owning a claim either way. Only Rule 2 (copy) needs
+    // emitRetain; Rule 1 (fresh literal) transfers the temp claim.
+    if (decl && !isFieldAssignment
+        && classifyResource(decl) == ResourceKind::Refcounted) {
+        bool rhsIsFreshLiteral = expr->rhs->isa<AnonFuncExprAST>();
+        if (!rhsIsFreshLiteral) {
+            emitRetain(decl, rhsValue, ctx);
         }
     }
 

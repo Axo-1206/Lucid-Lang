@@ -40,7 +40,6 @@
 
 #include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
-#include "codegen/generic/CodeGenGeneric.hpp"
 #include "codegen/support/CodeGenAlloca.hpp"
 #include "codegen/support/CodeGenPanic.hpp"
 #include "core/SourceLocation.hpp"
@@ -143,38 +142,18 @@ llvm::Value* normalizeToClosureType(llvm::Value* value, CodeGenContext& ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& capture) {
-    if (!capture.decl) return nullptr;
-
-    TypeAST* declType = capture.decl->type;
-    if (!declType) return nullptr;
-
-    // ─── Function-typed captures need special handling ────────────────────
-    if (declType->isa<FuncTypeAST>()) {
-        // Use the isClosureValue flag from Sema
-        // If true: the captured value is a closure → { ptr, ptr }
-        // If false: the captured value is a plain function → function pointer
-        // 
-        // Note: For parameters and fields, Sema sets isClosureValue = true
-        // conservatively. CodeGen will emit runtime checks when using the
-        // value (e.g., in emitCallableCall).
-        return getFunctionRuntimeType(
-            ctx,
-            declType->as<FuncTypeAST>(),
-            capture.isClosureValue
-        );
-    }
-
-    // ─── Regular type: use getType ────────────────────────────────────────
-    llvm::Type* baseType = getType(ctx, declType);
-    if (!baseType) return nullptr;
-
-    // If by reference, we store a pointer to the variable
-    if (capture.byReference) {
-        return llvm::PointerType::get(baseType, 0);
-    }
-
-    // By value: store the value directly
-    return baseType;
+    // ─── TODO: Scope walker not yet implemented ─────────────────────────
+    // Under the redesign, a capture identifies its declaration by
+    // (name, functionDepth), not by a ValueDeclAST* pointer. Resolving
+    // the type requires walking ctx.stack's function frames up to
+    // functionDepth and looking up `name` in the enclosing function's
+    // scope map. That infrastructure doesn't exist yet.
+    //
+    // Until it does, closure lowering of ANY capturing function is
+    // unsupported. Non-capturing closures (captures.empty()) never reach
+    // this function, so they still work.
+    (void)capture;
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,9 +163,24 @@ llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& cap
 llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    const bool hasCaptures = !expr->captures.empty();
+    // ─── Interim: capturing closures not yet supported ──────────────────
+    // The redesign represents a capture as (name, functionDepth), not a
+    // ValueDeclAST*. Resolving that to an LLVM value and type requires the
+    // CodeGen-side scope walker (per-function name→value and name→type
+    // maps with an `enclosing` chain), which does not exist yet.
+    //
+    // Until it does, reject any closure with captures here, at the single
+    // entry point, rather than silently producing a bogus environment.
+    if (!expr->captures.empty()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
+            "capturing closures are not yet supported by this codegen pass — "
+            "the scope walker for capture type resolution is not implemented");
+        return nullptr;
+    }
 
-    // ─── 1. Build the closure environment struct ──────────────────────────
+    // ─── 1. Build the (empty) closure environment struct ────────────────
+    // For a non-capturing closure this is just an empty struct; it exists
+    // only to keep the fat-pointer shape uniform.
     llvm::StructType* envType = buildClosureEnvironment(expr, ctx);
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -194,7 +188,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── 2. Create the closure function ───────────────────────────────────
+    // ─── 2. Create the closure function ─────────────────────────────────
     llvm::Function* closureFunc = createClosureFunction(expr, ctx);
     if (!closureFunc) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -202,133 +196,29 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── 3. Store the closure function on the AST node ────────────────────
     expr->closureFunction = closureFunc;
     expr->environmentType = envType;
 
-    llvm::Value* envPtr = nullptr;
+    // ─── 3. Non-capturing: null env pointer ─────────────────────────────
+    // No heap allocation, no retain, no release. The fat pointer's env
+    // slot is null; emitClosureCall passes null through to the closure
+    // function, which ignores it.
+    llvm::Value* envPtr = llvm::ConstantPointerNull::get(
+        llvm::PointerType::get(ctx.llvmCtx, 0));
 
-    if (hasCaptures) {
-        // ─── 4. Allocate the environment ───────────────────────────────────
-        llvm::Function* allocEnv = ctx.getRuntimeFn(RuntimeFn::AllocEnv);
-
-        // ─── 5. Get the size of the environment ────────────────────────────
-        llvm::DataLayout dl(ctx.module);
-        uint64_t envSize = dl.getTypeAllocSize(envType);
-
-        // ─── 6. Allocate the environment ───────────────────────────────────
-        llvm::Value* envSizeVal = llvm::ConstantInt::get(
-            llvm::Type::getInt64Ty(ctx.llvmCtx),
-            envSize
-        );
-        envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal}, "env_ptr");
-
-        // ─── 7. Cast to the environment type ───────────────────────────────
-        llvm::Value* typedEnvPtr = ctx.builder.CreatePointerCast(
-            envPtr,
-            llvm::PointerType::get(envType, 0),
-            "typed_env"
-        );
-
-        // ─── 8. Fill the environment with captured variables ───────────────
-        for (const CapturedVariable& capture : expr->captures) {
-            if (!capture.decl) continue;
-
-            // Look up the captured variable's value
-            llvm::Value* capturedValue = ctx.lookupValue(capture.decl);
-            if (!capturedValue) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
-                                        "captured variable '", 
-                                        ctx.pool.lookup(capture.decl->name),
-                                        "' has no LLVM value");
-                continue;
-            }
-
-            // ─── Handle function-typed captures ─────────────────────────────
-            // If the captured value is function-typed, we need to normalize it
-            // to the closure type { ptr, ptr } before storing.
-            TypeAST* declType = capture.decl->type;
-            bool isFunctionType = declType && declType->isa<FuncTypeAST>();
-
-            if (isFunctionType) {
-                capturedValue = normalizeToClosureType(capturedValue, ctx);
-                if (!capturedValue) continue;
-            }
-
-            // ─── Handle by-value vs by-reference captures ───────────────────
-            if (!capture.byReference) {
-                // By value: load the value and store it in the environment
-                llvm::Type* fieldType = getCaptureFieldType(ctx, capture);
-                if (fieldType) {
-                    capturedValue = loadIfNeeded(capturedValue, fieldType, ctx);
-                } else {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
-                                            "captured variable '", 
-                                            ctx.pool.lookup(capture.decl->name),
-                                            "' has invalid type");
-                    continue;
-                }
-
-                // ─── Retain if this capture is a closure by value ──────
-                // If the captured value is a closure (function type AND it's a
-                // closure value), we need to retain its environment.
-                // __lucid_retain_env is null-safe (see ClosureEnvHeader::retain),
-                // so no branch/null-check needed here.
-                if (isFunctionType) {
-                    // Extract the environment pointer from the closure value
-                    llvm::Value* envPtrForRetain = ctx.builder.CreateExtractValue(
-                        capturedValue, 1, "captured_env_for_retain"
-                    );
-                    llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
-                    ctx.builder.CreateCall(retainFn, {envPtrForRetain});
-                }
-            } else {
-                // By reference: store the address (pointer) in the environment
-                if (!capturedValue->getType()->isPointerTy()) {
-                    ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
-                                            "by-reference capture of '",
-                                            ctx.pool.lookup(capture.decl->name),
-                                            "' requires a pointer, got non-pointer value");
-                    continue;
-                }
-            }
-
-            // ─── Get the field pointer in the environment ───────────────────
-            llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
-                envType,
-                typedEnvPtr,
-                capture.index,
-                "env_field_" + ctx.pool.lookup(capture.decl->name)
-            );
-
-            // ─── Store the captured value ────────────────────────────────────
-            ctx.builder.CreateStore(capturedValue, fieldPtr);
-        }
-    } else {
-        // ─── No captures: skip heap allocation ────────────────────────────
-        envPtr = llvm::ConstantPointerNull::get(
-            llvm::PointerType::get(ctx.llvmCtx, 0));
-    }
-
-    // ─── 9. Create the closure value (fat pointer) ─────────────────────────
+    // ─── 4. Build the fat pointer { func, env } ─────────────────────────
     llvm::StructType* closureType = ctx.getClosureType();
-
     llvm::Value* closure = llvm::UndefValue::get(closureType);
     closure = ctx.builder.CreateInsertValue(
         closure,
-        ctx.builder.CreatePointerCast(closureFunc, llvm::PointerType::get(ctx.llvmCtx, 0)),
-        0
-    );
-    closure = ctx.builder.CreateInsertValue(
-        closure,
-        envPtr,
-        1
-    );
+        ctx.builder.CreatePointerCast(closureFunc,
+            llvm::PointerType::get(ctx.llvmCtx, 0)),
+        0);
+    closure = ctx.builder.CreateInsertValue(closure, envPtr, 1);
 
-    // ─── 10. Store the closure value on the AST node ───────────────────────
     expr->llvmValue = closure;
 
-    Trace::detail("Lowered closure with ", expr->captures.size(), " captures");
+    Trace::detail("Lowered non-capturing closure (0 captures)");
     return closure;
 }
 
@@ -349,21 +239,21 @@ llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr, CodeGenContext&
     std::vector<std::string> fieldNames;
 
     for (const CapturedVariable& capture : expr->captures) {
-        if (!capture.decl) continue;
+        if (!capture.name.isValid()) continue;
 
         // Get the LLVM type for the captured variable
         llvm::Type* fieldType = getCaptureFieldType(ctx, capture);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
                                     "captured variable '",
-                                    ctx.pool.lookup(capture.decl->name),
+                                    ctx.pool.lookup(capture.name),
                                     "' has invalid type");
             // Use a placeholder type to continue
             fieldType = llvm::Type::getInt8Ty(ctx.llvmCtx);
         }
 
         fieldTypes.push_back(fieldType);
-        fieldNames.push_back(ctx.pool.lookup(capture.decl->name));
+        fieldNames.push_back(ctx.pool.lookup(capture.name));
     }
 
     // ─── Create the environment struct ────────────────────────────────────
@@ -454,6 +344,10 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
     FuncTypeAST* funcType = expr->funcType;
     if (!funcType) return false;
 
+    // NOTE: there is no capture-load loop here. For a non-capturing closure
+    // (the only kind that reaches this function — see the guard in
+    // lowerClosure), the environment is empty and envPtr is null. Captured
+    // values would be loaded from the env here once the scope walker exists.
     llvm::StructType* envType = expr->environmentType;
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -466,71 +360,20 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
 
     // ─── 2. Create entry block ──────────────────────────────────────────
     llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
-        ctx.llvmCtx,
-        "entry",
-        closureFunc
-    );
+        ctx.llvmCtx, "entry", closureFunc);
     ctx.builder.SetInsertPoint(entryBlock);
 
-    // ─── 3. Load captured variables from environment ────────────────────
-    // Store them in the context's value map for use in the body
-    for (size_t i = 0; i < expr->captures.size(); ++i) {
-        const CapturedVariable& capture = expr->captures[i];
-        if (!capture.decl) continue;
-
-        // Get the field pointer from the environment
-        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
-            envType,
-            envPtr,
-            i,
-            "captured_" + ctx.pool.lookup(capture.decl->name)
-        );
-
-        // Load the captured value
-        llvm::Type* fieldType = envType->getElementType(i);
-        llvm::Value* capturedValue = ctx.builder.CreateLoad(
-            fieldType,
-            fieldPtr,
-            "load_captured_" + ctx.pool.lookup(capture.decl->name)
-        );
-
-        // ─── For function-typed captures, we may need to normalize ──────
-        // If the captured value is stored as { ptr, ptr } but we need a
-        // plain function pointer, extract it. This happens when the closure
-        // body calls the captured function directly.
-        TypeAST* declType = capture.decl->type;
-        if (declType && declType->isa<FuncTypeAST>()) {
-            // If the field type is a struct (closure type), the value is
-            // stored as { func, env }. Extract the function pointer.
-            if (fieldType->isStructTy()) {
-                capturedValue = ctx.builder.CreateExtractValue(
-                    capturedValue,
-                    0,
-                    "captured_func_ptr"
-                );
-            }
-        }
-
-        // Store in the context's value map for use in the closure body
-        ctx.storeValue(capture.decl, capturedValue);
-    }
-
-    // ─── 4. Lower parameters ────────────────────────────────────────────
-    // Parameters are arguments after the environment pointer
+    // ─── 3. Lower parameters ────────────────────────────────────────────
     size_t paramArgIndex = 1;
     for (ParamAST* param : funcType->params) {
         if (paramArgIndex < closureFunc->arg_size()) {
             llvm::Value* argValue = closureFunc->getArg(paramArgIndex);
             paramArgIndex++;
 
-            // Create alloca for the parameter
             llvm::Type* paramType = getType(ctx, param->type);
             if (paramType) {
                 llvm::AllocaInst* alloca = createAlloca(
-                    ctx.pool.lookup(param->name),
-                    paramType,
-                    ctx
-                );
+                    ctx.pool.lookup(param->name), paramType, ctx);
                 ctx.builder.CreateStore(argValue, alloca);
                 ctx.storeValue(param, alloca);
                 param->llvmAlloca = alloca;
@@ -539,7 +382,7 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         }
     }
 
-    // ─── 5. Lower the body ──────────────────────────────────────────────
+    // ─── 4. Lower the body ──────────────────────────────────────────────
     if (expr->body) {
         lowerStatement(expr->body, ctx);
     } else {
@@ -549,10 +392,8 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         return false;
     }
 
-    // ─── 6. Pop function context ────────────────────────────────────────
     ctx.setCurrentFunction(nullptr);
 
-    // ─── 7. Verify the function ──────────────────────────────────────────
     std::string error;
     llvm::raw_string_ostream errorStream(error);
     if (llvm::verifyFunction(*closureFunc, &errorStream)) {
