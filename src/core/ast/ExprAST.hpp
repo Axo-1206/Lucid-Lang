@@ -191,10 +191,42 @@ struct StructLiteralExprAST : ExprAST {
 ///   x        – local variable or parameter
 ///   add      – function name
 ///   Direction – enum type name (used before .North in Direction.North)
+///   identity<int>  – a generic specialization reference (genericArgs = [int])
 /// 
 /// The semantic pass resolves the name against the symbol table and sets
 /// resolvedType. If the name resolves to a struct field and 'self' is in scope,
 /// it's transformed into an implicit field access through self.
+///
+/// ─── `genericArgs`: Family vs. Member ──────────────────────────────────
+/// This single node covers both a plain name and a generic specialization
+/// reference — there is no separate node for the latter (no `generic_ref_expr`
+/// AST node exists; see grammar's **Expressions** section). `genericArgs`
+/// is what distinguishes the two cases:
+///
+///   - `genericArgs.empty()` — a plain name (`x`, `add`, `identity`). If
+///     `resolvedDecl` resolves to a generic `FuncDeclAST` (i.e.
+///     `resolvedDecl->isGeneric()`), this identifier names a *family*, not
+///     a value — Sema must reject it wherever a value is required (see
+///     diagnostic D2: "'identity' names a generic function, not a value").
+///     A bare generic name is only legal as the callee of a `CallExprAST`
+///     that itself carries `genericArgs` (i.e. `identity<int>(x)`, where
+///     the type arguments live on the `CallExprAST`'s own generic
+///     instantiation, not on this node) — see `CallExprAST` below.
+///
+///   - `!genericArgs.empty()` — a specialization reference (`identity<int>`).
+///     This denotes a concrete function value — a *member* of the family,
+///     structurally identical to a hand-written concrete function once
+///     monomorphized. It is valid in any expression position.
+///
+///     Whether this node is itself a **call** or a **bare reference** is
+///     determined structurally, by the parent node, not by anything stored
+///     here: if this `IdentifierExprAST` is the `callee` of a `CallExprAST`,
+///     it's being called (`identity<int>(x)`); if it stands alone with no
+///     such parent, it's a bare `generic_ref_expr` value (`identity<int>`
+///     with no trailing `(...)`) — e.g. `let g (int) -> int = identity<int>;`.
+///     Both cases reuse this same node and the same non-empty `genericArgs`;
+///     no `isGenericSpecializationRef`-style flag was added, since
+///     inspecting `genericArgs.empty()` plus the parent node is sufficient.
 ///
 /// NOTE: resolvedDecl already points to the appropriate function declaration.
 /// genericArgs are already stored.
@@ -767,6 +799,20 @@ struct ComposeExprAST : ExprAST {
 /// `captures` holds `CapturedVariable` entries — see that struct for why
 /// they identify captures by name + lexical depth rather than by a
 /// declaration pointer.
+///
+/// ─── No `genericParams` Here, By Design ────────────────────────────────
+/// This node has no `genericParams` field, and none was added when
+/// `FuncDeclAST` gained its const-only-for-generics invariant (see
+/// `FuncDeclAST` below). That invariant falls out of this node's shape for
+/// free: an anonymous function literal has no syntax to declare type
+/// parameters of its own (`func_literal` in the grammar carries no
+/// `generic_params`), so an `AnonFuncExprAST` can never itself be generic —
+/// only the enclosing `FuncDeclAST` can be. This is exactly what makes
+/// "an anonymous function cannot carry `T`" (grammar reassignment case 3)
+/// and "a bare generic name is not a value" (case 4a) fall out naturally
+/// rather than needing a dedicated check on this node: there is simply no
+/// `AnonFuncExprAST` shape capable of expressing a generic family in the
+/// first place.
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 

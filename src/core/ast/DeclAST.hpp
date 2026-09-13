@@ -271,10 +271,34 @@ using ParamGroup = std::vector<ParamAST*>;
 /// by the assignment's type check, but the `ParamAST` nodes are different
 /// objects — this is why CodeGen always reads parameters from `init`, never
 /// from `this->funcType`.
+///
+/// ─── Invariant: Generic ⇒ `const` ───────────────────────────────────────
+/// `!genericParams.empty() ⇒ keyword == DeclKeyword::Const`. The parser
+/// accepts either keyword here (`func_decl` still reads `('let' | 'const')`
+/// in the grammar), so this is a Sema-enforced invariant, not a
+/// parse-time one — Sema rejects `let` on a generic declaration with a
+/// targeted diagnostic (D1: "a generic function must be declared 'const'")
+/// rather than letting a generic parse error fall out of the grammar.
+///
+/// The reasoning: a generic function's declared type is a *family*, not a
+/// value. No expression form in the language ever produces a family —
+/// a bare `IdentifierExprAST` with empty `genericArgs` names the family but
+/// is not one (see `IdentifierExprAST`, above), and one with non-empty
+/// `genericArgs` denotes a *member* (a specialization), never the family
+/// itself. A `let`-bound generic `FuncDeclAST` would therefore have no
+/// legal `init` expression that could ever reassign it — `let` asks for a
+/// reassignment capability this node has no way to exercise, and `const`
+/// is simply what the declaration already is. By the time this invariant
+/// is checked, every code path that constructs a `FuncDeclAST` with a
+/// non-empty `genericParams` must already have rejected `DeclKeyword::Let`
+/// upstream in Sema; nothing downstream (CodeGen included) needs to
+/// re-check it, but nothing downstream should assume it silently either —
+/// assert it if this node is walked by a new pass.
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
+    // Invariant: !genericParams.empty() ⇒ keyword == DeclKeyword::Const.
     ArenaSpan<GenericParamDeclAST*> genericParams;
 
     /// The declared function type — parsed from the declaration header.
@@ -312,6 +336,8 @@ struct FuncDeclAST : ValueDeclAST {
         , funcType(ft)
         , init(i) {}
 
+    /// True if this declaration has type parameters. Per the invariant
+    /// above, `isGeneric() == true` implies `keyword == DeclKeyword::Const`.
     bool isGeneric() const { return !genericParams.empty(); }
 };
 
