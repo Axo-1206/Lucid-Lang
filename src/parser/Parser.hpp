@@ -236,7 +236,6 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
-bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ────────────────────────────────────────────────────
 

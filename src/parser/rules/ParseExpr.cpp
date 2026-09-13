@@ -220,107 +220,81 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return expr;
     }
     
-    // ─── Arena static access: Arena::create ──────────────────────────────
-    // Check if we have "Arena" followed by "::"
+    // ─── Identifier-led forms ────────────────────────────────────────────
+    //
+    // Everything that starts with an IDENTIFIER lands here:
+    //
+    //   Arena::method(...)     → arena static access
+    //   mod:member             → module access
+    //   mod:member<T>(...)     → module access with generic args
+    //   Ident<T> { ... }       → generic struct literal
+    //   Ident { ... }          → struct literal
+    //   Ident<T>(...)          → generic call (Ident<T> returned, postfix
+    //                            picks up the call)
+    //   Ident(...)             → call (Ident returned, postfix picks up
+    //                            the call)
+    //   Ident<T>               → generic identifier expression
+    //   Ident                  → identifier expression
+    //
+    // We do a single save/restore lookahead for the two cases that need to
+    // peek past the identifier (Arena::, mod:member). If neither matches,
+    // we commit: consume the identifier, parse optional generic args, and
+    // either build a struct literal (if '{' follows) or return the
+    // identifier expression and let postfix/infix handling take over.
     if (current == TokenType::IDENTIFIER) {
-        Token nameTok = stream.peek();
-        if (nameTok.value == "Arena") {
-            size_t savedPos = stream.getPos();
-            stream.consume(); // Consume "Arena"
-            if (stream.check(TokenType::COLON_COLON)) {
-                // It's Arena::something - parse it as static form
-                stream.setPos(savedPos);
-                return parseArenaAccessExpr(stream, ctx, nullptr, true);
-            }
-            stream.setPos(savedPos);
-        }
-    }
-    
-    // ─── Module Access: module:member ───────────────────────────────────
-    // Only parse as module access if the current token is IDENTIFIER followed by ':'
-    // This prevents parsing 'obj.field:something' as module access
-    if (current == TokenType::IDENTIFIER) {
-        size_t savedPos = stream.getPos();
-        stream.consume(); // Consume identifier temporarily
-        bool isModuleAccess = stream.check(TokenType::COLON);
-        stream.setPos(savedPos);
-        
-        if (isModuleAccess) {
-            return parseModuleAccessExpr(stream, ctx);
-        }
-    }
 
-    // ─── Identifier: x or Vec2 or int ──────────────────────────────────
-    if (current == TokenType::IDENTIFIER) {
-        Token nameTok = stream.peek();
-        std::string_view name = nameTok.value;
-        
-        // ─── Check if this is a primitive type in a type context ──────
-        // If the identifier is a primitive type name and we're in a context
-        // where a type is expected (like inside #sizeof), we want to treat
-        // it as a type, not a value.
-        bool isTypeName = is_primitive_type(nameTok.type);
-        
-        // ─── Check if this is a struct name followed by '{' ────────────
-        // If the identifier is a struct name and the next token is '{',
-        // it's a struct literal, which is handled above.
-        
-        // ─── Check if this is a generic type reference ─────────────────
-        // If the identifier is followed by '<', it might be a generic type.
-        bool hasGenericArgs = false;
-        size_t savedPos = stream.getPos();
-        stream.consume(); // Consume identifier temporarily
-        if (stream.check(TokenType::LESS)) {
-            // This could be a generic type or a generic function call
-            hasGenericArgs = true;
+        // ─── Peek-past-identifier: Arena::method ────────────────────────
+        {
+            Token nameTok = stream.peek();
+            if (nameTok.value == "Arena") {
+                size_t savedPos = stream.getPos();
+                stream.consume();
+                if (stream.check(TokenType::COLON_COLON)) {
+                    stream.setPos(savedPos);
+                    return parseArenaAccessExpr(stream, ctx, nullptr, true);
+                }
+                stream.setPos(savedPos);
+            }
         }
-        stream.setPos(savedPos);
-        
-        // ─── Parse the identifier ──────────────────────────────────────
-        IdentifierExprAST* idExpr = parseIdentifierExpr(stream, ctx);
-        if (!idExpr) {
-            return nullptr;
+
+        // ─── Peek-past-identifier: module:member ────────────────────────
+        {
+            size_t savedPos = stream.getPos();
+            stream.consume();
+            bool isModuleAccess = stream.check(TokenType::COLON);
+            stream.setPos(savedPos);
+            if (isModuleAccess) {
+                return parseModuleAccessExpr(stream, ctx);
+            }
         }
-        
-        // ─── Mark as type if it's a primitive type name ──────────────
-        // This will be resolved by Sema
-        if (isTypeName) {
-            // The parser can't know for sure if this is a type or a value
-            // in all contexts. We'll let Sema decide based on context.
-            // But we can mark it as a potential type.
-            // Sema will look at the context to determine if it's a type.
-            idExpr->isType = true;
-        }
-        
-        return idExpr;
-    }
-    
-    // ─── Struct literal: Point { x = 1, y = 2 } ────────────────────────
-    if (looksLikeStructLiteral(stream, ctx)) {
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
-                                    "expected struct type name, got '", stream.peekValue(), "'");
-            return nullptr;
-        }
+
+        // ─── Commit: identifier, optional generics, then decide ─────────
+        SourceLocation nameLoc = stream.currentLoc();
         Token nameTok = stream.consume();
-        InternedString typeName = ctx.pool.intern(nameTok.value);
-        
+        InternedString name = ctx.pool.intern(nameTok.value);
+
         ArenaSpan<TypeAST*> genericArgs;
         if (stream.check(TokenType::LESS)) {
             genericArgs = parseGenericArgs(stream, ctx);
         }
-        
-        if (!stream.check(TokenType::LBRACE)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                                    "expected '{', got '", stream.peekValue(), "'");
-            return nullptr;
+
+        // Struct literal: Ident<...> '{' ...
+        if (stream.check(TokenType::LBRACE)) {
+            return parseStructLiteralExpr(stream, ctx, name, genericArgs);
         }
-        return parseStructLiteralExpr(stream, ctx, typeName, genericArgs);
-    }
-    
-    // ─── Identifier: x ──────────────────────────────────────────────────
-    if (current == TokenType::IDENTIFIER) {
-        return parseIdentifierExpr(stream, ctx);
+
+        // Otherwise it's an identifier expression. If a '(' follows, the
+        // Pratt loop's postfix handling will turn this into a call. If a
+        // '<' comparison follows, the Pratt loop's infix handling will
+        // turn this into a comparison — but note that we've already
+        // consumed any '<...>' immediately after the identifier as
+        // generic args above, so this is only reached when the '<' is
+        // not a generic-args introducer. See the note below.
+        auto* idExpr = ctx.arena.make<IdentifierExprAST>(name);
+        idExpr->loc = nameLoc;
+        idExpr->genericArgs = genericArgs;
+        idExpr->isType = is_primitive_type(nameTok.type);
+        return idExpr;
     }
     
     // ─── Unknown primary expression ─────────────────────────────────────

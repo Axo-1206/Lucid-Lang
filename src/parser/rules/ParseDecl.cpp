@@ -110,9 +110,6 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         } else if (isVarDecl) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected ';' after variable declaration");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ';' after declaration");
         }
     }
     
