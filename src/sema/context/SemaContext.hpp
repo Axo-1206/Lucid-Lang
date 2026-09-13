@@ -39,14 +39,8 @@ struct ModuleTable {
 /// enabling fast type comparison via pointer equality.
 struct TypeCache {
     // ─── Primitive Types ──────────────────────────────────────────────────
-    PrimitiveTypeAST* boolType = nullptr;
-    PrimitiveTypeAST* intType = nullptr;
-    PrimitiveTypeAST* floatType = nullptr;
-    PrimitiveTypeAST* stringType = nullptr;
-    PrimitiveTypeAST* charType = nullptr;
-    PrimitiveTypeAST* uint64Type = nullptr;
-    PrimitiveTypeAST* uint8Type = nullptr;
     UnknownTypeAST* unknownType = nullptr;
+    std::unordered_map<PrimitiveKind, PrimitiveTypeAST*> primitives;
     
     // ─── Named Type Cache ──────────────────────────────────────────────────
     struct NamedTypeKey {
@@ -92,6 +86,44 @@ struct TypeCache {
         size_t operator()(const RefTypeKey& key) const;
     };
     std::unordered_map<RefTypeKey, RefTypeAST*, RefTypeKeyHash> refTypes;
+
+        // ─── Nullable / Fallible / Combined Type Caches ─────────────────────
+    //
+    // Same rationale as ptrTypes/refTypes: canonicalize so that two
+    // call sites writing `int?` produce one node, not two. The
+    // instantiation cache relies on this.
+    struct NullableTypeKey {
+        TypeAST* inner;
+        bool operator==(const NullableTypeKey& other) const { return inner == other.inner; }
+    };
+    struct NullableTypeKeyHash {
+        size_t operator()(const NullableTypeKey& key) const {
+            return std::hash<TypeAST*>{}(key.inner);
+        }
+    };
+    std::unordered_map<NullableTypeKey, NullableTypeAST*, NullableTypeKeyHash> nullableTypes;
+
+    struct FallibleTypeKey {
+        TypeAST* inner;
+        bool operator==(const FallibleTypeKey& other) const { return inner == other.inner; }
+    };
+    struct FallibleTypeKeyHash {
+        size_t operator()(const FallibleTypeKey& key) const {
+            return std::hash<TypeAST*>{}(key.inner);
+        }
+    };
+    std::unordered_map<FallibleTypeKey, FallibleTypeAST*, FallibleTypeKeyHash> fallibleTypes;
+
+    struct CombinedTypeKey {
+        TypeAST* inner;
+        bool operator==(const CombinedTypeKey& other) const { return inner == other.inner; }
+    };
+    struct CombinedTypeKeyHash {
+        size_t operator()(const CombinedTypeKey& key) const {
+            return std::hash<TypeAST*>{}(key.inner);
+        }
+    };
+    std::unordered_map<CombinedTypeKey, CombinedTypeAST*, CombinedTypeKeyHash> combinedTypes;
 };
 
 // ─── Instantiation Cache Key ─────────────────────────────────────────────
@@ -284,6 +316,26 @@ struct SemaContext {
     ArrayTypeAST* getArrayType(ArrayKind kind, uint64_t size, TypeAST* element);
     PtrTypeAST* getPtrType(TypeAST* inner);
     RefTypeAST* getRefType(TypeAST* inner);
+    NullableTypeAST* getNullableType(TypeAST* inner);
+    FallibleTypeAST* getFallibleType(TypeAST* inner);
+    CombinedTypeAST* getCombinedType(TypeAST* inner);
+
+    // ─── Primitive Type Canonicalization ──────────────────────────────
+    //
+    // Returns the canonical singleton node for the given primitive kind.
+    // Every call site that produces a `PrimitiveTypeAST` (typically the
+    // parser) yields a distinct node; this accessor ensures that two
+    // same-kind primitives written at different source locations map to
+    // one node in the type cache.
+    //
+    // Why this matters for instantiation: the instantiation cache is
+    // keyed on `(templateDecl, typeArgs)` with pointer identity on each
+    // type argument. Without canonicalization, `factorial<int>` written
+    // twice produces two distinct `int` nodes, two distinct keys, and
+    // two separate specializations. With canonicalization, both keys
+    // are `(factorial, [the-int-singleton])` and the second lookup
+    // hits the cache.
+    PrimitiveTypeAST* getPrimitiveType(PrimitiveKind kind);
 
     /// Arena is a compiler-builtin type representing a bump allocator.
     /// Bindings of this type must be declared with `const`.

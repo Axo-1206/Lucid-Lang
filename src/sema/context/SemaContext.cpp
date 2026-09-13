@@ -528,55 +528,23 @@ bool SemaContext::hasPendingSpawn() const {
 
 // ─── Type Cache Accessors ─────────────────────────────────────────────────
 
-PrimitiveTypeAST* SemaContext::getBoolType() {
-    if (!typeCache.boolType) {
-        typeCache.boolType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool);
+PrimitiveTypeAST* SemaContext::getPrimitiveType(PrimitiveKind kind) {
+    auto it = typeCache.primitives.find(kind);
+    if (it != typeCache.primitives.end()) {
+        return it->second;
     }
-    return typeCache.boolType;
+    PrimitiveTypeAST* type = arena.make<PrimitiveTypeAST>(kind);
+    typeCache.primitives[kind] = type;
+    return type;
 }
 
-PrimitiveTypeAST* SemaContext::getIntType() {
-    if (!typeCache.intType) {
-        typeCache.intType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Int);
-    }
-    return typeCache.intType;
-}
-
-PrimitiveTypeAST* SemaContext::getFloatType() {
-    if (!typeCache.floatType) {
-        typeCache.floatType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Float);
-    }
-    return typeCache.floatType;
-}
-
-PrimitiveTypeAST* SemaContext::getStringType() {
-    if (!typeCache.stringType) {
-        typeCache.stringType = arena.make<PrimitiveTypeAST>(PrimitiveKind::String);
-    }
-    return typeCache.stringType;
-}
-
-PrimitiveTypeAST* SemaContext::getCharType() {
-    if (!typeCache.charType) {
-        typeCache.charType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Char);
-    }
-    return typeCache.charType;
-}
-
-PrimitiveTypeAST* SemaContext::getUint64Type() {
-    // Check cache first
-    if (!typeCache.uint64Type) {
-        typeCache.uint64Type = arena.make<PrimitiveTypeAST>(PrimitiveKind::Uint64);
-    }
-    return typeCache.uint64Type;
-}
-
-PrimitiveTypeAST* SemaContext::getUint8Type() {
-    if (!typeCache.uint8Type) {
-        typeCache.uint8Type = arena.make<PrimitiveTypeAST>(PrimitiveKind::Uint8);
-    }
-    return typeCache.uint8Type;
-}
+PrimitiveTypeAST* SemaContext::getIntType()    { return getPrimitiveType(PrimitiveKind::Int); }
+PrimitiveTypeAST* SemaContext::getFloatType()  { return getPrimitiveType(PrimitiveKind::Float); }
+PrimitiveTypeAST* SemaContext::getBoolType()   { return getPrimitiveType(PrimitiveKind::Bool); }
+PrimitiveTypeAST* SemaContext::getStringType() { return getPrimitiveType(PrimitiveKind::String); }
+PrimitiveTypeAST* SemaContext::getCharType()   { return getPrimitiveType(PrimitiveKind::Char); }
+PrimitiveTypeAST* SemaContext::getUint64Type() { return getPrimitiveType(PrimitiveKind::Uint64); }
+PrimitiveTypeAST* SemaContext::getUint8Type()  { return getPrimitiveType(PrimitiveKind::Uint8); }
 
 UnknownTypeAST* SemaContext::getUnknownType() {
     if (!typeCache.unknownType) {
@@ -635,6 +603,48 @@ RefTypeAST* SemaContext::getRefType(TypeAST* inner) {
     
     RefTypeAST* type = arena.make<RefTypeAST>(inner);
     typeCache.refTypes[key] = type;
+    return type;
+}
+
+NullableTypeAST* SemaContext::getNullableType(TypeAST* inner) {
+    if (!inner) return nullptr;
+    
+    TypeCache::NullableTypeKey key{inner};
+    auto it = typeCache.nullableTypes.find(key);
+    if (it != typeCache.nullableTypes.end()) {
+        return it->second;
+    }
+    
+    NullableTypeAST* type = arena.make<NullableTypeAST>(inner);
+    typeCache.nullableTypes[key] = type;
+    return type;
+}
+
+FallibleTypeAST* SemaContext::getFallibleType(TypeAST* inner) {
+    if (!inner) return nullptr;
+    
+    TypeCache::FallibleTypeKey key{inner};
+    auto it = typeCache.fallibleTypes.find(key);
+    if (it != typeCache.fallibleTypes.end()) {
+        return it->second;
+    }
+    
+    FallibleTypeAST* type = arena.make<FallibleTypeAST>(inner);
+    typeCache.fallibleTypes[key] = type;
+    return type;
+}
+
+CombinedTypeAST* SemaContext::getCombinedType(TypeAST* inner) {
+    if (!inner) return nullptr;
+    
+    TypeCache::CombinedTypeKey key{inner};
+    auto it = typeCache.combinedTypes.find(key);
+    if (it != typeCache.combinedTypes.end()) {
+        return it->second;
+    }
+    
+    CombinedTypeAST* type = arena.make<CombinedTypeAST>(inner);
+    typeCache.combinedTypes[key] = type;
     return type;
 }
 

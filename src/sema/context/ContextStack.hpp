@@ -361,7 +361,6 @@ public:
     bool insideLoop() const;
     bool insideSwitch() const;
 
-    FuncDeclAST* currentFunction() const;
     StmtAST* currentLoop() const;
     SwitchStmtAST* currentSwitch() const;
     BlockStmtAST* currentBlock() const;
@@ -407,11 +406,20 @@ public:
     /// @brief Check if we're inside a nested function.
     bool insideNestedFunction() const;
 
-    /// @brief Get the innermost function declaration.
-    FuncDeclAST* getInnermostFunction() const;
-
-    /// @brief Get the innermost function node (FuncDeclAST or AnonFuncExprAST).
-    BaseAST* getInnermostFunctionNode() const;
+    /// @brief Get the second-innermost function node — the lexical parent of
+    ///        whatever function is currently being analyzed, or nullptr if
+    ///        there is no enclosing function (top-level).
+    ///
+    /// Capture analysis runs while the closure's own FuncBody frame is
+    /// pushed, so the innermost frame is the closure itself; its lexical
+    /// parent is one frame further out. This accessor returns exactly that.
+    ///
+    /// Every FuncBody frame is pushed by pushAnonFunction and its `node` is
+    /// an AnonFuncExprAST — a FuncDeclAST never appears on this stack (a
+    /// FuncDeclAST is a declaration; its body, when it has one, is the
+    /// AnonFuncExprAST at `init`, and that body is what gets pushed). So the
+    /// return value here is always either an AnonFuncExprAST or nullptr.
+    BaseAST* getEnclosingFunctionNode() const;
 
 private:
     // ─── Members ──────────────────────────────────────────────────────────
@@ -431,8 +439,6 @@ private:
 
     // ─── Helpers ──────────────────────────────────────────────────────────
 
-    ContextFrame* findInnermostFunction();
-    const ContextFrame* findInnermostFunction() const;
     ContextFrame* findInnermostIfContext();
     const ContextFrame* findInnermostIfContext() const;
     ContextFrame* findInnermostBlock();

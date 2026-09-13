@@ -89,6 +89,26 @@ TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc);
 StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc);
 ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc);
 
+/// @brief Substitute generic parameters in a declaration.
+///
+/// A declaration can appear in two places that need substitution:
+///
+///   - Inside a `DeclStmt` in a generic function's body. The declaration's
+///     type and initializer may reference `T`, and both need to be
+///     substituted before the specialized body is resolved. This is the
+///     path `substituteStmt`'s `DeclStmt` case takes.
+///
+///   - In principle, anywhere else a `DeclAST` can be reached through the
+///     substitution walk. Today that's only the `DeclStmt` case, but the
+///     helper is written to handle a full declaration regardless of how
+///     it was reached.
+///
+/// Only the declaration kinds that can legally appear inside a function
+/// body are handled here — `VarDeclAST`, `FuncDeclAST`, `StructDeclAST`,
+/// `EnumDeclAST`, `TraitDeclAST`. Other kinds (imports, module-level
+/// declarations reached through unusual paths) fall through unchanged.
+DeclAST* substituteDecl(DeclAST* decl, SubstitutionContext& sc);
+
 bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 
 // ─── Instantiation (implemented in Instantiation.cpp) ─────────────────

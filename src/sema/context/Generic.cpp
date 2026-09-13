@@ -46,38 +46,39 @@ TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc) {
         case ASTKind::NamedType: {
             NamedTypeAST* named = type->as<NamedTypeAST>();
 
-            // ─── Check if this is a generic parameter ──────────────────
             if (sc.subst.isParam(named->name)) {
                 TypeAST* result = sc.subst.lookup(named->name);
                 if (result) {
-                    return substituteType(result, sc);
+                    // Substituting a generic parameter yields the concrete
+                    // argument. We do NOT recurse into substituteType(result)
+                    // here — the argument is already concrete (or a nested
+                    // generic parameter in a re-substitution, but that would
+                    // have been resolved by an outer substitution pass). If
+                    // it's another parameter, we still return it as-is; the
+                    // caller's subsequent resolution will see it correctly.
+                    //
+                    // (The previous `substituteType(result, sc)` was the
+                    // source of the infinite loop on T → T.)
+                    return result;
                 }
                 return type;
             }
 
-            // ─── Check if this is a generic struct with args ──────────
-            if (!named->genericArgs.empty()) {
-                bool changed = false;
-
-                auto subArgs = sc.sema.arena.makeSpan<TypeAST*>(
-                    named->genericArgs,
-                    [&](TypeAST* arg) -> TypeAST* {
-                        TypeAST* subArg = substituteType(arg, sc);
-                        if (subArg != arg) changed = true;
-                        return subArg;
-                    }
-                );
-
-                if (changed) {
-                    NamedTypeAST* newNamed = sc.sema.arena.make<NamedTypeAST>(named->name);
-                    newNamed->genericArgs = subArgs;
-                    newNamed->resolvedDecl = named->resolvedDecl;
-                    newNamed->loc = named->loc;
-                    return newNamed;
+            // Always build a fresh node, even if no type argument changed.
+            // Sharing with the template would let resolution write into the
+            // template's AST.
+            auto subArgs = sc.sema.arena.makeSpan<TypeAST*>(
+                named->genericArgs,
+                [&](TypeAST* arg) -> TypeAST* {
+                    return substituteType(arg, sc);
                 }
-            }
+            );
 
-            return type;
+            NamedTypeAST* newNamed = sc.sema.arena.make<NamedTypeAST>(named->name);
+            newNamed->genericArgs = subArgs;
+            newNamed->loc = named->loc;
+            // resolvedDecl left null; will be set by re-resolution.
+            return newNamed;
         }
 
         case ASTKind::ArrayType: {
@@ -92,65 +93,44 @@ TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc) {
         case ASTKind::NullableType: {
             NullableTypeAST* nullable = type->as<NullableTypeAST>();
             TypeAST* subInner = substituteType(nullable->inner, sc);
-            if (subInner != nullable->inner) {
-                return sc.sema.arena.make<NullableTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<NullableTypeAST>(subInner);
         }
 
         case ASTKind::FallibleType: {
             FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
             TypeAST* subInner = substituteType(fallible->inner, sc);
-            if (subInner != fallible->inner) {
-                return sc.sema.arena.make<FallibleTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<FallibleTypeAST>(subInner);
         }
 
         case ASTKind::CombinedType: {
             CombinedTypeAST* combined = type->as<CombinedTypeAST>();
             TypeAST* subInner = substituteType(combined->inner, sc);
-            if (subInner != combined->inner) {
-                return sc.sema.arena.make<CombinedTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<CombinedTypeAST>(subInner);
         }
 
         case ASTKind::RefType: {
             RefTypeAST* ref = type->as<RefTypeAST>();
             TypeAST* subInner = substituteType(ref->inner, sc);
-            if (subInner != ref->inner) {
-                return sc.sema.arena.make<RefTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<RefTypeAST>(subInner);
         }
 
         case ASTKind::PtrType: {
             PtrTypeAST* ptr = type->as<PtrTypeAST>();
             TypeAST* subInner = substituteType(ptr->inner, sc);
-            if (subInner != ptr->inner) {
-                return sc.sema.arena.make<PtrTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<PtrTypeAST>(subInner);
         }
 
         case ASTKind::FuncType: {
             FuncTypeAST* func = type->as<FuncTypeAST>();
 
-            bool paramsChanged = false;
             auto subParams = sc.sema.arena.makeSpan<ParamAST*>(
                 func->params,
                 [&](ParamAST* param) -> ParamAST* {
-                    if (!param->type) return param;
-                    TypeAST* subType = substituteType(param->type, sc);
-                    if (subType != param->type) {
-                        paramsChanged = true;
-                        ParamAST* newParam = sc.sema.arena.make<ParamAST>(
-                            param->name, subType, param->isVariadic, param->isConstParam);
-                        newParam->loc = param->loc;
-                        return newParam;
-                    }
-                    return param;
+                    TypeAST* subType = param->type ? substituteType(param->type, sc) : nullptr;
+                    ParamAST* newParam = sc.sema.arena.make<ParamAST>(
+                        param->name, subType, param->isVariadic, param->isConstParam);
+                    newParam->loc = param->loc;
+                    return newParam;
                 }
             );
 
@@ -158,41 +138,29 @@ TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc) {
                 ? substituteType(func->returnType, sc)
                 : nullptr;
 
-            if (paramsChanged || subReturn != func->returnType) {
-                FuncTypeAST* newFunc = sc.sema.arena.make<FuncTypeAST>();
-                newFunc->params = subParams;
-                newFunc->returnType = subReturn;
-                newFunc->loc = func->loc;
-                return newFunc;
-            }
-            return type;
+            FuncTypeAST* newFunc = sc.sema.arena.make<FuncTypeAST>();
+            newFunc->params = subParams;
+            newFunc->returnType = subReturn;
+            newFunc->loc = func->loc;
+            return newFunc;
         }
 
         case ASTKind::FutureType: {
             FutureTypeAST* future = type->as<FutureTypeAST>();
             TypeAST* subInner = substituteType(future->inner, sc);
-            if (subInner != future->inner) {
-                return sc.sema.arena.make<FutureTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<FutureTypeAST>(subInner);
         }
 
         case ASTKind::ThreadType: {
             ThreadTypeAST* thread = type->as<ThreadTypeAST>();
             TypeAST* subInner = substituteType(thread->inner, sc);
-            if (subInner != thread->inner) {
-                return sc.sema.arena.make<ThreadTypeAST>(subInner);
-            }
-            return type;
+            return sc.sema.arena.make<ThreadTypeAST>(subInner);
         }
 
         case ASTKind::SimdType: {
             SimdTypeAST* simd = type->as<SimdTypeAST>();
             TypeAST* subElement = substituteType(simd->elementType, sc);
-            if (subElement != simd->elementType) {
-                return sc.sema.arena.make<SimdTypeAST>(subElement, simd->laneCount);
-            }
-            return type;
+            return sc.sema.arena.make<SimdTypeAST>(subElement, simd->laneCount);
         }
 
         case ASTKind::ArenaType:
@@ -222,7 +190,10 @@ StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc) {
                 }
             );
 
-            newBlock->scopeExits = block->scopeExits;
+            // scopeExits is populated during body resolution by
+            // validateScopeExit. The template body was not resolved, so
+            // the specialized copy accumulates its own list during the
+            // post-substitution resolution pass.
             return newBlock;
         }
 
@@ -247,8 +218,10 @@ StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc) {
 
         case ASTKind::DeclStmt: {
             DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
-            // TODO: substitute types inside the declaration.
-            return stmt;
+            DeclAST* newDecl = substituteDecl(declStmt->decl, sc);
+            DeclStmtAST* newDeclStmt = sc.sema.arena.make<DeclStmtAST>(newDecl);
+            newDeclStmt->loc = declStmt->loc;
+            return newDeclStmt;
         }
 
         case ASTKind::IfStmt: {
@@ -322,9 +295,19 @@ StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc) {
             return newSwitch;
         }
 
-        case ASTKind::BreakStmt:
-        case ASTKind::ContinueStmt:
-            return stmt;
+        case ASTKind::BreakStmt: {
+            BreakStmtAST* breakStmt = stmt->as<BreakStmtAST>();
+            BreakStmtAST* newBreakStmt = sc.sema.arena.make<BreakStmtAST>();
+            newBreakStmt->loc = breakStmt->loc;
+            return newBreakStmt;
+        }
+
+        case ASTKind::ContinueStmt: {
+            ContinueStmtAST* continueStmt = stmt->as<ContinueStmtAST>();
+            ContinueStmtAST* newContinueStmt = sc.sema.arena.make<ContinueStmtAST>();
+            newContinueStmt->loc = continueStmt->loc;
+            return newContinueStmt;
+        }
 
         default:
             return stmt;
@@ -337,13 +320,40 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
     if (!expr) return nullptr;
 
     switch (expr->kind) {
-        case ASTKind::LiteralExpr:
-            return expr;
+        case ASTKind::LiteralExpr: {
+            LiteralExprAST* lit = expr->as<LiteralExprAST>();
+            LiteralExprAST* newLit = sc.sema.arena.make<LiteralExprAST>(lit->kind, lit->value);
+            newLit->loc = lit->loc;
+            return newLit;
+        }
 
         case ASTKind::IdentifierExpr: {
-            // Generic function references are resolved by Sema; nothing
-            // to substitute on a plain identifier.
-            return expr;
+            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+
+            // Always allocate a fresh identifier node. Resolution writes
+            // semantic state onto each identifier it visits, and sharing a
+            // template node would leak that state back into the template.
+            auto subArgs = sc.sema.arena.makeSpan<TypeAST*>(
+                id->genericArgs,
+                [&](TypeAST* arg) -> TypeAST* {
+                    return substituteType(arg, sc);
+                }
+            );
+
+            IdentifierExprAST* newId =
+                sc.sema.arena.make<IdentifierExprAST>(id->name);
+            newId->genericArgs = subArgs;
+            newId->isType = id->isType;
+            newId->loc = id->loc;
+
+            // Semantic fields (resolvedDecl, resolvedType, valueState,
+            // isConst, isLValue, isImplicitFieldAccess, selfObject,
+            // fieldIndex, resolvedTypeNode) are deliberately left unset.
+            // The specialized body has not been resolved yet; resolution
+            // runs after substitution, and the nodes must be re-bound from
+            // scratch in that pass.
+
+            return newId;
         }
 
         case ASTKind::BinaryExpr: {
@@ -381,11 +391,11 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
             FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
             FieldAccessExprAST* newField = sc.sema.arena.make<FieldAccessExprAST>(field->fieldName);
             newField->object = substituteExpr(field->object, sc);
-            newField->resolvedDecl = field->resolvedDecl;
-            newField->ownerType = field->ownerType;
-            newField->isEnumAccess = field->isEnumAccess;
-            newField->fieldIndex = field->fieldIndex;
             newField->loc = field->loc;
+
+            // Semantic fields (resolvedDecl, ownerType, isEnumAccess,
+            // fieldIndex) are left unset so the specialized copy resolves
+            // fresh during the body-resolution pass.
             return newField;
         }
 
@@ -415,13 +425,23 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
                     return newInit;
                 }
             );
+
+            auto subGenericArgs = sc.sema.arena.makeSpan<TypeAST*>(
+                structExpr->genericArgs,
+                [&](TypeAST* arg) -> TypeAST* {
+                    return substituteType(arg, sc);
+                }
+            );
+
             StructLiteralExprAST* newStruct = sc.sema.arena.make<StructLiteralExprAST>(
                 structExpr->typeName,
-                structExpr->genericArgs,
+                subGenericArgs,
                 subInits
             );
-            newStruct->resolvedDecl = structExpr->resolvedDecl;
             newStruct->loc = structExpr->loc;
+
+            // resolvedDecl is left unset; the specialized struct literal
+            // resolves from scratch during the body-resolution pass.
             return newStruct;
         }
 
@@ -481,7 +501,6 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
                 );
             }
 
-            newMod->resolvedDecl = mod->resolvedDecl;
             newMod->loc = mod->loc;
             return newMod;
         }
@@ -499,18 +518,13 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
                 nullptr   // body, filled below
             );
 
-            // ─── Captures are lexically invariant ──────────────────────
-            // (name, functionDepth) survive substitution unchanged.
-            newAnon->captures   = anon->captures;
-            newAnon->hasClosure = anon->hasClosure;
-            newAnon->isReturned = anon->isReturned;
-            newAnon->loc        = anon->loc;
+            newAnon->loc = anon->loc;
 
-            // ─── Re-derive enclosingFunction in the specialized context ─
-            // The template's node points at the template's enclosing
-            // anon; that node isn't in the specialized tree. The correct
-            // parent is whatever substitution is currently inside —
-            // sc.enclosingFunction.
+            // `captures`, `hasClosure`, and `isReturned` are populated by
+            // analyzeCaptures during body resolution. The template body is
+            // not resolved yet, so these fields are empty on the template
+            // node. The specialized copy gets its own capture set when the
+            // specialized body is resolved later.
             newAnon->enclosingFunction = sc.enclosingFunction;
 
             // ─── Walk the body with newAnon as current enclosing ───────
@@ -609,7 +623,6 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
                     }
                 );
             }
-            newIntrinsic->intrinsicID = intrinsic->intrinsicID;
             newIntrinsic->loc = intrinsic->loc;
             return newIntrinsic;
         }
@@ -637,13 +650,231 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
                     }
                 );
             }
-            newArenaAccess->resolvedDecl = arenaAccess->resolvedDecl;
             newArenaAccess->loc = arenaAccess->loc;
             return newArenaAccess;
         }
 
         default:
             return expr;
+    }
+}
+
+// ─── substituteDecl ───────────────────────────────────────────────────
+
+DeclAST* substituteDecl(DeclAST* decl, SubstitutionContext& sc) {
+    if (!decl) return nullptr;
+
+    switch (decl->kind) {
+        // ─── VarDeclAST ────────────────────────────────────────────────
+        //
+        // The common case: `let x T = ...` or `const x T = ...` inside a
+        // generic body. Both `type` and `init` may reference `T`.
+        //
+        // The keyword is preserved (`let` stays `let`, `const` stays
+        // `const`) — substitution never changes mutability. The name
+        // stays the same. Only the type and the initializer change.
+        case ASTKind::VarDecl: {
+            VarDeclAST* var = decl->as<VarDeclAST>();
+
+            TypeAST* newType = var->type
+                ? substituteType(var->type, sc)
+                : nullptr;
+
+            ExprAST* newInit = var->init
+                ? substituteExpr(var->init, sc)
+                : nullptr;
+
+            VarDeclAST* newVar = sc.sema.arena.make<VarDeclAST>(
+                var->name,
+                var->keyword,
+                newType,
+                newInit
+            );
+            newVar->loc = var->loc;
+            // attributes are copied verbatim — attributes are not
+            // types and never reference generic parameters.
+            newVar->attributes = var->attributes;
+            return newVar;
+        }
+
+        // ─── FuncDeclAST ───────────────────────────────────────────────
+        //
+        // A local function declaration inside a generic body. Its
+        // signature and initializer may reference `T`. Local functions
+        // cannot have their *own* generic parameters — that would be a
+        // second level of genericity nested inside the first, and the
+        // grammar and Sema already reject it.
+        //
+        // Note: we substitute `funcType` and `init` but do NOT re-resolve
+        // them here. Resolution of the specialized declaration happens
+        // when the enclosing body's resolution walk reaches this node,
+        // through the same machinery as any other local declaration.
+        case ASTKind::FuncDecl: {
+            FuncDeclAST* func = decl->as<FuncDeclAST>();
+
+            TypeAST* newFuncType = func->funcType
+                ? substituteType(func->funcType, sc)
+                : nullptr;
+
+            ExprAST* newInit = func->init
+                ? substituteExpr(func->init, sc)
+                : nullptr;
+
+            FuncDeclAST* newFunc = sc.sema.arena.make<FuncDeclAST>(
+                func->name,
+                func->keyword,
+                sc.sema.arena.emptySpan<GenericParamDeclAST*>(),  // local funcs are not generic
+                newFuncType ? newFuncType->as<FuncTypeAST>() : nullptr,
+                newInit
+            );
+            newFunc->loc = func->loc;
+            newFunc->attributes = func->attributes;
+            newFunc->isForeignFunction = func->isForeignFunction;
+            newFunc->isInline = func->isInline;
+            newFunc->isNoInline = func->isNoInline;
+            return newFunc;
+        }
+
+        // ─── StructDeclAST ─────────────────────────────────────────────
+        //
+        // A local struct declaration. Structs are a compile-time-only
+        // construct — they produce no runtime value — but a *local*
+        // struct that mentions the enclosing function's `T` in a field
+        // type must have that field type substituted.
+        //
+        // A local struct's own generic parameters are independent of the
+        // enclosing function's, so any `T` in this struct's `genericParams`
+        // is a *different* `T` and must not be substituted by the
+        // enclosing substitution. That's why we only substitute field
+        // types whose generic parameters are the enclosing function's —
+        // i.e., any field type that references a name not bound by this
+        // struct's own parameter list.
+        //
+        // The cleanest way to express this without shadowing analysis is
+        // to check, per field type, whether the substitution applies. The
+        // `GenericSubstitution` only knows about the enclosing function's
+        // parameters; if the local struct declares a parameter with the
+        // same name, the substitution's `isParam` will still return true
+        // and we'd wrongly substitute. To avoid that, we skip substitution
+        // entirely for a local generic struct whose parameter list shadows
+        // any of the enclosing function's parameters.
+        //
+        // (This is a rare case; in practice local structs inside generic
+        //  functions don't have their own generic parameters.)
+        case ASTKind::StructDecl: {
+            StructDeclAST* strct = decl->as<StructDeclAST>();
+
+            // If the local struct has its own generic parameters that
+            // shadow the enclosing function's, skip substitution on its
+            // fields. Its fields reference its own parameters, not the
+            // enclosing function's.
+            bool hasShadowingParam = false;
+            for (GenericParamDeclAST* param : strct->genericParams) {
+                if (sc.subst.isParam(param->name)) {
+                    hasShadowingParam = true;
+                    break;
+                }
+            }
+            if (hasShadowingParam) {
+                // Reuse the original node unchanged. A correct
+                // implementation would substitute only the fields that
+                // reference the enclosing function's parameters, but that
+                // requires shadowing-aware type substitution, which is
+                // beyond what this pass does today.
+                return strct;
+            }
+
+            auto subFields = sc.sema.arena.makeSpan<FieldDeclAST*>(
+                strct->fields,
+                [&](FieldDeclAST* field) -> FieldDeclAST* {
+                    TypeAST* newFieldType = field->type
+                        ? substituteType(field->type, sc)
+                        : nullptr;
+                    ExprAST* newDefault = field->defaultVal
+                        ? substituteExpr(field->defaultVal, sc)
+                        : nullptr;
+                    FieldDeclAST* newField = sc.sema.arena.make<FieldDeclAST>(
+                        field->name,
+                        newFieldType,
+                        newDefault,
+                        field->isConstField
+                    );
+                    newField->loc = field->loc;
+                    newField->attributes = field->attributes;
+                    return newField;
+                }
+            );
+
+            StructDeclAST* newStruct = sc.sema.arena.make<StructDeclAST>(
+                strct->name,
+                strct->genericParams,      // local struct's own params, unchanged
+                subFields,
+                strct->traitRefs,
+                strct->isPacked
+            );
+            newStruct->loc = strct->loc;
+            newStruct->attributes = strct->attributes;
+            return newStruct;
+        }
+
+        // ─── EnumDeclAST ───────────────────────────────────────────────
+        //
+        // Enums have no fields with generic types in Lucid (variants are
+        // integer-valued). But a local enum's backing type is a
+        // PrimitiveTypeAST and can't reference `T`. The only thing that
+        // could reference `T` is... nothing. A local enum is
+        // type-substitution-neutral in the current language.
+        //
+        // So we could return `decl` unchanged. For uniformity with the
+        // other cases, allocate a fresh node so the specialized body
+        // doesn't share the template's enum node. The enum's variant
+        // list is not mutated by resolution (variants have no semantic
+        // fields beyond the ones set at parse time), so sharing the
+        // variant nodes would be safe — but a fresh enum node keeps the
+        // invariant simple.
+        case ASTKind::EnumDecl: {
+            EnumDeclAST* enm = decl->as<EnumDeclAST>();
+            EnumDeclAST* newEnum = sc.sema.arena.make<EnumDeclAST>(
+                enm->name,
+                enm->variants,
+                enm->backingType
+            );
+            newEnum->loc = enm->loc;
+            newEnum->attributes = enm->attributes;
+            return newEnum;
+        }
+
+        // ─── TraitDeclAST ──────────────────────────────────────────────
+        //
+        // Same reasoning as enum: a trait is a set of field *contracts*,
+        // not actual fields. The field types in a trait may mention the
+        // trait's own generic parameters, and those are independent of
+        // any enclosing function's. A local trait referenced from inside
+        // a generic function's body is unusual, but if it happens, its
+        // field types are expressed in terms of the trait's own
+        // parameters, not the enclosing function's.
+        //
+        // Return unchanged.
+        case ASTKind::TraitDecl: {
+            TraitDeclAST* trait = decl->as<TraitDeclAST>();
+            TraitDeclAST* newTrait = sc.sema.arena.make<TraitDeclAST>(
+                trait->name,
+                trait->genericParams,
+                trait->fields
+            );
+            newTrait->loc = trait->loc;
+            newTrait->attributes = trait->attributes;
+            return newTrait;
+        }
+
+        // ─── Other kinds ───────────────────────────────────────────────
+        //
+        // ImportDeclAST cannot appear inside a function body. Any other
+        // kind reaching here is either already handled by its own
+        // substituter (`VarDeclAST` and `FuncDeclAST` above) or cannot
+        // reference generic parameters. Return unchanged.
+        default:
+            return decl;
     }
 }
 
