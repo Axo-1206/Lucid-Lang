@@ -6,7 +6,6 @@
 #include "core/ast/TypeAST.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "GenericHelpers.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -26,7 +25,7 @@ static bool satisfiesTraitConstraint(TypeAST* actualType,
     if (!actualType || !requiredTrait) return false;
 
     // Generic parameters are placeholders - checked at instantiation time
-    if (isGenericParameterType(actualType, ctx)) {
+    if (ctx.isGenericParameterType(actualType)) {
         return true;
     }
 

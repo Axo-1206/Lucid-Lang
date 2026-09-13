@@ -27,7 +27,6 @@
 #include "../support/MangledName.hpp"
 #include "../registry/AttributeValidator.hpp"
 #include "sema/types/SemaType.hpp"
-#include "sema/types/GenericHelpers.hpp"
 
 
 namespace sema {

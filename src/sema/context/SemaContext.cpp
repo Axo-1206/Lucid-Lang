@@ -165,6 +165,31 @@ bool SemaContext::isGenericParamInCurrentScope(InternedString name) const {
     return currentScope().genericParams.find(name) != currentScope().genericParams.end();
 }
 
+/// @brief Check whether a type is a generic parameter reference.
+///
+/// A `NamedTypeAST` is a generic parameter reference if:
+///   - its `resolvedDecl` is already a `GenericParamDeclAST`, OR
+///   - it has no `resolvedDecl` yet, but its name resolves to a
+///     `GenericParamDeclAST` in the current scope stack.
+///
+/// The second form covers a `NamedTypeAST` that has not been through
+/// `resolveType` yet — e.g. a parser-produced type annotation being
+/// inspected before the resolver has run.
+///
+/// Only meaningful for a `NamedTypeAST`; returns false for every other
+/// `TypeAST` kind.
+bool SemaContext::isGenericParameterType(TypeAST* type) const {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+
+    if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
+        return true;
+    }
+
+    return isGenericParam(named->name);
+}
+
 // ─── Symbol Insertion ─────────────────────────────────────────────────────
 
 bool SemaContext::insertValue(ValueDeclAST* decl) {

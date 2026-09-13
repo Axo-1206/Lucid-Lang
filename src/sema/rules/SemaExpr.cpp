@@ -16,7 +16,6 @@
 #include "core/builtins/ArenaMethod.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
 #include "sema/context/Generic.hpp"
-#include "sema/types/GenericHelpers.hpp"
 #include "sema/types/SemaType.hpp"
 
 #include <unordered_set>

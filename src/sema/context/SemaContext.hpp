@@ -305,6 +305,7 @@ struct SemaContext {
     bool isTypeInCurrentScope(InternedString name) const;
     bool isModuleTypeMember(InternedString name) const;
     bool isGenericParamInCurrentScope(InternedString name) const;
+    bool isGenericParameterType(TypeAST* type) const;
     
     // ─── Symbol Insertion ──────────────────────────────────────────────
     bool insertValue(ValueDeclAST* decl);

@@ -6,7 +6,6 @@
 #include "core/registry/AttributeRegistry.hpp"
 #include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
-#include "sema/types/GenericHelpers.hpp"
 
 #include <unordered_set>
 

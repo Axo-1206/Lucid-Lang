@@ -6,7 +6,6 @@
 #include "core/ASTStrings.hpp"
 #include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
-#include "sema/types/GenericHelpers.hpp"
 #include "core/trace/Trace.hpp"
 
 namespace sema {
