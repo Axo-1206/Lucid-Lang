@@ -254,7 +254,162 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 }
 
 // ─── resolveFuncDecl ──────────────────────────────────────────────────────────
-
+//
+// ─── Two Scopes, Two Purposes ─────────────────────────────────────────────────
+//
+// Resolving a function declaration requires *two* distinct scopes, pushed
+// at two different moments, and the split is not obvious from the code
+// unless you know which names live where. This comment records the split
+// so it isn't "simplified" away by a future reader who sees two scope
+// pushes and assumes one of them is redundant.
+//
+//   Scope A — pushed here, in resolveFuncDecl, before anything else.
+//             Holds the function's *generic parameters* (`<T>`, `<K, V>`).
+//             Inserted by resolveGenericParam, one per parameter.
+//
+//             Exists so that resolving the declared function type can
+//             resolve references to `T`:
+//
+//                 const factorial<T> (base T, p T) -> int = { ... }
+//                                     ↑
+//                          resolving this type needs `T` in scope,
+//                          or lookupTypeDecl("T") returns nullptr and
+//                          the type resolver emits Sem_UndefinedType.
+//
+//             Also visible inside the body, so `let x T = ...` works.
+//
+//   Scope B — pushed by ScopedFunction inside resolveAnonFuncExpr, later,
+//             when resolveExprWithTarget dispatches into the AnonFuncExprAST
+//             at `init`. Holds the function's *runtime parameters* (`base`,
+//             `p`).
+//
+//             Exists so that resolving the body can resolve references to
+//             parameter *names*:
+//
+//                 const factorial<T> (base T, p T) -> int = {
+//                     return factorial(base, p - 1);
+//                                     ↑     ↑
+//                          resolving these names needs the runtime
+//                          ParamAST nodes in scope. The type-only
+//                          ParamAST nodes on decl->funcType are a
+//                          different set of nodes and would not be
+//                          found by the same lookup — and even if
+//                          they were, CodeGen would later fail to
+//                          connect them to the argument allocas it
+//                          actually stores. See FuncDeclAST's doc-
+//                          comment for the full reasoning.
+//
+// ─── Why Not One Scope? ───────────────────────────────────────────────────────
+//
+// The two scopes hold disjoint name sets — type parameters vs. value
+// parameters — and they answer different lookup questions
+// (lookupTypeDecl vs. lookupValue). Collapsing them into one would
+// require pushing the generic parameters into the same map that
+// resolveParam writes to, which would make `T` (a type) and `base` (a
+// value) siblings in one namespace. That conflicts with the language's
+// two-namespace model (see BaseAST.hpp's NAMESPACE SEPARATION note) and
+// would make `lookupTypeDecl` and `lookupValue` return each other's
+// entries.
+//
+// ─── Nesting Order ────────────────────────────────────────────────────────────
+//
+// At body-resolution time the scope stack is:
+//
+//     [module scope]        ← module-level declarations
+//       [Scope A]           ← generic parameters (T)
+//         [Scope B]         ← runtime parameters (base, p)
+//           [block scope]   ← the body's own `{ ... }`
+//
+// Name lookup walks outward, so a body reference to `base` finds Scope B,
+// a body reference to `T` finds Scope A, and a recursive reference to
+// `factorial` finds the module scope (registered in Phase 1). All three
+// resolve, and none of them leak: Scope A pops when resolveFuncDecl
+// returns, Scope B pops when the anon's ScopedFunction destructor fires.
+//
+// ─── Why Phase 1 Does Not Register Generic Parameters ─────────────────────────
+//
+// registerFuncName does not call ctx.insertGenericParam. Registering `T`
+// at module scope would:
+//   1. Collide when two functions both declare `<T>` in the same module.
+//   2. Shadow any module-level type named `T` for every other declaration.
+//   3. Make `T` visible to declarations that have nothing to do with this
+//      function.
+//
+// Generic parameters are lexical to the function that declares them, so
+// they are registered in a scope that exists only for that function's
+// resolution. That scope is Scope A.
+//
+// ─── Why the Push Is Unconditional ────────────────────────────────────────────
+//
+// SymbolScope is pushed whether or not decl->genericParams is empty.
+// For a non-generic function Scope A is empty and does nothing useful,
+// but the uniformity is deliberate: a conditional push would need to be
+// kept in sync with every other place a FuncDeclAST is resolved, and
+// the cost of an empty std::vector entry is negligible compared to the
+// maintenance hazard of a conditional that can drift out of agreement
+// with reality.
+//
+// ─── Standalone func_literals Do Not Get Scope A ──────────────────────────────
+//
+// A `func_literal` used as a value (passed as an argument, stored in a
+// struct field, returned from another function) never goes through
+// resolveFuncDecl. It's resolved directly by resolveExprWithTarget
+// dispatching to resolveAnonFuncExpr, which pushes only Scope B. That's
+// correct: AnonFuncExprAST has no genericParams, so there is nothing for
+// Scope A to hold. Scope B alone is what the body needs.
+//
+// ─── Curried Functions and Nested Scopes ──────────────────────────────────────
+//
+// For a curried declaration like
+//
+//     const add<T> (a T) -> (b T) -> T = {
+//         return (b T) -> T { return a + b; };
+//     };
+//
+// the scope stack while resolving the inner anon is:
+//
+//     [module scope]
+//       [Scope A]              ← T (generic parameter)
+//         [Scope B outer]      ← a (outer runtime parameter)
+//           [block outer]
+//             [Scope B inner]  ← b (inner runtime parameter)
+//               [block inner]
+//
+// The inner body sees both `a` (from Scope B outer, still on the stack
+// because the outer anon hasn't finished resolving) and `b` (from Scope
+// B inner). T is visible to both from Scope A. This is what makes
+// currying work: each curry stage gets its own parameter scope, and
+// outer stages remain visible to inner stages by virtue of the stack
+// discipline.
+//
+// ─── Name Collisions Between Scopes ───────────────────────────────────────────
+//
+// A parameter and a generic parameter can share a name:
+//
+//     const f<T> (T T) -> T = { ... }   // legal, if confusing
+//
+// Scope B's `T` (the value parameter) shadows Scope A's `T` (the type
+// parameter) for lookupValue, while lookupTypeDecl still finds Scope A's
+// `T` because ParamAST is not consulted by lookupTypeDecl. The result is
+// that the value `T` is the parameter and the type `T` is the generic —
+// which is the coherent reading, if a confusing one. Lucid does not
+// forbid this today. If it starts appearing in practice, a warning
+// would be the right response, not an error: the semantics are
+// well-defined, the surprise is just the naming.
+//
+// ─── Summary ──────────────────────────────────────────────────────────────────
+//
+// | Scope | Pushed by                    | Holds                | Popped by                     |
+// | ----- | ---------------------------- | -------------------- | ----------------------------- |
+// | A     | SymbolScope in this function | generic parameters   | SymbolScope's destructor      |
+// | B     | ScopedFunction in the anon   | runtime parameters   | ScopedFunction's destructor   |
+//
+// Neither is redundant. Removing either breaks a distinct class of name
+// resolution, and the failure modes are different (A fails to resolve
+// parameter *types*; B fails to resolve parameter *values* and, later,
+// CodeGen's binding lookup).
+//
+// ──────────────────────────────────────────────────────────────────────────────
 void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     if (decl->hasSyntaxError) {
         if (decl->type) {
@@ -264,19 +419,12 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── Defensive: generic ⇒ const ───────────────────────────────────────
-    // The parser is the primary enforcer (see parseFuncDecl), and it sets
-    // hasSyntaxError when this rule is violated — so if we reach here with
-    // a `let`-generic declaration, it's a compiler bug, not a user error.
-    // Do NOT emit a user-facing diagnostic here; the parser already did.
     AST_ASSERT_MSG(!decl->isGeneric() || decl->keyword == DeclKeyword::Const,
                    "FuncDeclAST invariant violated: generic function with let keyword");
 
     validateAllAttributes(decl, ctx);
 
-    // ─── 1. Validate attributes ───────────────────────────────────────────
-    validateAllAttributes(decl, ctx);
-
-    // ─── 2. Check @[foreign] ──────────────────────────────────────────────
+    // ─── 1. Check @[foreign] ──────────────────────────────────────────────
     InternedString foreignName = ctx.pool.intern("foreign");
     for (AttributeAST* attr : decl->attributes) {
         if (attr->name == foreignName) {
@@ -284,13 +432,43 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Resolve the declared function type ────────────────────────────
+    // ─── 2. Push the function's own scope ─────────────────────────────────
+    //
+    // Holds the function's generic parameters (`<T>`) for the duration of
+    // this declaration's resolution. The runtime parameters belong to the
+    // AnonFuncExprAST at `init` and are handled when the init is resolved.
+    //
+    // For a generic function, we will NOT resolve the init here, so this
+    // scope only needs to stay alive long enough to resolve the signature
+    // and the generic parameter constraints. It is popped at the end of
+    // this function via SymbolScope's destructor.
+    SymbolScope funcScope(ctx);
+
+    // ─── 3. Resolve generic parameters ────────────────────────────────────
+    //
+    // Must run before resolveFuncType: the signature may reference `T`,
+    // and `T` must be in scope for that resolution to succeed.
+    for (GenericParamDeclAST* g : decl->genericParams) {
+        resolveGenericParam(g, ctx);
+    }
+
+    // ─── 4. Resolve the declared function type ────────────────────────────
+    //
+    // Both kinds of function (generic and non-generic) resolve their
+    // signature at declaration time. For a generic function, the signature
+    // is a *template*: parameter types may reference the function's own
+    // generic parameters, and those references are resolved against the
+    // GenericParamDeclAST nodes registered in step 3.
+    //
+    // This is the only place a generic function's signature is validated
+    // as a template. Each specialization's signature is derived from this
+    // one by substitution during instantiation.
     FuncTypeAST* funcType = decl->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // ─── 4. Foreign functions: no body, no init ───────────────────────────
+    // ─── 5. Foreign functions: no body, no init ───────────────────────────
     if (decl->isForeignFunction) {
         decl->mangledName = decl->name;
         Trace::info("Foreign function '", ctx.pool.lookup(decl->name),
@@ -298,12 +476,13 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 5. Resolve generic parameters (if any) ───────────────────────────
-    for (GenericParamDeclAST* g : decl->genericParams) {
-        resolveGenericParam(g, ctx);
-    }
-
     // ─── 6. Generate mangled name ─────────────────────────────────────────
+    //
+    // For a generic function, this mangles the *template's* name. Each
+    // specialization gets its own mangled name in
+    // createInstantiatedFunction, derived from the template's name plus
+    // the concrete type arguments. The template's mangled name is only
+    // used in diagnostics that reference the template itself.
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
@@ -316,62 +495,62 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 8. Resolve the init against the declared function type ───────────
+    // ─── 8a. Generic functions: do NOT resolve the body here ──────────────
     //
-    // ─── Design Note: No ScopedFunction Here ─────────────────────────────
+    // A generic function declaration is not a function — it is a *family*
+    // of functions, one per distinct concrete set of type arguments.
     //
-    // A FuncDeclAST is a *binding*, not a function. It owns no body and no
-    // parameters — those belong to the AnonFuncExprAST its init points to.
-    // So this function does NOT:
-    //   - push a ScopedFunction
-    //   - register the declared funcType's parameters
-    //   - run capture analysis
+    // The template's body is a recipe: a parameterized program, not a
+    // program. It cannot be resolved while `T` is abstract, because the
+    // body may contain operations that require `T` to be concrete:
     //
-    // All of those happen inside resolveAnonFuncExpr, which is called via
-    // resolveExprWithTarget when the init is an AnonFuncExprAST.
+    //   - a recursive call to the function itself: `factorial<T>(...)`.
+    //     `factorial<T>` is not an instantiation — it's a "self-reference
+    //     to the enclosing family", and there is no concrete type to
+    //     instantiate with at template-resolution time.
+    //   - a call to another generic function with `T` as an argument:
+    //     `other<T>(...)`. Same problem.
+    //   - arithmetic or comparison on `T`-typed values: `p <= 1` where `p`
+    //     has type `T`. This only type-checks if `T` is known to be numeric.
+    //   - field access on a `T`-typed value: `x.field` where `x: T`. This
+    //     only type-checks if `T` is constrained to a trait providing that
+    //     field.
     //
-    // For an init that is *not* an AnonFuncExprAST (a reference, a call, a
-    // compose), no function scope is pushed at all. That's correct: those
-    // inits don't reference the declared function's parameters, so there's
-    // nothing to register and nothing to capture. The reference value
-    // already carries its own scope story from wherever it was defined.
+    // None of these can be resolved at declaration time. They all resolve
+    // naturally during instantiation, when `T` has been substituted by the
+    // concrete type argument and the body reads `factorial<int>(...)`,
+    // `other<int>(...)`, `p <= 1` where `p: int`, and so on.
     //
-    // ─── Why Not Register Parameters Here ────────────────────────────────
+    // So the template body is left unresolved here. Its resolution happens
+    // once per specialization, in finalizeInstantiatedFunction, after
+    // substitution has replaced every occurrence of `T` with its concrete
+    // argument.
     //
-    // If we pushed a ScopedFunction here AND the init is an anon, that anon
-    // would push its own ScopedFunction too, registering the same
-    // parameters twice. The outer (phantom) registration would be shadowed
-    // by the inner one for name lookup, but it would still consume a
-    // function-context slot on the stack — corrupting functionDepth
-    // computation for any nested declaration whose capture needs to look
-    // past the phantom scope.
+    // Consequence: errors in a generic function's body are reported at
+    // first instantiation, not at declaration. This matches the behavior
+    // of every specialization-only generic system (C++ templates, Rust
+    // monomorphization, Zig comptime): the body is not checked until the
+    // compiler actually has a concrete type to check it against.
+    if (decl->isGeneric()) {
+        return;
+    }
+
+    // ─── 8b. Non-generic functions: resolve the body ──────────────────────
     //
-    // ─── What the Init Can Be ────────────────────────────────────────────
+    // A non-generic function is a function. Its body resolves normally:
+    // push a ScopedFunction (done inside resolveAnonFuncExpr when the init
+    // is an AnonFuncExprAST), register the runtime parameters, resolve the
+    // body, run capture analysis.
     //
-    //   - AnonFuncExprAST      — block body wrapped by the parser; its own
-    //                            resolveAnonFuncExpr pushes scope, registers
-    //                            params, resolves the body, and runs
-    //                            capture analysis.
-    //   - IdentifierExprAST    — reference to a named function; resolveExpr
-    //                            looks it up and validates its type.
-    //   - ModuleAccessExprAST  — reference to a module-level function.
-    //   - FieldAccessExprAST   — reference to a struct field holding a function.
-    //   - CallExprAST          — call that returns a function value.
-    //   - ComposeExprAST       — composition of functions.
-    //
-    // All of these are ordinary ExprASTs; resolveExprWithTarget dispatches
-    // to the right resolver and validates the result against funcType.
+    // Any call in the body that instantiates a generic function —
+    // `factorial<int>(5)` — will trigger instantiation via
+    // resolveIdentifierExpr / resolveCallExpr, which call into
+    // finalizeInstantiatedFunction. That's the same path as before.
     TypeAST* initType = resolveExprWithTarget(decl->init, funcType, ctx);
     if (!initType || initType->isa<UnknownTypeAST>()) {
         // resolveExprWithTarget already emitted a diagnostic
         return;
     }
-
-    // ─── 9. Done ──────────────────────────────────────────────────────────
-    //
-    // No cleanup needed — if the init was an anon, its ScopedFunction
-    // popped when resolveAnonFuncExpr returned. If it wasn't, no scope
-    // was ever pushed.
 }
 
 // ─── resolveParam ─────────────────────────────────────────────────────────────

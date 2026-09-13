@@ -434,6 +434,33 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, Sem
     // ─── Step 6: Handle generic arguments ──────────────────────────────────
     TypeAST* declType = decl->type;
     
+    // ─── Generic family referenced without type arguments ──────────────────
+    //
+    // A generic function declaration names a *family* of functions, not a
+    // function. It has no callable form and no value. Using it as a value
+    // — passing it, storing it, calling it without type arguments — is an
+    // error. The user must supply type arguments to select a specific
+    // specialization, e.g. `factorial<int>`.
+    //
+    // This check runs after all the value-lookup and closure-capture checks
+    // above, so it fires only when the identifier genuinely resolves to a
+    // generic function declaration and there are no type arguments to
+    // select a specialization.
+    if (expr->genericArgs.empty() && decl->isa<FuncDeclAST>()) {
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        if (funcDecl->isGeneric()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                "'", ctx.pool.lookup(expr->name), "' names a family of functions, "
+                "not a function. Supply type arguments to select a specialization, "
+                "e.g. '", ctx.pool.lookup(expr->name), "<int>'.");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            expr->isConst = false;
+            return ctx.getUnknownType();
+        }
+    }
+    
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1907,9 +1934,9 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, TypeAST* targetType, SemaContext
                 if (!(isNullableType(leftType) || isFallibleType(leftType) ||
                       isNullableType(rightType) || isFallibleType(rightType))) {
                     ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                                          "comparison of incompatible types: ",
-                                          typeToString(leftType, ctx.pool), " and ",
-                                          typeToString(rightType, ctx.pool));
+                                          "comparison of incompatible types: '",
+                                          typeToString(leftType, ctx.pool), "' and '",
+                                          typeToString(rightType, ctx.pool), "'");
                     expr->resolvedType = ctx.getUnknownType();
                     expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();

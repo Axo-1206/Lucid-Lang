@@ -73,9 +73,6 @@ void lowerStatement(StmtAST* stmt, CodeGenContext& ctx) {
         case ASTKind::DeclStmt:
             lowerDeclStmt(stmt->as<DeclStmtAST>(), ctx);
             break;
-        case ASTKind::FuncRefStmt:
-            lowerFuncRefStmt(stmt->as<FuncRefStmtAST>(), ctx);
-            break;
         case ASTKind::AsyncStmt:
             lowerAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
             break;
@@ -640,8 +637,8 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     // lowerErasedFunctionBody for @[erased] functions), func's declared
     // return type is the ABI-transformed type (e.g. TaggedSlot* for the
     // erased ABI), NOT what this return statement's expression produces.
-    // ctx.returnValueType carries the real (concrete) type in that case.
-    llvm::Type* returnType = ctx.returnBlock ? ctx.returnValueType : func->getReturnType();
+    // // ctx.returnValueType carries the real (concrete) type in that case.
+    // llvm::Type* returnType = ctx.returnBlock ? ctx.returnValueType : func->getReturnType();
 
     // ─── Check if this is the main function ──────────────────────────────
     bool isMain = false;
@@ -659,56 +656,56 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
         ctx.builder.CreateCall(shutdownFn, {});
     }
 
-    llvm::Value* returnVal = nullptr;
-    if (stmt->value) {
-        returnVal = lowerExpression(stmt->value, ctx);
-        if (!returnVal) return;
+    // llvm::Value* returnVal = nullptr;
+    // if (stmt->value) {
+    //     returnVal = lowerExpression(stmt->value, ctx);
+    //     if (!returnVal) return;
 
-        if (stmt->value->isLValue) {
-            llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
-            assert(elemType && "Return value has no type");
-            returnVal = loadIfNeeded(returnVal, elemType, ctx);
-        }
+    //     if (stmt->value->isLValue) {
+    //         llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
+    //         assert(elemType && "Return value has no type");
+    //         returnVal = loadIfNeeded(returnVal, elemType, ctx);
+    //     }
 
-        // Cast if needed
-        if (returnVal->getType() != returnType) {
-            if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
-                if (getIntegerBitWidth(returnVal->getType()) < getIntegerBitWidth(returnType)) {
-                    returnVal = ctx.builder.CreateSExt(returnVal, returnType);
-                } else {
-                    returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
-                }
-            } else if (returnVal->getType()->isFloatingPointTy() && returnType->isFloatingPointTy()) {
-                if (returnVal->getType()->getPrimitiveSizeInBits() < returnType->getPrimitiveSizeInBits()) {
-                    returnVal = ctx.builder.CreateFPExt(returnVal, returnType);
-                } else {
-                    returnVal = ctx.builder.CreateFPTrunc(returnVal, returnType);
-                }
-            } else if (returnVal->getType()->isPointerTy() && returnType->isPointerTy()) {
-                returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
-            }
-        }
-    }
+    //     // Cast if needed
+    //     if (returnVal->getType() != returnType) {
+    //         if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
+    //             if (getIntegerBitWidth(returnVal->getType()) < getIntegerBitWidth(returnType)) {
+    //                 returnVal = ctx.builder.CreateSExt(returnVal, returnType);
+    //             } else {
+    //                 returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
+    //             }
+    //         } else if (returnVal->getType()->isFloatingPointTy() && returnType->isFloatingPointTy()) {
+    //             if (returnVal->getType()->getPrimitiveSizeInBits() < returnType->getPrimitiveSizeInBits()) {
+    //                 returnVal = ctx.builder.CreateFPExt(returnVal, returnType);
+    //             } else {
+    //                 returnVal = ctx.builder.CreateFPTrunc(returnVal, returnType);
+    //             }
+    //         } else if (returnVal->getType()->isPointerTy() && returnType->isPointerTy()) {
+    //             returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
+    //         }
+    //     }
+    // }
 
     // ─── Unified-exit mode: stash + branch instead of ret directly ───────
     // Lets one caller-installed exit block do ABI-specific work (e.g.
     // boxing into a TaggedSlot for @[erased]) exactly once, no matter how
     // many return sites the body has (early returns in if/match/loops all
     // funnel through here).
-    if (ctx.returnBlock) {
-        if (returnVal && ctx.returnValueAlloca) {
-            ctx.builder.CreateStore(returnVal, ctx.returnValueAlloca);
-        }
-        ctx.builder.CreateBr(ctx.returnBlock);
-        return;
-    }
+    // if (ctx.returnBlock) {
+    //     if (returnVal && ctx.returnValueAlloca) {
+    //         ctx.builder.CreateStore(returnVal, ctx.returnValueAlloca);
+    //     }
+    //     ctx.builder.CreateBr(ctx.returnBlock);
+    //     return;
+    // }
 
-    if (returnVal) {
-        ctx.builder.CreateRet(returnVal);
-    } else {
-        assert(returnType->isVoidTy() && "Void return in non-void function");
-        ctx.builder.CreateRetVoid();
-    }
+    // if (returnVal) {
+    //     ctx.builder.CreateRet(returnVal);
+    // } else {
+    //     assert(returnType->isVoidTy() && "Void return in non-void function");
+    //     ctx.builder.CreateRetVoid();
+    // }
 }
 
 // =============================================================================
@@ -758,19 +755,6 @@ void lowerExprStmt(ExprStmtAST* stmt, CodeGenContext& ctx) {
 void lowerDeclStmt(DeclStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
     lowerDeclaration(stmt->decl, ctx);
-}
-
-// =============================================================================
-// Function Reference Statement
-// =============================================================================
-
-void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx) {
-    if (!stmt) return;
-
-    llvm::Value* target = lowerExpression(stmt->target, ctx);
-    if (!target) return;
-
-    stmt->resolvedFunction = llvm::dyn_cast<llvm::Function>(target);
 }
 
 // =============================================================================
