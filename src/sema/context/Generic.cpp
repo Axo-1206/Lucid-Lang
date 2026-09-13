@@ -1,408 +1,151 @@
 /// @file sema/context/Generic.cpp
-/// @brief Implementation of generic instantiation and substitution utilities.
+/// @brief Generic substitution — mechanical AST rewriting.
+///
+/// See Generic.hpp for the split between substitution and instantiation.
+/// This file implements only substitution: given a GenericSubstitution
+/// and a SubstitutionContext, produce a copy of the input AST with every
+/// occurrence of a generic parameter replaced by its concrete type.
+///
+/// No caches, no arity validation, no shell/finalize — those live in
+/// Instantiation.cpp. Substitution is a pure tree-rewriting pass.
 
 #include "Generic.hpp"
-#include "sema/support/MangledName.hpp"
 #include "core/trace/Trace.hpp"
 #include "sema/types/SemaType.hpp"
 
 namespace sema {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: Create a shell struct and register it in the cache
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── GenericSubstitution ──────────────────────────────────────────────
+// (These stay here because they're small and closely tied to substitution.)
 
-/// @brief Create an empty shell for an instantiated struct and register it in the cache.
-/// 
-/// This is the first half of the "register before recursing" pattern.
-/// The shell is created with no fields and immediately inserted into the cache.
-/// If a recursive call tries to create the same instantiation, it finds the shell
-/// and returns it, breaking the infinite loop.
-/// 
-/// @param templateDecl The generic struct template.
-/// @param typeArgs The concrete type arguments for this instantiation.
-/// @param mangledName The mangled name for the instantiation.
-/// @param ctx The semantic context.
-/// @return A shell StructDeclAST with empty fields, or nullptr on error.
-static StructDeclAST* createInstantiatedStructShell(
-    StructDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    InternedString mangledName,
-    SemaContext& ctx
-) {
-    if (!templateDecl || !mangledName.isValid()) {
-        return nullptr;
+bool GenericSubstitution::isParam(InternedString name) const {
+    for (GenericParamDeclAST* param : genericParams) {
+        if (param->name == name) return true;
     }
-
-    // ─── Create the shell with empty fields ──────────────────────────────
-    StructDeclAST* shell = ctx.arena.make<StructDeclAST>(
-        mangledName,
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
-        ctx.arena.emptySpan<FieldDeclAST*>(),         // Empty fields (will be filled later)
-        templateDecl->traitRefs,                      // Traits are unchanged
-        templateDecl->isPacked
-    );
-    shell->mangledName = mangledName;
-    shell->loc = templateDecl->loc;
-
-    // ─── Register the shell BEFORE any substitution ──────────────────────
-    // This breaks recursive cycles. If substituting a field triggers
-    // createInstantiatedStruct for the same (templateDecl, typeArgs), the
-    // cache will return this shell.
-    // 
-    // Use typeArgs, NOT templateDecl->genericParams!
-    InstantiationKey key{templateDecl, typeArgs};
-    ctx.instantiationCache[key] = shell;
-
-    return shell;
+    return false;
 }
 
-/// @brief Finalize an instantiated struct by filling its fields.
-/// 
-/// This is the second half of the "register before recursing" pattern.
-/// After the shell is registered, we substitute all fields and create
-/// the final struct. The cache entry is updated to point to the final struct.
-/// 
-/// @param templateDecl The generic struct template.
-/// @param typeArgs The concrete type arguments.
-/// @param shell The shell struct to finalize.
-/// @param ctx The semantic context.
-/// @return The finalized StructDeclAST, or nullptr on error.
-static StructDeclAST* finalizeInstantiatedStruct(
-    StructDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    StructDeclAST* shell,
-    SemaContext& ctx
-) {
-    if (!templateDecl || !shell) return nullptr;
-
-    // ─── Create substitution context ──────────────────────────────────────
-    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
-
-    // ─── Substitute all fields ────────────────────────────────────────────
-    std::vector<FieldDeclAST*> fieldList;
-    fieldList.reserve(templateDecl->fields.size());
-    bool hasError = false;
-
-    for (FieldDeclAST* field : templateDecl->fields) {
-        // Substitute the field type (this may recursively call back into
-        // createInstantiatedStruct, but the shell is already in the cache)
-        TypeAST* substitutedType = substituteType(field->type, subst, ctx);
-        if (!substitutedType) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, field,
-                "field '", ctx.pool.lookup(field->name),
-                "' has invalid type in instantiation");
-            hasError = true;
-            break;
+TypeAST* GenericSubstitution::lookup(InternedString name) const {
+    for (size_t i = 0; i < genericParams.size(); ++i) {
+        if (genericParams[i]->name == name) {
+            return i < typeArgs.size() ? typeArgs[i] : nullptr;
         }
-
-        // Substitute default value if present
-        ExprAST* substitutedDefault = field->defaultVal 
-            ? substituteExpr(field->defaultVal, subst, ctx) 
-            : nullptr;
-
-        // Substitute default body if present
-        StmtAST* substitutedBody = field->defaultBody 
-            ? substituteStmt(field->defaultBody, subst, ctx) 
-            : nullptr;
-
-        // Create the new field
-        FieldDeclAST* newField = ctx.arena.make<FieldDeclAST>(
-            field->name,
-            substitutedType,
-            substitutedDefault,
-            substitutedBody,
-            field->isConstField
-        );
-        newField->loc = field->loc;
-        fieldList.push_back(newField);
     }
-
-    if (hasError) {
-        return nullptr;
-    }
-
-    // ─── Create the final struct with all fields ─────────────────────────
-    StructDeclAST* finalStruct = ctx.arena.make<StructDeclAST>(
-        shell->name,                                    // Same mangled name
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),   // No generic params
-        ctx.arena.makeSpan<FieldDeclAST*>(fieldList),  // Populated fields
-        templateDecl->traitRefs,
-        templateDecl->isPacked
-    );
-    finalStruct->mangledName = shell->mangledName;
-    finalStruct->loc = shell->loc;
-
-    // ─── Update the cache entry to point to the final struct ─────────────
-    // The shell is no longer needed; we replace it with the final struct.
-    InstantiationKey key{templateDecl, typeArgs};
-    ctx.instantiationCache[key] = finalStruct;
-
-    Trace::detail("Finalized instantiated struct: ", 
-                  ctx.pool.lookup(finalStruct->mangledName),
-                  " (", fieldList.size(), " fields)");
-
-    return finalStruct;
+    return nullptr;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: Create a shell function and register it in the cache
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── substituteType ───────────────────────────────────────────────────
 
-/// @brief Create an empty shell for an instantiated function and register it in the cache.
-/// 
-/// This is the function equivalent of createInstantiatedStructShell.
-/// 
-/// @param templateDecl The generic function template.
-/// @param typeArgs The concrete type arguments for this instantiation.
-/// @param mangledName The mangled name for the instantiation.
-/// @param ctx The semantic context.
-/// @return A shell FuncDeclAST with empty body, or nullptr on error.
-static FuncDeclAST* createInstantiatedFunctionShell(
-    FuncDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    InternedString mangledName,
-    SemaContext& ctx
-) {
-    if (!templateDecl || !mangledName.isValid()) {
-        return nullptr;
-    }
-
-    // ─── Create the shell with empty body ──────────────────────────────────
-    FuncDeclAST* shell = ctx.arena.make<FuncDeclAST>(
-        mangledName,
-        templateDecl->keyword,
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
-        nullptr,                                       // funcType (will be filled later)
-        nullptr                                        // body (will be filled later)
-    );
-    shell->mangledName = mangledName;
-    shell->isForeignFunction = templateDecl->isForeignFunction;
-    shell->isInline = templateDecl->isInline;
-    shell->isNoInline = templateDecl->isNoInline;
-    shell->hasClosure = templateDecl->hasClosure;
-    shell->isReturned = templateDecl->isReturned;
-    shell->loc = templateDecl->loc;
-
-    // ─── Register the shell BEFORE any substitution ──────────────────────
-    // Use typeArgs, NOT templateDecl->genericParams!
-    InstantiationKey key{templateDecl, typeArgs};
-    ctx.instantiationCache[key] = shell;
-
-    return shell;
-}
-
-/// @brief Finalize an instantiated function by filling its body.
-/// 
-/// This is the function equivalent of finalizeInstantiatedStruct.
-/// 
-/// @param templateDecl The generic function template.
-/// @param typeArgs The concrete type arguments.
-/// @param shell The shell function to finalize.
-/// @param ctx The semantic context.
-/// @return The finalized FuncDeclAST, or nullptr on error.
-static FuncDeclAST* finalizeInstantiatedFunction(
-    FuncDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    FuncDeclAST* shell,
-    SemaContext& ctx
-) {
-    if (!templateDecl || !shell) return nullptr;
-
-    // ─── Create substitution context ──────────────────────────────────────
-    GenericSubstitution subst{templateDecl->genericParams, typeArgs};
-
-    // ─── Substitute function type ──────────────────────────────────────────
-    TypeAST* substitutedFuncType = substituteType(templateDecl->funcType, subst, ctx);
-    if (!substitutedFuncType || !substitutedFuncType->isa<FuncTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, templateDecl,
-            "failed to substitute function type for '",
-            ctx.pool.lookup(templateDecl->name), "'");
-        return nullptr;
-    }
-
-    // ─── Substitute body ────────────────────────────────────────────────────
-    StmtAST* substitutedBody = templateDecl->body 
-        ? substituteStmt(templateDecl->body, subst, ctx) 
-        : nullptr;
-
-    // ─── Create the final function ─────────────────────────────────────────
-    FuncDeclAST* finalFunc = ctx.arena.make<FuncDeclAST>(
-        shell->name,
-        shell->keyword,
-        ctx.arena.emptySpan<GenericParamDeclAST*>(),  // No generic params
-        substitutedFuncType->as<FuncTypeAST>(),
-        substitutedBody
-    );
-    finalFunc->mangledName = shell->mangledName;
-    finalFunc->isForeignFunction = shell->isForeignFunction;
-    finalFunc->isInline = shell->isInline;
-    finalFunc->isNoInline = shell->isNoInline;
-    finalFunc->hasClosure = shell->hasClosure;
-    finalFunc->isReturned = shell->isReturned;
-    finalFunc->loc = shell->loc;
-
-    // ─── Propagate closure captures (Option A from MigrationPlan) ─────────
-    // A specialized generic whose template captured variables needs its
-    // own capture list and its own closure view. Without this, CodeGen
-    // sees `hasClosure == true` but `closureView == nullptr` and cannot
-    // lower the function.
-    //
-    // KNOWN LIMITATION: the CapturedVariable::decl pointers in
-    // templateDecl->captures point at the *template's* ParamAST /
-    // FieldDeclAST nodes, not the substituted ones now living in
-    // finalFunc->funcType. Remapping them requires either re-running
-    // capture analysis against the substituted body (which needs Sema
-    // scope state that isn't set up during instantiation), or walking
-    // the substituted funcType and rewriting each decl pointer by
-    // matching parameter position. Neither is implemented yet — see
-    // FuncDeclAST's "Generic Instantiation Caveat" for the current
-    // contract. The closure view itself is structurally valid; only the
-    // decl pointers inside its capture list are stale.
-    if (shell->hasClosure) {
-        finalFunc->captures = templateDecl->captures;
-
-        AnonFuncExprAST* view = ctx.arena.make<AnonFuncExprAST>(
-            finalFunc->funcType, finalFunc->body);
-        view->captures   = finalFunc->captures;
-        view->hasClosure = true;
-        view->isReturned = finalFunc->isReturned;
-        view->loc        = finalFunc->loc;
-        finalFunc->closureView = view;
-    } else {
-        finalFunc->closureView = nullptr;   // explicit: no captures, no view
-    }
-
-    // ─── Update the cache entry to point to the final function ────────────
-    InstantiationKey key{templateDecl, typeArgs};
-    ctx.instantiationCache[key] = finalFunc;
-
-    Trace::detail("Finalized instantiated function: ", 
-                  ctx.pool.lookup(finalFunc->mangledName));
-
-    return finalFunc;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Type Substitution Implementation
-// ─────────────────────────────────────────────────────────────────────────────
-
-TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaContext& ctx) {
+TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc) {
     if (!type) return nullptr;
 
     switch (type->kind) {
         case ASTKind::PrimitiveType:
-            return type;  // Primitives don't contain generic params
+            return type;
 
         case ASTKind::NamedType: {
             NamedTypeAST* named = type->as<NamedTypeAST>();
-            
-            // ─── Check if this is a generic parameter ──────────────────────
-            if (subst.isParam(named->name)) {
-                TypeAST* result = subst.lookup(named->name);
+
+            // ─── Check if this is a generic parameter ──────────────────
+            if (sc.subst.isParam(named->name)) {
+                TypeAST* result = sc.subst.lookup(named->name);
                 if (result) {
-                    // Recursively substitute the result
-                    return substituteType(result, subst, ctx);
+                    return substituteType(result, sc);
                 }
                 return type;
             }
-            
-            // ─── Check if this is a generic struct with args ──────────────
+
+            // ─── Check if this is a generic struct with args ──────────
             if (!named->genericArgs.empty()) {
                 bool changed = false;
-                
-                // Use makeSpan with transform - clean functional style
-                auto subArgs = ctx.arena.makeSpan<TypeAST*>(
+
+                auto subArgs = sc.sema.arena.makeSpan<TypeAST*>(
                     named->genericArgs,
                     [&](TypeAST* arg) -> TypeAST* {
-                        TypeAST* subArg = substituteType(arg, subst, ctx);
+                        TypeAST* subArg = substituteType(arg, sc);
                         if (subArg != arg) changed = true;
                         return subArg;
                     }
                 );
-                
+
                 if (changed) {
-                    NamedTypeAST* newNamed = ctx.arena.make<NamedTypeAST>(named->name);
+                    NamedTypeAST* newNamed = sc.sema.arena.make<NamedTypeAST>(named->name);
                     newNamed->genericArgs = subArgs;
                     newNamed->resolvedDecl = named->resolvedDecl;
                     newNamed->loc = named->loc;
                     return newNamed;
                 }
             }
-            
+
             return type;
         }
 
         case ASTKind::ArrayType: {
             ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-            TypeAST* subElement = substituteType(arr->element, subst, ctx);
+            TypeAST* subElement = substituteType(arr->element, sc);
             if (subElement != arr->element) {
-                return ctx.getArrayType(arr->arrayKind, arr->size, subElement);
+                return sc.sema.getArrayType(arr->arrayKind, arr->size, subElement);
             }
             return type;
         }
 
         case ASTKind::NullableType: {
             NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            TypeAST* subInner = substituteType(nullable->inner, subst, ctx);
+            TypeAST* subInner = substituteType(nullable->inner, sc);
             if (subInner != nullable->inner) {
-                return ctx.arena.make<NullableTypeAST>(subInner);
+                return sc.sema.arena.make<NullableTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::FallibleType: {
             FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            TypeAST* subInner = substituteType(fallible->inner, subst, ctx);
+            TypeAST* subInner = substituteType(fallible->inner, sc);
             if (subInner != fallible->inner) {
-                return ctx.arena.make<FallibleTypeAST>(subInner);
+                return sc.sema.arena.make<FallibleTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::CombinedType: {
             CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            TypeAST* subInner = substituteType(combined->inner, subst, ctx);
+            TypeAST* subInner = substituteType(combined->inner, sc);
             if (subInner != combined->inner) {
-                return ctx.arena.make<CombinedTypeAST>(subInner);
+                return sc.sema.arena.make<CombinedTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::RefType: {
             RefTypeAST* ref = type->as<RefTypeAST>();
-            TypeAST* subInner = substituteType(ref->inner, subst, ctx);
+            TypeAST* subInner = substituteType(ref->inner, sc);
             if (subInner != ref->inner) {
-                return ctx.arena.make<RefTypeAST>(subInner);
+                return sc.sema.arena.make<RefTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::PtrType: {
             PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            TypeAST* subInner = substituteType(ptr->inner, subst, ctx);
+            TypeAST* subInner = substituteType(ptr->inner, sc);
             if (subInner != ptr->inner) {
-                return ctx.arena.make<PtrTypeAST>(subInner);
+                return sc.sema.arena.make<PtrTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::FuncType: {
             FuncTypeAST* func = type->as<FuncTypeAST>();
-            
-            // Substitute parameter types
+
             bool paramsChanged = false;
-            
-            // Use makeSpan with transform for params
-            auto subParams = ctx.arena.makeSpan<ParamAST*>(
+            auto subParams = sc.sema.arena.makeSpan<ParamAST*>(
                 func->params,
                 [&](ParamAST* param) -> ParamAST* {
                     if (!param->type) return param;
-                    
-                    TypeAST* subType = substituteType(param->type, subst, ctx);
+                    TypeAST* subType = substituteType(param->type, sc);
                     if (subType != param->type) {
                         paramsChanged = true;
-                        ParamAST* newParam = ctx.arena.make<ParamAST>(
+                        ParamAST* newParam = sc.sema.arena.make<ParamAST>(
                             param->name, subType, param->isVariadic, param->isConstParam);
                         newParam->loc = param->loc;
                         return newParam;
@@ -410,14 +153,13 @@ TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaCon
                     return param;
                 }
             );
-            
-            // Substitute return type
-            TypeAST* subReturn = func->returnType 
-                ? substituteType(func->returnType, subst, ctx) 
+
+            TypeAST* subReturn = func->returnType
+                ? substituteType(func->returnType, sc)
                 : nullptr;
-            
+
             if (paramsChanged || subReturn != func->returnType) {
-                FuncTypeAST* newFunc = ctx.arena.make<FuncTypeAST>();
+                FuncTypeAST* newFunc = sc.sema.arena.make<FuncTypeAST>();
                 newFunc->params = subParams;
                 newFunc->returnType = subReturn;
                 newFunc->loc = func->loc;
@@ -428,27 +170,27 @@ TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::FutureType: {
             FutureTypeAST* future = type->as<FutureTypeAST>();
-            TypeAST* subInner = substituteType(future->inner, subst, ctx);
+            TypeAST* subInner = substituteType(future->inner, sc);
             if (subInner != future->inner) {
-                return ctx.arena.make<FutureTypeAST>(subInner);
+                return sc.sema.arena.make<FutureTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::ThreadType: {
             ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            TypeAST* subInner = substituteType(thread->inner, subst, ctx);
+            TypeAST* subInner = substituteType(thread->inner, sc);
             if (subInner != thread->inner) {
-                return ctx.arena.make<ThreadTypeAST>(subInner);
+                return sc.sema.arena.make<ThreadTypeAST>(subInner);
             }
             return type;
         }
 
         case ASTKind::SimdType: {
             SimdTypeAST* simd = type->as<SimdTypeAST>();
-            TypeAST* subElement = substituteType(simd->elementType, subst, ctx);
+            TypeAST* subElement = substituteType(simd->elementType, sc);
             if (subElement != simd->elementType) {
-                return ctx.arena.make<SimdTypeAST>(subElement, simd->laneCount);
+                return sc.sema.arena.make<SimdTypeAST>(subElement, simd->laneCount);
             }
             return type;
         }
@@ -463,32 +205,32 @@ TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaCon
     }
 }
 
-StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaContext& ctx) {
+// ─── substituteStmt ───────────────────────────────────────────────────
+
+StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc) {
     if (!stmt) return nullptr;
 
     switch (stmt->kind) {
         case ASTKind::BlockStmt: {
             BlockStmtAST* block = stmt->as<BlockStmtAST>();
-            BlockStmtAST* newBlock = ctx.arena.make<BlockStmtAST>();
-            
-            // Use makeSpan with transform for statements
-            newBlock->stmts = ctx.arena.makeSpan<StmtAST*>(
+            BlockStmtAST* newBlock = sc.sema.arena.make<BlockStmtAST>();
+
+            newBlock->stmts = sc.sema.arena.makeSpan<StmtAST*>(
                 block->stmts,
                 [&](StmtAST* s) -> StmtAST* {
-                    return substituteStmt(s, subst, ctx);
+                    return substituteStmt(s, sc);
                 }
             );
-            
-            // Copy scope exits (these are semantic metadata, not AST nodes)
+
             newBlock->scopeExits = block->scopeExits;
             return newBlock;
         }
 
         case ASTKind::ReturnStmt: {
             ReturnStmtAST* ret = stmt->as<ReturnStmtAST>();
-            ReturnStmtAST* newRet = ctx.arena.make<ReturnStmtAST>();
+            ReturnStmtAST* newRet = sc.sema.arena.make<ReturnStmtAST>();
             if (ret->value) {
-                newRet->value = substituteExpr(ret->value, subst, ctx);
+                newRet->value = substituteExpr(ret->value, sc);
             }
             newRet->loc = ret->loc;
             return newRet;
@@ -496,8 +238,8 @@ StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::ExprStmt: {
             ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
-            ExprStmtAST* newExprStmt = ctx.arena.make<ExprStmtAST>(
-                substituteExpr(exprStmt->expr, subst, ctx)
+            ExprStmtAST* newExprStmt = sc.sema.arena.make<ExprStmtAST>(
+                substituteExpr(exprStmt->expr, sc)
             );
             newExprStmt->loc = exprStmt->loc;
             return newExprStmt;
@@ -505,19 +247,17 @@ StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::DeclStmt: {
             DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
-            // Declarations inside the body need special handling
-            // For now, return as-is (the declaration's type will be substituted elsewhere)
-            // TODO: Need to substitute types inside the declaration
+            // TODO: substitute types inside the declaration.
             return stmt;
         }
 
         case ASTKind::IfStmt: {
             IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
-            IfStmtAST* newIf = ctx.arena.make<IfStmtAST>();
-            newIf->condition = substituteExpr(ifStmt->condition, subst, ctx);
-            newIf->thenBranch = substituteStmt(ifStmt->thenBranch, subst, ctx);
-            newIf->elseBranch = ifStmt->elseBranch 
-                ? substituteStmt(ifStmt->elseBranch, subst, ctx) 
+            IfStmtAST* newIf = sc.sema.arena.make<IfStmtAST>();
+            newIf->condition = substituteExpr(ifStmt->condition, sc);
+            newIf->thenBranch = substituteStmt(ifStmt->thenBranch, sc);
+            newIf->elseBranch = ifStmt->elseBranch
+                ? substituteStmt(ifStmt->elseBranch, sc)
                 : nullptr;
             newIf->loc = ifStmt->loc;
             return newIf;
@@ -525,62 +265,57 @@ StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::WhileStmt: {
             WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
-            WhileStmtAST* newWhile = ctx.arena.make<WhileStmtAST>();
-            newWhile->condition = substituteExpr(whileStmt->condition, subst, ctx);
-            newWhile->body = substituteStmt(whileStmt->body, subst, ctx);
+            WhileStmtAST* newWhile = sc.sema.arena.make<WhileStmtAST>();
+            newWhile->condition = substituteExpr(whileStmt->condition, sc);
+            newWhile->body = substituteStmt(whileStmt->body, sc);
             newWhile->loc = whileStmt->loc;
             return newWhile;
         }
 
         case ASTKind::DoWhileStmt: {
             DoWhileStmtAST* doWhileStmt = stmt->as<DoWhileStmtAST>();
-            DoWhileStmtAST* newDoWhile = ctx.arena.make<DoWhileStmtAST>();
-            newDoWhile->body = substituteStmt(doWhileStmt->body, subst, ctx);
-            newDoWhile->condition = substituteExpr(doWhileStmt->condition, subst, ctx);
+            DoWhileStmtAST* newDoWhile = sc.sema.arena.make<DoWhileStmtAST>();
+            newDoWhile->body = substituteStmt(doWhileStmt->body, sc);
+            newDoWhile->condition = substituteExpr(doWhileStmt->condition, sc);
             newDoWhile->loc = doWhileStmt->loc;
             return newDoWhile;
         }
 
         case ASTKind::ForStmt: {
             ForStmtAST* forStmt = stmt->as<ForStmtAST>();
-            ForStmtAST* newFor = ctx.arena.make<ForStmtAST>();
-            newFor->indexVar = forStmt->indexVar;  // TODO: Need to substitute param types
-            newFor->valueVar = forStmt->valueVar;  // TODO: Need to substitute param types
-            newFor->iterable = substituteExpr(forStmt->iterable, subst, ctx);
-            newFor->step = forStmt->step ? substituteExpr(forStmt->step, subst, ctx) : nullptr;
-            newFor->body = substituteStmt(forStmt->body, subst, ctx);
+            ForStmtAST* newFor = sc.sema.arena.make<ForStmtAST>();
+            newFor->indexVar = forStmt->indexVar;
+            newFor->valueVar = forStmt->valueVar;
+            newFor->iterable = substituteExpr(forStmt->iterable, sc);
+            newFor->step = forStmt->step ? substituteExpr(forStmt->step, sc) : nullptr;
+            newFor->body = substituteStmt(forStmt->body, sc);
             newFor->loc = forStmt->loc;
             return newFor;
         }
 
         case ASTKind::SwitchStmt: {
             SwitchStmtAST* switchStmt = stmt->as<SwitchStmtAST>();
-            SwitchStmtAST* newSwitch = ctx.arena.make<SwitchStmtAST>();
-            newSwitch->subject = substituteExpr(switchStmt->subject, subst, ctx);
-            
-            // Use makeSpan with transform for cases
-            newSwitch->cases = ctx.arena.makeSpan<SwitchCaseAST*>(
+            SwitchStmtAST* newSwitch = sc.sema.arena.make<SwitchStmtAST>();
+            newSwitch->subject = substituteExpr(switchStmt->subject, sc);
+
+            newSwitch->cases = sc.sema.arena.makeSpan<SwitchCaseAST*>(
                 switchStmt->cases,
                 [&](SwitchCaseAST* caseNode) -> SwitchCaseAST* {
-                    // Create new case with substituted values and body
-                    SwitchCaseAST* newCase = ctx.arena.make<SwitchCaseAST>();
-                    
-                    // Substitute case values
-                    newCase->values = ctx.arena.makeSpan<ExprAST*>(
+                    SwitchCaseAST* newCase = sc.sema.arena.make<SwitchCaseAST>();
+                    newCase->values = sc.sema.arena.makeSpan<ExprAST*>(
                         caseNode->values,
                         [&](ExprAST* val) -> ExprAST* {
-                            return substituteExpr(val, subst, ctx);
+                            return substituteExpr(val, sc);
                         }
                     );
-                    
-                    newCase->body = substituteStmt(caseNode->body, subst, ctx)->as<BlockStmtAST>();
+                    newCase->body = substituteStmt(caseNode->body, sc)->as<BlockStmtAST>();
                     newCase->loc = caseNode->loc;
                     return newCase;
                 }
             );
-            
-            newSwitch->defaultBody = switchStmt->defaultBody 
-                ? substituteStmt(switchStmt->defaultBody, subst, ctx)->as<BlockStmtAST>()
+
+            newSwitch->defaultBody = switchStmt->defaultBody
+                ? substituteStmt(switchStmt->defaultBody, sc)->as<BlockStmtAST>()
                 : nullptr;
             newSwitch->defaultLoc = switchStmt->defaultLoc;
             newSwitch->loc = switchStmt->loc;
@@ -589,80 +324,63 @@ StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::BreakStmt:
         case ASTKind::ContinueStmt:
-            // These have no data - just copy
             return stmt;
-
-        case ASTKind::FuncRefStmt: {
-            FuncRefStmtAST* funcRef = stmt->as<FuncRefStmtAST>();
-            FuncRefStmtAST* newFuncRef = ctx.arena.make<FuncRefStmtAST>();
-            newFuncRef->target = substituteExpr(funcRef->target, subst, ctx);
-            newFuncRef->resolvedFunction = funcRef->resolvedFunction;
-            newFuncRef->loc = funcRef->loc;
-            return newFuncRef;
-        }
 
         default:
             return stmt;
     }
 }
 
-ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaContext& ctx) {
+// ─── substituteExpr ───────────────────────────────────────────────────
+
+ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
     if (!expr) return nullptr;
 
     switch (expr->kind) {
         case ASTKind::LiteralExpr:
-            return expr;  // Literals are immutable
+            return expr;
 
         case ASTKind::IdentifierExpr: {
-            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            // Generic function references in the body need to be handled
-            // They should have been resolved by Sema already
+            // Generic function references are resolved by Sema; nothing
+            // to substitute on a plain identifier.
             return expr;
         }
 
         case ASTKind::BinaryExpr: {
             BinaryExprAST* bin = expr->as<BinaryExprAST>();
-            BinaryExprAST* newBin = ctx.arena.make<BinaryExprAST>(bin->op);
-            newBin->left = substituteExpr(bin->left, subst, ctx);
-            newBin->right = substituteExpr(bin->right, subst, ctx);
+            BinaryExprAST* newBin = sc.sema.arena.make<BinaryExprAST>(bin->op);
+            newBin->left = substituteExpr(bin->left, sc);
+            newBin->right = substituteExpr(bin->right, sc);
             newBin->loc = bin->loc;
             return newBin;
         }
 
         case ASTKind::UnaryExpr: {
             UnaryExprAST* unary = expr->as<UnaryExprAST>();
-            UnaryExprAST* newUnary = ctx.arena.make<UnaryExprAST>(unary->op);
-            newUnary->operand = substituteExpr(unary->operand, subst, ctx);
+            UnaryExprAST* newUnary = sc.sema.arena.make<UnaryExprAST>(unary->op);
+            newUnary->operand = substituteExpr(unary->operand, sc);
             newUnary->loc = unary->loc;
             return newUnary;
         }
 
         case ASTKind::CallExpr: {
             CallExprAST* call = expr->as<CallExprAST>();
-            CallExprAST* newCall = ctx.arena.make<CallExprAST>(call->hasArgPack);
-            
-            // ─── Substitute the callee (which may have generic args) ──────────────
-            newCall->callee = substituteExpr(call->callee, subst, ctx);
-            
-            // ─── Substitute arguments ──────────────────────────────────────────────
-            newCall->args = ctx.arena.makeSpan<ExprAST*>(
+            CallExprAST* newCall = sc.sema.arena.make<CallExprAST>(call->hasArgPack);
+            newCall->callee = substituteExpr(call->callee, sc);
+            newCall->args = sc.sema.arena.makeSpan<ExprAST*>(
                 call->args,
                 [&](ExprAST* arg) -> ExprAST* {
-                    return substituteExpr(arg, subst, ctx);
+                    return substituteExpr(arg, sc);
                 }
             );
-            
-            // ─── Copy semantic fields ──────────────────────────────────────────────
-            // Note: genericArgs is NOT stored on CallExprAST - it's on the callee
             newCall->loc = call->loc;
-            
             return newCall;
         }
 
         case ASTKind::FieldAccessExpr: {
             FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-            FieldAccessExprAST* newField = ctx.arena.make<FieldAccessExprAST>(field->fieldName);
-            newField->object = substituteExpr(field->object, subst, ctx);
+            FieldAccessExprAST* newField = sc.sema.arena.make<FieldAccessExprAST>(field->fieldName);
+            newField->object = substituteExpr(field->object, sc);
             newField->resolvedDecl = field->resolvedDecl;
             newField->ownerType = field->ownerType;
             newField->isEnumAccess = field->isEnumAccess;
@@ -673,39 +391,33 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::ArrayLiteralExpr: {
             ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
-            
-            // Use makeSpan with transform for elements
-            auto subElements = ctx.arena.makeSpan<ExprAST*>(
+            auto subElements = sc.sema.arena.makeSpan<ExprAST*>(
                 arr->elements,
                 [&](ExprAST* elem) -> ExprAST* {
-                    return substituteExpr(elem, subst, ctx);
+                    return substituteExpr(elem, sc);
                 }
             );
-            
-            ArrayLiteralExprAST* newArr = ctx.arena.make<ArrayLiteralExprAST>(subElements);
+            ArrayLiteralExprAST* newArr = sc.sema.arena.make<ArrayLiteralExprAST>(subElements);
             newArr->loc = arr->loc;
             return newArr;
         }
 
         case ASTKind::StructLiteralExpr: {
             StructLiteralExprAST* structExpr = expr->as<StructLiteralExprAST>();
-            
-            // Use makeSpan with transform for field inits
-            auto subInits = ctx.arena.makeSpan<FieldInitAST*>(
+            auto subInits = sc.sema.arena.makeSpan<FieldInitAST*>(
                 structExpr->inits,
                 [&](FieldInitAST* init) -> FieldInitAST* {
-                    FieldInitAST* newInit = ctx.arena.make<FieldInitAST>(
-                        init->name, 
-                        substituteExpr(init->value, subst, ctx)
+                    FieldInitAST* newInit = sc.sema.arena.make<FieldInitAST>(
+                        init->name,
+                        substituteExpr(init->value, sc)
                     );
                     newInit->loc = init->loc;
                     return newInit;
                 }
             );
-            
-            StructLiteralExprAST* newStruct = ctx.arena.make<StructLiteralExprAST>(
-                structExpr->typeName, 
-                structExpr->genericArgs, 
+            StructLiteralExprAST* newStruct = sc.sema.arena.make<StructLiteralExprAST>(
+                structExpr->typeName,
+                structExpr->genericArgs,
                 subInits
             );
             newStruct->resolvedDecl = structExpr->resolvedDecl;
@@ -715,9 +427,9 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::IndexExpr: {
             IndexExprAST* index = expr->as<IndexExprAST>();
-            IndexExprAST* newIndex = ctx.arena.make<IndexExprAST>(
-                substituteExpr(index->target, subst, ctx),
-                substituteExpr(index->index, subst, ctx)
+            IndexExprAST* newIndex = sc.sema.arena.make<IndexExprAST>(
+                substituteExpr(index->target, sc),
+                substituteExpr(index->index, sc)
             );
             newIndex->loc = index->loc;
             return newIndex;
@@ -725,10 +437,10 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::SliceExpr: {
             SliceExprAST* slice = expr->as<SliceExprAST>();
-            SliceExprAST* newSlice = ctx.arena.make<SliceExprAST>(
-                substituteExpr(slice->target, subst, ctx),
-                slice->start ? substituteExpr(slice->start, subst, ctx) : nullptr,
-                slice->end ? substituteExpr(slice->end, subst, ctx) : nullptr,
+            SliceExprAST* newSlice = sc.sema.arena.make<SliceExprAST>(
+                substituteExpr(slice->target, sc),
+                slice->start ? substituteExpr(slice->start, sc) : nullptr,
+                slice->end ? substituteExpr(slice->end, sc) : nullptr,
                 slice->isExclusive
             );
             newSlice->loc = slice->loc;
@@ -737,9 +449,9 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::NullCoalesceExpr: {
             NullCoalesceExprAST* coalesce = expr->as<NullCoalesceExprAST>();
-            NullCoalesceExprAST* newCoalesce = ctx.arena.make<NullCoalesceExprAST>(
-                substituteExpr(coalesce->value, subst, ctx),
-                substituteExpr(coalesce->fallback, subst, ctx)
+            NullCoalesceExprAST* newCoalesce = sc.sema.arena.make<NullCoalesceExprAST>(
+                substituteExpr(coalesce->value, sc),
+                substituteExpr(coalesce->fallback, sc)
             );
             newCoalesce->loc = coalesce->loc;
             return newCoalesce;
@@ -747,31 +459,28 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::AssignExpr: {
             AssignExprAST* assign = expr->as<AssignExprAST>();
-            AssignExprAST* newAssign = ctx.arena.make<AssignExprAST>(assign->op);
-            newAssign->lhs = substituteExpr(assign->lhs, subst, ctx);
-            newAssign->rhs = substituteExpr(assign->rhs, subst, ctx);
+            AssignExprAST* newAssign = sc.sema.arena.make<AssignExprAST>(assign->op);
+            newAssign->lhs = substituteExpr(assign->lhs, sc);
+            newAssign->rhs = substituteExpr(assign->rhs, sc);
             newAssign->loc = assign->loc;
             return newAssign;
         }
 
         case ASTKind::ModuleAccessExpr: {
             ModuleAccessExprAST* mod = expr->as<ModuleAccessExprAST>();
-            // Module access expressions don't contain generic params
-            // but we need to substitute generic args if any
-            ModuleAccessExprAST* newMod = ctx.arena.make<ModuleAccessExprAST>(
+            ModuleAccessExprAST* newMod = sc.sema.arena.make<ModuleAccessExprAST>(
                 mod->moduleName, mod->memberName
             );
-            
-            // Substitute generic args if present
+
             if (!mod->genericArgs.empty()) {
-                newMod->genericArgs = ctx.arena.makeSpan<TypeAST*>(
+                newMod->genericArgs = sc.sema.arena.makeSpan<TypeAST*>(
                     mod->genericArgs,
                     [&](TypeAST* arg) -> TypeAST* {
-                        return substituteType(arg, subst, ctx);
+                        return substituteType(arg, sc);
                     }
                 );
             }
-            
+
             newMod->resolvedDecl = mod->resolvedDecl;
             newMod->loc = mod->loc;
             return newMod;
@@ -779,24 +488,46 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::AnonFuncExpr: {
             AnonFuncExprAST* anon = expr->as<AnonFuncExprAST>();
-            TypeAST* subFuncType = substituteType(anon->funcType, subst, ctx);
-            AnonFuncExprAST* newAnon = ctx.arena.make<AnonFuncExprAST>(
+            TypeAST* subFuncType = substituteType(anon->funcType, sc);
+
+            // ─── Construct newAnon without body first ──────────────────
+            // We need `newAnon` to exist before recursing into its body,
+            // because the body walk needs `newAnon` as the current
+            // enclosing function (for nested closures' enclosingFunction).
+            AnonFuncExprAST* newAnon = sc.sema.arena.make<AnonFuncExprAST>(
                 subFuncType ? subFuncType->as<FuncTypeAST>() : nullptr,
-                substituteStmt(anon->body, subst, ctx)
+                nullptr   // body, filled below
             );
-            newAnon->captures = anon->captures;
+
+            // ─── Captures are lexically invariant ──────────────────────
+            // (name, functionDepth) survive substitution unchanged.
+            newAnon->captures   = anon->captures;
             newAnon->hasClosure = anon->hasClosure;
             newAnon->isReturned = anon->isReturned;
-            newAnon->loc = anon->loc;
+            newAnon->loc        = anon->loc;
+
+            // ─── Re-derive enclosingFunction in the specialized context ─
+            // The template's node points at the template's enclosing
+            // anon; that node isn't in the specialized tree. The correct
+            // parent is whatever substitution is currently inside —
+            // sc.enclosingFunction.
+            newAnon->enclosingFunction = sc.enclosingFunction;
+
+            // ─── Walk the body with newAnon as current enclosing ───────
+            AnonFuncExprAST* prevEnclosing = sc.enclosingFunction;
+            sc.enclosingFunction = newAnon;
+            newAnon->body = substituteStmt(anon->body, sc);
+            sc.enclosingFunction = prevEnclosing;
+
             return newAnon;
         }
 
         case ASTKind::IfExpr: {
             IfExprAST* ifExpr = expr->as<IfExprAST>();
-            IfExprAST* newIf = ctx.arena.make<IfExprAST>(
-                substituteExpr(ifExpr->condition, subst, ctx),
-                substituteExpr(ifExpr->thenBranch, subst, ctx),
-                substituteExpr(ifExpr->elseBranch, subst, ctx)
+            IfExprAST* newIf = sc.sema.arena.make<IfExprAST>(
+                substituteExpr(ifExpr->condition, sc),
+                substituteExpr(ifExpr->thenBranch, sc),
+                substituteExpr(ifExpr->elseBranch, sc)
             );
             newIf->loc = ifExpr->loc;
             return newIf;
@@ -804,39 +535,34 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::RangeExpr: {
             RangeExprAST* range = expr->as<RangeExprAST>();
-            RangeExprAST* newRange = ctx.arena.make<RangeExprAST>(range->isExclusive);
-            newRange->lo = substituteExpr(range->lo, subst, ctx);
-            newRange->hi = substituteExpr(range->hi, subst, ctx);
+            RangeExprAST* newRange = sc.sema.arena.make<RangeExprAST>(range->isExclusive);
+            newRange->lo = substituteExpr(range->lo, sc);
+            newRange->hi = substituteExpr(range->hi, sc);
             newRange->loc = range->loc;
             return newRange;
         }
 
         case ASTKind::PipelineExpr: {
             PipelineExprAST* pipe = expr->as<PipelineExprAST>();
-            
-            // Use makeSpan with transform for pipeline steps
-            auto subSteps = ctx.arena.makeSpan<PipelineStepAST*>(
+            auto subSteps = sc.sema.arena.makeSpan<PipelineStepAST*>(
                 pipe->steps,
                 [&](PipelineStepAST* step) -> PipelineStepAST* {
-                    // Substitute pack args if any
-                    auto subPackArgs = ctx.arena.makeSpan<ExprAST*>(
+                    auto subPackArgs = sc.sema.arena.makeSpan<ExprAST*>(
                         step->packArgs,
                         [&](ExprAST* arg) -> ExprAST* {
-                            return substituteExpr(arg, subst, ctx);
+                            return substituteExpr(arg, sc);
                         }
                     );
-                    
-                    PipelineStepAST* newStep = ctx.arena.make<PipelineStepAST>(
-                        substituteExpr(step->callable, subst, ctx),
+                    PipelineStepAST* newStep = sc.sema.arena.make<PipelineStepAST>(
+                        substituteExpr(step->callable, sc),
                         subPackArgs
                     );
                     newStep->loc = step->loc;
                     return newStep;
                 }
             );
-            
-            PipelineExprAST* newPipe = ctx.arena.make<PipelineExprAST>(
-                substituteExpr(pipe->seed, subst, ctx),
+            PipelineExprAST* newPipe = sc.sema.arena.make<PipelineExprAST>(
+                substituteExpr(pipe->seed, sc),
                 subSteps
             );
             newPipe->loc = pipe->loc;
@@ -845,30 +571,25 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::ComposeExpr: {
             ComposeExprAST* compose = expr->as<ComposeExprAST>();
-            
-            // Use makeSpan with transform for compose operands
-            auto subOperands = ctx.arena.makeSpan<ComposeOperandAST*>(
+            auto subOperands = sc.sema.arena.makeSpan<ComposeOperandAST*>(
                 compose->operands,
                 [&](ComposeOperandAST* op) -> ComposeOperandAST* {
-                    // Substitute generic args if any
-                    auto subGenericArgs = ctx.arena.makeSpan<TypeAST*>(
+                    auto subGenericArgs = sc.sema.arena.makeSpan<TypeAST*>(
                         op->genericArgs,
                         [&](TypeAST* arg) -> TypeAST* {
-                            return substituteType(arg, subst, ctx);
+                            return substituteType(arg, sc);
                         }
                     );
-                    
-                    ComposeOperandAST* newOp = ctx.arena.make<ComposeOperandAST>(
-                        substituteExpr(op->callable, subst, ctx),
+                    ComposeOperandAST* newOp = sc.sema.arena.make<ComposeOperandAST>(
+                        substituteExpr(op->callable, sc),
                         subGenericArgs
                     );
                     newOp->loc = op->loc;
                     return newOp;
                 }
             );
-            
-            ComposeExprAST* newCompose = ctx.arena.make<ComposeExprAST>(
-                substituteExpr(compose->left, subst, ctx),
+            ComposeExprAST* newCompose = sc.sema.arena.make<ComposeExprAST>(
+                substituteExpr(compose->left, sc),
                 subOperands
             );
             newCompose->loc = compose->loc;
@@ -877,20 +598,17 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::IntrinsicCallExpr: {
             IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
-            IntrinsicCallExprAST* newIntrinsic = ctx.arena.make<IntrinsicCallExprAST>(
+            IntrinsicCallExprAST* newIntrinsic = sc.sema.arena.make<IntrinsicCallExprAST>(
                 intrinsic->intrinsicName
             );
-            
-            // Substitute args if any
             if (!intrinsic->args.empty()) {
-                newIntrinsic->args = ctx.arena.makeSpan<ExprAST*>(
+                newIntrinsic->args = sc.sema.arena.makeSpan<ExprAST*>(
                     intrinsic->args,
                     [&](ExprAST* arg) -> ExprAST* {
-                        return substituteExpr(arg, subst, ctx);
+                        return substituteExpr(arg, sc);
                     }
                 );
             }
-            
             newIntrinsic->intrinsicID = intrinsic->intrinsicID;
             newIntrinsic->loc = intrinsic->loc;
             return newIntrinsic;
@@ -898,32 +616,27 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
 
         case ASTKind::ArenaAccessExpr: {
             ArenaAccessExprAST* arenaAccess = expr->as<ArenaAccessExprAST>();
-            ArenaAccessExprAST* newArenaAccess = ctx.arena.make<ArenaAccessExprAST>(
+            ArenaAccessExprAST* newArenaAccess = sc.sema.arena.make<ArenaAccessExprAST>(
                 arenaAccess->methodName,
                 arenaAccess->isStatic,
-                arenaAccess->arenaExpr ? substituteExpr(arenaAccess->arenaExpr, subst, ctx) : nullptr
+                arenaAccess->arenaExpr ? substituteExpr(arenaAccess->arenaExpr, sc) : nullptr
             );
-            
-            // Substitute generic args if any
             if (!arenaAccess->genericArgs.empty()) {
-                newArenaAccess->genericArgs = ctx.arena.makeSpan<TypeAST*>(
+                newArenaAccess->genericArgs = sc.sema.arena.makeSpan<TypeAST*>(
                     arenaAccess->genericArgs,
                     [&](TypeAST* arg) -> TypeAST* {
-                        return substituteType(arg, subst, ctx);
+                        return substituteType(arg, sc);
                     }
                 );
             }
-            
-            // Substitute args if any
             if (!arenaAccess->args.empty()) {
-                newArenaAccess->args = ctx.arena.makeSpan<ExprAST*>(
+                newArenaAccess->args = sc.sema.arena.makeSpan<ExprAST*>(
                     arenaAccess->args,
                     [&](ExprAST* arg) -> ExprAST* {
-                        return substituteExpr(arg, subst, ctx);
+                        return substituteExpr(arg, sc);
                     }
                 );
             }
-            
             newArenaAccess->resolvedDecl = arenaAccess->resolvedDecl;
             newArenaAccess->loc = arenaAccess->loc;
             return newArenaAccess;
@@ -933,6 +646,8 @@ ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaCon
             return expr;
     }
 }
+
+// ─── containsGenericParams ────────────────────────────────────────────
 
 bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst) {
     if (!type) return false;
@@ -946,37 +661,18 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst) {
             }
             return false;
         }
-
-        case ASTKind::ArrayType: {
-            ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-            return containsGenericParams(arr->element, subst);
-        }
-
-        case ASTKind::NullableType: {
-            NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            return containsGenericParams(nullable->inner, subst);
-        }
-
-        case ASTKind::FallibleType: {
-            FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            return containsGenericParams(fallible->inner, subst);
-        }
-
-        case ASTKind::CombinedType: {
-            CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            return containsGenericParams(combined->inner, subst);
-        }
-
-        case ASTKind::RefType: {
-            RefTypeAST* ref = type->as<RefTypeAST>();
-            return containsGenericParams(ref->inner, subst);
-        }
-
-        case ASTKind::PtrType: {
-            PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            return containsGenericParams(ptr->inner, subst);
-        }
-
+        case ASTKind::ArrayType:
+            return containsGenericParams(type->as<ArrayTypeAST>()->element, subst);
+        case ASTKind::NullableType:
+            return containsGenericParams(type->as<NullableTypeAST>()->inner, subst);
+        case ASTKind::FallibleType:
+            return containsGenericParams(type->as<FallibleTypeAST>()->inner, subst);
+        case ASTKind::CombinedType:
+            return containsGenericParams(type->as<CombinedTypeAST>()->inner, subst);
+        case ASTKind::RefType:
+            return containsGenericParams(type->as<RefTypeAST>()->inner, subst);
+        case ASTKind::PtrType:
+            return containsGenericParams(type->as<PtrTypeAST>()->inner, subst);
         case ASTKind::FuncType: {
             FuncTypeAST* func = type->as<FuncTypeAST>();
             for (ParamAST* param : func->params) {
@@ -987,281 +683,15 @@ bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst) {
             }
             return false;
         }
-
-        case ASTKind::FutureType: {
-            FutureTypeAST* future = type->as<FutureTypeAST>();
-            return containsGenericParams(future->inner, subst);
-        }
-
-        case ASTKind::ThreadType: {
-            ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            return containsGenericParams(thread->inner, subst);
-        }
-
-        case ASTKind::SimdType: {
-            SimdTypeAST* simd = type->as<SimdTypeAST>();
-            return containsGenericParams(simd->elementType, subst);
-        }
-
+        case ASTKind::FutureType:
+            return containsGenericParams(type->as<FutureTypeAST>()->inner, subst);
+        case ASTKind::ThreadType:
+            return containsGenericParams(type->as<ThreadTypeAST>()->inner, subst);
+        case ASTKind::SimdType:
+            return containsGenericParams(type->as<SimdTypeAST>()->elementType, subst);
         default:
             return false;
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GenericResolution Implementation
-// ─────────────────────────────────────────────────────────────────────────────
-
-GenericResolution resolveGenericInstantiation(
-    DeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx
-) {
-    GenericResolution result;
-    
-    if (!templateDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, nullptr,
-                              "cannot instantiate null declaration");
-        return result;
-    }
-
-    // ─── Determine if this is a function or struct ──────────────────────────
-    bool isFunction = templateDecl->isa<FuncDeclAST>();
-    bool isStruct = templateDecl->isa<StructDeclAST>();
-    
-    if (!isFunction && !isStruct) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, templateDecl,
-                              "declaration '", ctx.pool.lookup(templateDecl->name),
-                              "' cannot be instantiated with generic arguments");
-        return result;
-    }
-
-    // ─── Get generic parameters ──────────────────────────────────────────────
-    ArenaSpan<GenericParamDeclAST*> genericParams;
-    if (isFunction) {
-        genericParams = templateDecl->as<FuncDeclAST>()->genericParams;
-    } else {
-        genericParams = templateDecl->as<StructDeclAST>()->genericParams;
-    }
-
-    // ─── Validate arity ──────────────────────────────────────────────────────
-    if (typeArgs.size() != genericParams.size()) {
-        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, templateDecl,
-                              "declaration '", ctx.pool.lookup(templateDecl->name),
-                              "' expected ", genericParams.size(),
-                              " generic arguments, got ", typeArgs.size());
-        return result;
-    }
-
-    // ─── Validate each type argument ─────────────────────────────────────────
-    for (TypeAST* arg : typeArgs) {
-        if (!arg) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, templateDecl,
-                                  "invalid generic argument (null)");
-            return result;
-        }
-        if (arg->isa<NamedTypeAST>()) {
-            NamedTypeAST* namedArg = arg->as<NamedTypeAST>();
-            if (!namedArg->resolvedDecl) {
-                resolveNamedType(namedArg, ctx);
-                if (!namedArg->resolvedDecl) {
-                    ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, arg,
-                                          "unresolved type '", ctx.pool.lookup(namedArg->name),
-                                          "' in generic argument");
-                    return result;
-                }
-            }
-        }
-
-    }
-
-    // ─── Specialized path (default) ──────────────────────────────────────
-    if (isFunction) {
-        FuncDeclAST* instantiated = createInstantiatedFunction(
-            templateDecl->as<FuncDeclAST>(), typeArgs, ctx);
-        if (!instantiated) {
-            return result;
-        }
-        result.resolvedDecl = instantiated;
-    } else {
-        StructDeclAST* instantiated = createInstantiatedStruct(
-            templateDecl->as<StructDeclAST>(), typeArgs, ctx);
-        if (!instantiated) {
-            return result;
-        }
-        result.resolvedDecl = instantiated;
-    }
-
-    return result;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Instantiated Struct Creation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Create an instantiated struct from a generic template.
-/// 
-/// Uses the "register before recursing" pattern to handle self-referential
-/// types like `Node<T> { value: T, next: *Node<T> }`.
-/// 
-/// ─── Algorithm ──────────────────────────────────────────────────────────────
-/// 1. Check the instantiation cache. If found, return it immediately.
-/// 2. Validate arity.
-/// 3. Generate the mangled name.
-/// 4. Create a shell struct (empty fields) and register it in the cache.
-/// 5. Substitute all field types (may recursively call back).
-/// 6. Create the final struct with all fields.
-/// 7. Update the cache entry to point to the final struct.
-/// 
-/// ─── Why This Works ─────────────────────────────────────────────────────────
-/// The cache is populated BEFORE any field substitution. If a field's type
-/// (e.g., `*Node<T>`) triggers a recursive instantiation of the same struct,
-/// the cache returns the shell, breaking the infinite loop.
-/// 
-/// @param templateDecl The generic struct template (must have genericParams).
-/// @param typeArgs The concrete type arguments (must match arity).
-/// @param ctx The semantic context.
-/// @return The instantiated StructDeclAST, or nullptr on error.
-StructDeclAST* createInstantiatedStruct(
-    StructDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx) 
-{
-    // ─── Guard: Validate inputs ────────────────────────────────────────────
-    if (!templateDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, nullptr,
-                              "cannot instantiate null struct declaration");
-        return nullptr;
-    }
-
-    // ─── Step 1: Check the cache ────────────────────────────────────────────
-    InstantiationKey key{templateDecl, typeArgs};
-    auto it = ctx.instantiationCache.find(key);
-    if (it != ctx.instantiationCache.end()) {
-        return it->second ? it->second->as<StructDeclAST>() : nullptr;
-    }
-
-    // ─── Step 2: Validate arity ─────────────────────────────────────────────
-    if (typeArgs.size() != templateDecl->genericParams.size()) {
-        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, templateDecl,
-            "struct '", ctx.pool.lookup(templateDecl->name),
-            "' expected ", templateDecl->genericParams.size(),
-            " generic arguments, got ", typeArgs.size());
-        return nullptr;
-    }
-
-    // ─── Step 3: Generate mangled name ──────────────────────────────────────
-    InternedString mangledName = generateMangledNameForGeneric(
-        templateDecl, typeArgs, ctx);
-    
-    if (!mangledName.isValid()) {
-        ctx.diagnostics.error(DiagCode::Backend_InvalidIR, templateDecl,
-            "failed to generate mangled name for generic struct '",
-            ctx.pool.lookup(templateDecl->name), "'");
-        return nullptr;
-    }
-
-    // ─── Step 4: Create and register the shell ──────────────────────────────
-    StructDeclAST* shell = createInstantiatedStructShell(
-        templateDecl, typeArgs, mangledName, ctx);
-    if (!shell) {
-        return nullptr;
-    }
-
-    // ─── Step 5: Finalize the struct ────────────────────────────────────────
-    StructDeclAST* finalStruct = finalizeInstantiatedStruct(
-        templateDecl, typeArgs, shell, ctx);
-    if (!finalStruct) {
-        return nullptr;
-    }
-
-    // ─── Step 6: Result ─────────────────────────────────────────────────────
-    Trace::detail("Created instantiated struct: ", 
-                  ctx.pool.lookup(finalStruct->mangledName),
-                  " (", finalStruct->fields.size(), " fields)");
-
-    return finalStruct;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Instantiated Function Creation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Create an instantiated function from a generic template.
-/// 
-/// Uses the "register before recursing" pattern to handle recursive functions.
-/// 
-/// ─── Algorithm ──────────────────────────────────────────────────────────────
-/// 1. Check the instantiation cache. If found, return it immediately.
-/// 2. Validate arity.
-/// 3. Generate the mangled name.
-/// 4. Create a shell function (empty body) and register it in the cache.
-/// 5. Substitute the function type and body (may recursively call back).
-/// 6. Create the final function with all data.
-/// 7. Update the cache entry to point to the final function.
-/// 
-/// @param templateDecl The generic function template.
-/// @param typeArgs The concrete type arguments.
-/// @param ctx The semantic context.
-/// @return The instantiated FuncDeclAST, or nullptr on error.
-FuncDeclAST* createInstantiatedFunction(
-    FuncDeclAST* templateDecl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx) 
-{
-    // ─── Guard: Validate inputs ────────────────────────────────────────────
-    if (!templateDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, nullptr,
-                              "cannot instantiate null function declaration");
-        return nullptr;
-    }
-
-    // ─── Step 1: Check the cache ────────────────────────────────────────────
-    InstantiationKey key{templateDecl, typeArgs};
-    auto it = ctx.instantiationCache.find(key);
-    if (it != ctx.instantiationCache.end()) {
-        return it->second ? it->second->as<FuncDeclAST>() : nullptr;
-    }
-
-    // ─── Step 2: Validate arity ─────────────────────────────────────────────
-    if (typeArgs.size() != templateDecl->genericParams.size()) {
-        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, templateDecl,
-            "function '", ctx.pool.lookup(templateDecl->name),
-            "' expected ", templateDecl->genericParams.size(),
-            " generic arguments, got ", typeArgs.size());
-        return nullptr;
-    }
-
-    // ─── Step 3: Generate mangled name ──────────────────────────────────────
-    InternedString mangledName = generateMangledNameForGeneric(
-        templateDecl, typeArgs, ctx);
-    
-    if (!mangledName.isValid()) {
-        ctx.diagnostics.error(DiagCode::Backend_InvalidIR, templateDecl,
-            "failed to generate mangled name for generic function '",
-            ctx.pool.lookup(templateDecl->name), "'");
-        return nullptr;
-    }
-
-    // ─── Step 4: Create and register the shell ──────────────────────────────
-    FuncDeclAST* shell = createInstantiatedFunctionShell(
-        templateDecl, typeArgs, mangledName, ctx);
-    if (!shell) {
-        return nullptr;
-    }
-
-    // ─── Step 5: Finalize the function ──────────────────────────────────────
-    FuncDeclAST* finalFunc = finalizeInstantiatedFunction(
-        templateDecl, typeArgs, shell, ctx);
-    if (!finalFunc) {
-        return nullptr;
-    }
-
-    // ─── Step 6: Result ─────────────────────────────────────────────────────
-    Trace::detail("Created instantiated function: ", 
-                  ctx.pool.lookup(finalFunc->mangledName));
-
-    return finalFunc;
 }
 
 } // namespace sema

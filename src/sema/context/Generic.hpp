@@ -1,77 +1,103 @@
 /// @file sema/context/Generic.hpp
-/// @brief Generic instantiation and substitution utilities for Sema.
+/// @brief Generic substitution and instantiation utilities.
+///
+/// ─── Two Concerns, One Header ─────────────────────────────────────────────
+/// This header declares two related but distinct services:
+///
+///   1. **Substitution** — a mechanical tree-rewriting pass. Given a
+///      GenericSubstitution (a mapping from generic parameters to concrete
+///      types), it produces a copy of the input AST with every occurrence
+///      of a generic parameter replaced by its concrete type. Implemented
+///      in Generic.cpp.
+///
+///   2. **Instantiation** — an orchestration pass. It drives substitution,
+///      manages the instantiation cache, validates arity, and produces the
+///      final specialized declaration. Implemented in Instantiation.cpp.
+///
+/// The split keeps the "pure transformation" logic separate from the
+/// "register, validate, cache" logic. Substitution carries its own
+/// SubstitutionContext (see below) rather than polluting SemaContext with
+/// pass-scoped state; instantiation leans on SemaContext's
+/// instantiationCache, which is a service, not pass state.
 
 #pragma once
 
+#include "SemaContext.hpp"
+#include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
-#include "core/memory/ArenaSpan.hpp"
-#include "core/memory/InternedString.hpp"
-#include "sema/context/SemaContext.hpp"
-
-#include <unordered_set>
-#include <functional>
+#include "core/ast/TypeAST.hpp"
 
 namespace sema {
 
-// ─── GenericSubstitution ─────────────────────────────────────────────────────
+// ─── GenericSubstitution ──────────────────────────────────────────────
 
-/// @brief Simple substitution context for generic parameters to concrete types.
+/// @brief The mapping from generic parameters to concrete types for one
+///        instantiation.
+///
+/// The two spans are parallel: `genericParams[i]` is substituted by
+/// `typeArgs[i]`. Constructed once per instantiation and passed by const
+/// reference through the whole substitution walk.
 struct GenericSubstitution {
-    const ArenaSpan<GenericParamDeclAST*>& genericParams;
-    const ArenaSpan<TypeAST*>& typeArgs;
+    ArenaSpan<GenericParamDeclAST*> genericParams;
+    ArenaSpan<TypeAST*> typeArgs;
 
-    GenericSubstitution(
-        const ArenaSpan<GenericParamDeclAST*>& params,
-        const ArenaSpan<TypeAST*>& args)
+    GenericSubstitution(ArenaSpan<GenericParamDeclAST*> params,
+                        ArenaSpan<TypeAST*> args)
         : genericParams(params), typeArgs(args) {}
 
-    TypeAST* lookup(InternedString name) const {
-        for (size_t i = 0; i < genericParams.size(); ++i) {
-            if (genericParams[i]->name == name && i < typeArgs.size()) {
-                return typeArgs[i];
-            }
-        }
-        return nullptr;
-    }
-
-    bool isParam(InternedString name) const {
-        for (auto p : genericParams) {
-            if (p->name == name) return true;
-        }
-        return false;
-    }
-
-    size_t paramCount() const { return genericParams.size(); }
-    size_t argCount() const { return typeArgs.size(); }
-    bool isComplete() const { return typeArgs.size() == genericParams.size(); }
+    bool isParam(InternedString name) const;
+    TypeAST* lookup(InternedString name) const;
 };
 
-// ─── GenericResolution ─────────────────────────────────────────────────────
+// ─── SubstitutionContext ──────────────────────────────────────────────
+
+/// @brief Everything substitution needs beyond the substitution map.
+///
+/// Passed by reference through the substitution recursion. Keeps
+/// substitution-scoped state off SemaContext, which is shared across
+/// all passes and shouldn't accumulate per-pass fields.
+///
+/// As substitution grows (partial substitution, nested-generic scopes,
+/// substitution-aware diagnostics), this struct is where new state goes.
+struct SubstitutionContext {
+    /// The semantic context — used for arena allocation, diagnostics,
+    /// the type cache (getArrayType etc.), and other shared services.
+    /// Substitution never mutates any SemaContext field; it reads.
+    SemaContext& sema;
+
+    /// The substitution map for this instantiation.
+    const GenericSubstitution& subst;
+
+    /// The AnonFuncExprAST currently being rebuilt by substitution, or
+    /// nullptr at the top level.
+    ///
+    /// Set/restored by substituteExpr's AnonFuncExprAST branch around the
+    /// recursive walk of each anon's body. Used to re-derive
+    /// `newAnon->enclosingFunction` so a specialized closure points at its
+    /// specialized lexical parent, not the template's.
+    AnonFuncExprAST* enclosingFunction = nullptr;
+
+    SubstitutionContext(SemaContext& s, const GenericSubstitution& sub)
+        : sema(s), subst(sub) {}
+};
+
+// ─── Substitution (implemented in Generic.cpp) ────────────────────────
+
+TypeAST* substituteType(TypeAST* type, SubstitutionContext& sc);
+StmtAST* substituteStmt(StmtAST* stmt, SubstitutionContext& sc);
+ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc);
+
+bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
+
+// ─── Instantiation (implemented in Instantiation.cpp) ─────────────────
 
 /// @brief Result of resolving a generic instantiation.
-/// 
-/// Always resolves to the specialized declaration for the concrete type args.
 struct GenericResolution {
-    /// The resolved declaration for the concrete instantiation.
     DeclAST* resolvedDecl = nullptr;
+    // Add other fields here if the current GenericResolution has more.
 };
-
-// ─── Type Substitution Helpers (declarations) ──────────────────────────────
-
-/// @brief Substitute generic parameters in a type.
-TypeAST* substituteType(TypeAST* type, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Substitute generic parameters in a statement.
-StmtAST* substituteStmt(StmtAST* stmt, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Substitute generic parameters in an expression.
-ExprAST* substituteExpr(ExprAST* expr, const GenericSubstitution& subst, SemaContext& ctx);
-
-/// @brief Check if a type contains any generic parameters.
-bool containsGenericParams(TypeAST* type, const GenericSubstitution& subst);
 
 // ─── Generic Resolution (declaration) ─────────────────────────────────────
 
