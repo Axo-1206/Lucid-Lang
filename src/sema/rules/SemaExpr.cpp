@@ -1574,6 +1574,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     }
 
     StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+    ArenaSpan<TypeAST*> canonicalArgs;
 
     if (structDecl->hasSyntaxError) {
         expr->resolvedType = ctx.getUnknownType();
@@ -1623,8 +1624,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
         }
 
         // ─── 2d. Canonicalize and check the structural storage map ───────────
-        std::vector<TypeAST*> canonicalArgsList;
-        ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(expr->genericArgs, ctx);
+        canonicalArgs = canonicalizeTypeArgList(expr->genericArgs, ctx);
 
         StructDeclAST* resolvedStruct =ctx.getGenericTypeInstantiation(structDecl->name, canonicalArgs);
 
@@ -1804,7 +1804,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
 
     // ─── Step 8: Set the resolved type ──────────────────────────────────
     // The resolved type is the struct type (cached)
-    NamedTypeAST* resultType = ctx.getNamedType(targetStruct->name);
+    NamedTypeAST* resultType = ctx.getNamedType(targetStruct->name, canonicalArgs);
     expr->resolvedType = resultType;
     expr->valueState = state;
     expr->isLValue = false;
