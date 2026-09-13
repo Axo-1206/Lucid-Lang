@@ -151,7 +151,7 @@ bool validateForeign(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
 
     // ─── 4. Warn if function has a body ──────────────────────────────────
     FuncDeclAST* func = owner->as<FuncDeclAST>();
-    if (func->body) {
+    if (func->init) {
         ctx.diagnostics.warning(DiagCode::Warn_ForeignBody, attr,
                                 "foreign function '", ctx.pool.lookup(owner->name),
                                 "' has a body; it will be ignored");
