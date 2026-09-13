@@ -500,6 +500,9 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
     // ─── NOTE: Registration is handled by registerTraitName() ─────────────
     // Do NOT call ctx.insertType() here.
 
+    // ─── Push a scope for the trait's own contents ─────────────────────
+    SymbolScope traitScope(ctx);
+
     // ─── 1. Resolve generic parameters ──────────────────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
@@ -551,44 +554,47 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 
     ScopedTypeDefinition defining(ctx, decl);
 
+    // ─── Push a scope for the struct's own contents ────────────────────
+    // This scope holds:
+    //   - the struct's generic parameters (registered below)
+    //   - the struct's fields (registered after the generics)
+    // It's a single scope for both, because a field's type may reference
+    // the struct's generic parameters (`value T`, `next Node<T>?`), and
+    // both are local to the struct's own declaration.
+    SymbolScope structScope(ctx);
+
     // ─── 1. Resolve generic parameters FIRST ──────────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 2. Push a scope for struct fields ──────────────────────────────
-    ctx.pushScope();
-
-    // ─── 3. Register all fields in the struct scope ──────────────────────────
+    // ─── 2. Register all fields in the struct scope ──────────────────────────
     for (FieldDeclAST* field : decl->fields) {
         if (!field->name.isEmpty()) {
             ctx.insertValue(field);
         }
     }
 
-    // ─── 4. Resolve fields and compute logical layout ──────────────────────
+    // ─── 3. Resolve fields and compute logical layout ──────────────────────
     resolveStructFields(decl, ctx);
 
-    // ─── 5. Validate trait implementations ──────────────────────────────────
+    // ─── 4. Validate trait implementations ──────────────────────────────────
     if (!validateAllTraitImplementations(decl, ctx)) {
         // Error already reported
     }
 
-    // ─── 6. Validate generic parameter usage ───────────────────────────────
+    // ─── 5. Validate generic parameter usage ───────────────────────────────
     std::vector<TypeAST*> types;
     for (FieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 
-    // ─── 7. Generate mangled name ───────────────────────────────────────────
+    // ─── 6. Generate mangled name ───────────────────────────────────────────
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
-
-    // ─── 9. Pop the struct scope ─────────────────────────────────────────
-    ctx.popScope();
 }
 
 // ─── resolveStructFields ──────────────────────────────────────────────────────

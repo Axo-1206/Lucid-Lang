@@ -199,7 +199,20 @@ bool SemaContext::insertType(TypeDeclAST* decl) {
 }
 
 bool SemaContext::insertGenericParam(GenericParamDeclAST* param) {
-    assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
+    // A generic parameter is lexically scoped to the declaration that
+    // introduces it — struct/trait/func — and must be registered in the
+    // scope belonging to that declaration, not in an enclosing scope.
+    // Registering it in an enclosing scope would leak it: two declarations
+    // both writing `<T>` would collide, and a `T` in one declaration would
+    // shadow a `T` in an unrelated declaration for the rest of its scope.
+    //
+    // Every caller must push the declaration's own scope *before* calling
+    // this. See resolveFuncDecl's Scope A, resolveStructDecl's structScope,
+    // and resolveTraitDecl's traitScope.
+    AST_ASSERT_MSG(!isAtModuleLevel(),
+                   "insertGenericParam() called with no open scope — "
+                   "the declaring struct/trait/func did not push its own "
+                   "scope before resolving its generic parameters");
     if (currentScope().genericParams.find(param->name) != currentScope().genericParams.end()) {
         diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, param,
                           "redeclaration of generic parameter '", 
@@ -680,14 +693,6 @@ size_t SemaContext::getClosureDepth() const {
 
 bool SemaContext::insideNestedFunction() const {
     return stack.insideNestedFunction();
-}
-
-FuncDeclAST* SemaContext::getInnermostFunction() const {
-    return stack.getInnermostFunction();
-}
-
-BaseAST* SemaContext::getInnermostFunctionNode() const {
-    return stack.getInnermostFunctionNode();
 }
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────

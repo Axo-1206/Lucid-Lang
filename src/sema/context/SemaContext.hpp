@@ -301,8 +301,6 @@ struct SemaContext {
     // ─── Closure Helpers ──────────────────────────────────────────────
     size_t getClosureDepth() const;
     bool insideNestedFunction() const;
-    FuncDeclAST* getInnermostFunction() const;
-    BaseAST* getInnermostFunctionNode() const;
 
     // ─── Other Helpers ─────────────────────────────────────────────────
 
