@@ -24,9 +24,40 @@ static bool satisfiesTraitConstraint(TypeAST* actualType,
                                       SemaContext& ctx) {
     if (!actualType || !requiredTrait) return false;
 
-    // Generic parameters are placeholders - checked at instantiation time
-    if (ctx.isGenericParameterType(actualType)) {
-        return true;
+    // ─── Generic parameter as the actual type ───────────────────────────
+    //
+    // A generic parameter is a placeholder for a concrete type that will
+    // only be known at instantiation time. Whether T satisfies the trait
+    // cannot be decided here — it depends on which concrete type T is
+    // bound to at each call site, and that check happens during
+    // `validateGenericArguments` against the concrete argument.
+    //
+    // The two ways this node can be a generic parameter reference:
+    //
+    //   1. `resolvedDecl` is already set to a GenericParamDeclAST. This
+    //      happens when `resolveType` has run on the node — the resolver
+    //      stores the parameter decl directly on the reference.
+    //
+    //   2. `resolvedDecl` is not yet set, but the name resolves through
+    //      the current scope stack to a generic parameter. This covers a
+    //      parser-produced type node that has not been through
+    //      `resolveType` yet.
+    //
+    // Only a NamedTypeAST can be a generic parameter — primitives, arrays,
+    // function types, and everything else are always concrete.
+    if (actualType && actualType->isa<NamedTypeAST>()) {
+        NamedTypeAST* namedActual = actualType->as<NamedTypeAST>();
+
+        // ─── Fast path: already resolved to a generic parameter ────────
+        if (namedActual->resolvedDecl
+            && namedActual->resolvedDecl->isa<GenericParamDeclAST>()) {
+            return true;
+        }
+
+        // ─── Slow path: unresolved, check the scope stack ──────────────
+        if (ctx.isGenericParam(namedActual->name)) {
+            return true;
+        }
     }
 
     // Actual type must be a named type
