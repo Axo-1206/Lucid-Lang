@@ -35,10 +35,13 @@ namespace sema {
 /// 
 /// @param expr The condition expression.
 /// @param ctx The semantic context.
-/// @param outIsValidMixed Optional output parameter to detect mixed operators.
+/// @param outNoMixing Optional output parameter. On return, `*outNoMixing`
+///                    is `true` if the condition is well-formed (no mixed
+///                    operators); `false` if mixed operators were detected
+///                    and the returned `NarrowingInfo` is empty.
 /// @return NarrowingInfo with all narrowings found, or empty if mixed/unsound.
 NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx, 
-                                               bool* outIsValidMixed = nullptr);
+                                               bool* outMixed = nullptr);
 
 /// @brief Detect narrowing pattern from a binary expression.
 /// 

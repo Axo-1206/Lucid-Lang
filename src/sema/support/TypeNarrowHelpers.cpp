@@ -15,11 +15,13 @@ namespace sema {
 // ─────────────────────────────────────────────────────────────────────────────
 
 NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx,
-                                               bool* outIsValidMixed) {
+                                               bool* outMixed) {
     NarrowingInfo result;
     result.hasNarrowing = false;
 
-    if (outIsValidMixed) *outIsValidMixed = true;
+    // Default: assume no mixing until proven otherwise. "Mixing" is the
+    // exceptional case, so the flag's natural resting state is false.
+    if (outMixed) *outMixed = false;
 
     if (!expr) return result;
 
@@ -35,14 +37,14 @@ NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx,
         
         // Check for mixed operators - reject if either side has mixed operators
         if (leftMixed || rightMixed) {
-            if (outIsValidMixed) *outIsValidMixed = false;
+            if (outMixed) *outMixed = true;
             return NarrowingInfo();
         }
         
         // Check operator consistency when both sides have narrowing
         if (left.hasNarrowing && right.hasNarrowing) {
             if (left.isEquality != right.isEquality) {
-                if (outIsValidMixed) *outIsValidMixed = false;
+                if (outMixed) *outMixed = true;
                 return NarrowingInfo();
             }
         }
@@ -213,12 +215,14 @@ NarrowingInfo detectNarrowingPattern(BinaryExprAST* binary, SemaContext& ctx) {
 
     if (!binary) return result;
 
-    // Delegate to the main extraction function
-    bool isMixed = false;
-    result = extractNarrowingsFromCondition(binary, ctx, &isMixed);
+    // Delegate to the main extraction function.
+    // `outMixed` is set to `true` only when the condition contains mixed
+    // '==' and '!=' operators in a way that makes narrowing unsound; in
+    // every other case it stays `false`.
+    bool outMixed = false;
+    result = extractNarrowingsFromCondition(binary, ctx, &outMixed);
 
-    // If mixed operators were detected, report an error
-    if (isMixed) {
+    if (outMixed) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, binary,
                               "mixed '==' and '!=' in condition for type narrowing");
         return NarrowingInfo();
