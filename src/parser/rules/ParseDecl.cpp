@@ -330,6 +330,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse keyword ──────────────────────────────────────────────────
+    SourceLocation keywordLoc = stream.currentLoc();
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst && !stream.match(TokenType::LET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -357,6 +358,30 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
+    }
+
+    // ─── 3b. Invariant: generic ⇒ const ────────────────────────────────────
+    //
+    // A generic function declaration denotes a family, not a value. No
+    // expression form in the language produces a family, so a `let`-bound
+    // generic could never be reassigned — `let` would be asking for a
+    // capability the language has no way to exercise. Report at the
+    // keyword token, where the user wrote the wrong thing.
+    //
+    // The parser reports the error but does NOT fix the keyword — the AST
+    // still reflects what the user wrote, and `hasSyntaxError` is set so
+    // Sema skips the declaration. This keeps every downstream pass from
+    // having to re-check the invariant.
+    bool genericLetError = (!isConst && !genericParams.empty());
+    if (genericLetError) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericRequiresConst,
+                                keywordLoc,
+                                "a generic function must be declared 'const'");
+        ctx.diagnostics.noteAt(keywordLoc,
+            "a generic function is a definition, not a reassignable value: "
+            "no expression form produces a generic-family value, so 'let' "
+            "has nothing it could ever be reassigned to");
+        // fall through — build the node with hasSyntaxError, so Sema skips it
     }
 
     // ─── 4. Parse parameter groups ─────────────────────────────────────────
@@ -615,7 +640,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(
         name, keyword, genericParams, funcType, finalInit);
 
-    if (hasBodyError || hasError ||
+    if (hasBodyError || hasError || genericLetError ||
         (restType && restType->hasSyntaxError) ||
         (finalInit && finalInit->hasSyntaxError) ||
         name.isEmpty()) {

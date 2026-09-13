@@ -321,6 +321,7 @@ enum class DiagCode : uint32_t {
     Sem_TypeErasedGenericSimd       = 6023,  // Simd<T,N> with type-erased T
     Sem_TypeErasedGenericBitcast    = 6024,  // #bitcast on type-erased generic
     Sem_TypeErasedNestedMismatch    = 6025,  // Type-erased container with specialized inner type
+    Sem_GenericRequiresConst   = 6026, // Generic function declared with 'let'
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)

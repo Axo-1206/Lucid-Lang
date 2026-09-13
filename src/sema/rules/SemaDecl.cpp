@@ -263,6 +263,16 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
+    // ─── Defensive: generic ⇒ const ───────────────────────────────────────
+    // The parser is the primary enforcer (see parseFuncDecl), and it sets
+    // hasSyntaxError when this rule is violated — so if we reach here with
+    // a `let`-generic declaration, it's a compiler bug, not a user error.
+    // Do NOT emit a user-facing diagnostic here; the parser already did.
+    AST_ASSERT_MSG(!decl->isGeneric() || decl->keyword == DeclKeyword::Const,
+                   "FuncDeclAST invariant violated: generic function with let keyword");
+
+    validateAllAttributes(decl, ctx);
+
     // ─── 1. Validate attributes ───────────────────────────────────────────
     validateAllAttributes(decl, ctx);
 
