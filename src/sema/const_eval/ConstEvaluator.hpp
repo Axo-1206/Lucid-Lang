@@ -59,24 +59,58 @@ private:
 
 /// @brief RAII guard for const function evaluation context.
 /// Pushes a function context and scope for evaluating const functions.
+///
+/// ─── Why the Body Node, Not the Declaration ────────────────────────────
+/// Under the current AST design, a FuncDeclAST is a *binding* — it owns no
+/// body and no parameters. Its body (when it has one) is the
+/// AnonFuncExprAST at `init`. `ContextStack::pushAnonFunction` takes that
+/// AnonFuncExprAST, not the FuncDeclAST, and every consumer of the stack's
+/// FuncBody frames (capture analysis, getEnclosingFunctionNode, ...)
+/// assumes `frame.node` is an AnonFuncExprAST.
+///
+/// This guard therefore requires `func->init` to be an AnonFuncExprAST. If
+/// `func`'s init is a reference (a pure alias to another function) or null
+/// (a foreign declaration), there is no body to execute, and the guard is
+/// a no-op — which is exactly right: there is nothing to evaluate.
 class ConstFunctionContext {
 public:
     ConstFunctionContext(SemaContext& ctx, FuncDeclAST* func)
-        : m_ctx(ctx) {
-        m_ctx.stack.pushFunction(
-            func,
-            func->funcType ? func->funcType->returnType : nullptr
+        : m_ctx(ctx)
+        , m_pushed(false)
+    {
+        if (!func || !func->init) {
+            return;   // nothing to push — foreign or missing body
+        }
+        if (!func->init->isa<AnonFuncExprAST>()) {
+            return;   // reference body — no body of its own to evaluate
+        }
+
+        AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
+
+        // scopeDepth mirrors what ScopedFunction records when Sema analyzes
+        // a closure: the index of the parameter scope that was just pushed.
+        // Const evaluation pushes its own scope here first, so the index is
+        // whatever the scope stack size will be after pushScope() returns.
+        size_t scopeDepth = m_ctx.scopes.size();   // index the new scope WILL have
+        m_ctx.stack.pushAnonFunction(
+            body,
+            body->funcType ? body->funcType->returnType : nullptr,
+            scopeDepth
         );
         m_ctx.pushScope();
+        m_pushed = true;
     }
-    
+
     ~ConstFunctionContext() {
-        m_ctx.popScope();
-        m_ctx.stack.pop();
+        if (m_pushed) {
+            m_ctx.popScope();
+            m_ctx.stack.pop();
+        }
     }
 
 private:
     SemaContext& m_ctx;
+    bool m_pushed;
 };
 
 /// @brief RAII guard for recursion depth tracking.
@@ -249,6 +283,27 @@ private:
     static std::unordered_map<ExprAST*, ConstantValue> m_evalCache;  // Value cache
     static std::unordered_set<DeclAST*> m_evaluating;                 // Cycle detection
     static size_t m_recursionDepth;
+
+    /// @brief Per-call parameter bindings during const function evaluation.
+    ///
+    /// Keyed by the ParamAST* the body's identifiers resolve to. Populated
+    /// by executeFunction before body execution and erased after; the
+    /// evaluator never leaves a stale entry behind, so a recursive call
+    /// to the same function sees only its own bindings in this map.
+    ///
+    /// Why a side table rather than a field on ParamAST:
+    ///   1. ParamAST is a parser-owned node. Adding semantic-only state to
+    ///      it is the same leak the FuncDeclAST redesign removed (see the
+    ///      "Two funcType Fields" note in DeclAST.hpp).
+    ///   2. The value is a property of *this call*, not of the parameter.
+    ///      Two recursive evaluations of the same function bind different
+    ///      values to the same ParamAST*; a field on the node could only
+    ///      hold one at a time.
+    ///   3. The table mirrors m_evalCache's shape — evaluator-owned,
+    ///      keyed by AST node, populated and torn down per evaluation —
+    ///      so there is one pattern for "where does the const evaluator
+    ///      stash per-node values" rather than two.
+    static std::unordered_map<ParamAST*, ConstantValue> m_paramBindings;
 };
 
 } // namespace sema

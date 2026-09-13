@@ -275,79 +275,147 @@ ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, DeclStmtAST* stm
 
     return ConstantValue::unknown();
 }
+
 ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* func,
                                                const std::vector<ConstantValue>& args) {
-    if (!func) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
-                              "null function");
-        return ConstantValue::error();
+    // ─── 0. Guard: nothing to execute ─────────────────────────────────────
+    //
+    // A FuncDeclAST is a declaration, not a body. The body lives on the
+    // AnonFuncExprAST at `init` (when the declaration has one), or nowhere
+    // at all (foreign function, reference alias). Both cases mean there is
+    // nothing for the const evaluator to execute, so we return `unknown`
+    // rather than `error`: this is a "can't be const-evaluated" outcome,
+    // not a user mistake.
+    if (!func || !func->init) {
+        return ConstantValue::unknown();
     }
-    if (func->hasSyntaxError) return ConstantValue::error();
-
-    // ─── 0. Recursion depth guard ────────────────────────────────────────
-    // evaluate()'s own MAX_RECURSION check only fires if m_recursionDepth
-    // is actually incremented somewhere on the path it guards. Previously
-    // nothing incremented it anywhere in the evalCall → executeFunction →
-    // executeStmt → evaluate → evalCall cycle — only evaluateDecl did, a
-    // completely different call path (VarDeclAST circular-dependency
-    // detection, not function-call recursion). A recursive const function
-    // had no depth limit at all: it would recurse via genuine C++ call
-    // stack frames until the *compiler process itself* stack-overflowed.
-    // EvaluationGuard/m_evaluating isn't a substitute either — that only
-    // guards VarDeclAST cycles, never touched here.
-    if (m_recursionDepth >= MAX_RECURSION) {
-        ctx.diagnostics.error(DiagCode::Sem_CircularDependency, func,
-                              "const function '", ctx.pool.lookup(func->name),
-                              "' exceeded maximum recursion depth (",
-                              MAX_RECURSION, ")");
-        return ConstantValue::error();
+    if (!func->init->isa<AnonFuncExprAST>()) {
+        return ConstantValue::unknown();
     }
-    m_recursionDepth++;
-    struct DepthGuard {
-        size_t& depth;
-        ~DepthGuard() { depth--; }
-    } depthGuard{m_recursionDepth};
 
-    // ─── 1. Setup function context ──────────────────────────────────────
-    ConstFunctionContext context(ctx, func);
+    AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
+    if (!body->funcType || !body->body) {
+        return ConstantValue::unknown();
+    }
 
-    // ─── 2. Bind arguments to parameters ────────────────────────────────
-    size_t argIndex = 0;
-    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
-        for (ParamAST* param : group->params) {
-            if (argIndex < args.size()) {
-                // Create a synthetic literal for the argument value
-                // Store it in the parameter's type for lookup
-                param->type = getConstantType(ctx, args[argIndex]);
-                argIndex++;
-            }
-        }
+    // ─── 1. Push the function's context and parameter scope ──────────────
+    //
+    // ConstFunctionContext pushes:
+    //   - a FuncBody frame on the context stack (for return-type checks,
+    //     enclosing-function tracking, and any narrowing that needs to
+    //     know we're inside a function)
+    //   - a symbol scope (so parameters and locals declared in the body
+    //     have somewhere to live)
+    //
+    // Both are popped automatically when the guard goes out of scope,
+    // including on any early-return path below.
+    ConstFunctionContext guard(ctx, func);
+
+    // ─── 2. Bind parameters ──────────────────────────────────────────────
+    //
+    // Read parameters from `body->funcType`, NOT `func->funcType`. The
+    // FuncDeclAST doc-comment (DeclAST.hpp) is explicit about this: the
+    // declared signature's ParamAST nodes are type-only and are never
+    // registered as bindings; the runtime signature is the one on the
+    // AnonFuncExprAST, and its ParamAST nodes are the ones the body's
+    // identifiers resolve to.
+    //
+    // A single call of a curried function supplies one group's worth of
+    // arguments, and `body->funcType->params` is exactly that group.
+    // We do not walk the curried return chain here — that would flatten
+    // several groups onto one call's args and misalign them.
+    const auto& params = body->funcType->params;
+    if (params.size() != args.size()) {
+        // Arity is checked by Sema before this point is reachable; a
+        // mismatch here means the compiler built a call node with the
+        // wrong number of arguments, which is a compiler bug, not a
+        // user error. Returning `unknown` keeps the evaluator's
+        // contract ("either a value or a clean non-value") without
+        // spurious diagnostics.
+        return ConstantValue::unknown();
+    }
+
+    std::vector<ParamAST*> bound;
+    bound.reserve(params.size());
+
+    for (size_t i = 0; i < params.size(); ++i) {
+        ParamAST* param = params[i];
+        if (!param) continue;
+
+        // `_` discard — no name to bind, nothing to do.
+        if (param->name.isEmpty()) continue;
+
+        // Register the parameter in the current scope so that name
+        // lookup from the body finds it. insertValue diagnoses a
+        // redeclaration, but parameter names were already uniqueness-
+        // checked by Sema against the function's own scope, so this
+        // should never fire.
+        ctx.insertValue(param);
+
+        // Bind the value in the side table. evalIdentifier's ParamAST
+        // branch consults this table; see below for why a side table
+        // rather than a field on ParamAST.
+        m_paramBindings[param] = args[i];
+
+        bound.push_back(param);
     }
 
     // ─── 3. Execute the body ─────────────────────────────────────────────
-    ConstantValue result = ConstantValue::voidValue();
-    if (func->body) {
-        if (func->body->hasSyntaxError) return ConstantValue::error();
-        result = executeStmt(ctx, func->body);
+    //
+    // executeStmt returns:
+    //   - a Definite ConstantValue: the function produced a value via
+    //     a `return expr` (or the body's last statement was an
+    //     expression yielding a value).
+    //   - ConstantValue::voidValue(): the function returned bare
+    //     `return`, or fell off the end without returning anything.
+    //   - ConstantValue::unknown(): the body contains something that
+    //     can't be const-evaluated (an I/O call, a mutable binding,
+    //     an unbounded loop).
+    //   - ConstantValue::error(): the body contained a definite error
+    //     (a diagnostic has already been emitted).
+    ConstantValue result;
+    if (body->body->hasSyntaxError) {
+        result = ConstantValue::error();
     } else {
-        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
-                              "const function has no body");
-        return ConstantValue::error();
+        result = executeStmt(ctx, body->body);
     }
 
-    // ─── 4. Check return type ────────────────────────────────────────────
+    // ─── 4. Check the return type ────────────────────────────────────────
+    //
+    // The declared return type comes from `func->funcType` (the declared
+    // signature), not from `body->funcType` — the declared signature is
+    // what the caller sees, and it's what determines "should this have
+    // returned a value?". Under substitution both are the same shape, so
+    // reading either is fine; reading the declared one keeps the check
+    // in terms of what the source says.
     if (func->funcType && func->funcType->returnType) {
         if (result.isVoid()) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, body->body,
                                   "non-void const function does not return a value");
-            return ConstantValue::error();
+            result = ConstantValue::error();
         }
     } else {
-        if (!result.isVoid() && !result.isUnknown()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, func->body,
+        // Declared void. A non-void, non-unknown result means the body
+        // returned something the signature didn't promise.
+        if (!result.isVoid() && !result.isUnknown() && !result.isError()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, body->body,
                                   "void const function returns a value");
-            return ConstantValue::error();
+            result = ConstantValue::error();
         }
+    }
+
+    // ─── 5. Unbind parameters ────────────────────────────────────────────
+    //
+    // Cleanup happens explicitly rather than via an RAII guard because
+    // the set of parameters bound this call is only known here — the
+    // ConstFunctionContext guard covers the scope and function frame,
+    // but the specific ParamAST*s bound are this function's business.
+    //
+    // Erasing in reverse isn't necessary for a hash map keyed by pointer
+    // (there's no ordering dependency), but it mirrors the LIFO cleanup
+    // convention used elsewhere in the evaluator and costs nothing.
+    for (auto it = bound.rbegin(); it != bound.rend(); ++it) {
+        m_paramBindings.erase(*it);
     }
 
     return result;

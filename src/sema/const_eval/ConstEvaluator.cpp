@@ -670,9 +670,32 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
             }
         } else if (decl->isa<FuncDeclAST>()) {
             FuncDeclAST* func = decl->as<FuncDeclAST>();
-            if (func->body) {
-                collectDepsFromStmt(ctx, func->body, deps);
+
+            // The body (when there is one) lives on the AnonFuncExprAST at
+            // `init` — not on FuncDeclAST itself. `func->body` has not existed
+            // since the FuncDeclAST/AnonFuncExprAST redesign; everything that
+            // needs to walk a body reads it through `init`.
+            //
+            // `init` can be:
+            //   - an AnonFuncExprAST (block body) — this is the interesting case
+            //   - a reference expression (IdentifierExprAST, ModuleAccessExprAST,
+            //     CallExprAST, ComposeExprAST, FieldAccessExprAST) — a pure alias
+            //     to another function, so its dependencies are whatever the
+            //     reference resolves to, not a body of its own
+            //   - nullptr (foreign function) — nothing to walk
+            if (func->init && func->init->isa<AnonFuncExprAST>()) {
+                AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
+                if (body->body) {
+                    collectDepsFromStmt(ctx, body->body, deps);
+                }
             }
+            // Reference bodies and foreign declarations contribute no
+            // dependencies of their own. If we ever want to follow a reference
+            // alias to the function it points at, this is where that logic
+            // would go — but for const dependency ordering, a reference is a
+            // leaf: either the target function is itself const (and is picked
+            // up by the top-level scan independently) or it isn't (and the
+            // const evaluator will reject it at call time anyway).
         }
         m_deps[decl] = deps;
     }
