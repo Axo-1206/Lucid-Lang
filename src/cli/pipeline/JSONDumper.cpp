@@ -186,39 +186,31 @@ void JSONDumper::serializeFuncDecl(JSONWriter& json, FuncDeclAST* decl) {
     }
     json.endArray();
     
+    // ─── Declared signature (type-only params) ───────────────────────────
     if (decl->funcType) {
         json.key("funcType");
         serializeType(json, decl->funcType);
     }
-    if (decl->body) {
-        json.key("body");
-        serializeStmt(json, decl->body);
+    
+    // ─── Initializer ────────────────────────────────────────────────────
+    // The body is no longer a field on FuncDeclAST. It lives inside `init`,
+    // which is an AnonFuncExprAST for block bodies (the AnonFuncExprAST
+    // serializer already handles the body, captures, hasClosure, and
+    // isReturned), or a reference expression otherwise.
+    //
+    // `init == nullptr` only for foreign functions.
+    json.key("init");
+    if (decl->init) {
+        serializeExpr(json, decl->init);
+    } else {
+        json.null();
     }
     
-    // ─── Semantic flags ──────────────────────────────────────────────
+    // ─── Semantic flags ─────────────────────────────────────────────────
     json.kv("isForeignFunction", decl->isForeignFunction);
-    json.kv("isErased", decl->isErased);          // renamed from shouldSpecialize
     json.kv("isInline", decl->isInline);
     json.kv("isNoInline", decl->isNoInline);
-    json.kv("hasClosure", decl->hasClosure);
-    json.kv("isReturned", decl->isReturned);
-    
-    // ─── Capture list ───────────────────────────────────────────────
-    json.key("captures");
-    json.beginArray();
-    for (const auto& cap : decl->captures) {
-        json.beginObject();
-        if (cap.decl) {
-            json.kv("decl", str(cap.decl->name));
-        } else {
-            json.kvNull("decl");
-        }
-        json.kv("byReference", cap.byReference);
-        json.kv("isClosureValue", cap.isClosureValue);
-        json.kv("index", static_cast<uint64_t>(cap.index));
-        json.endObject();
-    }
-    json.endArray();
+    json.kv("isGeneric", decl->isGeneric());
     
     json.key("location");
     serializeLocation(json, decl->loc);
@@ -252,8 +244,7 @@ void JSONDumper::serializeStructDecl(JSONWriter& json, StructDeclAST* decl) {
     json.endArray();
     
     json.kv("isPacked", decl->isPacked);
-    json.kv("isErased", decl->isErased);          // renamed from shouldSpecialize
-    
+
     json.key("location");
     serializeLocation(json, decl->loc);
     json.endObject();
@@ -319,10 +310,9 @@ void JSONDumper::serializeFieldDecl(JSONWriter& json, FieldDeclAST* field) {
         json.key("defaultVal");
         serializeExpr(json, field->defaultVal);
     }
-    if (field->defaultBody) {
-        json.key("defaultBody");
-        serializeStmt(json, field->defaultBody);
-    }
+    // NOTE: no `defaultBody`. Block-body defaults are parsed into an
+    // AnonFuncExprAST and stored in `defaultVal` — the same way a
+    // FuncDeclAST's block body is stored in `init`.
     
     json.kv("fieldIndex", static_cast<uint64_t>(field->fieldIndex));
     
@@ -391,7 +381,6 @@ void JSONDumper::serializeStmt(JSONWriter& json, StmtAST* stmt) {
         case ASTKind::ReturnStmt:    serializeReturnStmt(json, stmt->as<ReturnStmtAST>()); break;
         case ASTKind::BreakStmt:     serializeBreakStmt(json, stmt->as<BreakStmtAST>()); break;
         case ASTKind::ContinueStmt:  serializeContinueStmt(json, stmt->as<ContinueStmtAST>()); break;
-        case ASTKind::FuncRefStmt:   serializeFuncRefStmt(json, stmt->as<FuncRefStmtAST>()); break;
         case ASTKind::AsyncStmt:     serializeAsyncStmt(json, stmt->as<AsyncStmtAST>()); break;
         case ASTKind::AwaitStmt:     serializeAwaitStmt(json, stmt->as<AwaitStmtAST>()); break;
         case ASTKind::SpawnStmt:     serializeSpawnStmt(json, stmt->as<SpawnStmtAST>()); break;
@@ -593,18 +582,6 @@ void JSONDumper::serializeBreakStmt(JSONWriter& json, BreakStmtAST* stmt) {
 void JSONDumper::serializeContinueStmt(JSONWriter& json, ContinueStmtAST* stmt) {
     json.beginObject();
     json.kv("kind", "ContinueStmt");
-    json.key("location");
-    serializeLocation(json, stmt->loc);
-    json.endObject();
-}
-
-void JSONDumper::serializeFuncRefStmt(JSONWriter& json, FuncRefStmtAST* stmt) {
-    json.beginObject();
-    json.kv("kind", "FuncRefStmt");
-    if (stmt->target) {
-        json.key("target");
-        serializeExpr(json, stmt->target);
-    }
     json.key("location");
     serializeLocation(json, stmt->loc);
     json.endObject();
@@ -827,7 +804,6 @@ void JSONDumper::serializeStructLiteralExpr(JSONWriter& json, StructLiteralExprA
     } else {
         json.null();
     }
-    json.kv("isErased", expr->isErased);
     
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
@@ -917,7 +893,6 @@ void JSONDumper::serializeCallExpr(JSONWriter& json, CallExprAST* expr) {
     }
     json.endArray();
     json.kv("hasArgPack", expr->hasArgPack);
-    json.kv("isErasedCall", expr->isErasedCall);      // renamed from isTypeErasedCall
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
     if (expr->hasType()) {
@@ -1244,18 +1219,35 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
         json.key("body");
         serializeStmt(json, expr->body);
     }
+    
+    // ─── Closure fields ─────────────────────────────────────────────────
     json.kv("hasClosure", expr->hasClosure);
     json.kv("isReturned", expr->isReturned);
     
+    // ─── Lexical nesting ────────────────────────────────────────────────
+    // The enclosing function's AnonFuncExprAST — the chain start for
+    // capture resolution. Emit just an identity marker (the enclosing
+    // node's source location) rather than recursing, since the enclosing
+    // node is an ancestor and would create a cycle.
+    json.key("enclosingFunction");
+    if (expr->enclosingFunction) {
+        json.beginObject();
+        json.key("location");
+        serializeLocation(json, expr->enclosingFunction->loc);
+        json.endObject();
+    } else {
+        json.null();
+    }
+    
+    // ─── Captures ───────────────────────────────────────────────────────
+    // CapturedVariable no longer stores a `decl` pointer; identity is
+    // lexical: `name` + `functionDepth`.
     json.key("captures");
     json.beginArray();
     for (const auto& cap : expr->captures) {
         json.beginObject();
-        if (cap.decl) {
-            json.kv("decl", str(cap.decl->name));
-        } else {
-            json.kvNull("decl");
-        }
+        json.kv("name", str(cap.name));
+        json.kv("functionDepth", static_cast<uint64_t>(cap.functionDepth));
         json.kv("byReference", cap.byReference);
         json.kv("isClosureValue", cap.isClosureValue);
         json.kv("index", static_cast<uint64_t>(cap.index));
@@ -1413,9 +1405,6 @@ void JSONDumper::serializeNamedType(JSONWriter& json, NamedTypeAST* type) {
     } else {
         json.null();
     }
-    
-    // ─── Erased flag (replaced isSpecialized/isGenericInstantiation) ────
-    json.kv("isErased", type->isErased);
     
     json.key("location");
     serializeLocation(json, type->loc);

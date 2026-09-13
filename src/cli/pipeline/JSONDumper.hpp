@@ -270,7 +270,6 @@ private:
     void serializeReturnStmt(JSONWriter& json, ReturnStmtAST* stmt);
     void serializeBreakStmt(JSONWriter& json, BreakStmtAST* stmt);
     void serializeContinueStmt(JSONWriter& json, ContinueStmtAST* stmt);
-    void serializeFuncRefStmt(JSONWriter& json, FuncRefStmtAST* stmt);
     void serializeAsyncStmt(JSONWriter& json, AsyncStmtAST* stmt);
     void serializeAwaitStmt(JSONWriter& json, AwaitStmtAST* stmt);
     void serializeSpawnStmt(JSONWriter& json, SpawnStmtAST* stmt);
