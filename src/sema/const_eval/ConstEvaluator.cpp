@@ -19,6 +19,7 @@ std::vector<DeclAST*> ConstEvaluator::m_constDecls;
 std::unordered_map<ExprAST*, ConstantValue> ConstEvaluator::m_evalCache;
 std::unordered_set<DeclAST*> ConstEvaluator::m_evaluating;
 size_t ConstEvaluator::m_recursionDepth = 0;
+std::unordered_map<ParamAST*, ConstantValue> ConstEvaluator::m_paramBindings;
 
 // ─── Main Entry Points ───────────────────────────────────────────────────
 
