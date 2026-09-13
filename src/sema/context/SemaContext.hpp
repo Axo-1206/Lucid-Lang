@@ -383,7 +383,6 @@ private:
 };
 
 struct ScopedFunction {
-    ScopedFunction(SemaContext& ctx, FuncDeclAST* decl, TypeAST* returnType);
     ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType);
     
     ~ScopedFunction();
