@@ -30,7 +30,7 @@ static StructDeclAST* createInstantiatedStructShell(
     }
 
     StructDeclAST* shell = ctx.arena.make<StructDeclAST>(
-        mangledName,
+        templateDecl->name,
         ctx.arena.emptySpan<GenericParamDeclAST*>(),
         ctx.arena.emptySpan<FieldDeclAST*>(),
         templateDecl->traitRefs,
@@ -89,7 +89,7 @@ static StructDeclAST* finalizeInstantiatedStruct(
 
     // ─── Build the final struct ────────────────────────────────────────
     StructDeclAST* finalStruct = ctx.arena.make<StructDeclAST>(
-        shell->name,
+        templateDecl->name,    // source name, not shell->name
         ctx.arena.emptySpan<GenericParamDeclAST*>(),
         ctx.arena.makeSpan<FieldDeclAST*>(fieldList),
         templateDecl->traitRefs,
@@ -148,6 +148,21 @@ static StructDeclAST* finalizeInstantiatedStruct(
         }
     }
 
+    // ─── Register in the structural map ──────────────────────────────────
+    //
+    // The instantiation cache above is keyed on (templateDecl*, typeArgs)
+    // pointer identity — it answers "have we started building this?". This
+    // map is keyed on (source name, canonical args) structural identity — it
+    // answers "what IS Box<int>?". Registering here means the next
+    // `Box<int>` at a different call site finds this exact node instead of
+    // re-instantiating.
+    //
+    // The template's *source* name is used, not its mangled name. The mangled
+    // name is a CodeGen concern (unique symbol per specialization); the
+    // semantic identity of the type is (name, args).
+    ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(typeArgs, ctx);
+    ctx.registerGenericTypeInstantiation(templateDecl->name, canonicalArgs, finalStruct);
+
     Trace::detail("Finalized instantiated struct: ",
                   ctx.pool.lookup(finalStruct->mangledName),
                   " (", fieldList.size(), " fields)");
@@ -168,7 +183,7 @@ static FuncDeclAST* createInstantiatedFunctionShell(
     }
 
     FuncDeclAST* shell = ctx.arena.make<FuncDeclAST>(
-        mangledName,
+        templateDecl->name,
         templateDecl->keyword,
         ctx.arena.emptySpan<GenericParamDeclAST*>(),
         nullptr,
@@ -439,13 +454,7 @@ GenericResolution resolveGenericInstantiation(
     // consumers (substitution, codegen) see the canonical nodes, so a
     // `T = int` substitution maps to the type singleton and not to a
     // per-call-site copy.
-    std::vector<TypeAST*> canonicalArgs;
-    canonicalArgs.reserve(typeArgs.size());
-    for (TypeAST* arg : typeArgs) {
-        canonicalArgs.push_back(canonicalizeTypeArg(arg, ctx));
-    }
-    ArenaSpan<TypeAST*> canonicalSpan =
-        ctx.arena.makeSpan<TypeAST*>(canonicalArgs);
+    ArenaSpan<TypeAST*> canonicalSpan = canonicalizeTypeArgList(typeArgs, ctx);
 
     if (isFunction) {
         FuncDeclAST* instantiated = createInstantiatedFunction(
@@ -460,6 +469,17 @@ GenericResolution resolveGenericInstantiation(
     }
 
     return result;
+}
+
+// ─── canonicalizeTypeArgList ──────────────────────────────────────
+
+ArenaSpan<TypeAST*> canonicalizeTypeArgList(const ArenaSpan<TypeAST*>& args, SemaContext& ctx) {
+    std::vector<TypeAST*> canonicalList;
+    canonicalList.reserve(args.size());
+    for (TypeAST* arg : args) {
+        canonicalList.push_back(canonicalizeTypeArg(arg, ctx));
+    }
+    return ctx.arena.makeSpan<TypeAST*>(canonicalList);
 }
 
 // ─── createInstantiatedStruct ─────────────────────────────────────────

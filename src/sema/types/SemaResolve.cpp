@@ -177,17 +177,53 @@ TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
 }
 
 // ─── Named Type ──────────────────────────────────────────────────────────
-
+//
+// Resolves a `NamedTypeAST` — an identifier written in a type position.
+//
+// The four kinds of declaration a type name can refer to:
+//
+//   - GenericParamDeclAST — a `T` from an enclosing `<T>` list. Handled
+//     first: the reference is valid only inside the generic declaration
+//     that introduced the parameter, and the resolved decl is the
+//     parameter itself.
+//
+//   - TraitDeclAST — a trait name, valid only as a generic constraint.
+//     Anywhere else it is a diagnostic. (The constraint context is
+//     checked in resolveTypeDecl before we reach here.)
+//
+//   - StructDeclAST — the ordinary case. With generic args, the named
+//     type is an instantiation request: resolve (or retrieve from
+//     cache) the specialized struct and bind it as the resolved decl.
+//     Without generic args, the name binds to the template directly.
+//
+//   - EnumDeclAST — enums are not generic. Reject any generic args and
+//     bind the enum declaration directly.
+//
+// Note on `isa<>`: in this codebase `isa<T>()` compares `node->kind`
+// against `T::staticKind`, so it is true only for the *exact* runtime
+// kind, not for subclasses of `T`. Every concrete declaration overrides
+// `staticKind`, so `isa<TypeDeclAST>()` and `isa<ValueDeclAST>()` are
+// false for every real node. Always check for the concrete kind
+// (`isa<StructDeclAST>()`, `isa<EnumDeclAST>()`), never for the abstract
+// base. See the note above `resolveGenericInstantiation`'s return-type
+// handling if `isa<Base>()` is ever made to walk the hierarchy.
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── Step 1: Resolve the declaration ─────────────────────────────────────
+    // ─── Step 1: Resolve the name to a declaration ────────────────────
     TypeDeclAST* decl = resolveTypeDecl(type, ctx);
     if (!decl) {
         return nullptr;
     }
-    
-    // If it's a generic parameter, no further validation needed
+
+    // ─── Step 2: Generic parameter reference ──────────────────────────
+    //
+    // `T` inside the body of `const f<T> (...)`. The name refers to the
+    // parameter; the resolved decl is the GenericParamDeclAST itself.
+    //
+    // A generic parameter cannot be instantiated — `<T>` is already the
+    // parameter, and there is no family behind it to specialize. Reject
+    // any generic args written on the reference.
     if (decl->isa<GenericParamDeclAST>()) {
         if (!type->genericArgs.empty()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
@@ -197,68 +233,102 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         }
         return type;
     }
-    
-    // If it's a trait, we already validated context in resolveTypeDecl
+
+    // ─── Step 3: Trait reference ──────────────────────────────────────
+    //
+    // A trait name. The context check (is it in a GenericConstraint?)
+    // happened inside resolveTypeDecl. A trait is never instantiable and
+    // never a value; if resolveTypeDecl accepted the reference, there is
+    // nothing further to validate here.
     if (decl->isa<TraitDeclAST>()) {
         return type;
     }
 
-    // ─── Step 2: Validate generic arguments ──────────────────────────────────
+    // ─── Step 4: Validate generic arguments against the template ──────
+    //
+    // For a struct: check arity, resolve each arg, validate trait
+    // constraints. For an enum: reject any generic args. This runs
+    // before the struct-instantiation branch so both struct and enum
+    // share the arity/args validation.
     if (!validateGenericInstantiation(type, ctx)) {
         return nullptr;
     }
 
-    // ─── Step 3: Handle generic struct instantiation ──────────────────────────
+    // ─── Step 5: Struct reference ─────────────────────────────────────
     if (decl->isa<StructDeclAST>()) {
         StructDeclAST* structDecl = decl->as<StructDeclAST>();
-        
-        // Only handle if this is a generic instantiation (has generic args)
-        if (!type->genericArgs.empty()) {
-            // Use the unified resolution function
+
+        // ─── 5a. Non-generic struct — bind the template directly ──────
+        if (type->genericArgs.empty()) {
+            type->resolvedDecl = structDecl;
+            return type;
+        }
+
+        // ─── 5b. Generic struct — check storage map first ────────────────────
+        //
+        // Canonicalize the args before anything else. Two `Box<int>` at different
+        // call sites produce two distinct PrimitiveTypeAST(Int) nodes from the
+        // parser; the storage map's key is pointer-identity on canonicalized args,
+        // so canonicalization must happen before the lookup or the key will not
+        // match what was registered.
+        std::vector<TypeAST*> canonicalArgsList;
+        ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(type->genericArgs, ctx);
+
+        // ─── Check the structural storage map ─────────────────────────────────
+        StructDeclAST* resolvedStruct =
+            ctx.getGenericTypeInstantiation(structDecl->name, canonicalArgs);
+
+        if (!resolvedStruct) {
+            // Miss — instantiate. resolveGenericInstantiation already
+            // canonicalizes internally and registers in the structural map via
+            // finalizeInstantiatedStruct, so we do not need to insert here.
             GenericResolution resolution = resolveGenericInstantiation(
-                structDecl, type->genericArgs, ctx);
-            
+                structDecl, canonicalArgs, ctx);
+
             if (!resolution.resolvedDecl) {
                 return nullptr;
             }
-            
-            // ─── Safely cast the resolved declaration ──────────────────────────
-            // The resolvedDecl is always a specialized StructDeclAST — the
-            // specialization-only path in resolveGenericInstantiation guarantees
-            // it. The isa check is defensive against future changes to
-            // GenericResolution.
-            if (!resolution.resolvedDecl->isa<TypeDeclAST>()) {
+            if (!resolution.resolvedDecl->isa<StructDeclAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                      "generic instantiation of '", ctx.pool.lookup(type->name),
-                                      "' did not produce a type declaration");
+                                    "generic instantiation of '", ctx.pool.lookup(type->name),
+                                    "' did not produce a struct declaration");
                 return nullptr;
             }
-            
-            TypeDeclAST* resolvedTypeDecl = resolution.resolvedDecl->as<TypeDeclAST>();
-            
-            // Store the resolution result on the NamedTypeAST
-            type->resolvedDecl = resolvedTypeDecl;
-            return type;
+            resolvedStruct = resolution.resolvedDecl->as<StructDeclAST>();
         }
-        
-        // Non-generic struct - just store the declaration
-        type->resolvedDecl = structDecl;
+
+        // ─── Canonicalize the NamedTypeAST's own args and bind the decl ───────
+        //
+        // Write the canonical args back onto `type` itself, not just into the
+        // lookup. Two `NamedTypeAST("Box", [int])` nodes must have identical
+        // `genericArgs` pointers, not just identical `resolvedDecl` — otherwise
+        // any comparison that falls back on args (rather than resolvedDecl)
+        // still sees two different nodes.
+        type->genericArgs = canonicalArgs;
+        type->resolvedDecl = resolvedStruct;
         return type;
     }
 
-    // ─── Step 4: Handle enum type ────────────────────────────────────────────
+    // ─── Step 6: Enum reference ───────────────────────────────────────
+    //
+    // Enums are never generic. `validateGenericInstantiation` already
+    // rejected any generic args on an enum reference, so by the time
+    // we're here the reference is plain and binds directly.
     if (decl->isa<EnumDeclAST>()) {
-        // Enums are not generic - ensure no generic args
-        if (!type->genericArgs.empty()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
-                                  "enum '", ctx.pool.lookup(type->name), "' is not generic");
-            return nullptr;
-        }
         type->resolvedDecl = decl;
+        return type;
     }
 
-
-    return type;
+    // ─── Step 7: Anything else ────────────────────────────────────────
+    //
+    // resolveTypeDecl only ever returns one of the four kinds above.
+    // Reaching this point means a new kind was added without extending
+    // this function — a compiler bug, not a user error. Emit an
+    // internal-style diagnostic and return null.
+    ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
+                          "type '", ctx.pool.lookup(type->name),
+                          "' resolves to an unsupported declaration kind");
+    return nullptr;
 }
 
 // ─── Built-in Type Resolution ────────────────────────────────────────────

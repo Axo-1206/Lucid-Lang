@@ -136,6 +136,19 @@ GenericResolution resolveGenericInstantiation(
     const ArenaSpan<TypeAST*>& typeArgs,
     SemaContext& ctx);
 
+/// @brief Canonicalize a list of type arguments.
+///
+/// Maps each parser-produced type node to the canonical node that
+/// represents the same type in the type cache. Two call sites writing
+/// `Box<int>` produce two distinct PrimitiveTypeAST(Int) nodes from the
+/// parser; after canonicalization both produce the same singleton.
+///
+/// This is the single entry point both `resolveNamedType` (in SemaResolve.cpp)
+/// and `resolveStructLiteralExpr` (in SemaExpr.cpp) must call before
+/// looking up `SemaContext::genericTypeInstantiations`, since the storage
+/// map is keyed on pointer identity of canonical args.
+ArenaSpan<TypeAST*> canonicalizeTypeArgList(const ArenaSpan<TypeAST*>& args, SemaContext& ctx);
+
 // ─── Instantiated Struct/Function Creation (declarations) ──────────────────
 
 /// @brief Create an instantiated struct from a generic template.

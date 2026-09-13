@@ -99,6 +99,19 @@ ModuleAST* SemaContext::findModuleByPath(InternedString path) const {
     return it != modulesByPath.end() ? it->second : nullptr;
 }
 
+// ─── Generic Type Instantiations ────────────────────────────────────────
+
+StructDeclAST* SemaContext::getGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs) const {
+    GenericTypeKey key{name, canonicalArgs};
+    auto it = genericTypeInstantiations.find(key);
+    return it != genericTypeInstantiations.end() ? it->second : nullptr;
+}
+
+void SemaContext::registerGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs, StructDeclAST* instantiated) {
+    GenericTypeKey key{name, canonicalArgs};
+    genericTypeInstantiations[key] = instantiated;
+}
+
 // ─── Scope Management ────────────────────────────────────────────────────
 
 bool SemaContext::isAtModuleLevel() const {

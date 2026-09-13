@@ -23,6 +23,34 @@ bool typesEqual(TypeAST* a, TypeAST* b) {
         case ASTKind::NamedType: {
             NamedTypeAST* na = a->as<NamedTypeAST>();
             NamedTypeAST* nb = b->as<NamedTypeAST>();
+
+            // ─── Fast path: both resolved ────────────────────────────────────
+            //
+            // After the storage layer, two `Box<int>` at different call sites
+            // share the same `resolvedDecl` pointer — both were resolved against
+            // `SemaContext::genericTypeInstantiations` and bound to the same
+            // canonical StructDeclAST*. Comparing pointers is O(1) and does not
+            // depend on whether the two nodes' `genericArgs` were canonicalized
+            // identically.
+            //
+            // The name check is kept because two nodes with different names can
+            // still both have resolvedDecl set — e.g. an unresolved `Foo` and a
+            // resolved `Bar` — and `name` is what the reader actually wrote.
+            // Pointer equality on resolvedDecl implies name equality for the
+            // struct case (both resolved through the same storage key), but
+            // not for enums or traits, which don't go through the storage map.
+            if (na->resolvedDecl && nb->resolvedDecl) {
+                if (na->resolvedDecl != nb->resolvedDecl) return false;
+                // Same decl → same type, regardless of how the args were written.
+                return true;
+            }
+
+            // ─── Slow path: at least one side unresolved ─────────────────────
+            //
+            // Fall back to structural comparison. This covers the case of a
+            // NamedTypeAST that hasn't been through resolution yet (e.g. one
+            // side is a freshly-parsed type annotation being checked against
+            // an already-resolved value type).
             if (na->name != nb->name) return false;
             if (na->genericArgs.size() != nb->genericArgs.size()) return false;
             for (size_t i = 0; i < na->genericArgs.size(); ++i) {

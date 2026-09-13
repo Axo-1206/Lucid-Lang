@@ -1622,30 +1622,24 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
             return ctx.getUnknownType();
         }
 
-        // ─── 2d. Use the unified resolution function ─────────────────────
-        GenericResolution resolution = resolveGenericInstantiation(
-            structDecl, expr->genericArgs, ctx);
+        // ─── 2d. Canonicalize and check the structural storage map ───────────
+        std::vector<TypeAST*> canonicalArgsList;
+        ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(expr->genericArgs, ctx);
 
-        if (!resolution.resolvedDecl) {
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->resolvedDecl = nullptr;
-            return ctx.getUnknownType();
+        StructDeclAST* resolvedStruct =ctx.getGenericTypeInstantiation(structDecl->name, canonicalArgs);
+
+        if (!resolvedStruct) {
+            GenericResolution resolution = resolveGenericInstantiation(
+                structDecl, canonicalArgs, ctx);
+            if (!resolution.resolvedDecl) { /* error path */ }
+            if (!resolution.resolvedDecl->isa<StructDeclAST>()) { /* error path */ }
+            resolvedStruct = resolution.resolvedDecl->as<StructDeclAST>();
         }
 
-        // Cast to StructDeclAST (should always succeed for struct instantiation)
-        if (!resolution.resolvedDecl->isa<StructDeclAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "generic instantiation of struct '", 
-                                  ctx.pool.lookup(expr->typeName),
-                                  "' did not produce a struct declaration");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            expr->resolvedDecl = nullptr;
-            return ctx.getUnknownType();
-        }
-
-        targetStruct = resolution.resolvedDecl->as<StructDeclAST>();
+        // Write canonical args back so this literal's `genericArgs` matches
+        // what a type annotation at the same source location would produce.
+        expr->genericArgs = canonicalArgs;
+        targetStruct = resolvedStruct;
     } else if (!structDecl->genericParams.empty()) {
         // ─── 2e. Struct has generic parameters but no arguments provided ──
         ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, expr,

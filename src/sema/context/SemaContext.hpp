@@ -158,6 +158,45 @@ struct InstantiationKeyHash {
     }
 };
 
+// ─── Generic Type Instantiations ────────────────────────────────────────
+// Structural identity map for concrete instantiations of generic *types*
+// (structs — the only generic type in Lucid; enums are not generic, and
+// type aliases were deliberately rejected by the language design, so this
+// map has exactly one value shape: StructDeclAST*).
+//
+// Distinct from `instantiationCache` above:
+//   instantiationCache     = "have we started building this?" (recursion guard)
+//                            keyed on (templateDecl*, typeArgs) pointer identity
+//   genericTypeInstantiations = "what IS Box<int>?" (semantic identity)
+//                            keyed on (source name, canonical args) structural identity
+//
+// This is what makes two `NamedTypeAST("Box", [int])` nodes from different
+// call sites compare equal: they share the same `resolvedDecl`.
+
+struct GenericTypeKey {
+    InternedString name;          // "Box" — source name, NOT mangled
+    ArenaSpan<TypeAST*> args;     // canonicalized args
+
+    bool operator==(const GenericTypeKey& other) const {
+        if (name != other.name) return false;
+        if (args.size() != other.args.size()) return false;
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (args[i] != other.args[i]) return false;
+        }
+        return true;
+    }
+};
+
+struct GenericTypeKeyHash {
+    size_t operator()(const GenericTypeKey& key) const {
+        size_t h = std::hash<uint32_t>{}(key.name.id);
+        for (TypeAST* arg : key.args) {
+            h ^= std::hash<TypeAST*>{}(arg) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        }
+        return h;
+    }
+};
+
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
 /// @brief Central hub for semantic analysis.
@@ -221,6 +260,22 @@ struct SemaContext {
         InstantiationKey key{templateDecl, typeArgs};
         instantiationCache[key] = instantiated;
     }
+
+    // ─── Generic Type Instantiations ────────────────────────────────────────
+
+    std::unordered_map<GenericTypeKey, StructDeclAST*, GenericTypeKeyHash> genericTypeInstantiations;
+
+    // ─── Lookup / Insertion Helpers ─────────────────────────────────────────
+
+    /// @brief Check if a concrete generic type instantiation already exists.
+    /// Key is (source name, canonicalized args). Caller must canonicalize
+    /// args before calling — see `canonicalizeTypeArg` in Instantiation.cpp.
+    StructDeclAST* getGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs) const;
+
+    /// @brief Register a completed generic type instantiation.
+    /// Called from `finalizeInstantiatedStruct` AFTER the struct is fully
+    /// resolved, so the next `Box<int>` at a different call site finds it.
+    void registerGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs, StructDeclAST* instantiated);
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     std::vector<TypeDeclAST*> definingTypes;
