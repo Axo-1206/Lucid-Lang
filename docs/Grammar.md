@@ -941,7 +941,7 @@ const shifted Point = Point { x = 5.0 };    -- x=5.0, y=4.0 from default
 > const v Validator = Validator { };    -- ERROR: check has no default and
 >                                             -- was not supplied
 > const v2 Validator = Validator {
->     check = (n int) -> bool { return n > 0 };    -- OK: required, now fixed
+>     check = (n int) -> bool { return n > 0; };    -- OK: required, now fixed
 > };
 > ```
 
@@ -1023,7 +1023,7 @@ struct Counter {
     total      int;
 }
 
-let c Counter = Counter { total = 0 };    -- step = 1, taken from the default
+let c Counter = Counter { total = 0; };    -- step = 1, taken from the default
 c.total = 5;    -- OK: total is let
 c.step  = 2;    -- ERROR: step is const — read-only even though c is let
 ```
@@ -1060,20 +1060,20 @@ Initialization**):
 
 ```lucid
 struct Validator {
-    const check (int) -> bool;    -- no default — every instance supplies its
-                                          -- own behavior; fixed once construction
-                                          -- finishes
+    const check (int) -> bool;  -- no default — every instance supplies its
+                                -- own behavior; fixed once construction
+                                -- finishes
 }
 
 const positive Validator = Validator {
-    check = (n int) -> bool { return n > 0 };
+    check = (n int) -> bool { return n > 0; };
 };
 
-positive.check = (n int) -> bool { return n < 0 };    -- ERROR: check is const
+positive.check = (n int) -> bool { return n < 0; };    -- ERROR: check is const
 
-const result bool = positive.check(5);    -- OK: calling through a
-                                                  -- const field is unaffected
-                                                  -- only reassignment is blocked
+const result bool = positive.check(5);  -- OK: calling through a
+                                        -- const field is unaffected
+                                        -- only reassignment is blocked
 ```
 
 
@@ -1083,11 +1083,11 @@ genuinely swappable behavior, like a configurable callback:
 
 ```lucid
 struct Logger {
-    sink (string) -> () = (msg string) -> () { io:printl(msg) };
+    sink (string) -> () = (msg string) -> () { io:printl(msg); };
 }
 
 let log Logger = Logger { };
-log.sink = (msg string) -> () { system:writeToFile("app.log", msg) };    -- OK
+log.sink = (msg string) -> () { system:writeToFile("app.log", msg); };    -- OK
 ```
 
 ### Implicit `self` for Field Defaults Referencing Sibling Fields
@@ -1209,11 +1209,15 @@ declared shape, so the following are the practical mitigations available:
 
   ```lucid
   -- avoid: caller supplies arbitrary behavior matching the shape
-  const runCallback (call () -> ()) -> () = { call() };
+  const runCallback (call () -> ()) -> () = { call(); };
 
   -- prefer: caller selects from a closed, exhaustively-checked set;
   -- the actual behavior is never exposed as a parameter at all
-  enum Action { Save = 0  Reload = 1  Discard = 2 }
+  enum Action { 
+    Save = 0;  
+    Reload = 1;  
+    Discard = 2; 
+  }
 
   const constructAndRunAction (kind Action)(arg1 T)(arg2 U) -> () = {
       switch kind {
@@ -1247,10 +1251,10 @@ struct Node<T> {
 }
 
 let node1 = Node<int> { value = 5, next = nil };
-{
+const example () = {
     let node2 = Node<int> { value = 10, next = nil };
     node1.next = node2;    -- DEEP COPY: node2's value is copied into node1.next
-}
+};
 -- node2 is freed when the block exits, but node1.next still has the value ✅
 ```
 
@@ -1288,7 +1292,7 @@ const process (n Node<int>) -> () = { ... };
 process(a);    -- ✅ Deep copy: function gets its own copy
 
 -- Return: deep copy
-const makeNode () -> Node<int> = { return Node { value = 42, next = nil } };
+const makeNode () -> Node<int> = { return Node { value = 42, next = nil }; };
 let c = makeNode();    -- ✅ Deep copy: returned value is copied
 ```
 
@@ -1315,7 +1319,7 @@ struct Node<T> {
         return Node<T> {
             value = self.value,
             next = self.next?.clone()
-        }
+        };
     };
 }
 ```
@@ -1507,16 +1511,16 @@ trait Container<T> {
 
 ```lucid
 -- name conflict: same field, different types — compile error
-trait A { x float }
-trait B { x int   }
+trait A { x float; }
+trait B { x int;   }
 
 struct Bad : A, B {    -- ERROR: field x required as float by A and int by B
     x float;    -- which one?
 }
 
 -- name conflict: same field, same type — fine, satisfied once
-trait A { x float }
-trait B { x float, y float }
+trait A { x float; }
+trait B { x float; y float; }
 
 struct Both : A, B {    -- OK: x satisfies both A and B
     x float;
@@ -1670,6 +1674,28 @@ func_type       = unnamed_cluster [ '->' type ]
                      at all, since there is no body to borrow from. *)
 ```
 
+> [!NOTE]
+> **A `func_decl` with non-empty `generic_params` must use `const`, never
+> `let`.** The grammar above still permits either keyword — `('let' |
+> 'const')` — but this is enforced in Sema, not the parser, so the
+> diagnostic can point at the keyword with a specific message rather than a
+> generic parse error (see **D1**, under **Generic Functions and Generic
+> Structs**). The reasoning: a generic function's declared type is a
+> *family*, not a value. No expression form in the language produces a
+> family as a value — a bare generic name (`g`) names the family but is not
+> one, and a specialization reference (`g<int>`) is a *member* of the
+> family, never the family itself. A `let`-bound generic declaration would
+> therefore have no `expr` that could ever legally reassign it — `let` asks
+> for a reassignment capability the language has no way to exercise, and
+> `const` correctly describes what the declaration already is.
+>
+> ```lucid
+> let identity<T> (v T) -> T = { return v; };    -- ERROR: a generic function
+>                                                -- must be declared 'const'
+>
+> const identity<T> (v T) -> T = { return v; };    -- OK
+> ```
+
 ### Grammar Rules
 
 | Position                                | Syntax                  | Allowed?  | Meaning                                                                                                                |
@@ -1691,18 +1717,18 @@ const add (a int)(b int) -> int = {
 -- VALID: Explicit arrows after the first '->'
 const makeAdder (base int) -> (int) -> int = {
     const adjusted int = base * 2;
-    return (n int) -> int { return adjusted + n };
+    return (n int) -> int { return adjusted + n; };
 };
 
 -- VALID: Mixed — leading cluster uses adjacency, return type uses explicit arrows
 const process (a int)(b int) -> (int) -> bool = {
     const sum int = a + b;
-    return (c int) -> bool { return c > sum };
+    return (c int) -> bool { return c > sum; };
 };
 
 -- INVALID: Adjacent groups after the first '->' — parser error
 const bad (a int) -> (int)(string) -> bool = {
-    return (b int)(c string) -> bool { return true };
+    return (b int)(c string) -> bool { return true; };
 };
 -- ERROR: expected '->' between '(int)' and '(string)'
 
@@ -1765,8 +1791,10 @@ something `expr` already covers: `IDENTIFIER`, `call_expr`, `module_expr`, and
 
 ```lucid
 -- a named function reference — no call, IDENTIFIER alone
-const sq<T> (v T) -> T = { return v * v };
-let g (a int) -> int = sq<int>;
+const sq<T> (v T) -> T = { return v * v; };
+let g (a int) -> int = sq<int>;    -- generic_ref_expr: a bare specialization
+                                    -- reference, a value in its own right —
+                                    -- see generic_ref_expr, under Expressions
 g = myModule:sq<int>;    -- module-qualified, still just an expr
 
 -- a call_expr that itself RETURNS a function value
@@ -1816,11 +1844,11 @@ matches `f`'s declared `func_type` exactly.
 > f = () -> () { ... };
 >
 > -- passed as an argument — always fine, this isn't a func_decl's own body
-> runCallback((x int) -> int { return x * 2 });
+> runCallback((x int) -> int { return x * 2; });
 >
 > -- returned from a function — always fine, same reason
 > const makeDoubler () -> (int) -> int = {
->     return (x int) -> int { return x * 2 };
+>     return (x int) -> int { return x * 2; };
 > };
 > ```
 
@@ -1839,16 +1867,16 @@ terminal `type`). At
 >
 > ```lucid
 > -- declaration: bare block is valid — header supplies the signature
-> let f (a int) -> int = { return a + 1 };
+> let f (a int) -> int = { return a + 1; };
 >
 > -- reassignment: bare block is REJECTED — no header to borrow from
 > f = { return a + 2 };    -- ERROR: block body not allowed outside declaration
 >
 > -- reassignment: anonymous function — OK, carries its own signature
-> f = (a int) -> int { return a + 2 };
+> f = (a int) -> int { return a + 2; };
 >
 > -- reassignment: named reference — OK, signature comes from the reference
-> const addTwo (a int) -> int = { return a + 2 };
+> const addTwo (a int) -> int = { return a + 2; };
 > f = addTwo;
 >
 > -- reassignment: call returning a function — OK, signature comes from the
@@ -1856,6 +1884,78 @@ terminal `type`). At
 > const pickAdder (n int) -> (int) -> int = { ... };
 > f = pickAdder(2);
 > ```
+
+### Reassignment and Generic Functions — Worked Cases
+
+The rules above — `func_body`'s second form accepting any `expr`, plus
+`generic_ref_expr` as a value (see **Expressions**) and the const-only rule
+for generic declarations (above) — combine to produce the following
+complete set of cases for what may legally appear as the value of a
+`let`/`const` function-typed binding:
+
+| #   | LHS                    | RHS                                                | Legal? | Reason                                                                                         |
+| --- | ---------------------- | -------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
+| 1   | `let f (x int) -> int` | `(x int) -> int { ... }`                           | ✅      | Ordinary function-value assignment — a `func_literal` is an `expr`                             |
+| 2a  | `let f (x int) -> int` | `h<int>(arg)` — call returning a matching function | ✅      | `h<int>(arg)` is a `generic_expr`/`call_expr`; it's an `expr`, and its result type matches     |
+| 2b  | `let f (x int) -> int` | `g<int>` — bare specialization reference           | ✅      | `g<int>` is a `generic_ref_expr` — a concrete value                                            |
+| 3   | `let f<T> (x T) -> T`  | any anonymous function                             | ❌      | Anonymous functions cannot carry `T` — an expression can never produce a family, only a member |
+| 4a  | `let f<T> (x T) -> T`  | `g` — bare generic name                            | ❌      | `g` is a family, not a value (see **Generic Functions and Generic Structs**)                   |
+| 4b  | `let f<T> (x T) -> T`  | `g<int>` — bare specialization                     | ❌      | Type mismatch: LHS wants a family, RHS is a member                                             |
+| 4c  | `let f<T> (x T) -> T`  | `h<int>(arg)` — call result                        | ❌      | Same type mismatch as 4b — a call result is a member value too                                 |
+
+Cases 4a–4c are moot in practice for a different reason as well: a generic
+`func_decl` (`f<T>`) must be declared `const` (see the NOTE above), so `let
+f<T> ...` is already rejected at the keyword before any RHS is even
+considered. The table is still worth spelling out in full, because it shows
+*why* no RHS could ever have worked here even if `let` were allowed — the
+family/member distinction, not the `const` rule itself, is what rules out
+4a–4c.
+
+```lucid
+const g<T>  (v T) -> T = { return v; };
+const h<T>  (v T) -> T = { return v; };
+
+-- Case 1 — ordinary function literal
+let f1 (x int) -> int = (x int) -> int { return x };
+
+-- Case 2a — call to a generic instantiation whose result is a function
+const pick<T> (n int) -> (T) -> T = { return g<T>; };
+let f2a (x int) -> int = pick<int>(0);    -- OK: pick<int>(0) is (int) -> int,
+                                            -- a call_expr/generic_expr result
+
+-- Case 2b — bare specialization reference
+let f2b (x int) -> int = g<int>;    -- OK: g<int> is a generic_ref_expr, a value
+
+-- Case 3 — anonymous function cannot carry T
+let f3<T> (x T) -> T = (x T) -> T { return x; };    -- ERROR: f3<T> must be
+                                                     -- 'const' (generic decl);
+                                                     -- and even as const,
+                                                     -- an anonymous function
+                                                     -- cannot supply T
+
+-- Case 4a — bare generic name in value position
+const f4a<T> (x T) -> T = g;    -- ERROR: 'g' names a generic function,
+                                 -- not a value — see D2
+
+-- Case 4b — bare specialization is a member, not a family
+const f4b<T> (x T) -> T = g<int>;    -- ERROR: g<int> is a concrete member;
+                                       -- f4b<T>'s declared type is a family
+
+-- Case 4c — a call result is a member value too
+const f4c<T> (x T) -> T = pick<int>(0);    -- ERROR: same mismatch as 4b
+```
+
+**Array of functions, revisited with `generic_ref_expr`.** The array-of-
+functions example above (`[*](int) -> int`) accepts any `expr` producing a
+matching function value as an element — including a `generic_ref_expr`,
+with no special case needed, exactly as in the reassignment table:
+
+```lucid
+const identity<T> (v T) -> T = { return v; };
+
+let fns [*](int) -> int = [identity<int>, identity<int>];    -- OK: each
+                                                 -- element is a generic_ref_expr
+```
 
 **Grouping several return values** is done with a generic struct — Lucid has no
 return-list and does not plan to add one. A struct is a first-class value: it
@@ -1882,7 +1982,7 @@ but cannot modify it:
 ```lucid
 const sum (nums ...int) -> int = {
     let total int = 0;
-    for _, n int in nums { total = total + n }
+    for _, n int in nums { total = total + n; }
     return total;
 };
 
@@ -1974,7 +2074,7 @@ const add (a int)(b int) -> int = {
 -- function's shape is written with a bare, unnamed group
 const makeAdder (base int) -> (int) -> int = {
     const adjusted int = base * 2;    -- runs once, at makeAdder(base)
-    return (n int) -> int { return adjusted + n }
+    return (n int) -> int { return adjusted + n; }
 };
 
 const addTen (n int) -> int = makeAdder(5);
@@ -1984,7 +2084,7 @@ addTen(3);    -- 13
 -- then an explicit boundary, then another merged cluster
 const process (a int)(b int) -> (int) -> int = {
     const sum int = a + b;    -- runs when process(a)(b) is called
-    return (c int) -> int { return sum + c }
+    return (c int) -> int { return sum + c; }
 };
 
 -- an arrow can appear more than once — each one is its own boundary,
@@ -2005,10 +2105,10 @@ parameter of its own group, two groups means two independent variadics:
 ```lucid
 const summarize (nums ...int)(words ...string) -> string = {
     let total int = 0;
-    for _, n int in nums { total = total + n }
+    for _, n int in nums { total = total + n; }
 
     let joined string = "";
-    for _, w string in words { joined = joined + w + " " }
+    for _, w string in words { joined = joined + w + " "; }
 
     return stringFromInt(total) + ": " + joined;
 };
@@ -2024,7 +2124,7 @@ declaration, and stays in scope through every later group and every nested
 const g<T> (a int)(b T) -> (T) -> bool = {
     return (c T) -> bool {
         return true;
-    }
+    };
 };
 ```
 
@@ -2032,8 +2132,8 @@ const g<T> (a int)(b T) -> (T) -> bool = {
 
 ```lucid
 const clamp (lo int)(hi int)(v int) -> int = {
-    if v < lo { return lo }
-    if v > hi { return hi }
+    if v < lo { return lo; }
+    if v > hi { return hi; }
     return v;
 };
 
@@ -2051,7 +2151,8 @@ This applies whether the source uses adjacent groups (which the compiler desugar
 
 ```lucid
 -- ❌ ERROR: 'a' is captured by the inner function
-const add (a &int)(b &int) -> int = { return a + b;
+const add (a &int)(b &int) -> int = { 
+    return a + b;
 };
 
 -- ❌ ERROR: same reason — writing the curry chain explicitly doesn't help
@@ -2078,7 +2179,8 @@ Three options, depending on what the earlier parameter is for.
 
 ```lucid
 -- ✅ OK: single parameter group, no currying, no capture
-const add (a &int, b &int) -> int = { return a + b;
+const add (a &int, b &int) -> int = { 
+    return a + b;
 };
 ```
 
@@ -2088,7 +2190,8 @@ The trade-off: `add` is no longer partially applicable. `add(x)` does not produc
 
 ```lucid
 -- ✅ OK: 'a' is owned, copied into the closure's environment
-const add (a int)(b &int) -> int = { return a + b;
+const add (a int)(b &int) -> int = { 
+    return a + b;
 };
 ```
 
@@ -2098,7 +2201,8 @@ The trade-off: `a` is copied. If `a` is a large struct, the copy is expensive. I
 
 ```lucid
 -- ✅ OK: Shared<T> is a Shared, refcounted type — closures may capture it
-const add (a Shared<int>)(b &int) -> int = { return a.get() + b;
+const add (a Shared<int>)(b &int) -> int = { 
+    return a.get() + b;
 };
 ```
 
@@ -2116,7 +2220,8 @@ A single-group function with `&T` parameters is fine:
 
 ```lucid
 -- ✅ OK: no currying, no inner closure, no capture
-const add (a &int, b &int) -> int = { return a + b;
+const add (a &int, b &int) -> int = { 
+    return a + b;
 };
 ```
 
@@ -2250,6 +2355,16 @@ let y int;    -- ERROR: plain, non-nullable type requires an initializer
 let z int?;    -- OK: nullable — starts as nil until assigned
 ```
 
+> [!NOTE]
+> **A function-typed `var_decl` follows the same `expr`-on-the-right rule as
+> any other type** — `type` here may be a `func_type`, and `expr` may be a
+> `func_literal`, a named or module-qualified reference, a `generic_ref_expr`
+> (a bare generic specialization such as `g<int>`), or a call returning a
+> function value. See **Function Declaration** — specifically **Reassignment
+> and Generic Functions — Worked Cases** — for the full set of what is and
+> isn't legal on the right-hand side of a function-typed `let`/`const`
+> binding, including how generic functions interact with it.
+
 ---
 
 ## Generic Functions and Generic Structs
@@ -2281,6 +2396,53 @@ generic_args    = '<' type { ',' type } '>'
   falls back to the generic.
 - A generic function body must be valid for **any** `T` — no `if T is X`
   branching. Type-specific logic is passed in as a callback parameter.
+- **A generic function declaration must be `const`.** No expression form in
+  the language produces a generic-family value, so a `let`-bound generic
+  function could never be reassigned. `const` describes what the
+  declaration already is. See the NOTE under **Function Declaration** for
+  the full reasoning and diagnostic **D1**, below.
+- **`g<int>` is a value; `g` is not.** A generic specialization reference
+  (`g<int>`) denotes a concrete function value — a `generic_ref_expr` (see
+  **Expressions**) — and may appear in any `expr` position. A bare generic
+  name (`g`, with no type arguments) names a family, not a member, and is
+  rejected wherever a value is required — see diagnostic **D2**, below.
+
+### Bare Generic Names Are Not Values
+
+An `IDENTIFIER` with no type arguments that resolves to a generic
+`func_decl` is a compile error wherever a value is required — as the
+right-hand side of an assignment, a call argument, an array element, and so
+on. This is a Sema-level check: the grammar accepts a bare `IDENTIFIER` in
+every `expr` position, and Sema rejects the specific case where it resolves
+to a generic function used as a value.
+
+```lucid
+const identity<T> (v T) -> T = { return v; };
+
+let g (a int) -> int = identity;          -- ERROR: 'identity' names a generic
+                                            -- function, not a value
+let g (a int) -> int = identity<int>;     -- OK: a generic_ref_expr — a value
+```
+
+### Diagnostics
+
+Both of the following fire in Sema, not the parser, so each can point at
+the specific token responsible with a targeted message.
+
+**D1 — Generic function declared with `let`:**
+```
+error: a generic function must be declared 'const'
+   = help: a generic function is a definition, not a reassignable value.
+     No expression form produces a generic-family value, so `let` has
+     nothing it could ever be reassigned to. Change `let` to `const`.
+```
+
+**D2 — Bare generic name in value position:**
+```
+error: 'identity' names a generic function, not a value
+   = help: supply explicit type arguments to refer to a specialization:
+     `identity<int>`.
+```
 
 ### Generic Constraints
 
@@ -2324,8 +2486,15 @@ const distanceBetween<T : Vector2, U : Vector2> (a T)(b U) -> float = {
 };
 
 -- works on any struct implementing Vector2
-struct Point  : Vector2 { x float = 0.0  y float = 0.0 }
-struct Entity : Vector2, Named { name string  x float = 0.0  y float = 0.0 }
+struct Point  : Vector2 { 
+    x float = 0.0; 
+    y float = 0.0 
+}
+struct Entity : Vector2, Named { 
+    name string;
+    x float = 0.0;
+    y float = 0.0;
+}
 
 magnitude<Point>(Point { x = 3.0, y = 4.0 });    -- OK → 5.0
 magnitude<Entity>(Entity { name = "hero", x = 3.0, y = 4.0 });    -- OK → 5.0
@@ -2357,7 +2526,7 @@ reconstructed `T`:
 
 ```lucid
 const addVectors (v1 Vector2)(v2 Vector2) -> Vector2 = {
-    return Vector2 { x = v1.x + v2.x, y = v1.y + v2.y }
+    return Vector2 { x = v1.x + v2.x, y = v1.y + v2.y };
 };
 
 const e Entity = Entity { name = "hero", x = 1.0, y = 2.0 };
@@ -2394,36 +2563,48 @@ The legitimate uses of generic functions in Lucid are:
 ```lucid
 const identity<T>  (v T)      -> T      = { return v };
 const first<T>     (items [_]T)(length int) -> T? = {
-    if length == 0 { return nil }
+    if length == 0 { return nil; }
     return items[0];    -- runtime-checked: a literal index does not prove
                          -- in-bounds against a slice of unknown length
                          -- see Runtime Panics
 };
-const swap<T>      (a T)(b T) -> Pair<T, T> = { return Pair<T, T>{ first = b, second = a } };
+const swap<T> (a T)(b T) -> Pair<T, T> = { 
+    return Pair<T, T>{ first = b, second = a }; 
+};
 ```
 
 **Higher-order — type-specific logic is a callback the caller provides:**
 
 ```lucid
-const map<T, U>    (items [_]T)(f (T) -> U)           -> [*]U  = {
+import std.array as arr
+
+const map<T, U> (items [_]T)(f (T) -> U) -> [*]U  = {
     let result [*]U = [];
-    for _, v T in items { arr:append<U>(result)(f(v)) }
+    for _, v T in items { 
+        arr:append<U>(result)(f(v));
+    }
     return result;
 };
 
-const filter<T>    (items [_]T)(pred (T) -> bool)     -> [*]T  = {
+const filter<T> (items [_]T)(pred (T) -> bool) -> [*]T  = {
     let result [*]T = [];
-    for _, v T in items { if pred(v) { arr:append<T>(result)(v) } }
+    for _, v T in items { 
+        if pred(v) { 
+            arr:append<T>(result)(v); 
+        } 
+    }
     return result;
 };
 
 const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
     let acc U = seed;
-    for _, v T in items { acc = f(acc, v) }
+    for _, v T in items { 
+        acc = f(acc, v); 
+    }
     return acc;
 };
 
-const sort<T>      (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... };
+const sort<T> (items [*]T)(cmp (T, T) -> int) -> [*]T  = { ... };
 ```
 
 **Call sites — explicit type arguments always required:**
@@ -2432,11 +2613,25 @@ const sort<T>      (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... };
 const nums   [*]int    = [3, 1, 4, 1, 5];
 const strs   [*]string = ["hello", "world"];
 
-const doubled [*]int    = map<int, int>(nums)((v int) -> int { return v * 2 });
-const lengths [*]int    = map<string, int>(strs)((s string) -> int { return strLength(s) });
-const evens   [*]int    = filter<int>(nums)((v int) -> bool { return v % 2 == 0 });
-const sum     int       = fold<int, int>(nums)(0)((acc int, v int) -> int { return acc + v });
-const sorted  [*]int    = sort<int>(nums)((a int, b int) -> int { return a - b });
+const doubled [*]int = map<int, int>(nums)(
+    (v int) -> int { return v * 2; }
+);
+
+const lengths [*]int = map<string, int>(strs)(
+    (s string) -> int { return strLength(s); }
+);
+
+const evens [*]int = filter<int>(nums)(
+    (v int) -> bool { return v % 2 == 0; }
+);
+
+const sum int = fold<int, int>(nums)(0)(
+    (acc int, v int) -> int { return acc + v; }
+);
+
+const sorted [*]int = sort<int>(nums)(
+    (a int, b int) -> int { return a - b; }
+);
 
 -- with pipeline
 const result [*]string =
@@ -2467,16 +2662,18 @@ struct Cache<K, V> {
 }
 
 -- instantiation
-const b Box<int>         = Box<int>    { value = 42 };
+const b Box<int> = Box<int> { value = 42 };
 const p Pair<int, string> = Pair<int, string> { first = 1, second = "hello" };
 ```
 
 Functions that operate on generic structs receive the instantiated type:
 
 ```lucid
-const unbox<T>    (b Box<T>)         -> T = { return b.value };
+const unbox<T> (b Box<T>) -> T = { 
+    return b.value;
+};
 const rebox<T, U> (b Box<T>)(f (T) -> U) -> Box<U> = {
-    return Box<U> { value = f(b.value) }
+    return Box<U> { value = f(b.value) };
 };
 
 const n int    = unbox<int>(b);
@@ -2562,7 +2759,9 @@ structs that must share one implementation across unrelated types:
 
 ```lucid
 let raw *void? = dynlib:symbol(handle, "process");
-if raw == nil { return err("symbol not found") };
+if raw == nil { 
+    return err("symbol not found");
+};
 const process (int)(int) -> int = #bitcast((int)(int) -> int, raw);
 -- process(3, 4) is undefined behavior if the real symbol's signature
 -- doesn't actually match — same trade-off as C's dlsym
@@ -2938,14 +3137,24 @@ case_value      = literal
 ```lucid
 const compute () -> int = {
     @[deprecated("use newVec")]
-    struct Vec2 { x float = 0.0  y float = 0.0 }
+    struct Vec2 { 
+        x float = 0.0;
+        y float = 0.0;
+    }
 
     @[inline]
-    const add (a int)(b int) -> int = { return a + b };
+    const add (a int)(b int) -> int = { return a + b; };
 
-    struct Point { x int = 0.0  y int = 0.0 }
+    struct Point {
+        x int = 0.0;
+        y int = 0.0;
+    }
 
-    enum Color { Red = 0  Green = 1  Blue = 2 }
+    enum Color { 
+        Red = 0;
+        Green = 1;
+        Blue = 2;
+    }
 
     const p Point = Point { x = 5, y = 5 };
     return add(p.x)(p.y);
@@ -3014,11 +3223,11 @@ The condition determines what gets narrowed and in which direction:
 
 ```lucid
 -- guard: exit on nil → rest of scope is non-nullable
-if a == nil { return }    -- rest: a is int
-if not a    { return }    -- rest: a is int  (if a is a boolean/nullable)
+if a == nil { return; }    -- rest: a is int
+if not a    { return; }    -- rest: a is int  (if a is a boolean/nullable)
 
 -- guard: exit on non-nil → no narrowing gained after exit
-if a != nil { return }    -- rest: a is int? (unchanged)
+if a != nil { return; }    -- rest: a is int? (unchanged)
 ```
 
 **`or` at the top level — each sub-condition narrowed independently:**
@@ -3026,11 +3235,11 @@ if a != nil { return }    -- rest: a is int? (unchanged)
 When conditions are joined by `or`, the exit fires if ANY is true. The inverse is ALL negated — every sub-condition's inverse is safely applied:
 
 ```lucid
-if a == nil or b == nil { return }
+if a == nil or b == nil { return; }
 -- inverse: a != nil AND b != nil
 -- rest: a is int, b is string — both narrowed
 
-if a == nil or b == nil or c == nil { return }
+if a == nil or b == nil or c == nil { return; }
 -- rest: a, b, c all non-nullable
 ```
 
@@ -3039,7 +3248,7 @@ if a == nil or b == nil or c == nil { return }
 When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the compiler cannot know which. Narrowing any single variable would be unsound:
 
 ```lucid
-if a == nil and b == nil { return }
+if a == nil and b == nil { return; }
 -- inverse: a != nil OR b != nil
 -- only one is guaranteed non-nil — cannot narrow either safely
 -- no narrowing applied when 'and' is at the top level
@@ -3052,7 +3261,7 @@ if a == nil and b == nil { return }
 >
 > ```lucid
 > const process (a int?)(b string?)(c User?) -> int = {
->     if a == nil or b == nil or c == nil { return -1 }
+>     if a == nil or b == nil or c == nil { return -1; }
 >    -- from here: a is int, b is string, c is User
 >     return a + strLength(b) + c.id;
 > };
@@ -3062,7 +3271,7 @@ if a == nil and b == nil { return }
 >
 > ```lucid
 > for _, item int? in items {
->     if item == nil { continue }
+>     if item == nil { continue; }
 >    -- item is int for the rest of this iteration
 >     process(item);
 > }
@@ -3072,11 +3281,11 @@ if a == nil and b == nil { return }
 >
 > ```lucid
 >    -- WRONG: chained else-if, no inverse narrowing after chain
-> if a == nil { return } else if b == nil { return }
+> if a == nil { return; } else if b == nil { return; }
 >
 >    -- CORRECT: two standalone guards, both narrow independently
-> if a == nil { return }
-> if b == nil { return }
+> if a == nil { return; }
+> if b == nil { return; }
 >    -- a is int, b is string here
 >```
 
@@ -3124,14 +3333,14 @@ numeric (`int`, `float`, and so on). Inclusivity of the end bound is
 controlled by `range_op`, matching **Range Expressions**:
 
 ```lucid
-for i int in 0..10  { io:printl(stringFromInt(i)) }    -- 0 through 10 inclusive
-for i int in 0..<10 { io:printl(stringFromInt(i)) }    -- 0 through 9, end excluded
+for i int in 0..10  { io:printl(stringFromInt(i)); }    -- 0 through 10 inclusive
+for i int in 0..<10 { io:printl(stringFromInt(i)); }    -- 0 through 9, end excluded
 ```
 
 An optional trailing `..` *expr* sets the step. Without it the step is `1`:
 
 ```lucid
-for i int in 0..10..2 { io:printl(stringFromInt(i)) }    -- 0, 2, 4, 6, 8, 10 — step of 2
+for i int in 0..10..2 { io:printl(stringFromInt(i)); }    -- 0, 2, 4, 6, 8, 10 — step of 2
 ```
 
 **Rejected — two variables on a range** (the step loop has no index to give):
@@ -3187,20 +3396,25 @@ dispatch.
 ensures all variants are explicitly handled:
 
 ```lucid
-enum Direction { North = 0  East = 1  South = 2  West = 3 }
+enum Direction {
+    North = 0;
+    East = 1;
+    South = 2;
+    West = 3;
+}
 
 -- exhaustive: all 4 variants covered, no default needed
 switch dir {
-    case Direction.North: { moveUp() }
-    case Direction.South: { moveDown() }
-    case Direction.East:  { moveRight() }
-    case Direction.West:  { moveLeft() }
+    case Direction.North: { moveUp();    }
+    case Direction.South: { moveDown();  }
+    case Direction.East:  { moveRight(); }
+    case Direction.West:  { moveLeft();  }
 }
 
 -- missing variant: compile error
 switch dir {
-    case Direction.North: { moveUp() }
-    case Direction.South: { moveDown() }
+    case Direction.North: { moveUp(); }
+    case Direction.South: { moveDown(); }
     -- ERROR: Direction.East and Direction.West not covered, no default clause
 }
 ```
@@ -3210,10 +3424,10 @@ exhaustiveness errors. Valid on any switch, not just enum types:
 
 ```lucid
 switch statusCode {
-    case 200: { handleOk() }
-    case 404: { handleNotFound() }
-    case 500: { handleServerError() }
-    default:  { handleUnknown() }
+    case 200: { handleOk(); }
+    case 404: { handleNotFound(); }
+    case 500: { handleServerError(); }
+    default:  { handleUnknown(); }
 }
 ```
 
@@ -3222,8 +3436,8 @@ several values:
 
 ```lucid
 switch dir {
-    case Direction.North, Direction.South: { moveVertical() }
-    case Direction.East,  Direction.West:  { moveHorizontal() }
+    case Direction.North, Direction.South: { moveVertical(); }
+    case Direction.East,  Direction.West:  { moveHorizontal(); }
 }
 ```
 
@@ -3232,10 +3446,10 @@ literal values, using the same `range_op` as **Range Expressions**:
 
 ```lucid
 switch score {
-    case 90..100:  { log("A") }
-    case 80..<90:  { log("B") }
-    case 70..<80:  { log("C") }
-    default:       { log("F") }
+    case 90..100:  { log("A"); }
+    case 80..<90:  { log("B"); }
+    case 70..<80:  { log("C"); }
+    default:       { log("F"); }
 }
 ```
 
@@ -3243,9 +3457,9 @@ Ranges combine with comma-separated values in the same arm:
 
 ```lucid
 switch n {
-    case 0, 1..9:   { log("single digit or zero") }
-    case 10..<100:  { log("two digits") }
-    default:        { log("large") }
+    case 0, 1..9:   { log("single digit or zero"); }
+    case 10..<100:  { log("two digits"); }
+    default:        { log("large"); }
 }
 ```
 
@@ -3254,8 +3468,8 @@ switch n {
 
 ```lucid
 switch ch {
-    case 'a', 'e', 'i', 'o', 'u': { log("vowel") }
-    default:                      { log("consonant") }
+    case 'a', 'e', 'i', 'o', 'u': { log("vowel"); }
+    default:                      { log("consonant"); }
 }
 ```
 
@@ -3317,6 +3531,7 @@ expr            = literal
                 | compose_expr
                 | fallback_expr
                 | generic_expr
+                | generic_ref_expr
                 | range_expr
                 | '(' expr ')'
 
@@ -3363,7 +3578,48 @@ field_init      = IDENTIFIER '=' expr
 array_literal   = '[' [ expr { ',' expr } ] ']'
 
 generic_expr    = IDENTIFIER '<' type_arg { ',' type_arg } '>' '(' [ arg_list ] ')'
+
+generic_ref_expr = IDENTIFIER '<' type_arg { ',' type_arg } '>'
+                  (* a bare specialization reference — a generic name with
+                     type arguments but NO trailing call parens. Structurally
+                     just IDENTIFIER '<' type_arg { ',' type_arg } '>' with
+                     nothing after the closing '>' — the only thing that
+                     distinguishes it from generic_expr is the absence of a
+                     following '(' arg_list ')'. See below. *)
 ```
+
+### `generic_ref_expr` — A Generic Specialization Is a Value
+
+`g<int>` denotes a concrete specialization of a generic function `g` at
+`T = int`. Once instantiated, a specialization is structurally identical to
+a hand-written concrete function — so `g<int>` is a **value**, and may
+appear in any `expr` position: the right-hand side of an assignment, an
+array element, a function argument, a struct literal field, a pipeline
+step, a composition operand, or anywhere else an `expr` is expected.
+
+**`generic_ref_expr` vs. `generic_expr` — a bare reference, not a call.**
+These two productions share the same prefix (`IDENTIFIER '<' type_arg { ','
+type_arg } '>'`) and diverge only in what follows: `generic_expr` continues
+with `'(' [ arg_list ] ')'` and *calls* the specialization, producing
+whatever the function returns; `generic_ref_expr` stops at the closing `>`
+and *names* the specialization itself, producing the function value without
+invoking it.
+
+```lucid
+const sq<T> (v T) -> T = { return v * v };
+
+sq<int>(5);    -- generic_expr:     CALLS the specialization, result is 25
+sq<int>;       -- generic_ref_expr: NAMES the specialization, result is a
+                -- function value of type (int) -> int
+```
+
+**No new AST node.** `generic_ref_expr` reuses `IdentifierExprAST` with a
+non-empty `genericArgs` list — the distinction between "call" and "bare
+reference" is structural (whether a `CallExprAST` parent wraps it), not a
+difference in node type. See **Generic Functions and Generic Structs** for
+the accompanying rule that a bare generic name (`g`, no type arguments at
+all) is rejected wherever a value is required — `g` is a family, not a
+value, only `g<int>` is.
 
 ### Range Expressions
 
@@ -3445,8 +3701,8 @@ if conn { }    -- runtime: true unless conn == err
 -- NOTE: conn is still Connection! inside this block — coercion is not
 -- narrowing. Use 'if conn != err { }' to narrow conn to plain Connection.
 
-if not user { return }    -- runtime: true only when user is nil
-if not conn { return }    -- runtime: true only when conn is err
+if not user { return; }    -- runtime: true only when user is nil
+if not conn { return; }    -- runtime: true only when conn is err
 ```
 
 `and` and `or` short-circuit. The right-hand operand is not evaluated unless
@@ -3495,7 +3751,7 @@ const shifted uint32 = 1 << 4;    -- 16
 
 ---
 
-## Pipeline Operator `|>` (Updated)
+## Pipeline Operator `|>`
 
 A pipeline passes the result of one expression as arguments to the next step, executing left to right at runtime. The pipeline **does not care about the `->` syntax** — it only cares about the **function type** of each step.
 
@@ -3507,30 +3763,46 @@ pipeline_step   = expr                          (* single-parameter function or 
                 | func_literal                  (* anonymous function *)
 ```
 
+> [!NOTE]
+> A `pipeline_step`'s first alternative is a bare `expr`, so a
+> `generic_ref_expr` (a bare specialization reference like `identity<int>`,
+> see **Expressions**) is already a valid step with no grammar change
+> needed — it is simply one more expression that evaluates to a function
+> value:
+>
+> ```lucid
+> const identity<T> (v T) -> T = { return v };
+>
+> 42 |> identity<int>;    -- OK: identity<int> is a generic_ref_expr — a
+>                          -- single-parameter function value
+> ```
+
 ```lucid
 const result [*]string =
     [1, 2, 3]
-    |> map<int, string>(stringFromInt)!;
-    |> filter<string>(isNonEmpty)!;
+    |> map<int, string>(stringFromInt)!
+    |> filter<string>(isNonEmpty)!
     |> map<string, string>(trim)!;
 ```
 
 ### Argument Pack `!`
 
-`fn(args)!` marks an intentionally incomplete argument list. The upstream values are injected as the **first** arguments when `|>` fires:
+> [!IMPORTANT]
+> Because we can only return a single value, therefore the downstream may not have
+> enough arguments, we will use `!` to fill in the missing arguments
+>
+> `fn(args)!` marks an intentionally incomplete argument list. 
+> The upstream values are injected as the **first** arguments when `|>` fires:
 
 ```lucid
-const scale (factor float)(v float) -> float = { return v * factor };
-
--- scale is curried: (factor float) -> (float) -> float
--- scale(2.0) returns: (v float) -> float
+const scale (factor float, v float) -> float = { return v * factor; };
 
 -- `!` is mandatory whenever a step supplies explicit arguments -
 -- scale(2.0) without ! is not valid pipeline_step syntax at all:
 42.0 |> scale(2.0);    -- SYNTAX ERROR: missing required '!'
 
 -- With !: upstream fills the first unfilled parameter
-42.0 |> scale(2.0)!;    -- Calls scale(42.0)(2.0) → 84.0
+42.0 |> scale(2.0)!;    -- Calls scale(42.0, 2.0) → 84.0
 ```
 
 **Important:** The `!` annotation tells the compiler "the upstream values will fill the remaining parameters." This is why it's called an **argument pack** — it packs the upstream values into the function's remaining parameters.
@@ -3541,8 +3813,8 @@ const scale (factor float)(v float) -> float = { return v * factor };
 
 ```lucid
 const clamp (lo int)(hi int)(v int) -> int = {
-    if v < lo { return lo }
-    if v > hi { return hi }
+    if v < lo { return lo; }
+    if v > hi { return hi; }
     return v;
 };
 
@@ -3555,8 +3827,8 @@ const clamp (lo int)(hi int)(v int) -> int = {
 };
 
 -- Use anonymous function to pre-apply
-42 |> (v int) -> int { return clamp(0)(100)(v) };    -- OK → 42
-150 |> (v int) -> int { return clamp(0)(100)(v) };   -- OK → 100
+42 |> (v int) -> int { return clamp(0)(100)(v); };    -- OK → 42
+150 |> (v int) -> int { return clamp(0)(100)(v); };   -- OK → 100
 
 -- Better: pre-apply to a single-parameter function
 const clamp0to100 (v int) -> int = clamp(0)(100);
@@ -3569,7 +3841,7 @@ const clamp0to100 (v int) -> int = clamp(0)(100);
 The pipeline fills parameters in **the order they appear in the function type**:
 
 ```lucid
-const add (a int)(b int) -> int = { return a + b };
+const add (a int)(b int) -> int = { return a + b; };
 
 -- add is curried: (a int) -> (b int) -> int
 -- add(5) returns: (b int) -> int
@@ -3601,7 +3873,7 @@ const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) };
 const result string =
     42
     |> identity<int>
-    |> map<int, string>(stringFromInt)!;
+    |> map<int, string>(stringFromInt)!
     |> map<string, string>(trim)!;
 ```
 
@@ -3622,7 +3894,7 @@ const add (a int, b int) -> int = { return a + b };
 -- fn(args)! — upstream injected as first arg, args fill the rest
 1 |> add(5)!;       -- OK: 1 fills a, 5 fills b → 6
 1 |> add(5, 6)!;    -- OK: 1 fills a, but b is already filled by 6 → 7
-                     -- Extra arguments are discarded
+                    -- Extra arguments (6) are discarded
 
 -- fn (no parentheses) — upstream is the only argument
 1 |> add;           -- ERROR: add expects 2 parameters, but only 1 upstream value
@@ -3638,10 +3910,9 @@ Anonymous functions capture all arguments at the definition site and cannot have
 
 ```lucid
 -- Anonymous function as pipeline step
-1 |> (x int) -> int { return x * 2 };    -- OK → 2
-
--- Anonymous function cannot have argument pack
-1 |> (x int)(y int) -> int { return x + y }(2)!;    -- ERROR: anonymous function cannot have !
+1 |> (x int) -> int { 
+    return x * 2; 
+};    -- OK → 2
 ```
 
 ### Type Checking
@@ -3673,6 +3944,22 @@ compose_expr    = expr '+>' expr     (* f +> g: apply f then g, always left-to-r
                                          both f and g must have exactly one parameter
                                          — see below *)
 ```
+
+> [!NOTE]
+> Each `compose_expr` operand is a bare `expr`, so a `generic_ref_expr` is
+> already a valid operand with no grammar change needed, subject to the
+> same **Operand Requirements** as any other operand (exactly one
+> parameter, no variadics, and — per **Generic Functions and `+>`**,
+> below — instantiated with explicit type arguments, since an
+> uninstantiated generic name is not a value at all):
+>
+> ```lucid
+> const identity<T> (v T) -> T = { return v; };
+>
+> const ok (x int) -> int = identity<int> +> identity<int>;    -- OK: both
+>                                                     -- operands are
+>                                                     -- generic_ref_expr
+> ```
 
 ```lucid
 const f (a int)    -> string = { ... };
@@ -3733,12 +4020,12 @@ Every operand in a composition **must satisfy all of the following**:
    const sum (a int, b ...int) -> int = { ... };   -- variadic
    const double (x int) -> int = { ... };          -- 1 parameter ✅
 
-   const bad (a int, b ...int) -> int = double +> sum;    -- ERROR: sum is variadic (not allowed)
+   const bad (a int, b ...int) -> int = double +> sum; -- ERROR: sum is variadic (not allowed)
    ```
 
 3. **Generic functions must be instantiated** — Generic parameters must be resolved with explicit type arguments:
    ```lucid
-   const identity<T> (x T) -> T = { return x };
+   const identity<T> (x T) -> T = { return x; };
 
    const ok (x int) -> int = identity<int> +> identity<int>;    -- OK: instantiated
    const bad = identity +> identity;              -- ERROR: missing generic args
@@ -3750,15 +4037,19 @@ Every operand in a composition **must satisfy all of the following**:
 
 ```lucid
 const add (a int) -> (int) -> int = { 
-    return (b int) -> int { return a + b } 
+    return (b int) -> int { 
+        return a + b; 
+    };
 };
-const apply5 (f (int) -> int) -> int = { return f(5) };
+const apply5 (f (int) -> int) -> int = { 
+    return f(5);
+};
 
 -- add returns (int) -> int, which matches apply5's parameter
 const pipeline (x int) -> int = add +> apply5;
 
-pipeline(10);    -- add(10) returns (b int) -> int { return 10 + b }
-                  -- apply5 calls it with 5 → returns 15
+pipeline(10);   -- add(10) returns (b int) -> int { return 10 + b; }
+                -- apply5 calls it with 5 → returns 15
 ```
 
 **Why currying is allowed:** The composed function's type is determined by the chain: `(input) -> (return)`. If the left operand returns a function, that function becomes the value that flows to the right operand. This is a natural consequence of the type system.
@@ -3867,7 +4158,7 @@ if x != err {
 ```lucid
 const process (id int) -> int = {
     const x int! = riskyOp(id);
-    if x == err { return -1 }
+    if x == err { return -1; }
     -- x is int here for the rest of the function
     return x + 1;
 };
@@ -3889,7 +4180,7 @@ exits:
 ```lucid
 const process (id int) -> int = {
     const x User?! = riskyLookup(id);
-    if x == nil or x == err { return -1 }
+    if x == nil or x == err { return -1; }
     -- x is User here — neither nil nor err remain possible
     return x.id;
 };
@@ -3903,8 +4194,8 @@ reasons already established:
 -- CORRECT: standalone guards, each narrows independently
 const a int?! = riskyOp();
 const b string?! = riskyOp2();
-if a == nil or a == err { return }
-if b == nil or b == err { return }
+if a == nil or a == err { return; }
+if b == nil or b == err { return; }
 -- a is int, b is string here
 ```
 
@@ -3961,7 +4252,11 @@ const d int  = c ?? 0;    -- err discarded, d = 0
 
 -- nullable and fallible together
 const e User?! = riskyLookup();
-const f User   = e ?? User { id = 0  name = "guest"  email = "" };
+const f User   = e ?? User { 
+    id = 0,
+    name = "guest",
+    email = "",
+};
 
 -- never triggers: lhs is plain int
 const g int = getValue();
@@ -4014,7 +4309,7 @@ established for `nil` and `err`:
  result int =
     if x == nil ?? handleAbsent(x)
     else if x == err ?? handleFailure(x)
-    else x.id
+    else x.id;
 ```
 
 > [!NOTE]
@@ -4028,15 +4323,15 @@ dispatch can use `switch` instead, since `nil` and `err` are valid
 `case_value`s:
 
 ```lucid
- handleAbsentCode  () -> int = { system:logError("absent")  return -1 };
- handleFailureCode () -> int = { system:logError("failed")  return -2 };
+ handleAbsentCode  () -> int = { system:logError("absent")  return -1; };
+ handleFailureCode () -> int = { system:logError("failed")  return -2; };
 
  code int?! = riskyParse();
 
 let result int = 0;
 switch code {
-    case nil: { result = handleAbsentCode() }
-    case err: { result = handleFailureCode() }
+    case nil: { result = handleAbsentCode(); }
+    case err: { result = handleFailureCode(); }
     default:  { result = 0;    -- see note below on narrowing in 'default' }
 }
 ```
@@ -4135,7 +4430,7 @@ const fetch (url string) -> string! = { ... };
 
 const process (url string) -> string! = {
     const raw string! = fetch(url);
-    if raw == err { return err }
+    if raw == err { return err; }
     -- raw is string here
     return raw;
 };
@@ -4194,7 +4489,7 @@ step:
 const result string = dbFindUser(id)
     |> formatUser
     |> (v string!) -> string {
-        if v == err { return "unnamed" }
+        if v == err { return "unnamed"; }
         return v;
     }
 ```
@@ -4232,7 +4527,7 @@ const dbFindUser (id int)(lastError DbError?) -> User?! = {
 };
 
 const formatUser (user User) -> string = {
-    if user.name == "" { return "user has no name" }
+    if user.name == "" { return "user has no name"; }
     return user.name + " <" + user.email + ">";
 };
 
@@ -4246,7 +4541,11 @@ const getFormattedUser (id int) -> string = {
     }
     -- found is User? here — err ruled out, nil still possible
 
-    const user User = found ?? User { id = 0  name = "guest"  email = "" };
+    const user User = found ?? User { 
+        id = 0,
+        name = "guest",
+        email = "",
+    };
 
     return user |> formatUser;
 };
@@ -4342,27 +4641,27 @@ const nums  [*]int = [3, 1, 4, 1, 5, 9, 2, 6];
 
 -- sorting — user provides the comparison callback
 const sorted [*]int = arr:sort<int>(nums)(
-    (a int, b int) -> int { return a - b }    -- ascending
+    (a int, b int) -> int { return a - b; }    -- ascending
 );
 
 -- mapping — user provides the transform callback
 const doubled [*]int = arr:map<int, int>(nums)(
-    (v int) -> int { return v * 2 }
+    (v int) -> int { return v * 2; }
 );
 
 -- filtering — user provides the predicate callback
 const evens [*]int = arr:filter<int>(nums)(
-    (v int) -> bool { return v % 2 == 0 }
+    (v int) -> bool { return v % 2 == 0; }
 );
 
 -- reducing — user provides the accumulator callback
 const sum int = arr:reduce<int, int>(nums)(0)(
-    (acc int, v int) -> int { return acc + v }
+    (acc int, v int) -> int { return acc + v; }
 );
 
 -- searching — user provides the predicate
 const found int? = arr:find<int>(nums)(
-    (v int) -> bool { return v > 4 }
+    (v int) -> bool { return v > 4; }
 );
 ```
 
@@ -4375,7 +4674,7 @@ import std.array as arr
 const result [*]string =
     [3, 1, 4, 1, 5, 9, 2, 6]
     |> arr:filter<int>(isPositive)!;
-    |> arr:sort<int>((a int, b int) -> int { return a - b })!;
+    |> arr:sort<int>((a int, b int) -> int { return a - b; })!;
     |> arr:map<int, string>(stringFromInt)!;
 ```
 
@@ -4576,7 +4875,10 @@ struct Player {
     items  [*]string;    -- owned: buffer deep-copied
 }
 
-const a Player = Player { score = 10, items = ["sword"] };
+const a Player = Player { 
+    score = 10, 
+    items = ["sword"], 
+};
 let b Player = a;
 -- b.score and b.items are fully independent of a
 ```
@@ -4591,7 +4893,7 @@ struct Counter {
 const makeCounter () -> Counter {
     let n int = 0;
     return Counter {
-        increment = () -> int { return n += 1 };    -- captures n
+        increment = () -> int { return n += 1; },    -- captures n
     };
 }
 
@@ -4731,7 +5033,7 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
    ```lucid
    struct Node {
        value int;
-       next  *Node?;    -- raw pointer, nullable. Requires manual lifecycle tracking.
+       next  *Node?; -- raw pointer, nullable. Requires manual lifecycle tracking.
    }
 ```
 3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These are **Shared, refcounted** types — see **Value and Reference Semantics** above — using the same allocate/retain/release mechanism as a Closure's environment, just exposed as an explicit user-facing type instead of an implicit one. They incur a small runtime cost, and like any refcounted scheme, a reference cycle between two `Shared<T>` values (or between a `Shared<T>` and a closure that captures it) will not be collected — break cycles with `Weak<T>`.
@@ -5023,7 +5325,7 @@ const q *Node? = findNode();   -- pointer itself may be nil; nil-check required 
 const malloc (size uint64) -> *uint8? = {};
 
 const buf *uint8? = malloc(1024);
-if buf == nil { return 1 }
+if buf == nil { return 1; }
 
 let ref &uint8 = #toRef(buf);    -- cross the boundary
 ref = 0xFF;    -- work with it safely
@@ -5221,11 +5523,17 @@ struct Vector2 {
 
 -- all "methods" are plain functions
 const vector2Add  (a Vector2)(b Vector2) -> Vector2 = {
-    return Vector2 { x = a.x + b.x, y = a.y + b.y }
+    return Vector2 { 
+        x = a.x + b.x,
+        y = a.y + b.y
+    };
 };
 
 const vector2Scale (v Vector2)(s float) -> Vector2 = {
-    return Vector2 { x = v.x * s, y = v.y * s }
+    return Vector2 { 
+        x = v.x * s,
+        y = v.y * s
+    };
 };
 
 const vector2Length (v Vector2) -> float = {
@@ -6159,7 +6467,7 @@ const process () = {
   > ```lucid
   > const setup (a int) -> () -> () = {
   >     sideEffectA(a);
-  >     return () -> () { sideEffectB() };
+  >     return () -> () { sideEffectB(); };
   > };
   >
   > #scope_exit(setup, 5);    -- ❌ rejected: setup(5) has type () -> (),
