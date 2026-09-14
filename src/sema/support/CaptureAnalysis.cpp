@@ -1060,8 +1060,48 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
         return;
     }
 
-    Trace::detail("analyzeCaptures: analyzing anonymous closure at depth ",
-             ctx.getClosureDepth());
+    // ─── Set the closure's lexical parent pointer ───────────────────────
+    // `enclosingFunction` tells CodeGen where to start walking when
+    // resolving a CapturedVariable's {name, functionDepth}. It points at
+    // the enclosing function's AnonFuncExprAST — see the field's doc on
+    // AnonFuncExprAST.
+    //
+    // Ordering: analyzeCaptures runs while the closure's own ScopedFunction
+    // is still pushed (resolveAnonFuncExpr constructs it in step 3 and
+    // calls analyzeCaptures in step 8, before the guard's destructor pops
+    // it). So the innermost FuncBody frame is this closure itself; its
+    // lexical parent is the next one out — getEnclosingFunctionNode()
+    // returns exactly that.
+    //
+    // Every FuncBody frame's `node` is an AnonFuncExprAST (pushed by
+    // pushAnonFunction; FuncDeclASTs never appear on the stack — their
+    // bodies are the AnonFuncExprASTs at `init`, and those are what get
+    // pushed). So the returned node is directly an AnonFuncExprAST, with
+    // no forwarding needed.
+    //
+    // A closure at the top level of a module has no enclosing function;
+    // getEnclosingFunctionNode returns nullptr and enclosingFunction stays
+    // nullptr, which is correct.
+    BaseAST* enclosingNode = ctx.stack.getEnclosingFunctionNode();
+    if (enclosingNode) {
+        // Defensive: the accessor should only return AnonFuncExprAST
+        // nodes. If a future refactor introduces a different node kind
+        // on FuncBody frames, this surfaces it immediately rather than
+        // silently mis-casting.
+        AST_ASSERT_MSG(enclosingNode->isa<AnonFuncExprAST>(),
+            "FuncBody frame's node is not an AnonFuncExprAST — "
+            "capture analysis assumes every function boundary is held "
+            "by an anon node. Update this code if the stack invariant "
+            "changed.");
+        expr->enclosingFunction = enclosingNode->as<AnonFuncExprAST>();
+    } else {
+        expr->enclosingFunction = nullptr;
+    }
+
+    Trace::detail("analyzeCaptures: closure at depth ",
+                  ctx.getClosureDepth(),
+                  " — enclosing function node: ",
+                  expr->enclosingFunction ? "set" : "nullptr (top-level)");
 
     CaptureAnalyzer analyzer(ctx, expr);
 
