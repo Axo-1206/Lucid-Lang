@@ -859,11 +859,6 @@ lucid/
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
     │   │
-    │   ├── generic/
-    │   │   ├── CodeGenGeneric.hpp/cpp      # Detection + Substitution + Instantiation
-    │   │   ├── GenericMangledName.hpp/cpp  # Generic mangled name generation
-    │   │   └── GenericRegistry.hpp         # generic instantiation cache
-    │   │
     │   ├── types/
     │   │   ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
     │   │   └── LLVMTypesHelpers.hpp        # Work with llvm types

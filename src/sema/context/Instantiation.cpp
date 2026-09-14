@@ -234,6 +234,7 @@ static FuncDeclAST* finalizeInstantiatedFunction(
     if (ctx.currentModule) {
         ctx.currentModule->specializations.push_back(finalFunc);
     }
+    finalFunc->resourceKind = ctx.classifyResourceKind(finalFunc->funcType, finalFunc);
 
     return finalFunc;
 }
