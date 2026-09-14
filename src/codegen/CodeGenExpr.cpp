@@ -940,46 +940,40 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
     llvm::Value* calleeVal = lowerExpression(expr->callee, ctx);
-    if (!calleeVal) {
-        return nullptr;
-    }
+    if (!calleeVal) return nullptr;
 
     // ─── Lower arguments ───────────────────────────────────────────────────
     std::vector<llvm::Value*> args;
-    
-    // ─── Get the callee's function type from Sema ──────────────────────────
+
     FuncTypeAST* calleeFuncType = expr->callee->resolvedType
         ? expr->callee->resolvedType->as<FuncTypeAST>()
         : nullptr;
-    
+
     if (!calleeFuncType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, expr->callee->loc,
                                 "call callee does not resolve to a function type");
         return nullptr;
     }
 
-    // ─── Get the LLVM function type ────────────────────────────────────────
     llvm::FunctionType* fnType = getFunctionType(ctx, calleeFuncType);
-    if (!fnType) {
-        return nullptr;
-    }
+    if (!fnType) return nullptr;
 
-    // ─── Process each argument ─────────────────────────────────────────────
-    size_t paramIndex = 0;
-    size_t tagIndex = 0;
+    // Precompute the LLVM closure type for the shape check below. This is
+    // { ptr, ptr }; the same type emitRetain and lowerClosure produce.
+    llvm::StructType* closureType = ctx.getClosureType();
+
     size_t numParams = fnType->getNumParams();
-    bool hasVariadic = !calleeFuncType->params.empty() && 
-                       calleeFuncType->params.back()->isVariadic;
-    size_t fixedParamCount = hasVariadic ? calleeFuncType->params.size() - 1 : calleeFuncType->params.size();
+    bool hasVariadic = !calleeFuncType->params.empty()
+                       && calleeFuncType->params.back()->isVariadic;
+    size_t fixedParamCount = hasVariadic
+        ? calleeFuncType->params.size() - 1
+        : calleeFuncType->params.size();
 
     for (size_t i = 0; i < expr->args.size(); ++i) {
         ExprAST* arg = expr->args[i];
         llvm::Value* argVal = lowerExpression(arg, ctx);
-        if (!argVal) {
-            return nullptr;
-        }
+        if (!argVal) return nullptr;
 
-        // ─── Load if l-value ────────────────────────────────────────────────
         if (arg->isLValue) {
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
             if (elemType) {
@@ -988,21 +982,38 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             if (!argVal) return nullptr;
         }
 
-        args.push_back(argVal);
+        // ─── Rule 1 vs Rule 2: retain only on load ────────────────────────
+        // A fresh argument (closure literal, call returning a fresh
+        // closure) carries one temporary claim that the callee's parameter
+        // binding takes over. A load argument (identifier, field, index)
+        // leaves the source binding holding its claim; the callee's
+        // parameter takes a new one, so the caller must retain.
+        //
+        // The guard is on both the resolved type (must be a function type)
+        // and the LLVM shape (must be the closure struct). A plain
+        // function pointer with a function type doesn't trigger the retain.
+        if (arg->resolvedType
+            && arg->resolvedType->isa<FuncTypeAST>()
+            && argVal->getType() == closureType
+            && !isFreshExpression(arg)) {
 
-        paramIndex++;
+            llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                argVal, 1, "arg_env_to_retain");
+            llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+            ctx.builder.CreateCall(retainFn, {envPtr});
+        }
+
+        args.push_back(argVal);
     }
 
-    // ─── Add trailing variadic slot if needed ──────────────────────────────
+    // ─── Add trailing variadic slot if needed (unchanged) ─────────────────
     if (hasVariadic && args.size() < numParams) {
-        // Fill missing variadic arguments with null slice
         llvm::StructType* sliceType = ctx.getSliceType();
         args.push_back(llvm::Constant::getNullValue(sliceType));
     }
 
-    // ─── Ensure argument count matches function signature ──────────────────
+    // ─── Ensure argument count matches (unchanged) ────────────────────────
     if (args.size() != numParams) {
-        // Try to pad with nulls or truncate
         if (args.size() < numParams) {
             for (size_t i = args.size(); i < numParams; ++i) {
                 llvm::Type* paramType = fnType->getParamType(i);
@@ -1013,7 +1024,6 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
-    // ─── Call the function ──────────────────────────────────────────────────
     llvm::Value* result = emitCallableCall(calleeVal, args, fnType, ctx, "call");
     expr->llvmValue = result;
     return result;
@@ -2100,11 +2110,9 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
 llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    // ─── Step 1: Get LHS as an l-value (must be a pointer) ──────────────────
+    // ─── Step 1: Get LHS as an l-value (must be a pointer) ────────────────
     llvm::Value* lhsPtr = lowerExpression(expr->lhs, ctx);
-    if (!lhsPtr) {
-        return nullptr;
-    }
+    if (!lhsPtr) return nullptr;
 
     if (!expr->lhs->isLValue) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, expr->lhs->loc,
@@ -2112,22 +2120,20 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Step 2: Get the declaration from LHS ────────────────────────────────
+    // ─── Step 2: Get the declaration from LHS ─────────────────────────────
     ValueDeclAST* decl = nullptr;
     bool isFieldAssignment = false;
-    
+
     if (expr->lhs->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = expr->lhs->as<IdentifierExprAST>();
         decl = id->resolvedDecl;
     } else if (expr->lhs->isa<FieldAccessExprAST>()) {
-        // Field assignment: resources are owned by the struct, not the field
-        // The struct's cleanup handles releasing resources
         FieldAccessExprAST* field = expr->lhs->as<FieldAccessExprAST>();
         decl = field->resolvedDecl;
         isFieldAssignment = true;
     }
 
-    // ─── Step 3: Get the value type ──────────────────────────────────────────
+    // ─── Step 3: Get the value type ────────────────────────────────────────
     llvm::Type* valueType = getType(ctx, expr->lhs->resolvedType);
     if (!valueType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
@@ -2135,9 +2141,7 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Step 4: Load old value BEFORE evaluating RHS ────────────────────────
-    // This is critical for cases like: x = x + 1 (we need the old value)
-    // and for resource cleanup (we need to release the old resource)
+    // ─── Step 4: Load old value BEFORE evaluating RHS ─────────────────────
     llvm::Value* oldValue = nullptr;
     bool isAlive = false;
 
@@ -2148,17 +2152,13 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
-    // ─── Step 5: Handle compound assignment ──────────────────────────────────
-    // Compound assignments desugar to: lhs = lhs op rhs
-    // The old value is needed as the left operand of the operation.
+    // ─── Step 5: Compute rhsValue (plain or compound) ────────────────────
     llvm::Value* rhsValue = nullptr;
 
     if (expr->op != AssignOp::Assign) {
-        // ─── 5a. Lower the RHS (the right operand of the operation) ─────────
+        // (unchanged — compound assignment path)
         rhsValue = lowerExpression(expr->rhs, ctx);
-        if (!rhsValue) {
-            return nullptr;
-        }
+        if (!rhsValue) return nullptr;
 
         if (expr->rhs->isLValue) {
             llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
@@ -2168,107 +2168,86 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
             if (!rhsValue) return nullptr;
         }
 
-        // ─── 5b. If the old value wasn't loaded (not alive or field), load it now ──
         if (!oldValue) {
             oldValue = ctx.builder.CreateLoad(valueType, lhsPtr, "old_value_compound_load");
         }
 
-        // ─── 5c. Perform the compound operation ─────────────────────────────
         llvm::Value* result = nullptr;
 
         switch (expr->op) {
             case AssignOp::AddAssign:
-                if (isIntegerType(oldValue->getType())) {
-                    result = ctx.builder.CreateAdd(oldValue, rhsValue, "add_assign");
-                } else {
-                    result = ctx.builder.CreateFAdd(oldValue, rhsValue, "fadd_assign");
-                }
+                result = isIntegerType(oldValue->getType())
+                    ? ctx.builder.CreateAdd(oldValue, rhsValue, "add_assign")
+                    : ctx.builder.CreateFAdd(oldValue, rhsValue, "fadd_assign");
                 break;
-
             case AssignOp::SubAssign:
-                if (isIntegerType(oldValue->getType())) {
-                    result = ctx.builder.CreateSub(oldValue, rhsValue, "sub_assign");
-                } else {
-                    result = ctx.builder.CreateFSub(oldValue, rhsValue, "fsub_assign");
-                }
+                result = isIntegerType(oldValue->getType())
+                    ? ctx.builder.CreateSub(oldValue, rhsValue, "sub_assign")
+                    : ctx.builder.CreateFSub(oldValue, rhsValue, "fsub_assign");
                 break;
-
             case AssignOp::MulAssign:
-                if (isIntegerType(oldValue->getType())) {
-                    result = ctx.builder.CreateMul(oldValue, rhsValue, "mul_assign");
-                } else {
-                    result = ctx.builder.CreateFMul(oldValue, rhsValue, "fmul_assign");
-                }
+                result = isIntegerType(oldValue->getType())
+                    ? ctx.builder.CreateMul(oldValue, rhsValue, "mul_assign")
+                    : ctx.builder.CreateFMul(oldValue, rhsValue, "fmul_assign");
                 break;
-
             case AssignOp::DivAssign:
                 if (isIntegerType(oldValue->getType())) {
-                    // Check for division by zero
-                    RuntimeErrorKind kind = RuntimeErrorKind::DivisionByZero;
-                    llvm::Value* checkedDivisor = emitZeroCheck(rhsValue, kind, ctx);
+                    llvm::Value* checkedDivisor = emitZeroCheck(
+                        rhsValue, RuntimeErrorKind::DivisionByZero, ctx);
                     if (!checkedDivisor) return nullptr;
                     result = ctx.builder.CreateSDiv(oldValue, checkedDivisor, "sdiv_assign");
                 } else {
                     result = ctx.builder.CreateFDiv(oldValue, rhsValue, "fdiv_assign");
                 }
                 break;
-
             case AssignOp::ModAssign:
                 if (isIntegerType(oldValue->getType())) {
-                    // Check for modulo by zero
-                    RuntimeErrorKind kind = RuntimeErrorKind::ModuloByZero;
-                    llvm::Value* checkedDivisor = emitZeroCheck(rhsValue, kind, ctx);
+                    llvm::Value* checkedDivisor = emitZeroCheck(
+                        rhsValue, RuntimeErrorKind::ModuloByZero, ctx);
                     if (!checkedDivisor) return nullptr;
                     result = ctx.builder.CreateSRem(oldValue, checkedDivisor, "srem_assign");
                 } else {
                     result = ctx.builder.CreateFRem(oldValue, rhsValue, "frem_assign");
                 }
                 break;
-
             case AssignOp::PowAssign: {
                 llvm::Type* oldType = oldValue->getType();
                 if (isIntegerType(oldType) && isIntegerType(rhsValue->getType())) {
-                    oldValue = ctx.builder.CreateSIToFP(oldValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
-                    rhsValue = ctx.builder.CreateSIToFP(rhsValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
+                    oldValue = ctx.builder.CreateSIToFP(
+                        oldValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
+                    rhsValue = ctx.builder.CreateSIToFP(
+                        rhsValue, llvm::Type::getDoubleTy(ctx.llvmCtx));
                 }
-                result = emitIntrinsic(ctx.pool.intern("pow"), {oldValue, rhsValue}, nullptr, ctx);
+                result = emitIntrinsic(ctx.pool.intern("pow"),
+                                       {oldValue, rhsValue}, nullptr, ctx);
                 break;
             }
-
             case AssignOp::BitAndAssign:
                 result = ctx.builder.CreateAnd(oldValue, rhsValue, "band_assign");
                 break;
-
             case AssignOp::BitOrAssign:
                 result = ctx.builder.CreateOr(oldValue, rhsValue, "bor_assign");
                 break;
-
             case AssignOp::BitXorAssign:
                 result = ctx.builder.CreateXor(oldValue, rhsValue, "bxor_assign");
                 break;
-
             case AssignOp::ShlAssign:
                 result = ctx.builder.CreateShl(oldValue, rhsValue, "shl_assign");
                 break;
-
             case AssignOp::ShrAssign:
                 result = ctx.builder.CreateAShr(oldValue, rhsValue, "ashr_assign");
                 break;
-
             default:
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidAssignment, expr->loc,
                                         "unsupported compound assignment operator");
                 return nullptr;
         }
 
-        // ─── 5d. The result of the compound operation is the new value ──────
         rhsValue = result;
     } else {
-        // ─── Plain assignment: lower the RHS ──────────────────────────────────
+        // Plain assignment
         rhsValue = lowerExpression(expr->rhs, ctx);
-        if (!rhsValue) {
-            return nullptr;
-        }
+        if (!rhsValue) return nullptr;
 
         if (expr->rhs->isLValue) {
             llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
@@ -2279,38 +2258,100 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
-    // ─── Step 6: Clean up the old resource (if any) ──────────────────────────
-    // If the variable owns a resource (closure env, array data, string data),
-    // we must release it BEFORE storing the new value.
-    if (decl && isAlive && !isFieldAssignment && oldValue) {
-        // Use the reassign helper to clean up the old resource
-        // The variable remains alive with the new value
-        ctx.reassign(decl, oldValue, rhsValue);
+    // ─── Step 5.5: Rule 4 — self-assignment guard ─────────────────────────
+    // Emit the env-pointer comparison as an SSA value. If the old and new
+    // env pointers are equal, the binding already owns the claim it's being
+    // assigned; releasing and re-retaining would free-and-resurrect it.
+    //
+    // The comparison is only meaningful for closure-shaped values. For
+    // non-refcounted declarations, isSelfAssign is a constant false and
+    // the rest of the function behaves as before.
+    llvm::Value* isSelfAssign = nullptr;
+    if (decl && !isFieldAssignment
+        && classifyResource(decl) == ResourceKind::Refcounted
+        && oldValue && rhsValue) {
+
+        llvm::Type* oldTy = oldValue->getType();
+        llvm::Type* newTy = rhsValue->getType();
+
+        if (oldTy->isStructTy() && oldTy->getStructNumElements() == 2
+            && newTy->isStructTy() && newTy->getStructNumElements() == 2) {
+
+            llvm::Value* oldEnv = ctx.builder.CreateExtractValue(
+                oldValue, 1, "self_assign_old_env");
+            llvm::Value* newEnv = ctx.builder.CreateExtractValue(
+                rhsValue, 1, "self_assign_new_env");
+            isSelfAssign = ctx.builder.CreateICmpEQ(
+                oldEnv, newEnv, "self_assign_cmp");
+        }
     }
 
-    // ─── Step 7: Store the new value ─────────────────────────────────────────
+    // ─── Step 6: Clean up the old resource, unless self-assignment ────────
+    // Wrap the release in a branch on isSelfAssign when it's present.
+    if (decl && isAlive && !isFieldAssignment && oldValue) {
+        if (isSelfAssign) {
+            llvm::Function* func = ctx.getCurrentFunction();
+            llvm::BasicBlock* releaseBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "reassign_release", func);
+            llvm::BasicBlock* skipBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "reassign_skip", func);
+
+            // isSelfAssign == true → skip; false → release.
+            ctx.builder.CreateCondBr(isSelfAssign, skipBlock, releaseBlock);
+
+            ctx.builder.SetInsertPoint(releaseBlock);
+            ctx.reassign(decl, oldValue, rhsValue);
+            ctx.builder.CreateBr(skipBlock);
+
+            ctx.builder.SetInsertPoint(skipBlock);
+        } else {
+            ctx.reassign(decl, oldValue, rhsValue);
+        }
+    }
+
+    // ─── Step 7: Store the new value ──────────────────────────────────────
     ctx.builder.CreateStore(rhsValue, lhsPtr);
 
-    // ─── Step 8: If the variable wasn't alive before, mark it now ────────────
+    // ─── Step 8: mark alive if first assignment ───────────────────────────
     if (decl && !isFieldAssignment && !isAlive) {
-        // This can happen for variables that were declared but not initialized
-        // and now being assigned for the first time
         ctx.markAlive(decl);
     }
 
-    // ─── Step 9: Transfer-vs-copy for the new value ────────────────────────
-    // Applies whether this was a first assignment or a reassignment: the
-    // slot ends up owning a claim either way. Only Rule 2 (copy) needs
-    // emitRetain; Rule 1 (fresh literal) transfers the temp claim.
+    // ─── Step 9: Rule 1 vs Rule 2 — transfer or copy ─────────────────────
+    // A fresh expression's value carries one temporary claim that the
+    // binding takes over (Rule 1, transfer, no retain). A load from an
+    // existing binding leaves that binding holding its own claim, so the
+    // new binding must take a new one (Rule 2, copy, retain).
+    //
+    // See isFreshExpression's doc-comment for which kinds are which and
+    // why IfExpr / NullCoalesce default to "load."
+    //
+    // Rule 4: when the self-assignment guard fired, the binding already
+    // owns the claim it's being assigned; skip the retain entirely.
     if (decl && !isFieldAssignment
-        && classifyResource(decl) == ResourceKind::Refcounted) {
-        bool rhsIsFreshLiteral = expr->rhs->isa<AnonFuncExprAST>();
-        if (!rhsIsFreshLiteral) {
+        && classifyResource(decl) == ResourceKind::Refcounted
+        && !isFreshExpression(expr->rhs)) {
+
+        if (isSelfAssign) {
+            llvm::Function* func = ctx.getCurrentFunction();
+            llvm::BasicBlock* retainBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "reassign_retain", func);
+            llvm::BasicBlock* skipBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "retain_skip", func);
+
+            ctx.builder.CreateCondBr(isSelfAssign, skipBlock, retainBlock);
+
+            ctx.builder.SetInsertPoint(retainBlock);
+            emitRetain(decl, rhsValue, ctx);
+            ctx.builder.CreateBr(skipBlock);
+
+            ctx.builder.SetInsertPoint(skipBlock);
+        } else {
             emitRetain(decl, rhsValue, ctx);
         }
     }
 
-    // ─── Step 10: Return the new value ──────────────────────────────────────
+    // ─── Step 10: Return the new value ────────────────────────────────────
     expr->llvmValue = rhsValue;
     return rhsValue;
 }
@@ -2350,10 +2391,10 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     return currentValue;
 }
 
-llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, CodeGenContext& ctx) {
+llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue,
+                               CodeGenContext& ctx) {
     if (!step) return nullptr;
 
-    // Get the function type from Sema, NOT guessed from args
     TypeAST* callableType = step->callable->resolvedType;
     if (!callableType || !callableType->isa<FuncTypeAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, step->callable->loc,
@@ -2363,7 +2404,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
 
     FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
 
-    // ─── Get the LLVM function type (same as lowerCallExpr uses) ──────────
     llvm::FunctionType* fnType = getFunctionType(ctx, funcType, /* isClosure */ false);
     if (!fnType) {
         ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, step->callable->loc,
@@ -2371,27 +2411,35 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         return nullptr;
     }
 
-    // Build argument list: upstream + packArgs (in order)
+    llvm::StructType* closureType = ctx.getClosureType();
+
     std::vector<llvm::Value*> args;
 
-    // ─── Upstream value is passed FIRST (if the function takes any params) ──
-    // If the function takes parameters, upstream is injected as the first arg.
-    // If the function takes no params, upstream is discarded (valid).
     bool hasUpstream = (upstreamValue != nullptr);
     bool hasParameters = !funcType->params.empty();
 
     if (hasUpstream && hasParameters) {
+        // ─── Upstream: always retain (no source expression available) ─────
+        // The upstream value comes from the previous pipeline step as an
+        // opaque llvm::Value* — there's no source ExprAST to classify. The
+        // safe choice is retain: if the previous step was a load whose
+        // source binding dies before this call completes, skipping the
+        // retain would be a use-after-free. Over-retaining leaks; under-
+        // retaining crashes. Prefer the leak.
+        if (upstreamValue->getType() == closureType) {
+            llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                upstreamValue, 1, "upstream_env_to_retain");
+            llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+            ctx.builder.CreateCall(retainFn, {envPtr});
+        }
         args.push_back(upstreamValue);
-    } else if (hasUpstream && !hasParameters) {
-        // Upstream is discarded - no warning needed (Sema already warned)
     }
 
-    // ─── Lower pack arguments ──────────────────────────────────────────────
+    // ─── Pack args: retain only on load ──────────────────────────────────
     for (ExprAST* arg : step->packArgs) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
-        if (!argVal) {
-            return nullptr;
-        }
+        if (!argVal) return nullptr;
+
         if (arg->isLValue) {
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
             if (elemType) {
@@ -2399,15 +2447,27 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
             }
             if (!argVal) return nullptr;
         }
+
+        if (arg->resolvedType
+            && arg->resolvedType->isa<FuncTypeAST>()
+            && argVal->getType() == closureType
+            && !isFreshExpression(arg)) {
+
+            llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+                argVal, 1, "pack_arg_env_to_retain");
+            llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+            ctx.builder.CreateCall(retainFn, {envPtr});
+        }
+
         args.push_back(argVal);
     }
 
-    // Truncate excess non-variadic arguments
+    // ─── Truncate / variadic handling: unchanged ─────────────────────────
     size_t paramCount = funcType->params.size();
-    bool hasVariadic = !funcType->params.empty() && funcType->params.back()->isVariadic;
+    bool hasVariadic = !funcType->params.empty()
+                       && funcType->params.back()->isVariadic;
 
     if (!hasVariadic && args.size() > paramCount) {
-        // Sema already validated this is safe - just truncate
         args.resize(paramCount);
     }
 
@@ -2498,9 +2558,7 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
     }
 
     llvm::Value* calleeVal = lowerExpression(step->callable, ctx);
-    if (!calleeVal) {
-        return nullptr;
-    }
+    if (!calleeVal) return nullptr;
 
     if (step->callable->isLValue) {
         llvm::Type* elemType = getType(ctx, step->callable->resolvedType);
@@ -2510,26 +2568,36 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         if (!calleeVal) return nullptr;
     }
 
-    // ─── Verify argument count matches function signature ────────────────
+    // ─── Arg count check: unchanged ──────────────────────────────────────
     if (args.size() != fnType->getNumParams()) {
-        // Sema should have validated this, but we truncate just in case
-        // This can happen with variadic parameters that we've already handled
         if (args.size() > fnType->getNumParams()) {
             args.resize(fnType->getNumParams());
         } else {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, step->callable->loc,
-                                    "pipeline step argument count mismatch: expected ",
-                                    fnType->getNumParams(), ", got ", args.size());
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch,
+                                    step->callable->loc,
+                                    "pipeline step argument count mismatch: "
+                                    "expected ", fnType->getNumParams(),
+                                    ", got ", args.size());
             return nullptr;
         }
     }
 
-    // emitCallableCall (closure/CodeGenClosure.hpp) discriminates closure
-    // values, plain llvm::Function references, and indirect function
-    // pointers - the same shared dispatch lowerCallExpr and
-    // createCompositionWrapper use.
+    // ─── Callee: retain only on load ─────────────────────────────────────
+    // If the callable is a fresh expression (a closure literal written
+    // directly in the pipeline, or a call returning a closure), its temp
+    // claim transfers to the call. If it's a load (an identifier naming a
+    // binding), the binding keeps its claim and the call takes a new one.
+    if (calleeVal->getType() == closureType
+        && !isFreshExpression(step->callable)) {
+
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+            calleeVal, 1, "callee_env_to_retain");
+        llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+        ctx.builder.CreateCall(retainFn, {envPtr});
+    }
+
     return emitCallableCall(calleeVal, args, fnType, ctx, "pipeline_call");
-}
+} 
 
 // =============================================================================
 // Compose Operand
@@ -2579,12 +2647,6 @@ static llvm::Function* createCompositionWrapper(
 ) {
     if (!f || !fLLVMType || !fParamSource || !g || !gType) return nullptr;
 
-    // ─── 1. Build g's canonical LLVM function type ─────────────────────────
-    if (!fLLVMType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, fParamSource->loc,
-                                "invalid function type in composition (left operand)");
-        return nullptr;
-    }
     llvm::FunctionType* gLLVMType = getFunctionType(ctx, gType);
     if (!gLLVMType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, gType->loc,
@@ -2594,25 +2656,40 @@ static llvm::Function* createCompositionWrapper(
 
     llvm::Type* returnType = gLLVMType->getReturnType();
 
-    // ─── 2. Build the wrapper's own LLVM function type ─────────────────────
-    // The wrapper takes f's parameters and returns g's return type.
     llvm::FunctionType* composedFuncType = llvm::FunctionType::get(
-        returnType,
-        fLLVMType->params(),
-        false
-    );
+        returnType, fLLVMType->params(), false);
 
-    // ─── 3. Generate a unique name for the wrapper ─────────────────────────
     static int wrapperCounter = 0;
-    std::string wrapperName = "_compose_wrapper_" + std::to_string(wrapperCounter++);
+    std::string wrapperName = "_compose_wrapper_"
+        + std::to_string(wrapperCounter++);
 
-    // ─── 4. Create the LLVM function ────────────────────────────────────────
     llvm::Function* wrapper = llvm::Function::Create(
         composedFuncType,
         llvm::Function::InternalLinkage,
         wrapperName,
-        ctx.module
-    );
+        ctx.module);
+
+    // ─── Rule 3 (partial): retain f and g at the construction site ────────
+    // This is the only valid location without changing the wrapper's
+    // signature. The retain emits IR into the CALLER's frame, holding
+    // claims on f's and g's envs for as long as the caller is live.
+    //
+    // This is a leak: the wrapper has no matching release. A correct
+    // fix requires passing f and g as wrapper parameters so the wrapper
+    // body can retain on entry and release on exit. Tracked separately.
+    llvm::StructType* closureType = ctx.getClosureType();
+    if (f->getType() == closureType) {
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+            f, 1, "compose_f_env_to_retain");
+        llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+        ctx.builder.CreateCall(retainFn, {envPtr});
+    }
+    if (g->getType() == closureType) {
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+            g, 1, "compose_g_env_to_retain");
+        llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+        ctx.builder.CreateCall(retainFn, {envPtr});
+    }
 
     // ─── 5. Set parameter names ─────────────────────────────────────────────
     size_t paramIndex = 0;

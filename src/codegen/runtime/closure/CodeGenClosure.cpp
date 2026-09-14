@@ -72,6 +72,20 @@ static std::atomic<size_t> g_closureCounter{0};
 static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
                            llvm::Value* envPtr, CodeGenContext& ctx);
 
+                           static llvm::Value* resolveCaptureValue(
+    const CapturedVariable& capture, CodeGenContext& ctx)
+{
+    if (!capture.resolvedDecl) return nullptr;
+    return ctx.lookupValue(capture.resolvedDecl);
+}
+
+static TypeAST* resolveCaptureType(
+    const CapturedVariable& capture, CodeGenContext& ctx)
+{
+    (void)ctx;
+    return capture.resolvedDecl ? capture.resolvedDecl->type : nullptr;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Runtime Closure Check Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,18 +156,8 @@ llvm::Value* normalizeToClosureType(llvm::Value* value, CodeGenContext& ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& capture) {
-    // ─── TODO: Scope walker not yet implemented ─────────────────────────
-    // Under the redesign, a capture identifies its declaration by
-    // (name, functionDepth), not by a ValueDeclAST* pointer. Resolving
-    // the type requires walking ctx.stack's function frames up to
-    // functionDepth and looking up `name` in the enclosing function's
-    // scope map. That infrastructure doesn't exist yet.
-    //
-    // Until it does, closure lowering of ANY capturing function is
-    // unsupported. Non-capturing closures (captures.empty()) never reach
-    // this function, so they still work.
-    (void)capture;
-    return nullptr;
+    if (!capture.resolvedDecl || !capture.resolvedDecl->type) return nullptr;
+    return getType(ctx, capture.resolvedDecl->type);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,50 +167,90 @@ llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& cap
 llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    // ─── Interim: capturing closures not yet supported ──────────────────
-    // The redesign represents a capture as (name, functionDepth), not a
-    // ValueDeclAST*. Resolving that to an LLVM value and type requires the
-    // CodeGen-side scope walker (per-function name→value and name→type
-    // maps with an `enclosing` chain), which does not exist yet.
-    //
-    // Until it does, reject any closure with captures here, at the single
-    // entry point, rather than silently producing a bogus environment.
-    if (!expr->captures.empty()) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
-            "capturing closures are not yet supported by this codegen pass — "
-            "the scope walker for capture type resolution is not implemented");
-        return nullptr;
-    }
-
-    // ─── 1. Build the (empty) closure environment struct ────────────────
-    // For a non-capturing closure this is just an empty struct; it exists
-    // only to keep the fat-pointer shape uniform.
     llvm::StructType* envType = buildClosureEnvironment(expr, ctx);
-    if (!envType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
-                                "failed to build closure environment");
-        return nullptr;
-    }
+    if (!envType) return nullptr;
 
-    // ─── 2. Create the closure function ─────────────────────────────────
     llvm::Function* closureFunc = createClosureFunction(expr, ctx);
-    if (!closureFunc) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
-                                "failed to create closure function");
-        return nullptr;
-    }
+    if (!closureFunc) return nullptr;
 
     expr->closureFunction = closureFunc;
     expr->environmentType = envType;
 
-    // ─── 3. Non-capturing: null env pointer ─────────────────────────────
-    // No heap allocation, no retain, no release. The fat pointer's env
-    // slot is null; emitClosureCall passes null through to the closure
-    // function, which ignores it.
-    llvm::Value* envPtr = llvm::ConstantPointerNull::get(
-        llvm::PointerType::get(ctx.llvmCtx, 0));
+    const bool hasCaptures = !expr->captures.empty();
+    llvm::Value* envPtr = nullptr;
 
-    // ─── 4. Build the fat pointer { func, env } ─────────────────────────
+    if (hasCaptures) {
+        llvm::Function* allocEnv = ctx.getRuntimeFn(RuntimeFn::AllocEnv);
+        llvm::DataLayout dl(ctx.module);
+        uint64_t envSize = dl.getTypeAllocSize(envType);
+        llvm::Value* envSizeVal = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(ctx.llvmCtx), envSize);
+        envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal}, "env_ptr");
+        envPtr = ctx.builder.CreatePointerCast(
+            envPtr, llvm::PointerType::get(envType, 0), "typed_env");
+
+        for (const CapturedVariable& capture : expr->captures) {
+            llvm::Value* binding = resolveCaptureValue(capture, ctx);
+            TypeAST* capturedType = resolveCaptureType(capture, ctx);
+
+            if (!binding || !capturedType) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidCapture, expr->loc,
+                    "captured variable '", ctx.pool.lookup(capture.name),
+                    "' could not be resolved");
+                return nullptr;
+            }
+
+            llvm::Type* fieldType = getType(ctx, capturedType);
+            if (!fieldType) return nullptr;
+
+            llvm::Value* storedValue = nullptr;
+
+            if (!capture.byReference && isOwnedBufferType(capturedType)) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
+                    "capturing an owned buffer (string or dynamic array) "
+                    "by value is not yet supported");
+                return nullptr;
+            }
+
+            if (capture.byReference) {
+                if (!binding->getType()->isPointerTy()) {
+                    ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, expr->loc,
+                        "by-reference capture '", ctx.pool.lookup(capture.name),
+                        "' did not resolve to a pointer");
+                    return nullptr;
+                }
+                storedValue = binding;
+            } else {
+                if (llvm::isa<llvm::AllocaInst>(binding)
+                    || llvm::isa<llvm::GlobalVariable>(binding)) {
+                    storedValue = ctx.builder.CreateLoad(
+                        fieldType, binding,
+                        "capture_" + ctx.pool.lookup(capture.name));
+                } else {
+                    storedValue = binding;
+                }
+            }
+
+            if (!capture.byReference && capturedType->isa<FuncTypeAST>()) {
+                if (!storedValue->getType()->isStructTy()) {
+                    storedValue = normalizeToClosureType(storedValue, ctx);
+                }
+                llvm::Value* envForRetain = ctx.builder.CreateExtractValue(
+                    storedValue, 1, "capture_env");
+                llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+                ctx.builder.CreateCall(retainFn, {envForRetain});
+            }
+
+            llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+                envType, envPtr, capture.index,
+                "env_field_" + ctx.pool.lookup(capture.name));
+            ctx.builder.CreateStore(storedValue, fieldPtr);
+        }
+    } else {
+        envPtr = llvm::ConstantPointerNull::get(
+            llvm::PointerType::get(ctx.llvmCtx, 0));
+    }
+
     llvm::StructType* closureType = ctx.getClosureType();
     llvm::Value* closure = llvm::UndefValue::get(closureType);
     closure = ctx.builder.CreateInsertValue(
@@ -215,10 +259,7 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
             llvm::PointerType::get(ctx.llvmCtx, 0)),
         0);
     closure = ctx.builder.CreateInsertValue(closure, envPtr, 1);
-
     expr->llvmValue = closure;
-
-    Trace::detail("Lowered non-capturing closure (0 captures)");
     return closure;
 }
 
@@ -344,10 +385,6 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
     FuncTypeAST* funcType = expr->funcType;
     if (!funcType) return false;
 
-    // NOTE: there is no capture-load loop here. For a non-capturing closure
-    // (the only kind that reaches this function — see the guard in
-    // lowerClosure), the environment is empty and envPtr is null. Captured
-    // values would be loaded from the env here once the scope walker exists.
     llvm::StructType* envType = expr->environmentType;
     if (!envType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
@@ -355,7 +392,10 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         return false;
     }
 
-    // ─── 1. Push function context ────────────────────────────────────────
+    // ─── 1. Save the previous function context ──────────────────────────
+    llvm::Function* prevFunc = ctx.currentFunction;
+    llvm::Value* prevEnv = ctx.currentEnvPtr;
+
     ctx.setCurrentFunction(closureFunc);
 
     // ─── 2. Create entry block ──────────────────────────────────────────
@@ -363,7 +403,46 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         ctx.llvmCtx, "entry", closureFunc);
     ctx.builder.SetInsertPoint(entryBlock);
 
-    // ─── 3. Lower parameters ────────────────────────────────────────────
+    // ─── 3. Load captured values from the environment ───────────────────
+    // This runs FIRST, before parameters and body, because the body's
+    // identifier expressions resolve against `ctx.values` — the same map
+    // these loads populate. Populating it after body lowering (as an
+    // earlier revision did) left every captured name unresolved at the
+    // point the body actually needed it.
+    //
+    // By-reference captures: the env field holds a pointer to the
+    //   captured binding's storage. Store that pointer directly under
+    //   `resolvedDecl`; identifier loads through it see the live value.
+    // By-value captures: the env field holds a copy. Spill it into a
+    //   fresh alloca so mutations inside the closure do not reach the
+    //   original, and store the alloca under `resolvedDecl`.
+    for (size_t i = 0; i < expr->captures.size(); ++i) {
+        const CapturedVariable& capture = expr->captures[i];
+        if (!capture.name.isValid()) continue;
+
+        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+            envType, envPtr, i,
+            "captured_" + ctx.pool.lookup(capture.name));
+        llvm::Type* fieldType = envType->getElementType(i);
+        llvm::Value* capturedValue = ctx.builder.CreateLoad(
+            fieldType, fieldPtr,
+            "load_captured_" + ctx.pool.lookup(capture.name));
+
+        if (capture.byReference) {
+            if (!capture.resolvedDecl) continue;
+            ctx.storeValue(capture.resolvedDecl, capturedValue);
+        } else {
+            llvm::AllocaInst* spill = ctx.builder.CreateAlloca(
+                fieldType, nullptr,
+                "capture_spill_" + ctx.pool.lookup(capture.name));
+            ctx.builder.CreateStore(capturedValue, spill);
+            if (capture.resolvedDecl) {
+                ctx.storeValue(capture.resolvedDecl, spill);
+            }
+        }
+    }
+
+    // ─── 4. Lower parameters ────────────────────────────────────────────
     size_t paramArgIndex = 1;
     for (ParamAST* param : funcType->params) {
         if (paramArgIndex < closureFunc->arg_size()) {
@@ -382,17 +461,19 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         }
     }
 
-    // ─── 4. Lower the body ──────────────────────────────────────────────
+    // ─── 5. Lower the body ──────────────────────────────────────────────
     if (expr->body) {
         lowerStatement(expr->body, ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, expr->loc,
                                 "anonymous function has no body");
-        ctx.setCurrentFunction(nullptr);
+        ctx.currentFunction = prevFunc;
+        ctx.currentEnvPtr = prevEnv;
         return false;
     }
 
-    ctx.setCurrentFunction(nullptr);
+    ctx.currentFunction = prevFunc;
+    ctx.currentEnvPtr = prevEnv;
 
     std::string error;
     llvm::raw_string_ostream errorStream(error);

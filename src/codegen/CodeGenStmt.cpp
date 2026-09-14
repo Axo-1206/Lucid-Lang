@@ -12,6 +12,7 @@
 #include "CodeGen.hpp"
 #include "support/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenOwnership.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "types/LLVMTypeHelpers.hpp"
 #include "support/Truthiness.hpp"
@@ -631,81 +632,103 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     llvm::Function* func = ctx.getCurrentFunction();
     assert(func && "Return statement outside of function");
 
-    // ─── Determine the type this statement is actually producing ─────────
-    // Normally func->getReturnType() is correct. But when a caller has
-    // installed a unified exit block (ctx.returnBlock != nullptr — used by
-    // lowerErasedFunctionBody for @[erased] functions), func's declared
-    // return type is the ABI-transformed type (e.g. TaggedSlot* for the
-    // erased ABI), NOT what this return statement's expression produces.
-    // // ctx.returnValueType carries the real (concrete) type in that case.
-    // llvm::Type* returnType = ctx.returnBlock ? ctx.returnValueType : func->getReturnType();
+    llvm::Type* returnType = func->getReturnType();
 
-    // ─── Check if this is the main function ──────────────────────────────
     bool isMain = false;
     std::string funcName = func->getName().str();
     if (funcName == "main" || funcName == "__lucid_main") {
         isMain = true;
     }
 
-    // ─── Emit cleanup for ALL scopes before returning ──────────────────
+    // ─── 1. Lower the return value BEFORE any cleanup ────────────────────
+    // emitUnwindTo(0) below releases every alive binding in every
+    // enclosing scope. If the return expression references any of them,
+    // those references must resolve before the release IR runs. Order:
+    // evaluate, retain, unwind, ret.
+    llvm::Value* returnVal = nullptr;
+    if (stmt->value) {
+        returnVal = lowerExpression(stmt->value, ctx);
+        if (!returnVal) return;
+
+        if (stmt->value->isLValue) {
+            llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
+            if (elemType) {
+                returnVal = loadIfNeeded(returnVal, elemType, ctx);
+            }
+            if (!returnVal) return;
+        }
+
+        // Cast to the declared return type if needed.
+        if (returnVal->getType() != returnType) {
+            if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
+                if (getIntegerBitWidth(returnVal->getType())
+                    < getIntegerBitWidth(returnType)) {
+                    returnVal = ctx.builder.CreateSExt(returnVal, returnType);
+                } else {
+                    returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
+                }
+            } else if (returnVal->getType()->isFloatingPointTy()
+                       && returnType->isFloatingPointTy()) {
+                if (returnVal->getType()->getPrimitiveSizeInBits()
+                    < returnType->getPrimitiveSizeInBits()) {
+                    returnVal = ctx.builder.CreateFPExt(returnVal, returnType);
+                } else {
+                    returnVal = ctx.builder.CreateFPTrunc(returnVal, returnType);
+                }
+            } else if (returnVal->getType()->isPointerTy()
+                       && returnType->isPointerTy()) {
+                returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
+            }
+        }
+    }
+
+    // ─── 2. Rule 2 — retain on return, only for loads ────────────────────
+    // A returned closure value whose source is a load from an existing
+    // binding (identifier, field, index) carries the source binding's
+    // claim. The caller's frame outlives this frame's cleanup — the
+    // emitUnwindTo(0) below will release the source binding's claim — so
+    // the callee must give the caller a claim of its own: retain.
+    //
+    // A returned closure value whose source is a fresh expression (closure
+    // literal, call returning a fresh closure, compose / pipeline result)
+    // already carries one temporary claim. The caller takes it over by
+    // transferring through the return. No retain; the temp claim is the
+    // caller's claim.
+    //
+    // See isFreshExpression's doc-comment for the classification and why
+    // the ambiguous kinds default to load.
+    if (returnVal
+        && returnType->isStructTy()
+        && returnType->getStructNumElements() == 2
+        && stmt->value
+        && stmt->value->resolvedType
+        && stmt->value->resolvedType->isa<FuncTypeAST>()
+        && !isFreshExpression(stmt->value)) {
+
+        llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+            returnVal, 1, "return_env_to_retain");
+        llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+        // __lucid_retain_env is null-safe (see CodeGenOwnership's note),
+        // so a non-capturing closure's null env is a no-op.
+        ctx.builder.CreateCall(retainFn, {envPtr});
+    }
+
+    // ─── 3. Emit cleanup for ALL scopes before returning ─────────────────
     ctx.emitUnwindTo(0);
 
-    // ─── If this is main, call __lucid_shutdown() before returning ──────
+    // ─── 4. If this is main, call __lucid_shutdown() before returning ────
     if (isMain) {
         llvm::Function* shutdownFn = ctx.getRuntimeFn(RuntimeFn::Shutdown);
         ctx.builder.CreateCall(shutdownFn, {});
     }
 
-    // llvm::Value* returnVal = nullptr;
-    // if (stmt->value) {
-    //     returnVal = lowerExpression(stmt->value, ctx);
-    //     if (!returnVal) return;
-
-    //     if (stmt->value->isLValue) {
-    //         llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
-    //         assert(elemType && "Return value has no type");
-    //         returnVal = loadIfNeeded(returnVal, elemType, ctx);
-    //     }
-
-    //     // Cast if needed
-    //     if (returnVal->getType() != returnType) {
-    //         if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
-    //             if (getIntegerBitWidth(returnVal->getType()) < getIntegerBitWidth(returnType)) {
-    //                 returnVal = ctx.builder.CreateSExt(returnVal, returnType);
-    //             } else {
-    //                 returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
-    //             }
-    //         } else if (returnVal->getType()->isFloatingPointTy() && returnType->isFloatingPointTy()) {
-    //             if (returnVal->getType()->getPrimitiveSizeInBits() < returnType->getPrimitiveSizeInBits()) {
-    //                 returnVal = ctx.builder.CreateFPExt(returnVal, returnType);
-    //             } else {
-    //                 returnVal = ctx.builder.CreateFPTrunc(returnVal, returnType);
-    //             }
-    //         } else if (returnVal->getType()->isPointerTy() && returnType->isPointerTy()) {
-    //             returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
-    //         }
-    //     }
-    // }
-
-    // ─── Unified-exit mode: stash + branch instead of ret directly ───────
-    // Lets one caller-installed exit block do ABI-specific work (e.g.
-    // boxing into a TaggedSlot for @[erased]) exactly once, no matter how
-    // many return sites the body has (early returns in if/match/loops all
-    // funnel through here).
-    // if (ctx.returnBlock) {
-    //     if (returnVal && ctx.returnValueAlloca) {
-    //         ctx.builder.CreateStore(returnVal, ctx.returnValueAlloca);
-    //     }
-    //     ctx.builder.CreateBr(ctx.returnBlock);
-    //     return;
-    // }
-
-    // if (returnVal) {
-    //     ctx.builder.CreateRet(returnVal);
-    // } else {
-    //     assert(returnType->isVoidTy() && "Void return in non-void function");
-    //     ctx.builder.CreateRetVoid();
-    // }
+    // ─── 5. Emit the ret ────────────────────────────────────────────────
+    if (returnVal) {
+        ctx.builder.CreateRet(returnVal);
+    } else {
+        assert(returnType->isVoidTy() && "Void return in non-void function");
+        ctx.builder.CreateRetVoid();
+    }
 }
 
 // =============================================================================

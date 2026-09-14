@@ -129,54 +129,7 @@ static bool isStaticStringData(llvm::Value* dataPtr) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 ResourceKind classifyResource(ValueDeclAST* decl) {
-    if (!decl || !decl->type) return ResourceKind::None;
-
-    TypeAST* type = decl->type;
-
-    // ─── Function-typed bindings ─────────────────────────────────────────
-    // A FuncDeclAST with hasClosure owns its env (refcounted). A FuncDeclAST
-    // without hasClosure is a bare function pointer and owns nothing. A
-    // VarDeclAST never holds a FuncTypeAST in Lucid (the parser's
-    // looksLikeFuncDecl guarantees it), so no separate VarDeclAST branch.
-    if (type->isa<FuncTypeAST>()) {
-        if (decl->isa<FuncDeclAST>()) {
-            FuncDeclAST* func = decl->as<FuncDeclAST>();
-            bool capturing = func->init
-                && func->init->isa<AnonFuncExprAST>()
-                && func->init->as<AnonFuncExprAST>()->hasClosure;
-            return capturing ? ResourceKind::Refcounted : ResourceKind::None;
-        }
-        return ResourceKind::None;
-    }
-
-    // ─── Strings ─────────────────────────────────────────────────────────
-    if (type->isa<PrimitiveTypeAST>()) {
-        PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
-        return prim->primitiveKind == PrimitiveKind::String
-            ? ResourceKind::OwnedBuffer : ResourceKind::None;
-    }
-
-    // ─── Dynamic arrays ──────────────────────────────────────────────────
-    if (type->isa<ArrayTypeAST>()) {
-        return type->as<ArrayTypeAST>()->isDynamic()
-            ? ResourceKind::OwnedBuffer : ResourceKind::None;
-    }
-
-    // ─── Named types (structs) ───────────────────────────────────────────
-    // TODO(Phase 5): recurse into fields once structOwnsResources exists.
-    if (type->isa<NamedTypeAST>()) {
-        return ResourceKind::None;
-    }
-
-    // ─── TaggedSlot-wrapped resources (erased path) ──────────────────────
-    // TODO(Phase 4): unwrap the payload type and recurse.
-    if (type->isa<NullableTypeAST>() ||
-        type->isa<FallibleTypeAST>() ||
-        type->isa<CombinedTypeAST>()) {
-        return ResourceKind::None;
-    }
-
-    return ResourceKind::None;
+    return decl ? decl->resourceKind : ResourceKind::None;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

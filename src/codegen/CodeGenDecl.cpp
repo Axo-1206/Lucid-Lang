@@ -354,7 +354,9 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 7. Save the previous function context ──────────────────────────
     llvm::Function* prevFunc = ctx.currentFunction;
     llvm::Value* prevEnv = ctx.currentEnvPtr;
+    AnonFuncExprAST* prevAnon = ctx.currentFunctionAnon;
     ctx.currentFunction = func;
+    ctx.currentFunctionAnon = anon; // `anon` is already in scope from step 4
 
     // ─── 8. Push a live scope for the function body ─────────────────────
     ctx.pushLiveScope();
@@ -410,6 +412,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 13. Restore the previous function context ──────────────────────
     ctx.currentFunction = prevFunc;
     ctx.currentEnvPtr = prevEnv;
+    ctx.currentFunctionAnon = prevAnon;
 
     Trace::detail("Lowered body of function '", ctx.pool.lookup(decl->name), "'");
 }

@@ -97,19 +97,32 @@
 ///   Store:   store %val, %dest_alloca            ; dest's claim acquired
 ///   Cleanup: emitRelease at scope exit (both)    ; refcount-- twice → 0
 ///
-/// ─── Rule 3: Always retain on return and argument pass ───────────────────
-/// Return and argument pass are always "copy" operations, because the
-/// destination frame outlives the source frame's cleanup. The callee or
-/// caller receives an independent claim via emitRetain, and the source
-/// frame releases its own claim through normal scope-exit cleanup.
+/// ─── Rule 3: Retain on return / argument pass, only for loads ───────────
+/// A return or argument pass is a "copy" when the value came from an
+/// existing binding (an identifier, a field read, an index read): the
+/// source binding keeps its claim, and the destination frame takes a new
+/// one via emitRetain. It is a "transfer" when the value came from a
+/// fresh expression (a closure literal, a call whose return value carries
+/// the callee's own Rule 3 claim): the temporary claim moves to the
+/// destination, and no retain is emitted.
 ///
-///   Caller:  %val = lowerExpression(arg)         ; source claim = 1
+/// The classification is made by isFreshExpression at each call site.
+/// See the helper's doc-comment for the kind list.
+///
+///   ─── Load: retain ───────────────────────────────────────────────
+///   Source:  %val = load %source_alloca          ; source claim = 1
 ///   Retain:  emitRetain(_, %val, ctx)            ; refcount++ → 2
-///   Call:    f(%val)                             ; callee's claim
+///   Pass:    f(%val)                             ; callee's claim
 ///   In f:    param stored in alloca              ; param binding owns claim
-///   ...
 ///   Cleanup: callee's scope exit releases        ; refcount-- → 1
 ///   Cleanup: caller's scope exit releases        ; refcount-- → 0
+///
+///   ─── Fresh: transfer ────────────────────────────────────────────
+///   Fresh:   %val = lowerClosure(...)            ; refcount = 1
+///   (no retain)
+///   Pass:    f(%val)                             ; temp claim → callee
+///   In f:    param stored in alloca              ; param binding owns claim
+///   Cleanup: callee's scope exit releases        ; refcount-- → 0
 ///
 /// ─── Rule 4: Self-assignment is a no-op ──────────────────────────────────
 /// When reassigning a binding to its own value (`f = f;`, or `f = g;` where
@@ -123,21 +136,27 @@
 ///
 /// ─── How the Call Sites Encode This ──────────────────────────────────────
 ///
-///   emitCleanupForTracker:  always emitRelease (Rule 1 or 2 — the binding
-///                           is dying, its claim must go away)
+///   emitCleanupForTracker:  always emitRelease (the binding is dying,
+///                           its claim must go away — Rule 1 or 2 made no
+///                           difference to this side)
 ///
-///   lowerReturnStmt:        always emitRetain (Rule 3)
+///   lowerReturnStmt:        emitRetain if the return expression is a load
+///                           (isFreshExpression == false); transfer if it
+///                           is fresh
 ///
-///   lowerCallExpr:          always emitRetain per closure arg (Rule 3)
+///   lowerCallExpr:          same predicate per closure argument
+///
+///   lowerPipelineStep:      same predicate on pack args and on the
+///                           callable; upstream is always retained (no
+///                           source expression available to classify)
 ///
 ///   lowerAssignExpr:        emitRelease old value,
-///                           then:
-///                             if RHS is a fresh closure literal → no retain
-///                             else → emitRetain (Rule 2)
+///                           then emitRetain if the RHS is a load;
+///                           transfer if the RHS is fresh,
 ///                           with a self-assignment guard (Rule 4)
 ///
-///   lowerStructLiteralExpr: Phase 5 decides per-field (fresh literal vs
-///                           existing binding, same rules)
+///   lowerStructLiteralExpr: Phase 5 decides per-field with the same
+///                           isFreshExpression predicate
 ///
 /// ─── Why Not Just Always Retain? ─────────────────────────────────────────
 /// If every store retained, the temp claim from lowerClosure would leak:
@@ -188,25 +207,6 @@
 
 namespace codegen {
 
-// ─── ResourceKind ─────────────────────────────────────────────────────────
-
-/// @brief What kind of heap resource, if any, a declaration's value owns.
-///
-/// See the file header's OWNERSHIP MODEL section for the patterns. This
-/// enum is the single classification result: every call site that used to
-/// ask "does this own a resource?" or "which kind?" now asks this one
-/// function and switches on the result.
-///
-/// Phase 4 will add TaggedResource (for T?/T!/T?! wrapping a resource).
-/// Phase 5 will add CompositeStruct (or, more likely, a separate
-/// classification of the struct's fields — see the file header's note).
-/// For now the set is exactly what emitRelease/emitRetain handle.
-enum class ResourceKind {
-    None,          ///< Owns nothing. Release/retain are no-ops.
-    Refcounted,    ///< Closure env. Retain increments; release decrements.
-    OwnedBuffer,   ///< String / dynamic array. Release frees; retain no-op.
-};
-
 /// @brief Classify a declaration's value into one of the resource kinds.
 ///
 /// This is the single source of truth for "does this binding own a heap
@@ -227,26 +227,23 @@ ResourceKind classifyResource(ValueDeclAST* decl);
 /// See the file header's OWNERSHIP MODEL section for the three patterns.
 /// This function classifies a declaration into one of them.
 ///
-/// Dispatches on decl->type. Current coverage:
+/// The classification is computed once, by Sema, at declaration-resolve
+/// time, and cached on the declaration as `ValueDeclAST::resourceKind`.
+/// CodeGen reads that field; it does not walk the type. The single source
+/// of truth for the decision is sema::classifyResourceKind — see that
+/// function's doc-comment for the full dispatch table and the reasoning
+/// behind the None classifications for function-typed parameters and
+/// fields without a statically-known shape.
 ///
-///   - FuncTypeAST on a FuncDeclAST with hasClosure
-///       → Pattern A (refcounted closure env).
-///   - FuncTypeAST on a FuncDeclAST without hasClosure
-///       → Pattern C (no-op).
-///   - FuncTypeAST on a VarDeclAST
-///       → Pattern C. VarDeclAST never holds a function-typed binding in
-///         Lucid; the parser's looksLikeFuncDecl dispatch guarantees it.
-///   - PrimitiveTypeAST with PrimitiveKind::String
-///       → Pattern B (deep copy).
-///   - ArrayTypeAST with ArrayKind::Dynamic
-///       → Pattern B (deep copy).
-///   - NamedTypeAST pointing at a StructDeclAST
-///       → Phase 5. Currently Pattern C (stub). Will become a recursive
-///         classification once structOwnsResources exists.
-///   - Nullable/Fallible/Combined wrapping a resource
-///       → Phase 4. Currently Pattern C (stub). Will unwrap and recurse.
-///   - Everything else
-///       → Pattern C.
+/// This function is a thin wrapper over the cached field:
+///
+///   ResourceKind classifyResource(ValueDeclAST* decl) {
+///       return decl ? decl->resourceKind : ResourceKind::None;
+///   }
+///
+/// The cached value is the answer to "does this binding own a heap
+/// resource, and if so, which kind?" — the same question this header's
+/// three functions answer.
 ///
 /// @param decl The declaration whose binding we're asking about. May be a
 ///             VarDeclAST, FuncDeclAST, ParamAST, or FieldDeclAST — any
@@ -335,12 +332,14 @@ void emitRelease(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx);
 /// For Pattern C (primitives, non-capturing functions, references), emitRetain
 /// is a no-op.
 ///
-/// Coverage today:
+/// Coverage is determined by decl->resourceKind, set by Sema:
 ///
-///   - FuncTypeAST on a FuncDeclAST with hasClosure → retain env (Rule 2/3).
-///   - FuncTypeAST on a FuncDeclAST without hasClosure → no-op.
-///   - String, dynamic array → no-op (documented above).
-///   - Struct, TaggedSlot → Phase 4 / Phase 5 stubs.
+///   - Refcounted  → retain the closure env (Rule 2/3).
+///   - OwnedBuffer → no-op (deep-copy semantics; see Pattern B above).
+///   - None        → no-op.
+///
+/// Struct and TaggedSlot resource kinds are Phase 4 / Phase 5 stubs:
+/// they currently classify as None, so emitRetain is a no-op on them.
 ///
 /// @param decl  The declaration the value belongs to. Used for type dispatch.
 /// @param value The LLVM value to retain. Must be the value, not an alloca.
