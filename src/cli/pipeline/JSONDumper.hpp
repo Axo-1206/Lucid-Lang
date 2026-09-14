@@ -319,6 +319,7 @@ private:
 
     std::string str(InternedString s) const;
     std::string getModulePath(InternedString filePath) const;
+    void serializeDeclRef(JSONWriter& json, DeclAST* decl);
     
     StringPool& pool;
     const std::vector<ModuleAST*>& modules;

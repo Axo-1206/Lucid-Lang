@@ -271,12 +271,10 @@ TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
         // parser; the storage map's key is pointer-identity on canonicalized args,
         // so canonicalization must happen before the lookup or the key will not
         // match what was registered.
-        std::vector<TypeAST*> canonicalArgsList;
         ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(type->genericArgs, ctx);
 
         // ─── Check the structural storage map ─────────────────────────────────
-        StructDeclAST* resolvedStruct =
-            ctx.getGenericTypeInstantiation(structDecl->name, canonicalArgs);
+        StructDeclAST* resolvedStruct = ctx.getGenericTypeInstantiation(structDecl->name, canonicalArgs);
 
         if (!resolvedStruct) {
             // Miss — instantiate. resolveGenericInstantiation already

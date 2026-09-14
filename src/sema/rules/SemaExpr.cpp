@@ -1782,8 +1782,16 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetTyp
     }
 
     // ─── Step 8: Set the resolved type ──────────────────────────────────
-    // The resolved type is the struct type (cached)
+    // The resolved type is the struct type (cached).
+    //
+    // NOTE: `ctx.getNamedType` only allocates/retrieves the canonical
+    // `NamedTypeAST(name, genericArgs)` node; it does NOT set `resolvedDecl`.
+    // `resolvedDecl` is only populated by `resolveNamedType` when a named type
+    // appears in a type-annotation context.  A struct literal reaches here via
+    // a different path, so we must stamp `resolvedDecl` ourselves to ensure
+    // every consumer of `expr->resolvedType` finds a fully-resolved type node.
     NamedTypeAST* resultType = ctx.getNamedType(targetStruct->name, canonicalArgs);
+    resultType->resolvedDecl = targetStruct;   // stamp specialization (or concrete struct)
     expr->resolvedType = resultType;
     expr->valueState = state;
     expr->isLValue = false;

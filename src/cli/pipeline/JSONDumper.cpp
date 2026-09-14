@@ -60,6 +60,46 @@ std::string JSONDumper::getModulePath(InternedString filePath) const {
     return str(filePath);
 }
 
+// ─── serializeDeclRef ────────────────────────────────────────────────────
+//
+// Emits a small JSON object that uniquely identifies a declaration:
+//
+//   { "name": "Box", "mangledName": "_L..._Box_Gi_Fi", "isGeneric": false }
+//
+// Using `mangledName` (which encodes the concrete type args for specializations
+// and is empty for uninstantiated templates/non-generic decls) lets a reader
+// distinguish the template `Box<T>` from its specialization `Box<int>` even
+// though both have the same source `name = "Box"`.
+//
+// Null is emitted for null decls (same convention as the old bare-string path).
+void JSONDumper::serializeDeclRef(JSONWriter& json, DeclAST* decl) {
+    if (!decl) {
+        json.null();
+        return;
+    }
+    json.beginObject();
+    json.kv("name", str(decl->name));
+    // mangledName is on specific concrete decl types, not the DeclAST base.
+    if (decl->isa<FuncDeclAST>()) {
+        json.kv("mangledName", str(decl->as<FuncDeclAST>()->mangledName));
+        json.kv("isGeneric", decl->as<FuncDeclAST>()->isGeneric());
+    } else if (decl->isa<StructDeclAST>()) {
+        json.kv("mangledName", str(decl->as<StructDeclAST>()->mangledName));
+        json.kv("isGeneric", decl->as<StructDeclAST>()->isGeneric());
+    } else if (decl->isa<EnumDeclAST>()) {
+        json.kv("mangledName", str(decl->as<EnumDeclAST>()->mangledName));
+        json.kv("isGeneric", false);   // enums are never generic
+    } else if (decl->isa<VarDeclAST>()) {
+        json.kv("mangledName", str(decl->as<VarDeclAST>()->mangledName));
+        json.kv("isGeneric", false);
+    } else {
+        // Params, fields, variants, etc. — no mangled name
+        json.kv("mangledName", "");
+        json.kv("isGeneric", false);
+    }
+    json.endObject();
+}
+
 // ─── Module Serialization ──────────────────────────────────────────────
 
 void JSONDumper::serializeModules(JSONWriter& json) {
@@ -744,11 +784,7 @@ void JSONDumper::serializeIdentifierExpr(JSONWriter& json, IdentifierExprAST* ex
     
     json.kv("resolved", expr->resolvedDecl != nullptr);
     json.key("resolvedDecl");
-    if (expr->resolvedDecl) {
-        json.string(str(expr->resolvedDecl->name));
-    } else {
-        json.null();
-    }
+    serializeDeclRef(json, expr->resolvedDecl);
     
     json.key("resolvedType");
     if (expr->hasType()) {
@@ -829,11 +865,7 @@ void JSONDumper::serializeStructLiteralExpr(JSONWriter& json, StructLiteralExprA
     
     // ─── Resolved decl + erased flag ────────────────────────────────────
     json.key("resolvedDecl");
-    if (expr->resolvedDecl) {
-        json.string(str(expr->resolvedDecl->name));
-    } else {
-        json.null();
-    }
+    serializeDeclRef(json, expr->resolvedDecl);
     
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
@@ -1029,11 +1061,7 @@ void JSONDumper::serializeFieldAccessExpr(JSONWriter& json, FieldAccessExprAST* 
     json.kv("fieldName", str(expr->fieldName));
     
     json.key("resolvedDecl");
-    if (expr->resolvedDecl) {
-        json.string(str(expr->resolvedDecl->name));
-    } else {
-        json.null();
-    }
+    serializeDeclRef(json, expr->resolvedDecl);
     
     json.key("ownerType");
     if (expr->ownerType) {
@@ -1078,11 +1106,7 @@ void JSONDumper::serializeModuleAccessExpr(JSONWriter& json, ModuleAccessExprAST
     json.endArray();
     
     json.key("resolvedDecl");
-    if (expr->resolvedDecl) {
-        json.string(str(expr->resolvedDecl->name));
-    } else {
-        json.null();
-    }
+    serializeDeclRef(json, expr->resolvedDecl);
     
     json.kv("resolved", expr->resolvedDecl != nullptr);
     json.kv("isConst", expr->isConst);
@@ -1430,11 +1454,7 @@ void JSONDumper::serializeNamedType(JSONWriter& json, NamedTypeAST* type) {
     json.endArray();
     
     json.key("resolvedDecl");
-    if (type->resolvedDecl) {
-        json.string(str(type->resolvedDecl->name));
-    } else {
-        json.null();
-    }
+    serializeDeclRef(json, type->resolvedDecl);
     
     json.key("location");
     serializeLocation(json, type->loc);

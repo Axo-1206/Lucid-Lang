@@ -120,7 +120,14 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
         
         // Update AST metadata (lightweight: just the flag and type)
         expr->isConst = true;
-        expr->resolvedType = getConstantType(ctx, result);
+        
+        // Only set the type if it wasn't already resolved by the main pass.
+        // The main pass's type is authoritative — it has the generic args and
+        // the specialization pointer. The const evaluator's derived type can
+        // disagree for parameterized types like `Box<int>`.
+        if (!expr->resolvedType) {
+            expr->resolvedType = getConstantType(ctx, result);
+        }
         expr->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
     }
 
@@ -422,7 +429,21 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, StructLiteralE
     ConstantValue result;
     result.kind = ConstantValue::Kind::Struct;
     result.value = fields;
-    result.type = ctx.getNamedType(structDecl->name);
+
+    if (expr->resolvedType) {
+        result.type = expr->resolvedType;
+    } else if (expr->resolvedDecl) {
+        // Reconstruct the type from the literal's own fields:
+        // - `resolvedDecl` is the specialization (or the struct, if non-generic)
+        // - `genericArgs` are the args as written (already canonicalized by
+        //   resolveStructLiteralExpr step 2d, so they're stable pointers)
+        result.type = ctx.getNamedType(
+            expr->resolvedDecl->name,
+            expr->genericArgs);
+    } else {
+        result.type = ctx.getNamedType(structDecl->name);
+    }
+
     return result;
 }
 
