@@ -795,11 +795,6 @@ struct ComposeExprAST : ExprAST {
 /// reads parameters from this field on the *current* init, every time it
 /// lowers a body.
 ///
-/// ─── Captures Are Lexical ──────────────────────────────────────────────
-/// `captures` holds `CapturedVariable` entries — see that struct for why
-/// they identify captures by name + lexical depth rather than by a
-/// declaration pointer.
-///
 /// ─── No `genericParams` Here, By Design ────────────────────────────────
 /// This node has no `genericParams` field, and none was added when
 /// `FuncDeclAST` gained its const-only-for-generics invariant (see
@@ -831,57 +826,6 @@ struct AnonFuncExprAST : ExprAST {
     /// True if this closure is returned from its enclosing function, and
     /// therefore must be heap-allocated rather than scope-confined.
     bool isReturned = false;
-
-    /// @brief The lexically enclosing function's `AnonFuncExprAST`, or
-    ///        `nullptr` for a top-level function.
-    ///
-    /// ─── Why This Is on the Closure, Not on the Capture ────────────────────
-    /// This pointer describes the closure's *position in the lexical nesting
-    /// tree*. It is one pointer, shared by every capture of this closure —
-    /// they all start from the same node and hop the same number of
-    /// `enclosingFunction` pointers upward. It is therefore a property of
-    /// the closure, not of any individual capture, and it does not belong on
-    /// `CapturedVariable`.
-    ///
-    /// ─── Relationship to `CapturedVariable::functionDepth` ─────────────────
-    /// The two are complementary, not redundant:
-    ///
-    ///   - `enclosingFunction` is the *chain start* — which node is one
-    ///     function boundary up.
-    ///   - `CapturedVariable::functionDepth` is the *hop count* — how many
-    ///     function boundaries up a particular capture resolves.
-    ///
-    /// Given a capture `{name, functionDepth}` and a closure `c`, CodeGen
-    /// resolves the name by starting at `c->enclosingFunction` and hopping
-    /// `functionDepth - 1` more times, then looking up `name` in the
-    /// resulting function's lowering-time scope. The two fields carry
-    /// different information: the pointer says *where* the chain starts, the
-    /// count says *how far* to walk it. Neither is derivable from the other.
-    ///
-    /// ─── What It Points At ─────────────────────────────────────────────────
-    /// This pointer targets `AnonFuncExprAST` nodes only — never `FuncDeclAST`.
-    /// A `FuncDeclAST` is a declaration, not a body; its body (when it has
-    /// one) is the `AnonFuncExprAST` at `init`. Two closures nested in the
-    /// same function both point at that function's `init` node; a closure
-    /// nested inside one of *those* closures points at the inner closure's
-    /// `AnonFuncExprAST`.
-    ///
-    /// ─── Set By Sema, Not by CodeGen ───────────────────────────────────────
-    /// This is a semantic fact about lexical nesting, known the moment the
-    /// closure is analyzed. Sema sets it in `analyzeCaptures` (or a helper
-    /// it calls) using the context stack's innermost function node — which,
-    /// at analyze time, is the enclosing function (the closure's own frame
-    /// has not been pushed yet).
-    ///
-    /// ─── Substitution ──────────────────────────────────────────────────────
-    /// Under generic substitution, the `AnonFuncExprAST` is rebuilt with
-    /// fresh `ParamAST` and `VarDeclAST` nodes. This pointer must be
-    /// re-derived in the specialized context: it should point at the
-    /// *specialized* enclosing function, not the template's. The substitution
-    /// pass walks top-down and knows its current enclosing function at every
-    /// node, so the assignment is a one-liner alongside the rebuilt node's
-    /// other fields.
-    AnonFuncExprAST* enclosingFunction = nullptr;
 
     // ─── CodeGen Fields (mutable) ───────────────────────────────────────
     llvm::Function* closureFunction = nullptr;

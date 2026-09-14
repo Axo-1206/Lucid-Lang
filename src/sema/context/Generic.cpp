@@ -509,30 +509,12 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
             AnonFuncExprAST* anon = expr->as<AnonFuncExprAST>();
             TypeAST* subFuncType = substituteType(anon->funcType, sc);
 
-            // ─── Construct newAnon without body first ──────────────────
-            // We need `newAnon` to exist before recursing into its body,
-            // because the body walk needs `newAnon` as the current
-            // enclosing function (for nested closures' enclosingFunction).
             AnonFuncExprAST* newAnon = sc.sema.arena.make<AnonFuncExprAST>(
                 subFuncType ? subFuncType->as<FuncTypeAST>() : nullptr,
-                nullptr   // body, filled below
+                nullptr
             );
-
             newAnon->loc = anon->loc;
-
-            // `captures`, `hasClosure`, and `isReturned` are populated by
-            // analyzeCaptures during body resolution. The template body is
-            // not resolved yet, so these fields are empty on the template
-            // node. The specialized copy gets its own capture set when the
-            // specialized body is resolved later.
-            newAnon->enclosingFunction = sc.enclosingFunction;
-
-            // ─── Walk the body with newAnon as current enclosing ───────
-            AnonFuncExprAST* prevEnclosing = sc.enclosingFunction;
-            sc.enclosingFunction = newAnon;
             newAnon->body = substituteStmt(anon->body, sc);
-            sc.enclosingFunction = prevEnclosing;
-
             return newAnon;
         }
 

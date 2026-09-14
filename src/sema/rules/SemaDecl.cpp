@@ -115,6 +115,11 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
+    // ─── 1b. Classify the resource kind ────────────────────────────────────
+    // VarDeclAST never holds a FuncTypeAST (parser guarantee), so the
+    // `asFunc` argument is always null here.
+    decl->resourceKind = ctx.classifyResourceKind(declaredType);
+
     // ─── 2. Validate const type ────────────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
@@ -548,6 +553,17 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     if (!resolveFunctionBody(decl->init, funcType, ctx)) {
         return;
     }
+
+    // ─── 9. Classify the resource kind ────────────────────────────────────
+    // Runs after step 8b, so `decl->init->as<AnonFuncExprAST>()->hasClosure`
+    // is set. A non-capturing function's init is a non-capturing anon,
+    // yielding None; a capturing function's init is a capturing anon,
+    // yielding Refcounted. A reference-body function's init is not an
+    // AnonFuncExprAST at all, so the classifier's hasClosure check
+    // short-circuits to false, yielding None — which is correct: a
+    // reference-body function's value is the referenced function's own
+    // pointer or fat pointer, not a new one this binding owns.
+    decl->resourceKind = ctx.classifyResourceKind(funcType, decl);
 }
 
 /// @brief Resolve a function's init expression against its declared type.
@@ -601,6 +617,17 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
         param->type = ctx.getUnknownType();
         return;
     }
+
+    // ─── 1b. Classify the resource kind ────────────────────────────────────
+    // The classifier's `asFunc` argument is null here: a ParamAST is not a
+    // FuncDeclAST, and a function-typed param's resource kind cannot be
+    // determined from the param alone (the value might be a plain function
+    // or a capturing closure). See classifyResourceKind's doc-comment for
+    // the reasoning behind returning None for that case.
+    //
+    // Non-function param types classify normally: string and dynamic array
+    // yield OwnedBuffer, everything else yields None.
+    param->resourceKind = ctx.classifyResourceKind(paramType);
     
     // ─── 2. Validate const parameter ────────────────────────────────────────
     if (param->isConstParam) {
@@ -871,6 +898,16 @@ bool resolveStructFieldDeclarations(
             return false;
         }
         field->type = fieldType;
+
+        // ─── 1b. Classify the resource kind ────────────────────────────
+        // FieldDeclAST never holds a FuncTypeAST as a *stored* value
+        // in the sense that matters here — a function-typed field is a
+        // function value, not a closure the field owns. If a field of
+        // function type is initialized with a capturing closure, the
+        // owning *struct* holds the closure env, not the field binding.
+        // Struct-level ownership is Phase 5; the field-level classification
+        // stays None for FuncTypeAST, matching CodeGen today.
+        field->resourceKind = ctx.classifyResourceKind(fieldType, nullptr, field->defaultVal);
 
         // ─── 2. Reject Arena by value ──────────────────────────────────
         if (isArenaType(fieldType)) {

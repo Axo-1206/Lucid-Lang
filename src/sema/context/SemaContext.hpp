@@ -357,7 +357,70 @@ struct SemaContext {
     std::vector<InternedString> getPendingSpawnNames() const;
     bool hasPendingAsync() const;
     bool hasPendingSpawn() const;
-    
+
+    // ─── Resource Kind Classification ──────────────────────────────────
+
+    /// @brief Classify what kind of heap resource a declaration's value owns.
+    ///
+    /// The single source of truth in Sema for the question "does this
+    /// binding own a heap resource, and if so, which kind?". CodeGen reads
+    /// the result from `ValueDeclAST::resourceKind`, which Sema stamps at
+    /// declaration-resolve time. This function is what stamps it.
+    ///
+    /// Called from `resolveVarDecl`, `resolveParam`, `resolveFuncDecl`,
+    /// `resolveStructFieldDeclarations`, and `finalizeInstantiatedFunction`
+    /// — once per declaration, right after its type is resolved. Never
+    /// called from CodeGen.
+    ///
+    /// ─── The Function-Type Case ─────────────────────────────────────────
+    ///
+    /// A function-typed declaration owns a refcounted closure environment
+    /// only if the value it holds is a *capturing* closure. Whether that's
+    /// knowable at the declaration site depends on the declaration kind:
+    ///
+    ///   FuncDeclAST with anon init  → knowable from init->hasClosure.
+    ///   FuncDeclAST with ref/call   → value flows from elsewhere; not
+    ///                                 resolvable from the declaration
+    ///                                 alone → None.
+    ///   FuncDeclAST foreign         → no value → None.
+    ///   ParamAST                    → value comes from the caller → None.
+    ///   FieldDeclAST with anon default → knowable from default's
+    ///                                 hasClosure.
+    ///   FieldDeclAST with no default, or a non-anon default → None.
+    ///   VarDeclAST                  → cannot hold a FuncTypeAST (parser
+    ///                                 guarantee) — this branch is
+    ///                                 unreachable for it.
+    ///
+    /// A `None` for a `ParamAST` or an overridable `FieldDeclAST` is safe
+    /// provided Rule 3 (retain on return / argument pass) is implemented
+    /// at every escape site — see CodeGenOwnership.hpp. A capturing
+    /// closure passed into such a slot stays alive because the caller's
+    /// own binding holds a claim on its environment for the duration of
+    /// the call; any escape out of the callee takes a fresh claim via
+    /// Rule 3.
+    ///
+    /// ─── Non-Function Types ─────────────────────────────────────────────
+    ///
+    /// String primitives and dynamic arrays own a buffer (OwnedBuffer).
+    /// Everything else owns nothing.
+    ///
+    /// Structs and tagged slots (T?/T!/T?!) are not yet classified —
+    /// they return None, matching what CodeGen's release/retain paths
+    /// currently handle.
+    ///
+    /// @param type            The declaration's resolved type. May be null.
+    /// @param asFunc          The declaration if it is a `FuncDeclAST`.
+    ///                        Null for every other caller.
+    /// @param asFieldDefault  A `FieldDeclAST`'s default value, if any.
+    ///                        Null for every other caller and for fields
+    ///                        with no default. Consulted only when `type`
+    ///                        is a function type.
+    /// @return The resource kind.
+    ResourceKind classifyResourceKind(
+        TypeAST* type,
+        FuncDeclAST* asFunc = nullptr,
+        ExprAST* asFieldDefault = nullptr) const;
+
     // ─── Type Cache Accessors ──────────────────────────────────────────
     PrimitiveTypeAST* getBoolType();
     PrimitiveTypeAST* getIntType();

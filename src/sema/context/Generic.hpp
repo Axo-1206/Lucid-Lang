@@ -70,15 +70,6 @@ struct SubstitutionContext {
     /// The substitution map for this instantiation.
     const GenericSubstitution& subst;
 
-    /// The AnonFuncExprAST currently being rebuilt by substitution, or
-    /// nullptr at the top level.
-    ///
-    /// Set/restored by substituteExpr's AnonFuncExprAST branch around the
-    /// recursive walk of each anon's body. Used to re-derive
-    /// `newAnon->enclosingFunction` so a specialized closure points at its
-    /// specialized lexical parent, not the template's.
-    AnonFuncExprAST* enclosingFunction = nullptr;
-
     SubstitutionContext(SemaContext& s, const GenericSubstitution& sub)
         : sema(s), subst(sub) {}
 };

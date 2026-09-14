@@ -465,53 +465,15 @@ enum class ValueState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A variable captured by a closure.
-///
-/// ─── Design: Lexical Identity, Not Pointer Identity ─────────────────────
-///
-/// Earlier revisions identified a captured variable by storing a
-/// `ValueDeclAST*` pointing at the declaration node it resolved to. That
-/// pointer went stale the moment a generic template was substituted: the
-/// specialized body contains freshly-built declaration nodes, but the
-/// capture list still pointed at the template's originals.
-///
-/// This struct now identifies a capture by two purely lexical facts:
-///
-///   - `name`          — the variable's source identifier
-///   - `functionDepth` — how many enclosing function scopes up it lives,
-///                     counted from the closure's own function scope
-///
-/// Both are invariant under generic substitution. Substitution rewrites
-/// type references and rebuilds expression nodes, but it never renames a
-/// variable and never changes scope structure. A capture list built
-/// against the template is therefore byte-identical to the one the
-/// specialized function needs — `substituteExpr`'s AnonFuncExprAST branch
-/// copies it verbatim, and that copy is correct.
-///
-/// CodeGen resolves a capture by walking `functionDepth` function scopes
-/// up from the closure's own scope and looking up `name` there, in the
-/// *current* lowering context. There is no fixed node to go stale.
-///
-/// ─── Why This Is a Distinct Struct, Not `ArenaSpan<ValueDeclAST*>` ──────
-/// Every field is a property of the *(this closure, this declaration)*
-/// pair, not of the declaration alone — the same variable may be captured
-/// mutably by one closure and read-only by another, and will generally
-/// have a different `index`/`envSlot` in each closure's own environment
-/// struct.
 struct CapturedVariable {
     // ─── Lexical Identity (invariant under generic substitution) ───────
     InternedString name;
 
-    /// How many enclosing *function* scopes up the captured variable lives,
-    /// counted from the closure's own function scope.
-    ///
-    /// A "function scope" here is an `AnonFuncExprAST` — the only node
-    /// that holds a function body and therefore the only node that
-    /// contributes a function boundary to this count. `FuncDeclAST` does
-    /// not contribute: it is a declaration whose body (when it has one)
-    /// is the `AnonFuncExprAST` at `init`, and that body is what the count
-    /// sees. See `AnonFuncExprAST::enclosingFunction` for the pointer
-    /// chain this count is defined against.
-    uint32_t functionDepth = 0;
+    /// The declaration this capture resolves to, in the specialized
+    /// context. Set by Sema's capture analysis; valid for CodeGen
+    /// because substitution rebuilds the anon before capture analysis
+    /// runs on it, so the declaration pointer is never stale.
+    ValueDeclAST* resolvedDecl = nullptr;
 
     // ─── Capture Flags (computed once by capture analysis) ─────────────
     /// True if this closure may write to the captured variable, and
@@ -613,6 +575,12 @@ enum class DeclKeyword {
     Const   // immutable
 };
 
+enum class ResourceKind : uint8_t {
+    None,          // owns nothing
+    Refcounted,    // closure env
+    OwnedBuffer,   // string or dynamic array
+};
+
 /// @brief Base class for declarations that produce values (can appear in expressions).
 /// 
 /// Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
@@ -644,6 +612,20 @@ struct ValueDeclAST : DeclAST {
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
     TypeAST* type = nullptr;
+
+    /// What kind of heap resource this binding owns, if any.
+    ///
+    /// Set once, by Sema, when the declaration's type is resolved.
+    /// Read by CodeGen at every release / retain / ownership-decision
+    /// site. Cached on the declaration because the answer is a
+    /// property of the declaration, not of the use site, and
+    /// re-deriving it at every use site means re-walking `type` at
+    /// every use site — which is both wasteful and a place for the
+    /// walkers to disagree.
+    ///
+    /// `mutable` because Phase 2 Sema writes it after construction;
+    /// `const` field would fight the existing two-phase model.
+    ResourceKind resourceKind = ResourceKind::None;
     
     /// @brief Check if this value is immutable (const).
     bool isConst() const { return keyword == DeclKeyword::Const; }
