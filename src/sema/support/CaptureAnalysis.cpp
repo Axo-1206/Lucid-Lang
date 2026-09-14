@@ -15,25 +15,18 @@
 /// - Store 1 word for plain function, 2 words for closure
 /// - Handle refcounting for closure environments
 ///
-/// # Design: Lexical Capture Identity
+/// # Design: Capture Identity
 ///
-/// Captured variables are identified by (name, functionDepth), not by a
-/// pointer to a ValueDeclAST. The pointer approach broke under generic
-/// substitution: the specialized body contains freshly-built declaration
-/// nodes, but the capture list still pointed at the template's originals.
+/// Captured variables are identified by the `ValueDeclAST*` they resolve
+/// to, in the specialized context. Sema runs capture analysis *after*
+/// substitution (see Generic.cpp's substituteExpr and SemaExpr.cpp's
+/// resolveAnonFuncExpr), so the declaration pointer Sema resolves is a
+/// node in the specialized tree — the same node CodeGen will see. The
+/// pointer never goes stale because there is no template-vs-specialization
+/// distinction left at capture-analysis time.
 ///
-/// (name, functionDepth) is invariant under substitution — substitution
-/// rewrites types and rebuilds expression nodes, but never renames a
-/// variable and never changes scope structure. So a capture list built
-/// against the template is byte-identical to the one the specialized
-/// function needs.
-///
-/// functionDepth is the number of enclosing function scopes between the
-/// closure's own body and the declaration's scope. A depth of 1 means the
-/// captured variable lives in the immediately enclosing function; a depth
-/// of 2 means two function scopes up; and so on. Depth 0 is never a
-/// capture (the variable is local to the closure's own body or is one of
-/// its own parameters).
+/// `name` is kept alongside the pointer for diagnostics and for LLVM IR
+/// labels, not as part of the identity.
 
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaType.hpp"
@@ -217,10 +210,8 @@ namespace {
 ///    Read-only captures are by-value (snapshot copy), mutated captures
 ///    are by-reference.
 ///
-/// 4. **Lexical depth**: Each captured variable is recorded with the
-///    number of function scopes between the closure body and the
-///    declaration. This replaces the old `ValueDeclAST* decl` pointer,
-///    which broke under generic substitution.
+/// 4. **Declaration pointer**: Each captured variable is recorded with
+///    the `ValueDeclAST*` it resolved to, in the specialized context.
 ///
 /// # Only one node kind is analyzed
 ///
@@ -328,90 +319,6 @@ struct CaptureAnalyzer {
         return ctx.lookupValue(name);
     }
 
-    /// @brief Compute how many function scopes separate the closure's own
-    ///        function from the scope that declares a captured name.
-    ///
-    /// A captured variable's *function depth* is the number of user-written
-    /// function boundaries between the closure's body and the function that
-    /// declares the variable. Depth 1 means the variable lives in the
-    /// immediately enclosing function's body (or in a block nested inside it);
-    /// depth 2 means two functions up; and so on. Depth 0 is never a capture
-    /// (the variable is local to the closure itself or is one of its own
-    /// parameters), and `isCapture` filters that case out before this runs.
-    ///
-    /// The name deliberately says "function depth" and not "lexical depth":
-    /// block scopes (a `{ }`, a loop body, an if branch) do not count toward
-    /// this number. Only function boundaries do — because only function
-    /// boundaries matter for capturing, and only function boundaries
-    /// correspond to entries on the context stack that capture analysis cares
-    /// about.
-    ///
-    /// @param name The captured variable's name.
-    /// @return The function depth, or 0 if the name cannot be located on the
-    ///         scope stack (defensive — indicates an internal inconsistency).
-    uint32_t computeFunctionDepth(InternedString name) const {
-        const auto& frames = ctx.stack.frames();
-
-        // ─── Step A: Find the innermost scope declaring `name`. ───────────────
-        //
-        // Walks ctx.scopes, which includes every scope pushed during analysis:
-        // function param scopes, block scopes, loop body scopes, etc. We don't
-        // care which kind; we just want the innermost one containing the name.
-        size_t declaringScopeIndex = SIZE_MAX;
-        for (size_t i = ctx.scopes.size(); i-- > 0; ) {
-            if (ctx.scopes[i].values.find(name) != ctx.scopes[i].values.end()) {
-                declaringScopeIndex = i;
-                break;
-            }
-        }
-        if (declaringScopeIndex == SIZE_MAX) return 0;
-
-        // ─── Step B: Find which function frame encloses that scope. ───────────
-        //
-        // The declaring scope may be a block scope rather than a function's own
-        // param scope. Either way, some function frame on the stack "contains"
-        // it: the innermost function frame whose scopeDepth is at or below the
-        // declaring scope's index. Walking frames bottom-to-top and keeping the
-        // last match gives that innermost enclosing function.
-        size_t declaringFunctionFrame = SIZE_MAX;
-        for (size_t i = 0; i < frames.size(); ++i) {
-            if (frames[i].kind == ContextKind::FuncBody &&
-                frames[i].scopeDepth != SIZE_MAX &&
-                frames[i].scopeDepth <= declaringScopeIndex) {
-                declaringFunctionFrame = i;
-            }
-        }
-        if (declaringFunctionFrame == SIZE_MAX) return 0;
-
-        // ─── Step C: Count function frames from declaring to closure. ─────────
-        //
-        // The closure's own function is the innermost FuncBody frame. Counting
-        // function frames from declaringFunctionFrame (inclusive) up to but not
-        // including the closure's own frame gives the number of function
-        // boundaries crossed.
-        size_t closureFrameIndex = SIZE_MAX;
-        for (size_t i = frames.size(); i-- > 0; ) {
-            if (frames[i].kind == ContextKind::FuncBody) {
-                closureFrameIndex = i;
-                break;
-            }
-        }
-        if (closureFrameIndex == SIZE_MAX) return 0;
-
-        // If the declaring function is the closure's own function, the name is
-        // local (or an own parameter) and should not have been classified as a
-        // capture by isCapture. Return 0 as a defensive "no depth".
-        if (declaringFunctionFrame >= closureFrameIndex) return 0;
-
-        uint32_t depth = 0;
-        for (size_t i = declaringFunctionFrame; i < closureFrameIndex; ++i) {
-            if (frames[i].kind == ContextKind::FuncBody) {
-                depth++;
-            }
-        }
-        return depth;
-    }
-
     // ─── Validate + Add Capture ──────────────────────────────────────────────
 
     /// @brief Validate capture rules for `decl` and add it to the capture list.
@@ -423,10 +330,8 @@ struct CaptureAnalyzer {
     /// must emit a runtime check to determine the actual value's shape.
     ///
     /// @param decl         The captured variable's declaration.
-    /// @param functionDepth Number of function scopes between the closure
-    ///                     body and the declaration's scope.
     /// @param diagLoc      AST node to anchor diagnostics on.
-    void validateAndAddCapture(ValueDeclAST* decl, uint32_t functionDepth, BaseAST* diagLoc) {
+    void validateAndAddCapture(ValueDeclAST* decl, BaseAST* diagLoc) {
         if (!decl) return;
         InternedString name = decl->name;
 
@@ -450,7 +355,7 @@ struct CaptureAnalyzer {
             return;
         }
 
-        // Rule 3: Borrowed types (&T, [_]T) cannot be captured
+        // Borrowed types (&T, [_]T) cannot be captured
         if (varType && isBorrowedType(varType)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
                                   "closure cannot capture borrowed type '",
@@ -460,7 +365,7 @@ struct CaptureAnalyzer {
             return;
         }
 
-        // Rule 4: Linear types (Future<T>, Thread<T>) cannot be captured
+        // Linear types (Future<T>, Thread<T>) cannot be captured
         if (varType && (varType->isa<FutureTypeAST>() || varType->isa<ThreadTypeAST>())) {
             const char* typeName = varType->isa<FutureTypeAST>() ? "Future<T>" : "Thread<T>";
             ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
@@ -531,13 +436,12 @@ struct CaptureAnalyzer {
         // If the variable is mutated anywhere in the closure body, it must
         // be captured by reference to reflect those changes.
         bool mutated = (mutatedVariables.find(name) != mutatedVariables.end());
-        bool byRef = mutated;
 
         // ─── Create the capture entry ──────────────────────────────────────
         CapturedVariable capture;
+        capture.resolvedDecl = decl;
         capture.name = name;
-        capture.functionDepth = functionDepth;
-        capture.byReference = byRef;
+        capture.byReference = mutated;
         capture.isClosureValue = isClosureVal;
         capture.index = captures.size();
 
@@ -545,10 +449,9 @@ struct CaptureAnalyzer {
         seenCaptures.insert(name);
 
         Trace::info("CaptureAnalysis: captured '", ctx.pool.lookup(name),
-                 "' by ", byRef ? "reference" : "value",
-                 " (closure value: ", isClosureVal ? "yes (conservative)" : "no",
-                 ", depth: ", functionDepth,
-                 ") at closure depth ", currentClosureDepth);
+                "' by ", mutated ? "reference" : "value",
+                " (closure value: ", isClosureVal ? "yes (conservative)" : "no",
+                ") at closure depth ", currentClosureDepth);
     }
 
     // ─── Propagate Capture ────────────────────────────────────────────────────
@@ -560,17 +463,9 @@ struct CaptureAnalyzer {
     /// never captures it itself, CodeGen would end up reusing a stale value
     /// from a different function. Propagating the capture upward closes this gap.
     ///
-    /// # Depth adjustment
-    ///
-    /// The child capture records the depth from the *child's* body. From
-    /// *our* body, the declaration is one function scope closer, because
-    /// the child's body is nested one function scope inside ours. So we
-    /// decrement the depth by 1.
-    ///
-    /// If the adjusted depth would be 0, the declaration lives in our own
-    /// body — which means it should have been caught by `isLocallyDeclared`
-    /// or `isOwnParam`. Skip it as a defensive measure; the real capture
-    /// for it will be added when we walk the actual reference to it.
+    /// The child resolved its capture against a scope nested inside ours,
+    /// so its `resolvedDecl` is valid here too. No depth arithmetic; just
+    /// forward the declaration.
     ///
     /// @param childCapture The capture from the nested closure.
     /// @param diagLoc AST node to anchor diagnostics on.
@@ -584,58 +479,36 @@ struct CaptureAnalyzer {
         if (ctx.isModuleMember(name)) return;
         if (ctx.isGenericParam(name)) return;
 
-        // Look up the declaration so we can run the type-based capture checks
-        // (Arena, borrowed, linear).
-        ValueDeclAST* decl = ctx.lookupValue(name);
+        // The child resolved this capture against a scope nested inside
+        // ours, so its `resolvedDecl` is valid here too.
+        ValueDeclAST* decl = childCapture.resolvedDecl;
         if (!decl) return;
 
-        // Compute the adjusted depth: the child saw the name at
-        // childCapture.functionDepth from its own body. From our body, it's
-        // one function scope closer.
-        if (childCapture.functionDepth <= 1) {
-            // The declaration would be in our own body. This shouldn't
-            // happen for a real propagated capture — defensive skip.
-            return;
-        }
-        uint32_t adjustedDepth = childCapture.functionDepth - 1;
-
-        validateAndAddCapture(decl, adjustedDepth, diagLoc);
+        validateAndAddCapture(decl, diagLoc);
     }
 
     // ─── Process Identifier ──────────────────────────────────────────────────
 
     void processIdentifier(IdentifierExprAST* id) {
         if (!id) return;
-
         InternedString name = id->name;
 
         // Skip '_' (discard placeholder)
-        if (ctx.pool.lookupView(name) == "_") {
-            return;
-        }
+        if (ctx.pool.lookupView(name) == "_") return;
 
         // Skip if it's our own parameter
-        if (isOwnParam(name)) {
-            return;
-        }
+        if (isOwnParam(name)) return;
 
         // Check if this is a capture from an outer scope
-        if (!isCapture(name)) {
-            return;
-        }
+        if (!isCapture(name)) return;
 
         // Skip if already seen
-        if (seenCaptures.find(name) != seenCaptures.end()) {
-            return;
-        }
+        if (seenCaptures.find(name) != seenCaptures.end()) return;
 
         ValueDeclAST* decl = getDeclaration(name);
-        if (!decl) {
-            return;
-        }
+        if (!decl) return;
 
-        uint32_t depth = computeFunctionDepth(name);
-        validateAndAddCapture(decl, depth, id);
+        validateAndAddCapture(decl, id);
     }
 
     // ─── Mutation Detection ──────────────────────────────────────────────────
@@ -1060,48 +933,7 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
         return;
     }
 
-    // ─── Set the closure's lexical parent pointer ───────────────────────
-    // `enclosingFunction` tells CodeGen where to start walking when
-    // resolving a CapturedVariable's {name, functionDepth}. It points at
-    // the enclosing function's AnonFuncExprAST — see the field's doc on
-    // AnonFuncExprAST.
-    //
-    // Ordering: analyzeCaptures runs while the closure's own ScopedFunction
-    // is still pushed (resolveAnonFuncExpr constructs it in step 3 and
-    // calls analyzeCaptures in step 8, before the guard's destructor pops
-    // it). So the innermost FuncBody frame is this closure itself; its
-    // lexical parent is the next one out — getEnclosingFunctionNode()
-    // returns exactly that.
-    //
-    // Every FuncBody frame's `node` is an AnonFuncExprAST (pushed by
-    // pushAnonFunction; FuncDeclASTs never appear on the stack — their
-    // bodies are the AnonFuncExprASTs at `init`, and those are what get
-    // pushed). So the returned node is directly an AnonFuncExprAST, with
-    // no forwarding needed.
-    //
-    // A closure at the top level of a module has no enclosing function;
-    // getEnclosingFunctionNode returns nullptr and enclosingFunction stays
-    // nullptr, which is correct.
-    BaseAST* enclosingNode = ctx.stack.getEnclosingFunctionNode();
-    if (enclosingNode) {
-        // Defensive: the accessor should only return AnonFuncExprAST
-        // nodes. If a future refactor introduces a different node kind
-        // on FuncBody frames, this surfaces it immediately rather than
-        // silently mis-casting.
-        AST_ASSERT_MSG(enclosingNode->isa<AnonFuncExprAST>(),
-            "FuncBody frame's node is not an AnonFuncExprAST — "
-            "capture analysis assumes every function boundary is held "
-            "by an anon node. Update this code if the stack invariant "
-            "changed.");
-        expr->enclosingFunction = enclosingNode->as<AnonFuncExprAST>();
-    } else {
-        expr->enclosingFunction = nullptr;
-    }
-
-    Trace::detail("analyzeCaptures: closure at depth ",
-                  ctx.getClosureDepth(),
-                  " — enclosing function node: ",
-                  expr->enclosingFunction ? "set" : "nullptr (top-level)");
+    Trace::detail("analyzeCaptures: closure at depth ", ctx.getClosureDepth());
 
     CaptureAnalyzer analyzer(ctx, expr);
 
