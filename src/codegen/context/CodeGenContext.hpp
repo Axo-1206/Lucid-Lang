@@ -9,7 +9,6 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../runtime/RuntimeFunctionRegistry.hpp"
-#include "../generic/GenericRegistry.hpp"
 #include "../support/LiveVariableTracker.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 
@@ -90,9 +89,6 @@ struct CodeGenContext {
     
     // ─── Runtime Function Mapping ──────────────────────────────────────
     std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
-    
-    // ─── Generic Registry ──────────────────────────────────────────────
-    GenericRegistry genericRegistry;
     
     // ─── Loop Info (for break/continue) ─────────────────────────────────
     struct LoopInfo {
