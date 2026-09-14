@@ -95,6 +95,36 @@ void JSONDumper::serializeModule(JSONWriter& json, ModuleAST* module) {
         }
     }
     json.endArray();
+
+    // ─── Specializations ────────────────────────────────────────────────
+    //
+    // The concrete forms Sema built while resolving this module's
+    // declarations: one `StructDeclAST` or `FuncDeclAST` per distinct
+    // `(template, typeArgs)` pair the program actually referenced.
+    //
+    // These are not in `decls`. `decls` holds only what the parser produced
+    // — the templates. A specialization is a fresh node allocated during
+    // resolution, reachable from any type or expression that names it via
+    // `resolvedDecl`, but owned by no source declaration. This array makes
+    // them explicit in the dump.
+    //
+    // Order is completion order during resolution, which is also dependency
+    // order: a specialization's own dependencies were pushed before it.
+    //
+    // Serialized with the same `serializeDecl` dispatcher as `decls` — a
+    // specialized `StructDeclAST` is just a struct declaration whose
+    // `genericParams` happen to be empty, and a specialized `FuncDeclAST`
+    // is just a function declaration whose `genericParams` happen to be
+    // empty and whose `funcType` is concrete. The existing serializers
+    // handle both without any new arms.
+    json.key("specializations");
+    json.beginArray();
+    for (auto* spec : module->specializations) {
+        if (spec) {
+            serializeDecl(json, spec);
+        }
+    }
+    json.endArray();
     json.endObject();
 }
 
