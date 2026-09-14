@@ -647,46 +647,82 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
                                     const std::vector<TypeAST*>& types,
                                     BaseAST* useSite,
                                     SemaContext& ctx) {
+    if (params.empty()) return true;   // nothing to check
+
     std::unordered_set<InternedString> usedParams;
 
-    // Recursively find generic parameter references in a type
     std::function<void(TypeAST*)> findParams = [&](TypeAST* type) {
         if (!type) return;
-        
-        if (NamedTypeAST* named = type->as<NamedTypeAST>()) {
-            if (ctx.isGenericParam(named->name)) {
-                usedParams.insert(named->name);
-            }
-            for (TypeAST* arg : named->genericArgs) {
-                findParams(arg);
-            }
-            return;
-        }
 
-        if (NullableTypeAST* nullable = type->as<NullableTypeAST>()) {
-            findParams(nullable->inner); return;
-        }
-        if (FallibleTypeAST* fallible = type->as<FallibleTypeAST>()) {
-            findParams(fallible->inner); return;
-        }
-        if (CombinedTypeAST* combined = type->as<CombinedTypeAST>()) {
-            findParams(combined->inner); return;
-        }
-        if (RefTypeAST* ref = type->as<RefTypeAST>()) {
-            findParams(ref->inner); return;
-        }
-        if (PtrTypeAST* ptr = type->as<PtrTypeAST>()) {
-            findParams(ptr->inner); return;
-        }
-        if (ArrayTypeAST* array = type->as<ArrayTypeAST>()) {
-            findParams(array->element); return;
-        }
-        if (FuncTypeAST* func = type->as<FuncTypeAST>()) {
-            for (ParamAST* param : func->params) {
-                findParams(param->type);
+        switch (type->kind) {
+            case ASTKind::NamedType: {
+                NamedTypeAST* named = static_cast<NamedTypeAST*>(type);
+                // Check against the declared parameters directly, not
+                // ctx.isGenericParam — the function's contract is
+                // "does this field type use any of MY parameters?",
+                // and ctx.isGenericParam also returns true for
+                // parameters of any enclosing scope (a struct nested
+                // inside a generic function, for instance). Using the
+                // ctx-wide lookup would silently mark an enclosing
+                // function's T as "used" by this struct, which is
+                // wrong.
+                for (GenericParamDeclAST* p : params) {
+                    if (p->name == named->name) {
+                        usedParams.insert(named->name);
+                        break;
+                    }
+                }
+                for (TypeAST* arg : named->genericArgs) {
+                    findParams(arg);
+                }
+                return;
             }
-            findParams(func->returnType);
-            return;
+            case ASTKind::NullableType:
+                findParams(static_cast<NullableTypeAST*>(type)->inner);
+                return;
+            case ASTKind::FallibleType:
+                findParams(static_cast<FallibleTypeAST*>(type)->inner);
+                return;
+            case ASTKind::CombinedType:
+                findParams(static_cast<CombinedTypeAST*>(type)->inner);
+                return;
+            case ASTKind::RefType:
+                findParams(static_cast<RefTypeAST*>(type)->inner);
+                return;
+            case ASTKind::PtrType:
+                findParams(static_cast<PtrTypeAST*>(type)->inner);
+                return;
+            case ASTKind::ArrayType:
+                findParams(static_cast<ArrayTypeAST*>(type)->element);
+                return;
+            case ASTKind::FuncType: {
+                FuncTypeAST* func = static_cast<FuncTypeAST*>(type);
+                for (ParamAST* param : func->params) {
+                    findParams(param->type);
+                }
+                findParams(func->returnType);
+                return;
+            }
+            case ASTKind::SimdType:
+                findParams(static_cast<SimdTypeAST*>(type)->elementType);
+                return;
+            case ASTKind::FutureType:
+                findParams(static_cast<FutureTypeAST*>(type)->inner);
+                return;
+            case ASTKind::ThreadType:
+                findParams(static_cast<ThreadTypeAST*>(type)->inner);
+                return;
+            case ASTKind::PrimitiveType:
+            case ASTKind::ArenaType:
+            case ASTKind::ArenaDescriptorType:
+            case ASTKind::ModuleTypeAccess:
+            default:
+                // Leaf nodes: no generic parameter can appear inside.
+                // ArenaType and ArenaDescriptorType reach here only if a
+                // caller constructs them directly (getArenaType returns
+                // a NamedTypeAST). ModuleTypeAccess is a fully-qualified
+                // reference to a concrete type.
+                return;
         }
     };
 
