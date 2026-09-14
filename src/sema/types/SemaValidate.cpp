@@ -106,6 +106,232 @@ static bool validateParamConstraints(TypeAST* actualType,
     return true;
 }
 
+// ─── Variable Self-Reference Detection ──────────────────────────────────
+
+void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& ctx) {
+    if (!expr) return;
+
+    // Walk the expression tree looking for references to varName
+    // Uses a recursive visitor pattern with early termination on error
+
+    switch (expr->kind) {
+        case ASTKind::IdentifierExpr: {
+            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+            if (id->name == varName) {
+                ctx.diagnostics.error(DiagCode::Sem_SelfReferentialInit, expr,
+                                      "let variable '", ctx.pool.lookup(varName),
+                                      "' cannot be used in its own initializer");
+            }
+            return;
+        }
+
+        case ASTKind::BinaryExpr: {
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            checkLetSelfReference(bin->left, varName, ctx);
+            checkLetSelfReference(bin->right, varName, ctx);
+            return;
+        }
+
+        case ASTKind::UnaryExpr: {
+            UnaryExprAST* unary = expr->as<UnaryExprAST>();
+            checkLetSelfReference(unary->operand, varName, ctx);
+            return;
+        }
+
+        case ASTKind::CallExpr: {
+            CallExprAST* call = expr->as<CallExprAST>();
+            checkLetSelfReference(call->callee, varName, ctx);
+            for (ExprAST* arg : call->args) {
+                checkLetSelfReference(arg, varName, ctx);
+            }
+            return;
+        }
+
+        case ASTKind::FieldAccessExpr: {
+            FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+            checkLetSelfReference(field->object, varName, ctx);
+            return;
+        }
+
+        case ASTKind::IndexExpr: {
+            IndexExprAST* index = expr->as<IndexExprAST>();
+            checkLetSelfReference(index->target, varName, ctx);
+            checkLetSelfReference(index->index, varName, ctx);
+            return;
+        }
+
+        case ASTKind::ArrayLiteralExpr: {
+            ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
+            for (ExprAST* elem : arr->elements) {
+                checkLetSelfReference(elem, varName, ctx);
+            }
+            return;
+        }
+
+        case ASTKind::StructLiteralExpr: {
+            StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
+            for (FieldInitAST* init : st->inits) {
+                checkLetSelfReference(init->value, varName, ctx);
+            }
+            return;
+        }
+
+        case ASTKind::NullCoalesceExpr: {
+            NullCoalesceExprAST* coalesce = expr->as<NullCoalesceExprAST>();
+            checkLetSelfReference(coalesce->value, varName, ctx);
+            checkLetSelfReference(coalesce->fallback, varName, ctx);
+            return;
+        }
+
+        case ASTKind::AssignExpr: {
+            AssignExprAST* assign = expr->as<AssignExprAST>();
+            checkLetSelfReference(assign->lhs, varName, ctx);
+            checkLetSelfReference(assign->rhs, varName, ctx);
+            return;
+        }
+
+        case ASTKind::PipelineExpr: {
+            PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
+            checkLetSelfReference(pipeline->seed, varName, ctx);
+            for (PipelineStepAST* step : pipeline->steps) {
+                checkLetSelfReference(step->callable, varName, ctx);
+                for (ExprAST* arg : step->packArgs) {
+                    checkLetSelfReference(arg, varName, ctx);
+                }
+            }
+            return;
+        }
+
+        case ASTKind::ComposeExpr: {
+            ComposeExprAST* compose = expr->as<ComposeExprAST>();
+            checkLetSelfReference(compose->left, varName, ctx);
+            for (ComposeOperandAST* op : compose->operands) {
+                checkLetSelfReference(op->callable, varName, ctx);
+            }
+            return;
+        }
+
+        case ASTKind::AnonFuncExpr: {
+            // An anonymous function's body may reference the variable
+            // But the variable is in scope, so we check the body
+            AnonFuncExprAST* anon = expr->as<AnonFuncExprAST>();
+            // We need to traverse the body statement
+            // For simplicity, we check the body if it's a block
+            if (anon->body && anon->body->isa<BlockStmtAST>()) {
+                BlockStmtAST* block = anon->body->as<BlockStmtAST>();
+                for (StmtAST* stmt : block->stmts) {
+                    // Check each statement for references
+                    // This is a simplified check - a full implementation would
+                    // need to traverse all statement types
+                    if (stmt->isa<ExprStmtAST>()) {
+                        checkLetSelfReference(stmt->as<ExprStmtAST>()->expr, varName, ctx);
+                    } else if (stmt->isa<ReturnStmtAST>()) {
+                        checkLetSelfReference(stmt->as<ReturnStmtAST>()->value, varName, ctx);
+                    }
+                }
+            }
+            return;
+        }
+
+        case ASTKind::IfExpr: {
+            IfExprAST* ifExpr = expr->as<IfExprAST>();
+            checkLetSelfReference(ifExpr->condition, varName, ctx);
+            checkLetSelfReference(ifExpr->thenBranch, varName, ctx);
+            checkLetSelfReference(ifExpr->elseBranch, varName, ctx);
+            return;
+        }
+
+        case ASTKind::RangeExpr: {
+            RangeExprAST* range = expr->as<RangeExprAST>();
+            checkLetSelfReference(range->lo, varName, ctx);
+            checkLetSelfReference(range->hi, varName, ctx);
+            return;
+        }
+
+        // These expression types cannot contain variable references
+        case ASTKind::LiteralExpr:
+        case ASTKind::IntrinsicCallExpr:
+        case ASTKind::SliceExpr:
+        case ASTKind::ModuleAccessExpr:
+        default:
+            return;
+    }
+}
+
+// ─── Struct Self-Reference Validation ───────────────────────────────────
+
+/// @brief Validate that a self-referential struct field is legal.
+///
+/// A field whose type refers to the enclosing struct creates an
+/// infinite-size type unless the recursion is broken by a nullable or
+/// raw-pointer indirection. This function is the check for that rule.
+///
+/// Called from `resolveStructFieldDeclarations`, which runs on concrete
+/// field types — either the fields of a non-generic struct or the
+/// substituted fields of a specialization. At this point `fieldType` is
+/// always a concrete `TypeAST*`, and `currentStruct->name` is the
+/// *source* name of the struct (`"Node"`, not the mangled form).
+///
+/// @return true if the field is a legal self-reference (or not a
+///         self-reference at all); false if it violates the rule, in
+///         which case a diagnostic has been emitted.
+bool isValidStructSelfReference(TypeAST* fieldType,
+                                 StructDeclAST* currentStruct,
+                                 SemaContext& ctx)
+{
+    if (!fieldType || !currentStruct) return false;
+
+    // ─── Step 1: Unwrap nullable and pointer layers ────────────────────
+    bool isNullable = false;
+    bool isPointer = false;
+    TypeAST* innerType = fieldType;
+
+    if (fieldType->isa<NullableTypeAST>()) {
+        isNullable = true;
+        innerType = fieldType->as<NullableTypeAST>()->inner;
+    }
+
+    if (innerType->isa<PtrTypeAST>()) {
+        isPointer = true;
+        innerType = innerType->as<PtrTypeAST>()->inner;
+    }
+
+    // ─── Step 2: Must be a NamedType to be a self-reference ────────────
+    if (!innerType->isa<NamedTypeAST>()) {
+        return true;   // Not a self-reference; nothing to check
+    }
+
+    NamedTypeAST* named = innerType->as<NamedTypeAST>();
+
+    // ─── Step 3: Match by source name only ─────────────────────────────
+    //
+    // `Node<int>` inside a specialization of `Node<T>` is a
+    // self-reference by any reasonable definition — it is the same
+    // struct family, and a non-nullable field of that family creates
+    // infinite size regardless of which concrete type arguments are
+    // supplied. The rule is expressed in terms of the struct, not the
+    // instantiation, so the comparison is by source name.
+    //
+    // The former generic-argument comparison was a bug: it exempted
+    // `Node<int>`, `Node<Box<int>>`, and bare `Node` from the
+    // infinite-size check below by returning early. Those are all
+    // self-references and must reach the check.
+    if (named->name != currentStruct->name) {
+        return true;   // Not a self-reference
+    }
+
+    // ─── Step 4: Enforce the infinite-size rule ────────────────────────
+    if (!isNullable && !isPointer) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, fieldType,
+                              "non-nullable self-reference in struct '",
+                              ctx.pool.lookup(currentStruct->name),
+                              "' (use '?', '*', or '*?' to allow recursion)");
+        return false;
+    }
+
+    return true;
+}
+
 // ─── Trait Validation ────────────────────────────────────────────────────
 
 /// @brief Validate that a struct implements a single trait.

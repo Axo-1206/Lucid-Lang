@@ -45,6 +45,14 @@ static StructDeclAST* createInstantiatedStructShell(
     return shell;
 }
 
+/// @brief Build and resolve the concrete form of a specialized struct.
+///
+/// This is where all field-related semantic work happens for a generic
+/// struct. The template itself was never resolved — it was only
+/// structurally validated. Here, after substitution has replaced every
+/// `T` with a concrete `TypeAST*`, we resolve the specialized tree
+/// exactly as if it had been written out by hand as a non-generic
+/// struct.
 static StructDeclAST* finalizeInstantiatedStruct(
     StructDeclAST* templateDecl,
     const ArenaSpan<TypeAST*>& typeArgs,
@@ -56,10 +64,9 @@ static StructDeclAST* finalizeInstantiatedStruct(
     GenericSubstitution subst{templateDecl->genericParams, typeArgs};
     SubstitutionContext sc{ctx, subst};
 
-    // ─── Substitute fields ─────────────────────────────────────────────
+    // ─── 1. Substitute fields ──────────────────────────────────────────
     std::vector<FieldDeclAST*> fieldList;
     fieldList.reserve(templateDecl->fields.size());
-    bool hasError = false;
 
     for (FieldDeclAST* field : templateDecl->fields) {
         TypeAST* substitutedType = substituteType(field->type, sc);
@@ -67,8 +74,7 @@ static StructDeclAST* finalizeInstantiatedStruct(
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, field,
                 "field '", ctx.pool.lookup(field->name),
                 "' has invalid type in instantiation");
-            hasError = true;
-            break;
+            return nullptr;
         }
 
         ExprAST* substitutedDefault = field->defaultVal
@@ -82,14 +88,13 @@ static StructDeclAST* finalizeInstantiatedStruct(
             field->isConstField
         );
         newField->loc = field->loc;
+        newField->attributes = field->attributes;
         fieldList.push_back(newField);
     }
 
-    if (hasError) return nullptr;
-
-    // ─── Build the final struct ────────────────────────────────────────
+    // ─── 2. Build the final struct ─────────────────────────────────────
     StructDeclAST* finalStruct = ctx.arena.make<StructDeclAST>(
-        templateDecl->name,    // source name, not shell->name
+        templateDecl->name,
         ctx.arena.emptySpan<GenericParamDeclAST*>(),
         ctx.arena.makeSpan<FieldDeclAST*>(fieldList),
         templateDecl->traitRefs,
@@ -98,74 +103,27 @@ static StructDeclAST* finalizeInstantiatedStruct(
     finalStruct->mangledName = shell->mangledName;
     finalStruct->loc = shell->loc;
 
-    // ─── Update the cache BEFORE resolving fields ─────────────────────
-    //
-    // Same register-before-recursing pattern as the function case. If
-    // resolving a substituted field type recursively triggers
-    // createInstantiatedStruct for the same (templateDecl, typeArgs) —
-    // which happens for self-referential structs like
-    // `struct Node<T> { next Node<T>?; }` — the recursive call must find
-    // this node in the cache and return it, rather than re-instantiating.
+    // ─── 3. Register in the instantiation cache BEFORE resolving ───────
     InstantiationKey key{templateDecl, typeArgs};
     ctx.instantiationCache[key] = finalStruct;
 
-    // ─── Re-resolve the specialized field types ───────────────────────
+    // ─── 4. Resolve the specialized field list ────────────────────────
     //
-    // The substitution produced copies of the template's field types with
-    // `T` replaced by the concrete argument. Each copy's `NamedTypeAST`
-    // nodes may carry a `resolvedDecl` from the template (pointing at the
-    // template's type) or none at all. Re-resolving against the current
-    // context fixes that.
-    //
-    // This is what makes a `T`-typed field concrete in the specialization
-    // and gives it the correct `resolvedDecl` — the type it actually is
-    // in this specialization, not the type it was written as in the
-    // template.
-    for (FieldDeclAST* newField : fieldList) {
-        if (newField->hasSyntaxError) continue;
-
-        // ─── Re-resolve the field type ────────────────────────────────
-        if (!resolveType(newField->type, ctx)) {
-            return nullptr;
-        }
-
-        // ─── Re-resolve the field default, if present ─────────────────
-        //
-        // The default is an expression in the struct's own scope. For a
-        // non-function field, it resolves against `newField->type`.
-        // For a function-typed field, its type already has `self` prepended
-        // by the parser, and the default is an AnonFuncExprAST whose
-        // `funcType` is that self-inclusive type. resolveExprWithTarget
-        // handles both cases through the same path.
-        if (newField->defaultVal) {
-            TypeAST* initType = resolveExprWithTarget(
-                newField->defaultVal,
-                newField->type,
-                ctx);
-            if (!initType || initType->isa<UnknownTypeAST>()) {
-                return nullptr;
-            }
-        }
+    // Same helper the non-generic path uses. `finalStruct->fields` is
+    // the span we just built — it holds the same `FieldDeclAST*` nodes
+    // as `fieldList`, but wrapped in the arena-allocated span the
+    // struct itself owns.
+    if (!resolveStructFieldDeclarations(finalStruct->fields, finalStruct, ctx)) {
+        return nullptr;
     }
 
-    // ─── Register in the structural map ──────────────────────────────────
-    //
-    // The instantiation cache above is keyed on (templateDecl*, typeArgs)
-    // pointer identity — it answers "have we started building this?". This
-    // map is keyed on (source name, canonical args) structural identity — it
-    // answers "what IS Box<int>?". Registering here means the next
-    // `Box<int>` at a different call site finds this exact node instead of
-    // re-instantiating.
-    //
-    // The template's *source* name is used, not its mangled name. The mangled
-    // name is a CodeGen concern (unique symbol per specialization); the
-    // semantic identity of the type is (name, args).
+    // ─── 5. Register in the structural storage map ─────────────────────
     ArenaSpan<TypeAST*> canonicalArgs = canonicalizeTypeArgList(typeArgs, ctx);
     ctx.registerGenericTypeInstantiation(templateDecl->name, canonicalArgs, finalStruct);
 
     Trace::detail("Finalized instantiated struct: ",
                   ctx.pool.lookup(finalStruct->mangledName),
-                  " (", fieldList.size(), " fields)");
+                  " (", finalStruct->fields.size(), " fields)");
 
     return finalStruct;
 }
@@ -209,11 +167,14 @@ static FuncDeclAST* finalizeInstantiatedFunction(
 {
     if (!templateDecl || !shell) return nullptr;
 
-    // substitute signature
+    // ─── Substitution ──────────────────────────────────────────────────
+    //
+    // The template's signature and body were never resolved. Both are
+    // walked through substitution here, and every `T` becomes a concrete
+    // `TypeAST*`. After this, the tree contains no abstract types.
     GenericSubstitution subst{templateDecl->genericParams, typeArgs};
     SubstitutionContext sc{ctx, subst};
 
-    // re-resolve the substituted signature
     TypeAST* substitutedFuncType = substituteType(templateDecl->funcType, sc);
     if (!substitutedFuncType || !substitutedFuncType->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, templateDecl,
@@ -222,14 +183,14 @@ static FuncDeclAST* finalizeInstantiatedFunction(
         return nullptr;
     }
 
-    // Re-resolve the specialized signature after substitution so the
-    // concrete NamedTypeAST nodes get their correct resolvedDecls and the
-    // specialized function type matches the current context.
+    // ─── Resolve the substituted signature ─────────────────────────────
+    //
+    // Concrete now — no `T` anywhere. Ordinary `resolveFuncType`.
     if (!resolveFuncType(substitutedFuncType->as<FuncTypeAST>(), ctx)) {
         return nullptr;
     }
 
-    // substitute body
+    // ─── Substitute the body ───────────────────────────────────────────
     ExprAST* substitutedInit = nullptr;
     if (templateDecl->init) {
         substitutedInit = substituteExpr(templateDecl->init, sc);
@@ -254,21 +215,13 @@ static FuncDeclAST* finalizeInstantiatedFunction(
     finalFunc->isNoInline = shell->isNoInline;
     finalFunc->loc = shell->loc;
 
-    // Register the completed specialization before resolving the body so
-    // recursive instantiations hit this node instead of expanding the
-    // template again.
+    // ─── Register before resolving the body ────────────────────────────
     InstantiationKey key{templateDecl, typeArgs};
     ctx.instantiationCache[key] = finalFunc;
 
-    // resolve the specialized body
-    if (finalFunc->init) {
-        TypeAST* initType = resolveExprWithTarget(
-            finalFunc->init,
-            finalFunc->funcType,
-            ctx);
-        if (!initType || initType->isa<UnknownTypeAST>()) {
-            return nullptr;
-        }
+    // ─── Resolve the substituted body ──────────────────────────────────
+    if (!resolveFunctionBody(finalFunc->init, finalFunc->funcType, ctx)) {
+        return nullptr;
     }
 
     Trace::detail("Finalized instantiated function: ",

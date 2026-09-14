@@ -669,35 +669,15 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, S
     // ─── Step 3: Handle generic type parameter ────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
         NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
-
         if (ctx.isGenericParam(namedType->name)) {
-            if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
-                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                                      "field '", ctx.pool.lookup(expr->fieldName),
-                                      "' is not accessible on generic type '",
-                                      ctx.pool.lookup(namedType->name),
-                                      "' (no trait constraint provides this field)");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
-            if (!fieldType) {
-                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                                      "field '", ctx.pool.lookup(expr->fieldName),
-                                      "' has no type information in generic constraints");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            expr->resolvedType = fieldType;
-            expr->valueState = (isNullableType(fieldType) || isFallibleType(fieldType))
-                               ? ValueState::Unknown : ValueState::Definite;
-            expr->isLValue = false;
-            expr->isConst = false;
-            return fieldType;
+            // The former "generic type parameter" branch lived here. It is
+            // deleted: after the specialize-first redesign, `objectType` is
+            // never a `T` — every resolver runs against concrete types only.
+            // A `T`-typed object type reaching this function is a compiler
+            // bug, not a user error, so it's asserted rather than handled.
+            AST_ASSERT_MSG(!ctx.isGenericParam(namedType->name),
+                   "field access on a generic parameter reached resolveFieldAccessExpr — "
+                   "this indicates a template body was resolved before substitution");
         }
     }
 

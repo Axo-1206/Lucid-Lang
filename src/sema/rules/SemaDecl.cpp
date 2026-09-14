@@ -253,7 +253,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 }
 
 // ─── resolveFuncDecl ──────────────────────────────────────────────────────────
-//
+
 // ─── Two Scopes, Two Purposes ─────────────────────────────────────────────────
 //
 // Resolving a function declaration requires *two* distinct scopes, pushed
@@ -545,11 +545,34 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // `factorial<int>(5)` — will trigger instantiation via
     // resolveIdentifierExpr / resolveCallExpr, which call into
     // finalizeInstantiatedFunction. That's the same path as before.
-    TypeAST* initType = resolveExprWithTarget(decl->init, funcType, ctx);
-    if (!initType || initType->isa<UnknownTypeAST>()) {
-        // resolveExprWithTarget already emitted a diagnostic
+    if (!resolveFunctionBody(decl->init, funcType, ctx)) {
         return;
     }
+}
+
+/// @brief Resolve a function's init expression against its declared type.
+///
+/// Shared by the non-generic function path (`resolveFuncDecl` for a
+/// function with no genericParams) and the generic specialization path
+/// (`finalizeInstantiatedFunction`). In both cases, at the moment this
+/// function runs, the init tree is concrete — for a non-generic
+/// function because there was never a `T` to substitute, for a
+/// specialization because substitution has already replaced every `T`
+/// with a concrete `TypeAST*`.
+///
+/// `init` may be an `AnonFuncExprAST` (block body), a reference
+/// expression, a call, or any other expression producing a value of
+/// `funcType`. `resolveExprWithTarget` dispatches on the shape.
+///
+/// @return true on success, false on failure (diagnostic emitted).
+bool resolveFunctionBody(ExprAST* init, FuncTypeAST* funcType, SemaContext& ctx) {
+    if (!init) return true;   // foreign functions have no body; caller already handled
+
+    TypeAST* initType = resolveExprWithTarget(init, funcType, ctx);
+    if (!initType || initType->isa<UnknownTypeAST>()) {
+        return false;   // resolveExprWithTarget already emitted a diagnostic
+    }
+    return true;
 }
 
 // ─── resolveParam ─────────────────────────────────────────────────────────────
@@ -723,6 +746,19 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
 
 // ─── resolveStructDecl ────────────────────────────────────────────────────────
 
+/// @brief Resolve a struct *template*.
+///
+/// A generic struct is not a type — it is a family of types, one per
+/// distinct concrete set of type arguments. This function does the
+/// minimum required to make the name usable for forward references and
+/// for later instantiation. It does *not* resolve field types, field
+/// defaults, or run any check that requires concrete types.
+///
+/// Fields' types and defaults are resolved per-specialization in
+/// `finalizeInstantiatedStruct`, after substitution has replaced every
+/// `T` with a concrete `TypeAST*`. This mirrors the discipline already
+/// applied to generic function bodies: no resolver ever runs over a
+/// tree containing an unresolved generic parameter.
 void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     if (decl->hasSyntaxError) {
         return;
@@ -730,133 +766,172 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 
     validateAllAttributes(decl, ctx);
 
-    ScopedTypeDefinition defining(ctx, decl);
-
-    // ─── Push a scope for the struct's own contents ────────────────────
-    // This scope holds:
-    //   - the struct's generic parameters (registered below)
-    //   - the struct's fields (registered after the generics)
-    // It's a single scope for both, because a field's type may reference
-    // the struct's generic parameters (`value T`, `next Node<T>?`), and
-    // both are local to the struct's own declaration.
+    // ─── Push a scope for the struct's own generic parameters ──────────
+    //
+    // Scope exists only so that `resolveTraitRef` on the traitRefs and
+    // the generic-parameter-usage check can see `T`. Field types and
+    // defaults are never resolved here, so no field is registered.
     SymbolScope structScope(ctx);
 
-    // ─── 1. Resolve generic parameters FIRST ──────────────────────────────
+    // ─── Resolve generic parameters ────────────────────────────────────
+    //
+    // Register T, U, ... in the struct's own scope. Constraints on each
+    // parameter are resolved (they name real traits) and stored on the
+    // GenericParamDeclAST.
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 2. Register all fields in the struct scope ──────────────────────────
+    // ─── Resolve trait references ──────────────────────────────────────
+    //
+    // `struct Container<T> : Named` — resolve `Named` to a TraitDeclAST.
+    // Trait refs never mention `T` (a struct cannot list a generic
+    // parameter as an implemented trait), so this is a template-time
+    // operation and does not depend on the fields being resolved.
+    for (NamedTypeAST* traitRef : decl->traitRefs) {
+        resolveTraitRef(traitRef, ctx);
+    }
+
+    // ─── Validate that every generic parameter is used ─────────────────
+    //
+    // Purely syntactic: walks the field *type* nodes looking for names
+    // that match the struct's generic parameter list. It does not
+    // resolve anything — it only checks that the parameter name appears
+    // somewhere in a field type.
+    std::vector<TypeAST*> fieldTypes;
+    fieldTypes.reserve(decl->fields.size());
     for (FieldDeclAST* field : decl->fields) {
-        if (!field->name.isEmpty()) {
-            ctx.insertValue(field);
-        }
+        fieldTypes.push_back(field->type);
     }
+    validateGenericParameterUsage(decl->genericParams, fieldTypes, decl, ctx);
 
-    // ─── 3. Resolve fields and compute logical layout ──────────────────────
-    resolveStructFields(decl, ctx);
-
-    // ─── 4. Validate trait implementations ──────────────────────────────────
-    if (!validateAllTraitImplementations(decl, ctx)) {
-        // Error already reported
-    }
-
-    // ─── 5. Validate generic parameter usage ───────────────────────────────
-    std::vector<TypeAST*> types;
-    for (FieldDeclAST* field : decl->fields) {
-        types.push_back(field->type);
-    }
-    validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
-
-    // ─── 6. Generate mangled name ───────────────────────────────────────────
+    // ─── Generate the mangled name for the template ────────────────────
+    //
+    // The template's mangled name is only used in diagnostics. Each
+    // specialization gets its own mangled name at instantiation time.
     InternedString mangled = generateMangledName(decl, ctx);
     if (mangled.isValid()) {
         decl->mangledName = mangled;
     }
+
+    // Field types, defaults, and any check that requires concrete
+    // types are deferred to instantiation.
 }
 
 // ─── resolveStructFields ──────────────────────────────────────────────────────
 
-void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
-    // ─── Phase 1: Resolve field types and validate ──────────────────────────
-    for (FieldDeclAST* field : decl->fields) {
+/// @brief Resolve a struct's field declarations against the current context.
+///
+/// Shared by the non-generic struct path (`resolveStructDecl` for a
+/// struct with no genericParams) and the generic specialization path
+/// (`finalizeInstantiatedStruct`). In both cases, at the moment this
+/// function runs, every type node in every field is concrete — there is
+/// no `T` to resolve, no trait constraint to walk, no generic-parameter
+/// scope to consult. It resolves exactly like handwritten non-generic
+/// code.
+///
+/// ─── Two Callers, One Function ───────────────────────────────────────
+///
+/// **Non-generic struct** (`Point { x float; y float; }`):
+///   The struct is its own concrete form. `resolveStructDecl` calls
+///   this directly with `decl->fields`, and the resolution happens at
+///   declaration time.
+///
+/// **Generic specialization** (`Box<int>`):
+///   `finalizeInstantiatedStruct` builds a fresh set of `FieldDeclAST*`
+///   nodes from substitution, constructs the specialized struct, then
+///   calls this with `finalStruct->fields`. The resolution happens once
+///   per distinct specialization.
+///
+/// The function doesn't know or care which case it's in. It receives a
+/// list of field declarations and resolves them.
+///
+/// @param fields       The field list to resolve, in declaration order.
+///                     Assigns `fieldIndex` from this order and mutates
+///                     each `FieldDeclAST*`'s `type` to the resolved type.
+/// @param owner        The struct these fields belong to. Used for
+///                     self-reference checks and diagnostics.
+/// @param ctx          The semantic context.
+///
+/// @return true on success, false if any field failed to resolve.
+bool resolveStructFieldDeclarations(
+    ArenaSpan<FieldDeclAST*> fields,
+    StructDeclAST* owner,
+    SemaContext& ctx)
+{
+    // ─── Phase 1: Resolve field types and defaults, validate each ──────
+    for (FieldDeclAST* field : fields) {
         if (field->hasSyntaxError) continue;
 
         validateAllAttributes(field, ctx);
 
-        // ─── 1. Resolve the field's type ──────────────────────────────────
+        // ─── 1. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
-        if (!fieldType) continue;
+        if (!fieldType) {
+            return false;
+        }
+        field->type = fieldType;
 
-        // ─── Arena validation: Cannot store Arena in struct fields ──────
+        // ─── 2. Reject Arena by value ──────────────────────────────────
         if (isArenaType(fieldType)) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
-                                  "field '", ctx.pool.lookup(field->name), "' cannot be of type Arena");
+                                  "field '", ctx.pool.lookup(field->name),
+                                  "' cannot be of type Arena");
             ctx.diagnostics.note(field,
                                  "Arena is scope-confined and cannot be stored in structs");
-            continue;
+            return false;
         }
 
-        // ─── 2. Downward Flow Rule: Check borrowed types ──────────────────
+        // ─── 3. Reject borrowed types ──────────────────────────────────
         if (isBorrowedType(fieldType)) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
                                   "field '", ctx.pool.lookup(field->name),
                                   "' has borrowed type (",
                                   typeToString(fieldType, ctx.pool),
                                   ") — struct fields cannot contain &T or [_]T");
-            continue;
+            return false;
         }
 
-        // ─── 3. Validate self-reference ──────────────────────────────────────
-        isValidStructSelfReference(fieldType, decl, ctx);
+        // ─── 4. Self-reference validation ──────────────────────────────
+        if (!isValidStructSelfReference(fieldType, owner, ctx)) {
+            return false;
+        }
 
-        // ─── 4. Validate const field type ──────────────────────────────────
+        // ─── 5. Const field type validation ────────────────────────────
         if (field->isConst()) {
             if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
-                continue;
+                return false;
             }
         }
 
-        // ─── 5. Handle default value ────────────────────────────────────────
-        //
-        // Under the new AST design, `defaultVal` is the single field that
-        // holds a default, regardless of whether the user wrote it as a
-        // value or as a block. A block default was wrapped by the parser
-        // into an AnonFuncExprAST whose funcType is `fieldType` (with
-        // `self: &StructName` prepended, if the field is function-typed).
-        //
-        // So there is exactly one case here: resolve `defaultVal` against
-        // `fieldType`. The block-vs-expression distinction the old code
-        // made has been eliminated — it's all just expressions now.
+        // ─── 6. Resolve the field's default, if present ────────────────
         if (field->defaultVal) {
             TypeAST* initType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
             if (!initType || initType->isa<UnknownTypeAST>()) {
-                // resolveExprWithTarget already emitted a diagnostic
-                continue;
+                return false;
             }
 
-            // ─── Semantic check: function-typed fields need function values ──
-            // Even though the type system should have caught this (a
-            // non-function value isn't assignable to a function type),
-            // we check explicitly because the error message is clearer.
-            // This mirrors the old code's expression-default branch.
             bool isFunctionType = fieldType->isa<FuncTypeAST>();
             if (isFunctionType && !isFunctionValue(field->defaultVal, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
                                       "field '", ctx.pool.lookup(field->name),
                                       "' default value must be a function value");
-                continue;
+                return false;
             }
         }
-        // ─── No default value ─────────────────────────────────────────────
-        // The struct literal must supply a value for this field.
     }
 
-    // ─── Phase 2: Compute logical layout ────────────────────────────────────
-    for (size_t i = 0; i < decl->fields.size(); ++i) {
-        FieldDeclAST* field = decl->fields[i];
-        field->fieldIndex = i;
+    // ─── Phase 2: Assign field indices ─────────────────────────────────
+    for (size_t i = 0; i < fields.size(); ++i) {
+        fields[i]->fieldIndex = i;
     }
+
+    // ─── Phase 3: Trait implementation validation ──────────────────────
+    if (!validateAllTraitImplementations(owner, ctx)) {
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace sema

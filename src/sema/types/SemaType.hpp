@@ -189,16 +189,6 @@ bool isValidStructSelfReference(TypeAST* fieldType,
                                  StructDeclAST* currentStruct,
                                  SemaContext& ctx);
 
-/// @brief Check if a field is accessible on a generic type.
-bool isFieldAccessibleOnGenericType(TypeAST* genericType,
-                                     InternedString fieldName,
-                                     SemaContext& ctx);
-
-/// @brief Get the type of a field on a generic type.
-TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
-                                    InternedString fieldName,
-                                    SemaContext& ctx);
-
 // =============================================================================
 // SEMANTIC VALIDATION
 // =============================================================================

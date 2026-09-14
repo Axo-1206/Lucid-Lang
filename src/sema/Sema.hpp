@@ -63,17 +63,18 @@ void resolveDecl(DeclAST* decl, SemaContext& ctx);
 
 void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx);
 void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx);
+
 void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx);
+bool resolveFunctionBody(ExprAST* init, FuncTypeAST* funcType, SemaContext& ctx);
+
 void resolveParam(ParamAST* param, SemaContext& ctx);
 void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx);
-void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx);
+
 void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx);
 void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx);
 
-// ─── Struct Field Resolution (Phase 2 of struct two-pass) ──────────────
-
-/// @brief Resolve all field types in a struct (after all fields are registered).
-void resolveStructFields(StructDeclAST* decl, SemaContext& ctx);
+void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx);
+bool resolveStructFieldDeclarations(ArenaSpan<FieldDeclAST*> fields, StructDeclAST* owner, SemaContext& ctx);
 
 // ─── Statement Resolution ──────────────────────────────────────────────
 
