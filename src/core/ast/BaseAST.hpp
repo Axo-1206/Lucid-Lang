@@ -722,6 +722,43 @@ struct ModuleAST : BaseAST {
     // ─── Legacy imports vector ──────────────────────────────────────────────
     std::vector<InternedString> imports;
 
+    // ─── Semantic Fields (set by Sema) ─────────────────────────────────────
+    //
+    // Specializations built during resolution of *this module's*
+    // declarations. Populated by Sema as it instantiates generic structs
+    // and functions; read by CodeGen when lowering this module.
+    //
+    // ─── Why a Field, Not a SemaContext Map ─────────────────────────────
+    // A specialization is created once per distinct (template, args) pair
+    // and shared by every module that references it. The *declaration*
+    // is unique; what needs a per-module home is the question "which
+    // module should emit the LLVM type or function for this?" — the
+    // module whose resolution first triggered the instantiation.
+    //
+    // A `SemaContext`-side map keyed on `ModuleAST*` would answer that
+    // question too, but it forces CodeGen to hold a `SemaContext&`,
+    // coupling the two layers. This field keeps the answer on the module
+    // node itself, where both layers can already reach it through their
+    // own module pointer. CodeGen walks `decls` and `specializations`;
+    // Sema appends to `specializations` during resolution.
+    //
+    // ─── Field Category ─────────────────────────────────────────────────
+    // This is a Semantic Field, in the sense of the table at the top of
+    // this file: set by Sema, read by later passes. The Parser initializes
+    // it empty and never touches it again. It is not a Parser Field, and
+    // it is not a Layout or CodeGen Field. The same category covers
+    // `hasErrors`, which is likewise a fact produced by one phase and
+    // consumed by another.
+    //
+    // ─── Ordering ───────────────────────────────────────────────────────
+    // Push order is completion order during resolution. Since Sema
+    // resolves depth-first and a specialization is only appended after
+    // its own body has been fully resolved, the vector is already in
+    // dependency order: a specialization's dependencies appear before
+    // it. CodeGen can lower the vector front-to-back without a
+    // topological sort.
+    std::vector<DeclAST*> specializations;
+
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };
 

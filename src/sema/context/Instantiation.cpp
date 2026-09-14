@@ -125,6 +125,10 @@ static StructDeclAST* finalizeInstantiatedStruct(
                   ctx.pool.lookup(finalStruct->mangledName),
                   " (", finalStruct->fields.size(), " fields)");
 
+    if (ctx.currentModule) {
+        ctx.currentModule->specializations.push_back(finalStruct);
+    }
+
     return finalStruct;
 }
 
@@ -226,6 +230,10 @@ static FuncDeclAST* finalizeInstantiatedFunction(
 
     Trace::detail("Finalized instantiated function: ",
                   ctx.pool.lookup(finalFunc->mangledName));
+
+    if (ctx.currentModule) {
+        ctx.currentModule->specializations.push_back(finalFunc);
+    }
 
     return finalFunc;
 }
