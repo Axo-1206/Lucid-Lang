@@ -80,9 +80,10 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Invariant: every FuncDeclAST reaching CodeGen is specialized ──
-    AST_ASSERT_MSG(decl->genericParams.empty(),
-        "CodeGen received an unspecialized generic function — Sema bug");
+    AST_ASSERT_MSG(!decl->isGeneric(),
+        "lowerStructDecl received a generic template — "
+        "lowerDeclaration should have skipped it.");
+
 
     llvm::StructType* structType = getStructType(ctx, decl);
     if (!structType) {
@@ -159,9 +160,10 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Invariant: every FuncDeclAST reaching CodeGen is specialized ──
-    AST_ASSERT_MSG(decl->genericParams.empty(),
-        "CodeGen received an unspecialized generic function — Sema bug");
+    AST_ASSERT_MSG(!decl->isGeneric(),
+        "lowerFunctionDecl received a generic template — "
+        "lowerDeclaration should have skipped it. A generic template "
+        "has no LLVM function; only its specializations do.");
 
     // ─── 1. Foreign functions: declare external symbol ──────────────────
     if (decl->isForeignFunction) {
@@ -533,6 +535,19 @@ void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
 
 void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx) {
     if (!decl || decl->hasSyntaxError) return;
+
+    // ─── Skip generic templates ────────────────────────────────────────
+    // A generic template is a family, not a concrete declaration. Sema
+    // produced a specialization for every concrete type the program
+    // actually uses, and those specializations appear in
+    // `module->specializations`. A template has no LLVM object of its
+    // own — it's the recipe, not the result.
+    if (decl->isa<StructDeclAST>() && decl->as<StructDeclAST>()->isGeneric()) {
+        return;
+    }
+    if (decl->isa<FuncDeclAST>() && decl->as<FuncDeclAST>()->isGeneric()) {
+        return;
+    }
 
     switch (decl->kind) {
         case ASTKind::FuncDecl:

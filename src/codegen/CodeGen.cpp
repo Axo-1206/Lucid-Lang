@@ -25,29 +25,52 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
     CodeGenContext ctx(p, d, context);
     ctx.modules = modules;
 
-    // ─── Phase 1: Generate all modules ───────────────────────────────────
-    // All declarations and function bodies are generated.
-    // Globals are created with null initializers.
+    // ─── Phase 1: Every module, every declaration, every body ──────────
+    //
+    // For each module, generateModule runs:
+    //   - lowerModuleDeclarations: prototypes and types for `decls`
+    //     *and* `specializations`
+    //   - lowerModuleBodies: bodies for functions in `decls` and
+    //     `specializations`
+    //
+    // By the end of this loop, every LLVM struct type, every function
+    // prototype, and every function body the program needs is in place.
+    // Nothing else will be created after this point except the global
+    // initializer.
+    //
+    // `pendingGlobals` accumulates during this phase: each module-level
+    // `let` with a non-constant initializer is queued when its
+    // llvm::GlobalVariable is created, but its initializer expression is
+    // not lowered yet.
     for (ModuleAST* module : modules) {
         if (!module) continue;
-        
+
         std::string name = p.lookup(module->filePath);
         ctx.module = new llvm::Module(name, context);
         ctx.currentFile = module->filePath;
         ctx.currentModule = module;
-        
-        // Store mapping for cross-module access
+
         ctx.llvmModules[module] = ctx.module;
-        
-        // Generate the module (declarations + bodies)
+
         generateModule(module, ctx);
-        
+
         result.push_back(std::unique_ptr<llvm::Module>(ctx.module));
     }
 
-    // ─── Phase 2: Generate global initializer ────────────────────────────
-    // NOW all symbols from all modules exist!
-    // Use the first module as the host for the initializer.
+    // ─── Phase 2: Global initializer ────────────────────────────────────
+    //
+    // __init_globals is generated once, in the first module, after every
+    // declaration and body from every module is in place. It lowers each
+    // pending global's initializer expression and stores the result into
+    // the global's slot.
+    //
+    // The sort by (dependencyOrder, orderInModule) inside
+    // generateGlobalInitializer ensures globals initialize in an order
+    // that respects cross-module dependencies.
+    //
+    // Specializations are covered by Phase 1: any global initializer that
+    // references a specialization will find its LLVM type and any LLVM
+    // functions it calls already lowered.
     if (!result.empty() && !ctx.pendingGlobals.empty()) {
         ctx.module = result[0].get();
         generateGlobalInitializer(ctx);
@@ -90,19 +113,60 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
 void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx) {
     if (!module) return;
 
+    // ─── 1. Parser-produced declarations ───────────────────────────────
+    //
+    // Templates (which Sema never resolved past their signature), plus
+    // non-generic structs, enums, traits, foreign functions, and globals.
+    //
+    // A non-generic FuncDeclAST gets its LLVM prototype here.
+    // A non-generic VarDeclAST gets its llvm::GlobalVariable here (with a
+    // null initializer; the actual value is deferred to __init_globals).
+    // A StructDeclAST — generic template or concrete — is *not* lowered
+    // here as a template: a template has no fields and no LLVM struct
+    // type is produced for it. Only concrete structs produce LLVM types.
     for (DeclAST* decl : module->decls) {
         if (!decl) continue;
         lowerDeclaration(decl, ctx);
+    }
+
+    // ─── 2. Specializations Sema built while resolving this module ─────
+    //
+    // These are the concrete forms of every generic struct and function
+    // the program actually referenced. Each is a StructDeclAST or
+    // FuncDeclAST with `genericParams.empty()` and `isGeneric() == false`.
+    //
+    // Ordering: Sema resolved specializations depth-first, appending each
+    // to `module->specializations` only after its body was fully resolved.
+    // A specialization's dependencies appear before it in this list, so
+    // lowering front-to-back creates every LLVM object before anything
+    // that references it.
+    for (DeclAST* spec : module->specializations) {
+        if (!spec) continue;
+        lowerDeclaration(spec, ctx);
     }
 }
 
 void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx) {
     if (!module) return;
 
+    // ─── 1. Bodies of parser-produced functions ────────────────────────
     for (DeclAST* decl : module->decls) {
         if (!decl) continue;
         if (decl->isa<FuncDeclAST>()) {
             lowerFunctionBody(decl->as<FuncDeclAST>(), ctx);
+        }
+    }
+
+    // ─── 2. Bodies of specialized functions ────────────────────────────
+    //
+    // Same ordering guarantee as the declaration pass. A specialized
+    // function's body may call other specialized functions; those
+    // callees appear earlier in the list and their LLVM prototypes
+    // already exist from the declaration pass.
+    for (DeclAST* spec : module->specializations) {
+        if (!spec) continue;
+        if (spec->isa<FuncDeclAST>()) {
+            lowerFunctionBody(spec->as<FuncDeclAST>(), ctx);
         }
     }
 }
