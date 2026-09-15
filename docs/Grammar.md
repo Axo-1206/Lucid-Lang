@@ -1,7 +1,7 @@
 # Lucid — Grammar Reference
 
 > Lucid is the successor to Luc. It keeps Luc's core ideas — primitive types,
-> function types, currying, generics, pipeline, composition, result-based error
+> function types, currying, generics, pipeline, result-based error
 > handling, and foreign-function communication — while removing `impl`, `from`,
 > traits, and method dispatch entirely. All behavior is expressed as plain
 > functions.
@@ -3125,7 +3125,7 @@ case_value      = literal
 > - Statements that end with a `block` (`if`, `for`, `while`, `switch`) do **not** take a `;` — the closing `}` is unambiguous.
 > - `do`/`while` ends with an expression, not a block, so it **does** require `;`.
 > - Everything else — declarations, assignments, `return`, `break`, `continue`, bare expression statements — requires `;`.
-> - This includes a declaration or assignment whose *value* happens to end in `}` — a struct literal (`let p Point = Point { x = 1.0 }`), a function body (`const add (a int)(b int) -> int = { return a + b }`), or a reassigned anonymous function (`f = (a int) -> int { return a + 1 }`) all still need the trailing `;`. The exemption above applies only to `if`/`for`/`while`/`switch` themselves, where the block **is** the statement; a struct literal or function body is a *value* on the right of `=`, and Lucid's `|>`, `+>`, `:`, and `.` can all legally follow a value, so nothing about a trailing `}` is inherently statement-final the way it is for those four keywords. Requiring `;` here removes that ambiguity instead of relying on layout to imply it.
+> - This includes a declaration or assignment whose *value* happens to end in `}` — a struct literal (`let p Point = Point { x = 1.0 }`), a function body (`const add (a int)(b int) -> int = { return a + b }`), or a reassigned anonymous function (`f = (a int) -> int { return a + 1 }`) all still need the trailing `;`. The exemption above applies only to `if`/`for`/`while`/`switch` themselves, where the block **is** the statement; a struct literal or function body is a *value* on the right of `=`, and Lucid's `|>`, `:`, and `.` can all legally follow a value, so nothing about a trailing `}` is inherently statement-final the way it is for those four keywords. Requiring `;` here removes that ambiguity instead of relying on layout to imply it.
 
 > [!WARNING]
 > **Visibility inside blocks:** `@[export]` is **not allowed** on any local declaration — it is top-level only. The parser emits an error if it appears inside a block.
@@ -3528,7 +3528,6 @@ expr            = literal
                 | struct_literal
                 | array_literal
                 | pipeline_expr
-                | compose_expr
                 | fallback_expr
                 | generic_expr
                 | generic_ref_expr
@@ -3595,7 +3594,7 @@ generic_ref_expr = IDENTIFIER '<' type_arg { ',' type_arg } '>'
 a hand-written concrete function — so `g<int>` is a **value**, and may
 appear in any `expr` position: the right-hand side of an assignment, an
 array element, a function argument, a struct literal field, a pipeline
-step, a composition operand, or anywhere else an `expr` is expected.
+step, or anywhere else an `expr` is expected.
 
 **`generic_ref_expr` vs. `generic_expr` — a bare reference, not a call.**
 These two productions share the same prefix (`IDENTIFIER '<' type_arg { ','
@@ -3935,134 +3934,33 @@ The pipeline validates that:
 -- Upstream: [int] ❌ (not enough arguments)
 ```
 
-## Composition Operator `+>`
+## Composition Is Not a Language Feature
 
-`+>` wires functions together at compile time, producing a new function without executing anything. The output type of the left operand must match the input type of the right operand. **Each operand must have exactly one parameter** — functions with multiple parameters or variadic parameters are not allowed in composition (see **Operand Requirements**, below).
-
-```ebnf
-compose_expr    = expr '+>' expr     (* f +> g: apply f then g, always left-to-right
-                                         both f and g must have exactly one parameter
-                                         — see below *)
-```
-
-> [!NOTE]
-> Each `compose_expr` operand is a bare `expr`, so a `generic_ref_expr` is
-> already a valid operand with no grammar change needed, subject to the
-> same **Operand Requirements** as any other operand (exactly one
-> parameter, no variadics, and — per **Generic Functions and `+>`**,
-> below — instantiated with explicit type arguments, since an
-> uninstantiated generic name is not a value at all):
->
-> ```lucid
-> const identity<T> (v T) -> T = { return v; };
->
-> const ok (x int) -> int = identity<int> +> identity<int>;    -- OK: both
->                                                     -- operands are
->                                                     -- generic_ref_expr
-> ```
+Lucid has no compile-time composition operator. `f +> g`, which would have
+wired two functions together at compile time into a new function value, was
+considered and removed before release: every use case it targeted is already
+covered more idiomatically by the pipeline operator `|>` (see **Pipeline
+Operator `|>`**, above), and the one case `|>` can't cover — a named, reusable
+composed function value — reads better as a short lambda or a named function
+whose body is a pipeline:
 
 ```lucid
-const f (a int)    -> string = { ... };
-const g (s string) -> bool   = { ... };
-
-const h   (a int) -> bool = f +> g;    -- OK: f returns string, g takes string
-const bad (a int) -> bool = g +> f;    -- ERROR: g returns bool, f takes int
-
--- chain three or more
-const process (raw string) -> bool = validate +> transform +> render;
-```
-
-### Generic Functions and `+>`
-
-`+>` is where generic functions are most powerful. Instantiated at the composition site, a generic function acts as a universal adapter between any two compatible types:
-
-```lucid
-const toString<T>  (v T)      -> string = { ... };
-const parseFloat   (s string) -> float  = { ... };
-const double       (x float)  -> float  = { return x * 2.0 };
-
--- int → string → float → float
-const intToDoubled (x int) -> float = toString<int> +> parseFloat +> double;
-
-intToDoubled(42);    -- "42" → 42.0 → 84.0
-intToDoubled(10);    -- "10" → 10.0 → 20.0
-```
-
-**Generics reduce boilerplate across type combinations:**
-
-```lucid
--- without generics: one wrapper per type combination
-const pipeInt   (v int)   -> string = validateInt   +> intToStr   +> trim;
-const pipeFloat (v float) -> string = validateFloat +> floatToStr +> trim;
-const pipeBool  (v bool)  -> string = validateBool  +> boolToStr  +> trim;
-
--- with generics: instantiate at composition site
-const pipeInt   (v int)   -> string = validateInt   +> toString<int>   +> trim;
-const pipeFloat (v float) -> string = validateFloat +> toString<float> +> trim;
-const pipeBool  (v bool)  -> string = validateBool  +> toString<bool>  +> trim;
-```
-
-### Operand Requirements
-
-Every operand in a composition **must satisfy all of the following**:
-
-1. **Exactly one parameter** — Functions with multiple parameters are not allowed:
-   ```lucid
-   const add (a int, b int) -> int = { ... };     -- 2 parameters
-   const scale (x int) -> int = { ... };          -- 1 parameter ✅
-
-   const bad (a int, b int) -> int = add +> scale;     -- ERROR: add has 2 parameters (not allowed)
-   const ok (a int) -> int = scale +> scale;   -- OK: both have 1 parameter
-   ```
-
-2. **No variadic parameters** — Variadic functions are not allowed because composition returns a single value:
-   ```lucid
-   const sum (a int, b ...int) -> int = { ... };   -- variadic
-   const double (x int) -> int = { ... };          -- 1 parameter ✅
-
-   const bad (a int, b ...int) -> int = double +> sum; -- ERROR: sum is variadic (not allowed)
-   ```
-
-3. **Generic functions must be instantiated** — Generic parameters must be resolved with explicit type arguments:
-   ```lucid
-   const identity<T> (x T) -> T = { return x; };
-
-   const ok (x int) -> int = identity<int> +> identity<int>;    -- OK: instantiated
-   const bad = identity +> identity;              -- ERROR: missing generic args
-   ```
-
-### Curried Functions
-
-**Curried functions are allowed in composition** — each function must still have exactly one parameter per group, but the return type can be another function:
-
-```lucid
-const add (a int) -> (int) -> int = { 
-    return (b int) -> int { 
-        return a + b; 
-    };
+const process (raw string) -> bool = {
+    return raw |> validate |> transform |> render;
 };
-const apply5 (f (int) -> int) -> int = { 
-    return f(5);
-};
-
--- add returns (int) -> int, which matches apply5's parameter
-const pipeline (x int) -> int = add +> apply5;
-
-pipeline(10);   -- add(10) returns (b int) -> int { return 10 + b; }
-                -- apply5 calls it with 5 → returns 15
 ```
 
-**Why currying is allowed:** The composed function's type is determined by the chain: `(input) -> (return)`. If the left operand returns a function, that function becomes the value that flows to the right operand. This is a natural consequence of the type system.
+If a reusable composition *value* (as opposed to a named function) is needed
+— for example to build a pipeline from runtime-selected functions — it is
+provided by a standard library module such as `std.fn` (`compose2`,
+`compose3`, ...), implemented as ordinary curried functions with no compiler
+support required:
 
-### Summary of Rules
+```lucid
+import std.fn as fn
 
-| Rule                      | Description                                       |
-| ------------------------- | ------------------------------------------------- |
-| **Exactly one parameter** | Each operand must have exactly one parameter      |
-| **No variadic**           | Variadic parameters are not allowed               |
-| **Generic instantiation** | Generic functions require explicit type arguments |
-| **Currying allowed**      | Return types can be function types                |
-| **Type matching**         | Output of left must match input of right          |
+const process (raw string) -> bool = fn:compose3(validate, transform, render);
+```
 
 ## Result Type and Error Handling
 
@@ -4666,7 +4564,7 @@ const found int? = arr:find<int>(nums)(
 ```
 
 Since the std array library functions are plain curried functions, they compose
-naturally with pipeline and composition:
+naturally with pipeline:
 
 ```lucid
 import std.array as arr
@@ -7252,7 +7150,6 @@ Highest to lowest:
 
 | Level | Operators                   | Associativity |
 | ----- | --------------------------- | ------------- |
-| 8     | `+>` (composition)          | left          |
 | 7     | unary `-` `not` `~`         | right         |
 | 6     | `*` `/` `%` `**`            | left          |
 | 5     | `+` `-`                     | left          |
@@ -8009,7 +7906,6 @@ import std.http as http
 
 | Level | Operators                   | Associativity | Handler                           |
 | ----- | --------------------------- | ------------- | --------------------------------- |
-| 8     | `+>`                        | Left          | parseComposeExpr()                |
 | 7     | unary `-` `not` `~`         | Right         | parsePrefixExpr()                 |
 | 6     | `*` `/` `%` `**`            | Left          | parseInfixBinary()                |
 | 5     | `+` `-`                     | Left          | parseInfixBinary()                |
