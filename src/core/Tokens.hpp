@@ -71,6 +71,10 @@ enum TokenType {
     ERR,      // err      (error sentinel)
 
     // ─── Types: Primitives ─────────────────────────────────────────────
+    // Function
+    TYPE_FN,     // fn
+    TYPE_CLS,    // cls
+
     // Boolean
     TYPE_BOOL,   // bool
 
@@ -228,6 +232,7 @@ struct Token {
     bool is_binary_op() const;
     bool is_literal() const;
     bool is_keyword() const;
+    bool is_function_type_keyword() const;
     bool is_primitive_type() const;
     bool is_integer_type() const;
     bool is_float_type() const;
@@ -271,6 +276,16 @@ inline bool is_primitive_type(TokenType type) {
         case TokenType::TYPE_DECIMAL:
         case TokenType::TYPE_STRING:
         case TokenType::TYPE_CHAR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_function_type_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_FN:
+        case TokenType::TYPE_CLS:
             return true;
         default:
             return false;
@@ -526,6 +541,8 @@ inline bool is_keyword(TokenType type) {
         case TokenType::FALSE:
         case TokenType::NIL:
         case TokenType::ERR:
+        case TokenType::TYPE_FN:
+        case TokenType::TYPE_CLS:
         case TokenType::TYPE_BOOL:
         case TokenType::TYPE_INT8:
         case TokenType::TYPE_INT16:
@@ -659,6 +676,10 @@ inline bool Token::is_primitive_type() const {
     return ::is_primitive_type(type);
 }
 
+inline bool Token::is_function_type_keyword() const {
+    return ::is_function_type_keyword(type);
+}
+
 inline bool Token::is_integer_type() const {
     return ::is_integer_type(type);
 }
@@ -741,6 +762,8 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::FALSE, "false"},
         {TokenType::NIL, "nil"},
         {TokenType::ERR, "err"},
+        {TokenType::TYPE_FN, "fn"},
+        {TokenType::TYPE_CLS, "cls"},
         {TokenType::TYPE_BOOL, "bool"},
         {TokenType::TYPE_INT8, "int8"},
         {TokenType::TYPE_INT16, "int16"},
@@ -864,7 +887,7 @@ inline bool is_keyword(const std::string& str) {
         "spawn", "join", "async", "await",
         "and", "or", "not",
         "true", "false", "nil", "err",
-        "bool",
+        "fn", "cls","bool",
         "int8", "int16", "int32", "int64",
         "uint8", "uint16", "uint32", "uint64",
         "byte", "short", "int", "long",
@@ -907,6 +930,8 @@ inline TokenType keyword_to_type(const std::string& str) {
         {"false", TokenType::FALSE},
         {"nil", TokenType::NIL},
         {"err", TokenType::ERR},
+        {"fn",  TokenType::TYPE_FN},
+        {"cls", TokenType::TYPE_CLS},
         {"bool", TokenType::TYPE_BOOL},
         {"int8", TokenType::TYPE_INT8},
         {"int16", TokenType::TYPE_INT16},
