@@ -98,6 +98,20 @@ bool typesEqual(TypeAST* a, TypeAST* b) {
             FuncTypeAST* fa = a->as<FuncTypeAST>();
             FuncTypeAST* fb = b->as<FuncTypeAST>();
 
+            // ─── Shape must match exactly ──────────────────────────────────────
+            //
+            // `fn (int) -> int` and `cls (int) -> int` are distinct types: one
+            // is a bare function pointer, the other a {func, env} fat pointer
+            // with a refcounted environment. They are not interchangeable at
+            // the type level — the implicit `fn → cls` coercion is a *value*
+            // conversion applied at assignability sites, not an identity.
+            //
+            // The shape is per-stage, and each nested FuncTypeAST carries its
+            // own, so this check runs once per stage as `typesEqual` recurses
+            // through `returnType`. That's exactly what's wanted: a mismatch
+            // in any stage of a curry chain makes the whole chain unequal.
+            if (fa->shape != fb->shape) return false;
+
             if (fa->params.size() != fb->params.size()) return false;
             for (size_t i = 0; i < fa->params.size(); ++i) {
                 ParamAST* pa = fa->params[i];
@@ -175,6 +189,72 @@ bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
         ctx.diagnostics.note(target, "  #ceil(x)  - round toward positive infinity");
         ctx.diagnostics.note(target, "  #round(x) - round to nearest, half away from zero");
         return false;
+    }
+
+    // ─── 2d. fn (T) -> U  →  cls (T) -> U  (implicit widening) ─────────────
+    //
+    // A bare function pointer can be used wherever a capturing closure is
+    // expected, by wrapping it in a null-environment fat pointer at the
+    // assignment site. The environment is empty, so no retain/release traffic
+    // is generated for the wrapper — it's a zero-cost construction.
+    //
+    // The reverse is rejected: a `cls` value might have captured variables,
+    // and there is no way to strip the environment and produce a valid bare
+    // function pointer that preserves the closure's behavior. The user must
+    // change the slot's declared shape to `cls`, or refactor the closure to
+    // not capture.
+    //
+    // The check is per-stage: the coercion applies to the *outermost* stage,
+    // and inner stages are compared structurally. This matches the design's
+    // per-stage marker rule — a `fn (a int) cls (b int) -> int` value can be
+    // used where `cls (a int) cls (b int) -> int` is expected (outer stage
+    // widens; inner stage already matches), but not where
+    // `cls (a int) fn (b int) -> int` is expected (inner stage would need
+    // the forbidden `cls → fn` direction).
+    if (target->isa<FuncTypeAST>() && source->isa<FuncTypeAST>()) {
+        FuncTypeAST* targetFunc = target->as<FuncTypeAST>();
+        FuncTypeAST* sourceFunc = source->as<FuncTypeAST>();
+
+        // Only `fn → cls` is permitted. `cls → fn` is rejected below,
+        // and equal shapes are already handled by `typesEqual` above.
+        if (sourceFunc->shape == FuncShape::Fn &&
+            targetFunc->shape == FuncShape::Cls) {
+            // Outer stage widens. Now check the rest of the signature
+            // structurally: same params, same return type, same inner-stage
+            // shapes. Reuse `typesEqual` on the *parts* rather than the
+            // whole type, so the shape check on this stage is bypassed
+            // (that's what the coercion is).
+            if (targetFunc->params.size() != sourceFunc->params.size()) return false;
+            for (size_t i = 0; i < targetFunc->params.size(); ++i) {
+                ParamAST* tp = targetFunc->params[i];
+                ParamAST* sp = sourceFunc->params[i];
+                if (tp->isVariadic != sp->isVariadic) return false;
+                if (tp->isConstParam != sp->isConstParam) return false;
+                if (!typesEqual(tp->type, sp->type)) return false;
+            }
+            return typesEqual(targetFunc->returnType, sourceFunc->returnType);
+        }
+
+        // `cls → fn` is explicitly rejected with a targeted diagnostic,
+        // because "why doesn't this work?" is a common question and the
+        // generic "types don't match" message doesn't explain it.
+        if (sourceFunc->shape == FuncShape::Cls &&
+            targetFunc->shape == FuncShape::Fn) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, source,
+                                "cannot use a closure ('cls') where a bare function "
+                                "pointer ('fn') is expected");
+            ctx.diagnostics.note(source,
+                                "A 'cls' value may have captured variables, so it "
+                                "cannot be unwrapped to a bare function pointer");
+            ctx.diagnostics.note(target,
+                                "Change the target's shape to 'cls', or refactor the "
+                                "closure to not capture");
+            return false;
+        }
+
+        // Both same shape but structurally different (params/return mismatch):
+        // fall through to the generic failure at the bottom of the function,
+        // which reports the structural mismatch.
     }
 
     // ─── 3. T → T? (widening to nullable) ──────────────────────────────
