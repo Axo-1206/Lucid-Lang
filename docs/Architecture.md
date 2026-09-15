@@ -854,7 +854,6 @@ lucid/
     │   ├── CodeGenDecl.cpp      # Declaration lowering
     │   ├── CodeGenStmt.cpp      # Statement lowering
     │   ├── CodeGenExpr.cpp      # Expression lowering
-    │   ├── CodeGenClosure.cpp   # Closure lowering
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
@@ -864,7 +863,8 @@ lucid/
     │   │   └── LLVMTypesHelpers.hpp        # Work with llvm types
     │   │
     │   ├── support/
-    │   │   ├── RuntimeError.hpp            # Define all runtime errors
+    │   │   ├── ArenaHelpers.hpp            # Arena-specific code generation helpers.
+    │   │   ├── CodeGenOwnership.hpp/cpp    # Source of truth for memory management
     │   │   ├── LiveVariableTracker.hpp     # live variable tracking
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
@@ -875,6 +875,10 @@ lucid/
     │   │   ├── RuntimeFunctionRegistry.hpp/cpp # Single source of truth for every `__lucid_*` runtime library
     │   │   │                                   function CodeGen declares and calls
     │   │   ├── PanicRuntime.cpp                # Panic implementation
+    │   │   ├── RuntimeError.hpp                # Define all runtime errors
+    │   │   │
+    │   │   ├── arena/
+    │   │   │   └── ArenaRuntime.cpp           # Implementation of arena runtime functions.
     │   │   │
     │   │   ├── memory/
     │   │   │   └── MemoryRuntime.cpp           # Memory management
@@ -890,23 +894,16 @@ lucid/
     │   │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
     │   │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
     │   │   │
-    │   │   ├── concurrency/
-    │   │   │   ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
-    │   │   │   ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
-    │   │   │   └── ConcurrencyEntry.cpp     # extern "C" entry points
-    │   │   │
-    │   │   └── dynlib/
-    │   │       └── DynlibEntry.cpp          # extern "C" __lucid_dynlib_load /
-    │   │                                    # __lucid_dynlib_symbol; wraps
-    │   │                                    # interpreter/dynlink's DynamicLinker +
-    │   │                                    # LibraryHandle so dynlib:load/symbol
-    │   │                                    # (Architecture §9.6) also works when
-    │   │                                    # statically linked into an AOT binary,
-    │   │                                    # not just under the JIT
+    │   │   └── concurrency/
+    │   │       ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
+    │   │       ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
+    │   │       └── ConcurrencyEntry.cpp     # extern "C" entry points
+    │   │
     │   │
     │   └── intrinsic/
-    │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API
-    │       └── IntrinsicEmitter.cpp             # All intrinsic implementations
+    │       ├── IntrinsicEmitter.hpp/cpp            # Intrinsic emission API
+    │       ├── LucidIntrinsicEmitter.hpp/cpp
+    │       └── LLVMIntrinsicEmitter.hpp/cpp
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp              # Public API - single entry point
