@@ -369,6 +369,7 @@ as          if          else        switch      case        default
 return      break       continue    while       for         in
 do          await       async       spawn       join        and         
 or          not         true        false       nil         err
+fn          cls
 ```
 
 > [!NOTE]
@@ -744,32 +745,35 @@ changing how a class stores its data is a breaking change for anyone touching
 its fields directly. A module's exported functions are already a layer of
 indirection over the storage, for free.
 
-**Overloading lets the exported surface offer multiple views without
-multiplying the underlying storage.** Since Lucid resolves overloads by
-parameter shape (see **Function Overloading**), one module can expose several
-ways to retrieve the same underlying data, each shaped for a different
-caller need:
+**Distinctly-named exports let the exported surface offer multiple views
+without multiplying the underlying storage.** Lucid has no function
+overloading (see **Function Overloading** — rejected), so a module that
+wants to expose several ways to retrieve the same underlying data gives
+each view its own name, each shaped for a different caller need:
 
 ```lucid
 -- inside users.luc — internal layout is the module's own choice
 let ids    [*]int    = [];
 let names  [*]string = [];
 
-@[export] const getUser (id int)    -> User?    = { ... };    -- one full record
-@[export] const getUser (ids [*]int) -> [*]User  = { ... };    -- many full records
-@[export] const getUser ()           -> [*]int   = { return ids };    -- ids only, no copy of names
+@[export] const getUserById  (id int)     -> User?    = { ... };    -- one full record
+@[export] const getUsersById (ids [*]int) -> [*]User  = { ... };    -- many full records
+@[export] const getUserIds   ()           -> [*]int   = { return ids };    -- ids only, no copy of names
 ```
 
 ```lucid
--- from outside the module — caller picks the shape it actually needs
-const one  User?  = users:getUser(7);
-const many [*]User = users:getUser([7, 8, 9]);
-const all  [*]int  = users:getUser();
+-- from outside the module — caller picks the function shaped for its need
+const one  User?  = users:getUserById(7);
+const many [*]User = users:getUsersById([7, 8, 9]);
+const all  [*]int  = users:getUserIds();
 ```
 
-Each overload can be implemented against whatever internal layout is
-fastest for that access pattern — the caller only ever sees `getUser`, never
-the storage decision behind it.
+Each of these can be implemented against whatever internal layout is
+fastest for that access pattern — the caller only ever sees the named
+export it called, never the storage decision behind it. This costs a
+slightly longer name at each call site compared to a single overloaded
+`getUser`, in exchange for the caller always being able to tell, from the
+name alone, which shape of data they're about to get back.
 
 ---
 
@@ -1060,9 +1064,12 @@ Initialization**):
 
 ```lucid
 struct Validator {
-    const check (int) -> bool;  -- no default — every instance supplies its
-                                -- own behavior; fixed once construction
-                                -- finishes
+    const check cls (int) -> bool;  -- no default — every instance supplies its
+                                    -- own behavior; fixed once construction
+                                    -- finishes. Declared 'cls' because a
+                                    -- validator commonly needs to capture
+                                    -- configuration (a min/max, a regex, a
+                                    -- reference table) from wherever it's built.
 }
 
 const positive Validator = Validator {
@@ -1083,12 +1090,35 @@ genuinely swappable behavior, like a configurable callback:
 
 ```lucid
 struct Logger {
-    sink (string) -> () = (msg string) -> () { io:printl(msg); };
+    sink cls (string) -> () = (msg string) -> () { io:printl(msg); };
 }
 
 let log Logger = Logger { };
 log.sink = (msg string) -> () { system:writeToFile("app.log", msg); };    -- OK
 ```
+
+> [!NOTE]
+> **Struct fields of function type must declare exactly one shape, `fn` or
+> `cls` — there is no overloading, and no "either" option.** `Logger.sink`
+> above is `cls` because a log sink commonly captures something (a file
+> handle, a request ID, a minimum log level). If a struct genuinely needs to
+> accept *both* a bare-function and a closure implementation for the same
+> conceptual role, it does not overload the field name — Lucid has no
+> function overloading (see **Function Overloading**). Instead, it uses two
+> distinctly-named fields, suffixed `Fn`/`Cls`:
+>
+> ```lucid
+> struct Logger {
+>     sinkFn  fn  (string) -> () = defaultSink;         -- bare-function slot
+>     sinkCls cls (string) -> () = (m string) -> () { }; -- capturing slot
+> }
+> ```
+>
+> This is a naming convention, not a new language mechanism — nothing about
+> the grammar or the AST changes to support it; two fields with different
+> names were already legal. Pick whichever single shape actually fits the
+> field's real use, and only reach for the two-field form when both shapes
+> are genuinely needed side by side.
 
 ### Implicit `self` for Field Defaults Referencing Sibling Fields
 
@@ -1619,10 +1649,16 @@ func_decl       = { attribute_list } ('let' | 'const') IDENTIFIER [ generic_para
    where adjacency is allowed — after the first '->', every subsequent
    stage must be separated by an explicit '->'.
 
+   Every stage — bound or unnamed, in the leading cluster or after an
+   arrow — carries its own mandatory 'fn' or 'cls' marker (see 'Function
+   Shape: fn vs cls', below). The marker is per-stage, not per-chain: a
+   single curried declaration can freely mix 'fn' and 'cls' stages.
+
    This means:
-     - Before the first '->': groups may be adjacent (e.g., `(a int)(b int)`)
-       → The compiler desugars them into nested functions automatically.
-     - After the first '->': adjacent groups are FORBIDDEN.
+     - Before the first '->': stages may be adjacent (e.g., `fn (a int) cls (b int)`)
+       → The compiler desugars them into nested functions automatically,
+         preserving each stage's own marker.
+     - After the first '->': adjacent stages are FORBIDDEN.
        Every boundary must be written as '->' explicitly.
 
    The first '->' marks the boundary where the function's body begins.
@@ -1631,18 +1667,27 @@ func_decl       = { attribute_list } ('let' | 'const') IDENTIFIER [ generic_para
 
 chain           = bound_cluster { '->' unnamed_cluster } [ '->' type ]
 
-bound_cluster   = bound_group { bound_group }
+bound_cluster   = bound_stage { bound_stage }
                   (* the leading cluster only — the part immediately before
                      the first '->'. Parameter names introduced here are the
                      only real bindings a func_decl's header can produce.
-                     Adjacent groups are allowed and automatically desugared
-                     into nested function wrappers by the compiler. *)
+                     Adjacent stages are allowed and automatically desugared
+                     into nested function wrappers by the compiler, with
+                     each stage's 'fn'/'cls' marker preserved through the
+                     desugaring. *)
 
-unnamed_cluster = unnamed_group { '->' unnamed_group }
+unnamed_cluster = unnamed_stage { '->' unnamed_stage }
                   (* every cluster AFTER the first '->'. No identifiers
                      appear here — see the func_type production, below.
-                     Each group must be separated by an explicit '->'.
-                     Adjacent groups are NOT allowed after the first '->'. *)
+                     Each stage must be separated by an explicit '->'.
+                     Adjacent stages are NOT allowed after the first '->'. *)
+
+bound_stage     = ( 'fn' | 'cls' ) bound_group
+                  (* every bound stage is marked. 'fn' means the stage's
+                     function value is a bare pointer; 'cls' means it is a
+                     closure with a refcounted environment. *)
+
+unnamed_stage   = ( 'fn' | 'cls' ) unnamed_group
 
 bound_group     = '(' [ bound_param_list ] ')'
 bound_param_list = bound_param { ',' bound_param } [ ',' variadic_bound ]
@@ -1665,11 +1710,12 @@ func_body       = '{' { statement } '}'         (* declaration only — see WARN
                                                      func_literal; see Function Body as an
                                                      Expression *)
 
-func_type       = unnamed_cluster [ '->' type ]
+func_type       = unnamed_stage { '->' unnamed_stage } [ '->' type ]
                   (* a bare function type — e.g. a struct field, a *func_type,
                      a variable's declared type, a generic argument — is
-                     unnamed throughout, including its leading cluster.
-                     After the first '->', every group must be separated by
+                     unnamed throughout, including its leading stage, and
+                     every stage still carries its own 'fn'/'cls' marker.
+                     After the first '->', every stage must be separated by
                      an explicit '->' — adjacency is NOT allowed in func_type
                      at all, since there is no body to borrow from. *)
 ```
@@ -1696,45 +1742,112 @@ func_type       = unnamed_cluster [ '->' type ]
 > const identity<T> (v T) -> T = { return v; };    -- OK
 > ```
 
-### Grammar Rules
+### Function Shape: `fn` vs `cls`
 
-| Position                                | Syntax                  | Allowed?  | Meaning                                                                                                                |
-| --------------------------------------- | ----------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Leading cluster** (before first `->`) | `(a int)(b int)`        | ✅ **YES** | Adjacent groups are allowed and automatically desugared into nested wrappers. The body belongs to the innermost group. |
-| **After the first `->`**                | `(int)(string)`         | ❌ **NO**  | Adjacent groups are **forbidden**. Each stage must be separated by `->`.                                               |
-| **After the first `->`**                | `-> (int) -> (string)`  | ✅ **YES** | Explicit arrows are required for every stage after the first.                                                          |
-| **`func_type` anywhere**                | `(int)(string) -> bool` | ❌ **NO**  | Adjacent groups are **never allowed** in a bare function type — only explicit arrows.                                  |
+Every function type in Lucid is marked with its runtime representation.
+The marker is **mandatory and per-stage** — every parameter group in a
+curry chain carries its own marker, and mixed shapes in one signature are
+expressible:
+
+| Marker | Runtime value | Words | Resource?            | Call protocol |
+| ------ | ------------- | ----- | -------------------- | ------------- |
+| `fn`   | bare `ptr`    | 1     | No                   | direct call   |
+| `cls`  | `{func, env}` | 2     | Yes (refcounted env) | closure call  |
+
+```lucid
+const add    fn (a int) cls (b int) -> int = { return a + b; };
+const ignore fn (a int) fn  (b int) -> int = { return b; };
+const makeAdder fn (n int) -> cls (int) -> int = { ... };
+const combine fn (f cls (int) -> int)(g fn (int) -> int) -> cls (int) -> int = { ... };
+```
+
+The distinction is entirely static — the compiler knows a function value's
+shape from its type, never from a runtime check. This means:
+
+- No runtime shape check anywhere in CodeGen.
+- No conservative retain/release on function values.
+- `fn` values skip the ownership model entirely — they are never resources.
+- `cls` values follow the existing ownership model (retain/release), exactly
+  like any other refcounted resource.
+
+**Shape inference and validation (Sema):**
+
+1. For each anonymous function expression, if it captures anything, its
+   shape is `cls`; if it captures nothing, its shape is `fn`.
+2. A declared stage's marker must match its initializer's inferred shape.
+3. This is checked at every binding site — bindings, parameters, struct
+   fields, and returns.
+4. **Implicit coercion `fn → cls` is allowed** — a `fn` value can be wrapped
+   as a null-environment `cls` fat pointer wherever a `cls` is expected.
+   **The reverse (`cls → fn`) is never allowed** — a closure might capture,
+   and there is no way to statically unwrap that.
+
+**Diagnostics:**
+
+```
+error: function marked 'fn' but captures variable 'a'
+   = note: 'add' returns a function that captures 'a', so it must be
+     marked 'cls'
+   = help: write 'fn (a int) -> cls (b int) -> int'
+```
+
+A missing marker on a stage is a parse error, not a Sema error — the parser
+rejects it immediately and suggests the correct form.
+
+> [!NOTE]
+> **Choosing `fn` vs `cls` for a parameter you're declaring (not just
+> inferring one you already wrote):** because the `fn → cls` coercion is
+> free and one-directional, a parameter declared `cls` accepts both a bare
+> function and a capturing closure, while a parameter declared `fn` accepts
+> only bare functions. Default to `cls` for callback parameters unless the
+> callback is called on a hot path where the closure-call overhead matters
+> and "no captures" is also a reasonable contract to place on the caller
+> (a sort comparator is the canonical example — see **Standard Library**).
+
+
+
+| Position                                | Syntax                          | Allowed?  | Meaning                                                                                                                                               |
+| --------------------------------------- | ------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Leading cluster** (before first `->`) | `fn (a int) cls (b int)`        | ✅ **YES** | Adjacent stages are allowed and automatically desugared into nested wrappers, each stage's marker preserved. The body belongs to the innermost stage. |
+| **After the first `->`**                | `fn (int) cls (string)`         | ❌ **NO**  | Adjacent stages are **forbidden**. Each stage must be separated by `->`.                                                                              |
+| **After the first `->`**                | `-> fn (int) -> cls (string)`   | ✅ **YES** | Explicit arrows are required for every stage after the first.                                                                                         |
+| **`func_type` anywhere**                | `fn (int) cls (string) -> bool` | ❌ **NO**  | Adjacent stages are **never allowed** in a bare function type — only explicit arrows.                                                                 |
+| **Any stage, anywhere**                 | `(int) -> bool`                 | ❌ **NO**  | A stage with no `fn`/`cls` marker is a parse error — the marker is mandatory, never inferred at parse time.                                           |
 
 ### Examples
 
 ```lucid
--- VALID: Adjacent groups in the leading cluster (before the first '->')
+-- VALID: Adjacent stages in the leading cluster (before the first '->')
 -- The compiler desugars this into nested wrappers automatically.
-const add (a int)(b int) -> int = {
+const add fn (a int) fn (b int) -> int = {
     return a + b;
 };
 
 -- VALID: Explicit arrows after the first '->'
-const makeAdder (base int) -> (int) -> int = {
+const makeAdder fn (base int) -> cls (int) -> int = {
     const adjusted int = base * 2;
-    return (n int) -> int { return adjusted + n; };
+    return (n int) -> int { return adjusted + n; };    -- captures 'adjusted' → cls
 };
 
 -- VALID: Mixed — leading cluster uses adjacency, return type uses explicit arrows
-const process (a int)(b int) -> (int) -> bool = {
+const process fn (a int) fn (b int) -> cls (int) -> bool = {
     const sum int = a + b;
-    return (c int) -> bool { return c > sum; };
+    return (c int) -> bool { return c > sum; };    -- captures 'sum' → cls
 };
 
--- INVALID: Adjacent groups after the first '->' — parser error
-const bad (a int) -> (int)(string) -> bool = {
+-- INVALID: Adjacent stages after the first '->' — parser error
+const bad fn (a int) -> fn (int) cls (string) -> bool = {
     return (b int)(c string) -> bool { return true; };
 };
--- ERROR: expected '->' between '(int)' and '(string)'
+-- ERROR: expected '->' between 'fn (int)' and 'cls (string)'
 
--- INVALID: Adjacent groups in func_type — parser error
-let arr [](int)(string) -> bool = ...;
--- ERROR: expected '->' between '(int)' and '(string)'
+-- INVALID: Adjacent stages in func_type — parser error
+let arr [] fn (int) cls (string) -> bool = ...;
+-- ERROR: expected '->' between 'fn (int)' and 'cls (string)'
+
+-- INVALID: missing marker on a stage — parser error
+let cb (int) -> bool = ...;
+-- ERROR: expected 'fn' or 'cls' before '(int)'
 ```
 
 ### Desugaring of Adjacent Groups
@@ -2259,10 +2372,33 @@ The same rule applies to `[_]T` slice parameters. A slice is a borrowed view for
 
 ---
 
-<!-- 
-This is a potential feature that we may added latter
-
 ## Function Overloading
+
+**Status: Rejected.** Function overloading was considered during the
+`fn`/`cls` function-shape redesign and is **not being added** to Lucid.
+
+The reasoning: overload resolution carries real, compounding costs —
+resolution rules, ambiguity handling, diagnostic quality, and interaction
+with generics and the `fn → cls` coercion all have to be gotten right, and
+none of it is free. Against that, nothing in the language actually requires
+it — not struct fields (which take a single declared `fn`/`cls` shape, or
+two distinctly-named fields — see **Function-Typed Fields**), not
+module exports (which use distinctly-named functions — see **Module
+Exports**), not anything else in the current design. Lucid's broader
+philosophy is already maximally explicit (no type inference, explicit
+generic instantiation, no implicit conversions besides `fn → cls`), and a
+same-name function silently dispatched by the compiler based on argument
+shape cuts against that, rather than extending it. Where the same operation
+is needed over multiple types, the convention is a distinct name per type
+(`describeInt`, `describeString`, ...), not an overload set.
+
+This section is kept, commented out, as a record of the design that was
+considered and its rules, in case the trade-off is ever revisited — it is
+not enabled and should not be treated as available syntax.
+
+<!--
+## Function Overloading (considered and rejected — do not implement without
+revisiting the decision above)
 
 Two or more declaration with the same name but different parameter signatures are
 overloads. The compiler picks the correct overload at the call site based on
@@ -2578,7 +2714,7 @@ const swap<T> (a T)(b T) -> Pair<T, T> = {
 ```lucid
 import std.array as arr
 
-const map<T, U> (items [_]T)(f (T) -> U) -> [*]U  = {
+const map<T, U> (items [_]T)(f cls (T) -> U) -> [*]U  = {
     let result [*]U = [];
     for _, v T in items { 
         arr:append<U>(result)(f(v));
@@ -2586,7 +2722,7 @@ const map<T, U> (items [_]T)(f (T) -> U) -> [*]U  = {
     return result;
 };
 
-const filter<T> (items [_]T)(pred (T) -> bool) -> [*]T  = {
+const filter<T> (items [_]T)(pred cls (T) -> bool) -> [*]T  = {
     let result [*]T = [];
     for _, v T in items { 
         if pred(v) { 
@@ -2596,7 +2732,7 @@ const filter<T> (items [_]T)(pred (T) -> bool) -> [*]T  = {
     return result;
 };
 
-const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
+const fold<T, U>   (items [_]T)(seed U)(f cls (U, T) -> U) -> U   = {
     let acc U = seed;
     for _, v T in items { 
         acc = f(acc, v); 
@@ -2604,8 +2740,16 @@ const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
     return acc;
 };
 
-const sort<T> (items [*]T)(cmp (T, T) -> int) -> [*]T  = { ... };
+const sort<T> (items [*]T)(cmp fn (T, T) -> int) -> [*]T  = { ... };
 ```
+
+`map`, `filter`, and `fold`'s callbacks are `cls` because they routinely
+close over context (a threshold, a running side-total, a captured
+multiplier). `sort`'s comparator is `fn`: it runs `O(n log n)` times per
+sort — the hottest of these call sites — and is expected to be a pure,
+total-order function with no business capturing anything, so pinning it to
+`fn` both avoids the closure-call overhead in the loop and enforces "no
+captures" as a type-level contract rather than just a convention.
 
 **Call sites — explicit type arguments always required:**
 
@@ -2613,6 +2757,8 @@ const sort<T> (items [*]T)(cmp (T, T) -> int) -> [*]T  = { ... };
 const nums   [*]int    = [3, 1, 4, 1, 5];
 const strs   [*]string = ["hello", "world"];
 
+-- these lambdas have no captures, so they're 'fn'-shaped and coerce
+-- automatically to map/filter's 'cls' parameters
 const doubled [*]int = map<int, int>(nums)(
     (v int) -> int { return v * 2; }
 );
@@ -2629,8 +2775,15 @@ const sum int = fold<int, int>(nums)(0)(
     (acc int, v int) -> int { return acc + v; }
 );
 
+-- sort's comparator matches its 'fn' parameter exactly — no captures allowed
 const sorted [*]int = sort<int>(nums)(
     (a int, b int) -> int { return a - b; }
+);
+
+-- a *capturing* predicate now works where it wouldn't if filter took 'fn'
+const threshold int = 3;
+const evensAbove [*]int = filter<int>(nums)(
+    (v int) -> bool { return v % 2 == 0 and v > threshold; }
 );
 
 -- with pipeline
@@ -2789,13 +2942,22 @@ Vector2?!    -- nullable and fallible struct value
 
 [*]int?    -- ERROR: ? on array type is forbidden — use empty array []
              --        instead of a nullable array
-(int) -> bool?;    -- ERROR: ? on function type is forbidden
+fn (int) -> bool?;    -- ERROR: ? on function type is forbidden
 ```
 
 > [!NOTE]
 > Disallowing nullable/fallible arrays and function types encourages cleaner
 > idioms: an empty array `[]` is always preferable to a `nil` array, and an
 > empty or no-op function is preferable to a nullable function binding.
+>
+> **Binding rule:** `?` and `!` bind to the **immediately preceding type**,
+> never to a whole chain or cluster. In a curried `chain`, that means `?`/`!`
+> after the final stage's return type applies only to that return type —
+> `fn (a int) -> cls (b int) -> int?` makes the innermost `int` nullable,
+> not the function itself. A `?`/`!` written directly after a complete
+> function type (as opposed to after the type it returns) is exactly the
+> case forbidden above, and is a parse error, not something that "binds
+> outward" to mean an optional function.
 
 ### Memory Layout
 
@@ -3861,7 +4023,7 @@ Generic functions must be instantiated with explicit type arguments at the pipel
 
 ```lucid
 const identity<T> (v T) -> T = { return v };
-const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) };
+const map<T, U>   (v T)(f cls (T) -> U) -> U = { return f(v) };
 
 42     |> identity<int>;    -- OK → 42
 42     |> identity;         -- ERROR: uninstantiated generic
@@ -3961,6 +4123,23 @@ import std.fn as fn
 
 const process (raw string) -> bool = fn:compose3(validate, transform, render);
 ```
+
+`std.fn`'s signatures, with `fn`/`cls` markers applied:
+
+```lucid
+const compose2<A, B, C>    (f cls (A) -> B)(g cls (B) -> C)             -> cls (A) -> C = { ... };
+const compose3<A, B, C, D> (f cls (A) -> B)(g cls (B) -> C)(h cls (C) -> D) -> cls (A) -> D = { ... };
+```
+
+Every parameter is `cls`, and so is the return type — but for different
+reasons. The parameters are `cls` for permissiveness: composition isn't a
+hot path (it runs once, to build the composed value), so there's no reason
+to refuse a capturing closure the way `sort`'s comparator does; `cls`
+accepts both a bare function and a closure, with bare functions coercing in
+for free. The return type is `cls` out of necessity, not choice — the
+composed function has to capture `f`, `g` (and `h`) in its own environment
+so it can call them later, and there is no `fn`-shaped way to return "call
+`f` then `g`" without an environment to hold them in.
 
 ## Result Type and Error Handling
 
@@ -4530,34 +4709,45 @@ already written in the type, not a runtime property.
 
 All other array manipulation is done through the standard library, which
 provides plain functions that accept the array and a user callback where
-needed:
+needed. Each callback parameter's `fn`/`cls` shape is fixed by the function's
+own declared signature — `sort`'s comparator is `fn` (no captures allowed,
+since it runs on the hot path), and `map`/`filter`/`reduce`/`find`'s
+callbacks are `cls` (they may capture, since a bare function coerces in for
+free where a capturing closure is welcome):
 
 ```lucid
 import std.array as arr
 
 const nums  [*]int = [3, 1, 4, 1, 5, 9, 2, 6];
 
--- sorting — user provides the comparison callback
+-- sorting — comparator is 'fn': no captures, matches arr:sort's declared shape
 const sorted [*]int = arr:sort<int>(nums)(
     (a int, b int) -> int { return a - b; }    -- ascending
 );
 
--- mapping — user provides the transform callback
+-- mapping — transform callback matches arr:map's 'cls' parameter (fn coerces up)
 const doubled [*]int = arr:map<int, int>(nums)(
     (v int) -> int { return v * 2; }
 );
 
--- filtering — user provides the predicate callback
+-- filtering — predicate matches arr:filter's 'cls' parameter
 const evens [*]int = arr:filter<int>(nums)(
     (v int) -> bool { return v % 2 == 0; }
 );
 
--- reducing — user provides the accumulator callback
+-- filtering with a capturing predicate — only possible because arr:filter's
+-- 'pred' parameter is 'cls', not 'fn'
+const threshold int = 4;
+const aboveThreshold [*]int = arr:filter<int>(nums)(
+    (v int) -> bool { return v > threshold; }
+);
+
+-- reducing — accumulator callback matches arr:reduce's 'cls' parameter
 const sum int = arr:reduce<int, int>(nums)(0)(
     (acc int, v int) -> int { return acc + v; }
 );
 
--- searching — user provides the predicate
+-- searching — predicate matches arr:find's 'cls' parameter
 const found int? = arr:find<int>(nums)(
     (v int) -> bool { return v > 4; }
 );
