@@ -211,8 +211,37 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx); // for both na
 TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx);
 TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx);
 TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx);
-TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx);
 TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST* type); // handle nullable/fallible
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FuncTypeParts — the raw, un-chained output of parseFuncTypeParts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief One marked stage of a function signature, as read from source.
+///
+/// A stage is the unit that appears between arrows (or adjacent to another
+/// stage): a shape marker followed by a parameter group.
+struct ParsedFuncStage {
+    FuncShape shape;
+    ArenaSpan<ParamAST*> params;
+    SourceLocation loc;
+};
+
+/// @brief The parsed pieces of a function type or declaration header.
+///
+/// `stages` is in source order (outermost first). `finalReturnType` is the
+/// last stage's return type, or nullptr for void.
+///
+/// A function type and a function declaration header read identically at the
+/// token level — the only difference is whether parameter names are allowed.
+/// Both call `parseFuncTypeParts` to get one of these, then hand it to the
+/// appropriate chain-builder.
+struct FuncTypeParts {
+    std::vector<ParsedFuncStage> stages;
+    TypeAST* finalReturnType = nullptr;
+};
+
+TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -229,6 +258,10 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
 std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowName);
 ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool allowNames);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
+
+FuncTypeParts parseFuncTypeParts(TokenStream& stream, ParserContext& ctx, bool allowNames);
+FuncTypeAST* buildFuncTypeChain(ParserContext& ctx, const FuncTypeParts& parts);
+AnonFuncExprAST* buildAnonFuncChain(ParserContext& ctx, const FuncTypeParts& parts, StmtAST* body);
 
 // ─── Lookahead Helpers ────────────────────────────────────────────────────
 

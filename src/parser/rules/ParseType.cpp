@@ -69,7 +69,7 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
         return parsePtrType(stream, ctx);
     }
     
-    if (stream.check(TokenType::LPAREN)) {
+    if (is_function_type_keyword(stream.peekType())) {
         return parseFuncType(stream, ctx);
     }
     
@@ -456,62 +456,67 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
-// parseFuncType - Parses function types with adjacent groups
+// parseFuncType - Parses a function type with per-stage fn/cls markers
 // =============================================================================
 
 /// @brief Parse a function type.
 ///
 /// Grammar:
-///   func_type = unnamed_cluster { [ '->' ] unnamed_cluster } [ '->' type ]
+///   func_type = stage { '->' stage } [ '->' type ]
+///   stage     = ( 'fn' | 'cls' ) unnamed_group
+///
+/// Each stage is marked with `fn` or `cls`, and the marker applies to that
+/// stage only. Stages may be arrow-separated or adjacent; adjacency is a
+/// shorthand for the arrow form and desugars the same way.
+///
+/// The result is a right-nested chain: the outermost FuncTypeAST is the
+/// first stage, its returnType is the second stage (another FuncTypeAST),
+/// and so on, with the innermost stage's returnType being the final
+/// (non-function) return type, or nullptr for void.
+///
+/// Examples:
+///   fn (a int) -> int
+///     → one stage: shape=Fn, params=[a], returnType=int
+///
+///   fn (a int) cls (b int) -> int
+///     → outer: shape=Fn,  params=[a], returnType=inner
+///     → inner: shape=Cls, params=[b], returnType=int
+///
+///   fn (a int) fn (b int) -> int
+///     → outer: shape=Fn, params=[a], returnType=inner
+///     → inner: shape=Fn, params=[b], returnType=int
+///
+///   fn (n int) -> cls (int) -> int
+///     → outer: shape=Fn,  params=[n], returnType=inner
+///     → inner: shape=Cls, params=[],  returnType=int
 ///
 /// Parameter names are NEVER allowed in a function type.
 ///
 /// @param stream The token stream
 /// @param ctx The parsing context
-/// @return TypeAST* The parsed function type
+/// @return TypeAST* The parsed function type (a FuncTypeAST chain)
 TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
-    // ─── 1. Parse all parameter groups before the first `->` ──────────────
-    // Parameter names are NEVER allowed in a function type.
-    std::vector<ParamAST*> allParams;
-    
-    while (stream.check(TokenType::LPAREN)) {
-        // Parse a single parameter group with allowNames = false
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, false);
-        for (auto* p : groupParams) {
-            allParams.push_back(p);
-        }
-        
-        if (stream.check(TokenType::ARROW)) {
-            break;
-        }
-    }
-    
-    // ─── 2. Create function type node ──────────────────────────────────────
-    auto* funcType = ctx.arena.make<FuncTypeAST>();
+    SourceLocation loc = stream.currentLoc();
 
-    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-    for (auto* p : allParams) {
-        paramBuilder.push_back(p);
-    }
-    funcType->params = paramBuilder.build();
+    FuncTypeParts parts = parseFuncTypeParts(stream, ctx, /*allowNames=*/false);
 
-    // ─── 3. Check for arrow ─────────────────────────────────────────────────
-    if (!stream.match(TokenType::ARROW)) {
-        return funcType;
+    FuncTypeAST* chain = buildFuncTypeChain(ctx, parts);
+
+    // Propagate error state from any stage that failed.
+    for (const auto& stage : parts.stages) {
+        for (ParamAST* p : stage.params) {
+            if (p && p->hasSyntaxError) {
+                chain->hasSyntaxError = true;
+                break;
+            }
+        }
     }
-    /// NOTE: after '->' we expect a returned type, if no '->' then the function
-    ///       is returned before this run
-    
-    // ─── 4. Parse return type ──────────────────────────────────────────────
-    TypeAST* returnType = parseType(stream, ctx);
-    if (!returnType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected return type, got '", stream.peekValue(), "'");
-        return funcType;
+    if (parts.finalReturnType && parts.finalReturnType->hasSyntaxError) {
+        chain->hasSyntaxError = true;
     }
-    funcType->returnType = returnType;
-    
-    return funcType;
+
+    chain->loc = loc;
+    return chain;
 }
 
 // =============================================================================

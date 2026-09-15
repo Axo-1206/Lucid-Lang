@@ -35,40 +35,29 @@ namespace parser {
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
     size_t savedPos = stream.getPos();
 
-    // 1. Check for `let` or `const`
     if (!stream.checkAny(TokenType::LET, TokenType::CONST)) {
         stream.setPos(savedPos);
         return false;
     }
-    stream.consume(); // Skip let/const
+    stream.consume();
 
-    // 2. The name is optional for THIS check. A function declaration with a
-    //    missing name still has to route to parseFuncDecl - parseVarDecl has
-    //    no business trying to recover a parameter list or generic list. If
-    //    we bailed out here, `const (x int) -> int { ... }` would fall into
-    //    parseVarDecl, whose type-probe would "successfully" misparse
-    //    `(x int)` as an unnamed function *type* (parseFuncType explicitly
-    //    forbids parameter names) and report a confusing, wrong-subsystem
-    //    diagnostic instead of the correct "expected function name". So:
-    //    skip the identifier if present, but keep looking for the
-    //    func-decl markers below either way.
-    stream.match(TokenType::IDENTIFIER);
+    stream.match(TokenType::IDENTIFIER);  // name is optional in error cases
 
-    // 3. Generic parameters are exclusive to function declarations - a
-    //    variable declaration's type grammar has no production starting
-    //    with '<'. Seeing it here is decisive by itself, even if the
-    //    generic list turns out to be malformed - that's parseFuncDecl's
-    //    (specifically parseGenericParamDecls') problem to diagnose, not
-    //    this lookahead's. No need to balance-match; we're not consuming
-    //    the real generic list here, just detecting intent.
+    // Skip generic params
     if (stream.check(TokenType::LESS)) {
-        stream.setPos(savedPos);
-        return true;
+        int depth = 0;
+        while (!stream.isAtEnd()) {
+            TokenType t = stream.peekType();
+            if (t == TokenType::LESS) depth++;
+            else if (t == TokenType::GREATER) {
+                depth--;
+                if (depth == 0) { stream.consume(); break; }
+            }
+            stream.consume();
+        }
     }
 
-    // 4. No generics - the remaining signal is a parameter-list start.
-    bool result = stream.check(TokenType::LPAREN);
-
+    bool result = is_function_type_keyword(stream.peekType());
     stream.setPos(savedPos);
     return result;
 }

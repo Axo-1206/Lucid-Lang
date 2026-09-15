@@ -341,12 +341,19 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::IDENTIFIER)) {
         Token nameTok = stream.consume();
         name = ctx.pool.intern(nameTok.value);
-    } else if (stream.check(TokenType::LESS) || stream.check(TokenType::LPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+    } else if (is_function_type_keyword(stream.peekType()) ||
+               stream.check(TokenType::LESS)) {
+        // The name is missing, but the marker or generic list still follows.
+        // This is a function declaration with a missing name — recover here
+        // rather than falling into parseVarDecl, which has no business
+        // parsing a marker-led header.
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                                stream.currentLoc(),
                                 "expected function name");
         name = ctx.pool.intern("");
     } else {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                                stream.currentLoc(),
                                 "expected function name, got '", stream.peekValue(), "'");
         return nullptr;
     }
@@ -361,14 +368,9 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     //
     // A generic function declaration denotes a family, not a value. No
     // expression form in the language produces a family, so a `let`-bound
-    // generic could never be reassigned — `let` would be asking for a
-    // capability the language has no way to exercise. Report at the
-    // keyword token, where the user wrote the wrong thing.
-    //
-    // The parser reports the error but does NOT fix the keyword — the AST
-    // still reflects what the user wrote, and `hasSyntaxError` is set so
-    // Sema skips the declaration. This keeps every downstream pass from
-    // having to re-check the invariant.
+    // generic could never be reassigned. Report at the keyword token, where
+    // the user wrote the wrong thing, but don't rewrite the AST — Sema skips
+    // declarations marked `hasSyntaxError`.
     bool genericLetError = (!isConst && !genericParams.empty());
     if (genericLetError) {
         ctx.diagnostics.errorAt(DiagCode::Sem_GenericRequiresConst,
@@ -378,58 +380,38 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             "a generic function is a definition, not a reassignable value: "
             "no expression form produces a generic-family value, so 'let' "
             "has nothing it could ever be reassigned to");
-        // fall through — build the node with hasSyntaxError, so Sema skips it
     }
 
-    // ─── 4. Parse parameter groups ─────────────────────────────────────────
+    // ─── 4. Parse the signature chain (shared with parseFuncType) ──────────
+    //
+    // Under the new grammar, every stage of the chain carries its own `fn`
+    // or `cls` marker. `parseFuncTypeParts` reads the marked stages and the
+    // final return type; `buildFuncTypeChain` right-nests them into the
+    // FuncTypeAST the declaration and its call sites will use.
+    //
+    // This is the *declared* signature. Its ParamAST nodes are type-only —
+    // CodeGen will iterate `init`'s AnonFuncExprAST to get the runtime
+    // parameters (see the FuncDeclAST doc comment).
     SourceLocation funcTypeLoc = stream.currentLoc();
-    std::vector<std::vector<ParamAST*>> groups;
+    FuncTypeParts parts = parseFuncTypeParts(stream, ctx, /*allowNames=*/true);
 
-    if (!stream.check(TokenType::LPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(' for function parameters, got '", stream.peekValue(), "'");
-        std::vector<ParamAST*> emptyGroup;
-        groups.push_back(emptyGroup);
-    }
+    FuncTypeAST* funcType = buildFuncTypeChain(ctx, parts);
+    if (funcType) funcType->loc = funcTypeLoc;
 
-    while (stream.check(TokenType::LPAREN)) {
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);
-        groups.push_back(groupParams);
-        if (stream.check(TokenType::ARROW)) {
-            break;
-        }
-    }
-
-    // ─── 5. Parse return type ──────────────────────────────────────────────
-    TypeAST* restType = nullptr;
-    if (stream.match(TokenType::ARROW)) {
-        restType = parseType(stream, ctx);
-        if (!restType) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected return type after '->'");
-            restType = ctx.arena.make<UnknownTypeAST>();
-            restType->hasSyntaxError = true;
-            synchronizeToBoundary(stream, ctx,
-                {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
-        }
-    }
-
-    // ─── 6. Parse body portion (produce a StmtAST* or ExprAST* to be
-    //        turned into an init below) ─────────────────────────────────────
+    // ─── 5. Parse body portion ─────────────────────────────────────────────
     //
     // At this point we know the header, but not yet whether the body is a
-    // block, a reference, or some other expression. We defer the decision
-    // about how to wrap it into step 8, once the signature chain is built.
+    // block, a reference, or some other expression. Defer the decision about
+    // how to wrap it into step 7, once the body is known to exist.
     //
-    // The parser stores the raw parsed form here:
-    //   - `parsedBlock` is the block body if the source had one.
-    //   - `parsedExpr`  is the expression body if the source had one.
-    //   - both null → foreign function (no body).
+    //   `parsedBlock` is the block body if the source had one.
+    //   `parsedExpr`  is the expression body if the source had one.
+    //   both null → foreign function (no body).
     StmtAST* parsedBlock = nullptr;
     ExprAST* parsedExpr = nullptr;
     bool hasBodyError = false;
 
-    // ─── 6a. Consume optional '=' before the body ──────────────────────────
+    // ─── 5a. Consume optional '=' before the body ──────────────────────────
     bool hasExplicitAssign = false;
     if (stream.match(TokenType::ASSIGN)) {
         hasExplicitAssign = true;
@@ -444,7 +426,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
 
-    // ─── 6b. Parse the body itself ─────────────────────────────────────────
+    // ─── 5b. Parse the body itself ─────────────────────────────────────────
     if (stream.check(TokenType::LBRACE)) {
         if (!hasExplicitAssign) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.previousLoc(),
@@ -460,7 +442,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             hasBodyError = true;
         }
     } else if (hasExplicitAssign) {
-        // ─── Expression body ──────────────────────────────────────────────
+        // ─── Expression body ───────────────────────────────────────────────
         if (looksLikeAnonFunc(stream, ctx)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration,
                                     stream.currentLoc(),
@@ -478,111 +460,37 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             }
         }
     }
-    // else: init stays nullptr → foreign function
+    // else: no init → foreign function
 
-    // ─── 7. Build the nested function type chain ───────────────────────────
-    //
-    // Curried desugaring. The surface syntax (a int)(b int) -> int desugars 
-    // into (a int) -> (b int) -> int — one nested anon per adjacent group. 
-    // The user's block becomes the innermost anon's body; each outer anon 
-    // wraps the next in { return <inner>; }. Earlier parameters therefore 
-    // become captures of inner anons. This is the mechanism behind partial 
-    // application (add(5) returns a closure that captured a = 5), and it is 
-    // intentional. The parser does not compute captures — Sema's scope chain 
-    // and analyzeCaptures handle that when the nested anons are resolved.
-    //
-    // `groupTypes` is hoisted to this scope so step 8 can reach the inner
-    // group's type when wrapping each curried stage. This replaces the
-    // ad-hoc `innermostFuncType` tracking from the previous version.
-    FuncTypeAST* funcType = nullptr;
-    std::vector<FuncTypeAST*> groupTypes;
-    bool hasError = false;
-
-    if (groups.empty()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
-                                "function must have at least one parameter group '()'");
-
-        auto* ft = ctx.arena.make<FuncTypeAST>();
-        ft->params = ctx.arena.makeBuilder<ParamAST*>().build();
-        ft->returnType = restType;
-        ft->loc = funcTypeLoc;
-        groupTypes.push_back(ft);
-        funcType = ft;
-        hasError = true;
-    } else {
-        groupTypes.resize(groups.size());
-
-        TypeAST* currentReturnType = restType;  // nullptr for void
-        for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
-            auto* ft = ctx.arena.make<FuncTypeAST>();
-            auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-            for (ParamAST* param : groups[i]) {
-                paramBuilder.push_back(param);
-            }
-            ft->params = paramBuilder.build();
-            ft->returnType = currentReturnType;
-            ft->loc = funcTypeLoc;
-            groupTypes[i] = ft;
-            currentReturnType = ft;
-        }
-        funcType = groupTypes[0];
-    }
-
-    // ─── 8. Convert the parsed body into an ExprAST init ───────────────────
+    // ─── 6. Convert the parsed body into an ExprAST init ───────────────────
     //
     // Two body forms are possible:
     //
-    //   parsedBlock != nullptr → block body. Wrap it in an AnonFuncExprAST
-    //     whose funcType is the innermost group's type. For curried
-    //     functions (groups.size() >= 2), wrap the innermost group's anon
-    //     in a ReturnStmtAST, then wrap that in an anon for the next group
-    //     out, and so on, ending with an outermost anon whose funcType is
-    //     `funcType`.
+    //   parsedBlock != nullptr → block body. Hand it to buildAnonFuncChain,
+    //     which wraps it in one AnonFuncExprAST per stage (the innermost
+    //     stage holds the block directly; each outer stage holds a
+    //     `return <inner anon>;`).
     //
     //   parsedExpr != nullptr → expression body. If it's a reference to
-    //     another function (IdentifierExprAST / ModuleAccessExprAST /
-    //     CallExprAST / FieldAccessExprAST), it IS the init — a 
-    //     function value of the declared type. Otherwise, for the
-    //     curried case, the expression is the innermost group's body
-    //     expression, so it needs to be wrapped in a ReturnStmtAST before
-    //     being wrapped in the outer anon chain.
+    //     another function value (IdentifierExprAST, ModuleAccessExprAST,
+    //     FieldAccessExprAST, CallExprAST), it IS the init — a value of the
+    //     declared type, already fully curried. Otherwise it's a plain
+    //     expression whose value must be returned from the innermost stage,
+    //     so wrap it in a ReturnStmtAST first.
     //
-    // Either way, the result is an ExprAST that produces a value of
-    // `funcType`. `nullptr` means a foreign function (no init).
+    // `nullptr` means a foreign function (no init).
     ExprAST* finalInit = nullptr;
 
     if (parsedBlock == nullptr && parsedExpr == nullptr) {
         // Foreign function: no init.
         finalInit = nullptr;
     } else {
-        // The innermost body, as a StmtAST. This is what the innermost
-        // AnonFuncExprAST will hold.
         StmtAST* innermostBody = nullptr;
 
         if (parsedBlock) {
-            // Block body: the block has no inherent type, so it borrows
-            // the header's signature. Wrap it in an AnonFuncExprAST per
-            // group (see the loop below).
             innermostBody = parsedBlock;
         } else {
-            // Expression body.
-            //
-            // ─── Pure function reference ──────────────────────────────
-            // A reference to another function value — an identifier,
-            // a module member, a field access, a call returning a
-            // function, or a composition. The reference already has its
-            // own fully-curried function type, which Sema will check
-            // against the declared funcType. It IS the init; there is
-            // nothing to wrap.
-            //
-            // This applies regardless of the number of parameter groups:
-            // a multi-group declaration like (a int)(b int) -> int has
-            // the same funcType as (a int) -> (b int) -> int, and the
-            // reference matches it directly. Wrapping it in an anon
-            // chain would try to *rebuild* the currying, which fails
-            // because the innermost anon's declared return type (the
-            // base type of the chain) does not match the reference's
-            // function type.
+            // Expression body: pure function reference or plain expression?
             bool isPureFunctionRef =
                 parsedExpr->isa<IdentifierExprAST>() ||
                 parsedExpr->isa<ModuleAccessExprAST>() ||
@@ -591,13 +499,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
 
             if (isPureFunctionRef) {
                 finalInit = parsedExpr;
-                innermostBody = nullptr;
             } else {
-                // A non-reference expression body (e.g. a literal, a
-                // binary expression). The expression's value must be
-                // returned from the innermost group. Wrap it in a
-                // ReturnStmtAST so it can serve as the innermost anon's
-                // body, then wrap that in the anon chain.
                 auto* ret = ctx.arena.make<ReturnStmtAST>();
                 ret->loc = parsedExpr ? parsedExpr->loc : stream.currentLoc();
                 ret->value = parsedExpr;
@@ -606,38 +508,33 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         }
 
         if (innermostBody != nullptr) {
-            // Wrap the innermost group's body in an AnonFuncExprAST, then
-            // walk outward wrapping each intermediate group in a return
-            // statement around another AnonFuncExprAST.
-            StmtAST* currentInnerBody = innermostBody;
-
-            for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
-                FuncTypeAST* thisGroupType = groupTypes[i];
-
-                auto* anon = wrapBlockBodyInAnonFunc(
-                    thisGroupType, currentInnerBody,
-                    (!groups[i].empty() && groups[i][0]) ? groups[i][0]->loc : funcTypeLoc,
-                    ctx);
-
-                if (i == 0) {
-                    finalInit = anon;
-                    break;
-                }
-
-                auto* ret = ctx.arena.make<ReturnStmtAST>();
-                ret->loc = anon->loc;
-                ret->value = anon;
-                currentInnerBody = ret;
-            }
+            finalInit = buildAnonFuncChain(ctx, parts, innermostBody);
         }
     }
 
-    // ─── 9. Build FuncDeclAST ──────────────────────────────────────────────
+    // ─── 7. Build FuncDeclAST ──────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(
         name, keyword, genericParams, funcType, finalInit);
 
-    if (hasBodyError || hasError || genericLetError ||
-        (restType && restType->hasSyntaxError) ||
+    // ─── 8. Error state ────────────────────────────────────────────────────
+    //
+    // Two groups of conditions:
+    //   - body-side: hasBodyError, finalInit->hasSyntaxError
+    //   - signature-side: any stage's params, or the final return type,
+    //     carries a syntax error; plus the parser-side errors we recorded
+    //     (missing name, generic-let violation).
+    bool signatureHasError = false;
+    for (const auto& stage : parts.stages) {
+        for (ParamAST* p : stage.params) {
+            if (p && p->hasSyntaxError) { signatureHasError = true; break; }
+        }
+        if (signatureHasError) break;
+    }
+    if (parts.finalReturnType && parts.finalReturnType->hasSyntaxError) {
+        signatureHasError = true;
+    }
+
+    if (hasBodyError || genericLetError || signatureHasError ||
         (finalInit && finalInit->hasSyntaxError) ||
         name.isEmpty()) {
         funcDecl->hasSyntaxError = true;

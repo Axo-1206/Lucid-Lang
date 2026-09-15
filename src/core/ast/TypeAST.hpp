@@ -32,6 +32,30 @@ enum class ArrayKind {
     Fixed    // [N]T
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FuncShape — the runtime representation of a function value.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Distinguishes the two runtime shapes a function value can take.
+///
+/// Every function type stage is preceded by `fn` or `cls` in source. The
+/// marker is mandatory and per-stage: in a curry chain, each parameter
+/// group carries its own marker, so a single signature can mix shapes.
+///
+/// | Marker | Runtime value | Words | Resource?            | Call protocol |
+/// | ------ | ------------- | ----- | -------------------- | ------------- |
+/// | `fn`   | bare `ptr`    | 1     | No                   | direct call   |
+/// | `cls`  | `{func, env}` | 2     | Yes (refcounted env) | closure call  |
+///
+/// The distinction is static. CodeGen knows which shape each function value
+/// has from its type, so there is no runtime shape check and no conservative
+/// retain/release: `fn` values skip ownership entirely, `cls` values follow
+/// the existing ownership model.
+enum class FuncShape : uint8_t {
+    Fn,     ///< Bare function pointer. One word. No environment. Not a resource.
+    Cls,    ///< Closure fat pointer `{func, env}`. Two words. Refcounted env.
+};
+
 // ─── PrimitiveKind ─────────────────────────────────────────────────────────
 
 /// @brief Identifies a primitive type in the type system.
@@ -517,35 +541,70 @@ struct PtrTypeAST : TypeAST {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents a function type with a single parameter group.
-/// 
+///
 /// This is a recursive design: a function type consists of one parameter group
 /// and one return type. If the function is curried, the return type
 /// is another FuncTypeAST.
-/// 
-/// Grammar (desugared):
-///   func_type := param_group [ '->' returnType ]
-/// 
-/// The parser desugars multiple parameter groups (e.g., `(a int)(b int) -> int`)
-/// into nested FuncTypeAST: `(a int) -> (b int) -> int`
-/// 
-/// Examples of nested structure:
-///   - `(a int) -> int`                    → params=[a], returnType = int
-///   - `(a int) -> (int) -> int`           → params=[a], returnType = FuncTypeAST(...)
-///   - `(a int) -> Pair<int, string>`      → params=[a], returnType = Pair<int, string>
-///   - `(a int)(b int) -> int`             → desugars to `(a int) -> (b int) -> int`
-/// 
+///
+/// ─── Per-Stage Shape Markers (Mandatory) ───────────────────────────────
+///
+/// Every function type stage is preceded by `fn` or `cls`:
+///
+///   func_type = stage { '->' stage } [ '->' type ]
+///   stage     = ( 'fn' | 'cls' ) unnamed_group
+///
+/// The marker is mandatory and applies to that stage only. **Every group
+/// in a curry chain carries its own marker** — writing `fn (a int)(b int)
+/// -> int` is malformed, because `(b int)` has no marker. The correct form
+/// is `fn (a int) fn (b int) -> int`, where each group is explicitly
+/// prefixed.
+///
+/// Groups may be adjacent (desugars to arrow) or arrow-separated. Adjacency
+/// is purely a syntactic shorthand for "these groups form a curry chain";
+/// it does **not** propagate a marker from one group to the next. The parser
+/// desugars multiple parameter groups into nested FuncTypeAST nodes, and
+/// each nested node carries its own `shape`.
+///
+/// Examples:
+///
+///   fn (a int) cls (b int) -> int
+///     → outer: params=[a], shape=Fn,  returnType = inner
+///     → inner: params=[b], shape=Cls, returnType = int
+///
+///   fn (a int) fn (b int) -> int
+///     → outer: params=[a], shape=Fn,  returnType = inner
+///     → inner: params=[b], shape=Fn,  returnType = int
+///
+///   fn (n int) -> cls (int) -> int
+///     → outer: params=[n], shape=Fn,  returnType = inner
+///     → inner: params=[],  shape=Cls, returnType = int
+///
+///   fn (a int) fn (b int) -> int      (adjacent form — desugars to the
+///     second example above; each group is still explicitly marked)
+///
+///   fn (a int)(b int) -> int          (MALFORMED — `(b int)` has no marker;
+///     the parser rejects this with a "missing 'fn' or 'cls' before
+///     parameter group" diagnostic, per the plan's diagnostics section)
+///
+/// `fn`-marked stages lower to bare `llvm::Function*` values; `cls`-marked
+/// stages lower to `{func, env}` fat pointers with a refcounted environment.
+/// The shape is static, so CodeGen dispatches on the type, never on a runtime
+/// tag.
+///
 /// @field params        The parameters for this group (raw pointers to ParamAST)
-/// @field returnType   Return type – a plain TypeAST or another FuncTypeAST
+/// @field returnType    Return type — a plain TypeAST or another FuncTypeAST
+/// @field shape         The runtime shape of this stage (Fn or Cls)
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
     TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
+    FuncShape shape = FuncShape::Fn;   // runtime shape of this stage
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
-    
+
     // Returns true if the return type is a function type (currying)
-    bool isCurried() const { 
+    bool isCurried() const {
         return returnType && returnType->isa<FuncTypeAST>();
     }
 
@@ -556,6 +615,10 @@ struct FuncTypeAST : TypeAST {
         }
         return nullptr;
     }
+
+    // ─── Shape Predicates ───────────────────────────────────────────────
+    bool isFn()  const { return shape == FuncShape::Fn;  }
+    bool isCls() const { return shape == FuncShape::Cls; }
 };
 
 /// @brief Accesses a type from a module via the ':' operator.
