@@ -60,14 +60,6 @@ private:
 /// @brief RAII guard for const function evaluation context.
 /// Pushes a function context and scope for evaluating const functions.
 ///
-/// ─── Why the Body Node, Not the Declaration ────────────────────────────
-/// Under the current AST design, a FuncDeclAST is a *binding* — it owns no
-/// body and no parameters. Its body (when it has one) is the
-/// AnonFuncExprAST at `init`. `ContextStack::pushAnonFunction` takes that
-/// AnonFuncExprAST, not the FuncDeclAST, and every consumer of the stack's
-/// FuncBody frames (capture analysis, getEnclosingFunctionNode, ...)
-/// assumes `frame.node` is an AnonFuncExprAST.
-///
 /// This guard therefore requires `func->init` to be an AnonFuncExprAST. If
 /// `func`'s init is a reference (a pure alias to another function) or null
 /// (a foreign declaration), there is no body to execute, and the guard is
@@ -87,15 +79,9 @@ public:
 
         AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
 
-        // scopeDepth mirrors what ScopedFunction records when Sema analyzes
-        // a closure: the index of the parameter scope that was just pushed.
-        // Const evaluation pushes its own scope here first, so the index is
-        // whatever the scope stack size will be after pushScope() returns.
-        size_t scopeDepth = m_ctx.scopes.size();   // index the new scope WILL have
         m_ctx.stack.pushAnonFunction(
             body,
-            body->funcType ? body->funcType->returnType : nullptr,
-            scopeDepth
+            body->funcType ? body->funcType->returnType : nullptr
         );
         m_ctx.pushScope();
         m_pushed = true;

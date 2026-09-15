@@ -246,22 +246,6 @@ struct ContextFrame {
     ContextKind kind;
     BaseAST* node = nullptr;
 
-    // ─── Scope Correlation ────────────────────────────────────────────────
-    /// Index into SemaContext::scopes identifying the symbol-table scope
-    /// this frame corresponds to, or SIZE_MAX if this frame has no scope.
-    ///
-    /// Set at push time by pushAnonFunction(), which are called by 
-    /// ScopedFunction after its SymbolScope member has pushed 
-    /// the function's parameter scope. Only function frames
-    /// currently carry a scope index; other frame kinds leave this at
-    /// SIZE_MAX.
-    ///
-    /// Used by capture analysis to correlate a function context on this
-    /// stack with the symbols declared in that function's scope, so it can
-    /// determine which function a captured name belongs to and how many
-    /// function boundaries are between that function and the closure.
-    size_t scopeDepth = SIZE_MAX;
-
     // ─── Return Type (FuncBody) ──────────────────────────────────────────
     TypeAST* expectedReturnType = nullptr;
 
@@ -334,18 +318,10 @@ struct ContextFrame {
 class ContextStack {
 public:
 
-    /// @brief Direct read-only access to the frame stack, innermost last.
-    ///
-    /// Used by capture analysis to walk function contexts for function-depth
-    /// computation. Callers should filter by `frame.kind` themselves — this
-    /// accessor exposes the raw stack so any future caller with a different
-    /// filtering need can use it too.
-    const std::vector<ContextFrame>& frames() const { return m_stack; }
-
     // ─── Push/Pop ────────────────────────────────────────────────────────
 
     void push(ContextKind kind, BaseAST* node);
-    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType, size_t scopeDepth);
+    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType);
     void pushLoop(StmtAST* loopStmt);
     void pushSwitch(SwitchStmtAST* switchStmt);
     void pushBlock(BlockStmtAST* block);
@@ -405,21 +381,6 @@ public:
 
     /// @brief Check if we're inside a nested function.
     bool insideNestedFunction() const;
-
-    /// @brief Get the second-innermost function node — the lexical parent of
-    ///        whatever function is currently being analyzed, or nullptr if
-    ///        there is no enclosing function (top-level).
-    ///
-    /// Capture analysis runs while the closure's own FuncBody frame is
-    /// pushed, so the innermost frame is the closure itself; its lexical
-    /// parent is one frame further out. This accessor returns exactly that.
-    ///
-    /// Every FuncBody frame is pushed by pushAnonFunction and its `node` is
-    /// an AnonFuncExprAST — a FuncDeclAST never appears on this stack (a
-    /// FuncDeclAST is a declaration; its body, when it has one, is the
-    /// AnonFuncExprAST at `init`, and that body is what gets pushed). So the
-    /// return value here is always either an AnonFuncExprAST or nullptr.
-    BaseAST* getEnclosingFunctionNode() const;
 
 private:
     // ─── Members ──────────────────────────────────────────────────────────

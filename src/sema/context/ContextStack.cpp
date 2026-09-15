@@ -43,12 +43,11 @@ void ContextStack::push(ContextKind kind, BaseAST* node) {
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType, size_t scopeDepth) {
+void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
     frame.expectedReturnType = returnType;
-    frame.scopeDepth = scopeDepth;
     m_stack.push_back(std::move(frame));
     m_returnStack.push(returnType);
 }
@@ -292,17 +291,6 @@ size_t ContextStack::getClosureDepth() const {
 
 bool ContextStack::insideNestedFunction() const {
     return getClosureDepth() > 1;
-}
-
-BaseAST* ContextStack::getEnclosingFunctionNode() const {
-    bool skippedInnermost = false;
-    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
-        if (it->kind == ContextKind::FuncBody) {
-            if (skippedInnermost) return it->node;
-            skippedInnermost = true;
-        }
-    }
-    return nullptr;
 }
 
 } // namespace sema

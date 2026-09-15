@@ -890,8 +890,7 @@ ScopedTypeDefinition::~ScopedTypeDefinition() {
 ScopedFunction::ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType)
     : ctx_(ctx)
     , paramScope_(ctx) {                      // pushes a symbol scope
-    size_t scopeIdx = ctx_.scopes.size() - 1;
-    ctx_.stack.pushAnonFunction(expr, returnType, scopeIdx);
+    ctx_.stack.pushAnonFunction(expr, returnType);
 }
 
 ScopedFunction::~ScopedFunction() {
