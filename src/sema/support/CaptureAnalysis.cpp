@@ -9,11 +9,18 @@
 /// - CodeGen must handle runtime checking for these conservative cases
 ///
 /// ## CodeGen
-/// - For `isClosureValue = true` where the actual value might be a plain function,
-///   emit a runtime check to determine the value's shape
-/// - Use a runtime API (e.g., `__lucid_is_closure(value)`) to check
-/// - Store 1 word for plain function, 2 words for closure
-/// - Handle refcounting for closure environments
+/// - Values classified as `ResourceKind::Refcounted` are treated as
+///   closure fat pointers. `emitRelease` / `emitRetain` check the LLVM
+///   value's shape statically (`isClosureShaped`), not the value's
+///   runtime closure-ness.
+/// - The conservative `isClosureValue = true` case (parameters, fields
+///   without a statically-known shape) classifies as `ResourceKind::None`,
+///   so no release or retain is emitted at the declaration. Correctness
+///   for values that escape through these slots is the escape sites'
+///   responsibility — see Rule 3 in CodeGenOwnership.hpp.
+/// - The `__lucid_is_closure` runtime API is used by `emitCallableCall`'s
+///   three-way dispatch to decide how to call a value whose runtime shape
+///   is unknown, not by the ownership path.
 ///
 /// # Design: Capture Identity
 ///

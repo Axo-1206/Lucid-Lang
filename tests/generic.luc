@@ -1,0 +1,29 @@
+const factorial<T> (base T, p int) -> int = {
+    let y T? = nil;
+    if p <= 1 {
+        return p;
+    }
+    return factorial<T>(base, p - 1);
+};
+
+const other2<T> (base T, p int) -> int = {
+    return factorial<T>(base, p - 1);
+};
+
+struct Box<T> {
+    value T;
+}
+
+struct Testing {
+    value int;
+    check () = {
+
+    };
+}
+
+@[export] const main () -> int = {
+    factorial<int>(5, 3);
+    const b Box<int> = Box<int> { value = 42 };
+
+    return 1;
+};

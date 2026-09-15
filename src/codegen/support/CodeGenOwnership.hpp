@@ -292,8 +292,11 @@ bool ownsResource(ValueDeclAST* decl);
 /// the binding's claim came from a transfer or a retain — emitRelease
 /// always removes exactly one claim.
 ///
-/// @param decl  The declaration the value belongs to. Used for type dispatch
-///              (decl->type) and, when applicable, for diagnostics.
+/// @param decl  The declaration the value belongs to. Consulted for
+///              resource-kind dispatch (`decl->resourceKind`, via
+///              classifyResource) and for the null guard. Its `type`
+///              field is not used for dispatch — the LLVM value's shape
+///              determines the IR to emit within each resource-kind case.
 /// @param value The LLVM value to release. Must be the current value, not an
 ///              alloca. If null, this is a no-op.
 /// @param ctx   The code generation context.
@@ -341,7 +344,9 @@ void emitRelease(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx);
 /// Struct and TaggedSlot resource kinds are Phase 4 / Phase 5 stubs:
 /// they currently classify as None, so emitRetain is a no-op on them.
 ///
-/// @param decl  The declaration the value belongs to. Used for type dispatch.
+/// @param decl  The declaration the value belongs to. Consulted for
+///              resource-kind dispatch (`decl->resourceKind`, via
+///              classifyResource).
 /// @param value The LLVM value to retain. Must be the value, not an alloca.
 /// @param ctx   The code generation context.
 void emitRetain(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx);
