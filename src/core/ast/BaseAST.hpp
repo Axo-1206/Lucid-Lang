@@ -120,8 +120,6 @@ struct NullCoalesceExprAST;
 struct AssignExprAST;
 struct PipelineExprAST;
 struct PipelineStepAST;
-struct ComposeExprAST;
-struct ComposeOperandAST;
 struct AnonFuncExprAST;
 struct IfExprAST;
 struct RangeExprAST;
@@ -240,8 +238,6 @@ enum class ASTKind : uint16_t {
     NullCoalesceExpr,
     PipelineExpr,
     PipelineStep,
-    ComposeExpr,
-    ComposeOperand,
     AnonFuncExpr,
     IfExpr,
     RangeExpr,

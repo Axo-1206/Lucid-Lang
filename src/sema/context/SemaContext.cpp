@@ -566,7 +566,7 @@ ResourceKind SemaContext::classifyResourceKind(
         // value. If that expression is a closure literal, capture
         // analysis has already set `hasClosure` on it.
         //
-        // A reference-init, call-init, or compose-init FuncDeclAST
+        // A reference-init or call-init FuncDeclAST
         // (`const alias (int) -> int = sq;`) has an init that is not an
         // AnonFuncExprAST. Its value flows from elsewhere — Sema would
         // have to resolve the referenced function to know whether it
@@ -586,7 +586,7 @@ ResourceKind SemaContext::classifyResourceKind(
         // resolved), and `hasClosure` answers the question.
         //
         // A field with no default, or with a non-anon default
-        // (reference/call/compose), falls through to None. The former
+        // (reference/call), falls through to None. The former
         // has no value at all until a struct literal supplies one; the
         // latter has the same reference-resolution gap as a
         // reference-init FuncDeclAST.

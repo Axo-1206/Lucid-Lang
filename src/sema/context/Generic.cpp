@@ -565,33 +565,6 @@ ExprAST* substituteExpr(ExprAST* expr, SubstitutionContext& sc) {
             return newPipe;
         }
 
-        case ASTKind::ComposeExpr: {
-            ComposeExprAST* compose = expr->as<ComposeExprAST>();
-            auto subOperands = sc.sema.arena.makeSpan<ComposeOperandAST*>(
-                compose->operands,
-                [&](ComposeOperandAST* op) -> ComposeOperandAST* {
-                    auto subGenericArgs = sc.sema.arena.makeSpan<TypeAST*>(
-                        op->genericArgs,
-                        [&](TypeAST* arg) -> TypeAST* {
-                            return substituteType(arg, sc);
-                        }
-                    );
-                    ComposeOperandAST* newOp = sc.sema.arena.make<ComposeOperandAST>(
-                        substituteExpr(op->callable, sc),
-                        subGenericArgs
-                    );
-                    newOp->loc = op->loc;
-                    return newOp;
-                }
-            );
-            ComposeExprAST* newCompose = sc.sema.arena.make<ComposeExprAST>(
-                substituteExpr(compose->left, sc),
-                subOperands
-            );
-            newCompose->loc = compose->loc;
-            return newCompose;
-        }
-
         case ASTKind::IntrinsicCallExpr: {
             IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
             IntrinsicCallExprAST* newIntrinsic = sc.sema.arena.make<IntrinsicCallExprAST>(

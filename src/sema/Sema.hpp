@@ -201,12 +201,6 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
 /// @return The return type of the step, or nullptr on error.
 TypeAST* resolvePipelineStepInternal(PipelineStepAST* step, TypeAST* upstreamType, SemaContext& ctx);
 
-/// @brief Resolve a composition expression.
-TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaContext& ctx);
-
-/// @brief Resolve a composition operand.
-TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, SemaContext& ctx);
-
 /// @brief Resolve an anonymous function expression.
 TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaContext& ctx);
 

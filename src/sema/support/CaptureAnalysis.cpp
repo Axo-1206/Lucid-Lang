@@ -698,19 +698,6 @@ struct CaptureAnalyzer {
                 break;
             }
 
-            case ASTKind::ComposeExpr: {
-                ComposeExprAST* compose = expr->as<ComposeExprAST>();
-                if (compose->left) {
-                    walkExpr(compose->left);
-                }
-                for (const ComposeOperandAST* operand : compose->operands) {
-                    if (operand->callable) {
-                        walkExpr(operand->callable);
-                    }
-                }
-                break;
-            }
-
             case ASTKind::AnonFuncExpr: {
                 // Nested closure: propagate its captures upward
                 AnonFuncExprAST* nested = expr->as<AnonFuncExprAST>();
@@ -1075,19 +1062,6 @@ void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
             markClosureIfEscaping(pipeline->seed, ctx);
             for (const PipelineStepAST* step : pipeline->steps) {
                 markClosureIfEscaping(step->callable, ctx);
-            }
-            return;
-        }
-
-        case ASTKind::ComposeExpr: {
-            const ComposeExprAST* compose = expr->as<ComposeExprAST>();
-            if (compose->left) {
-                markClosureIfEscaping(compose->left, ctx);
-            }
-            for (const ComposeOperandAST* operand : compose->operands) {
-                if (operand->callable) {
-                    markClosureIfEscaping(operand->callable, ctx);
-                }
             }
             return;
         }

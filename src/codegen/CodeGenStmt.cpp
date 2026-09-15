@@ -690,7 +690,7 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     // the callee must give the caller a claim of its own: retain.
     //
     // A returned closure value whose source is a fresh expression (closure
-    // literal, call returning a fresh closure, compose / pipeline result)
+    // literal, call returning a fresh closure, pipeline result)
     // already carries one temporary claim. The caller takes it over by
     // transferring through the return. No retain; the temp claim is the
     // caller's claim.

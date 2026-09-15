@@ -159,7 +159,6 @@ enum TokenType {
 
     // ─── Operators: Special ─────────────────────────────────────────────
     ARROW,          // ->      (function return type)
-    COMPOSE,        // +>      (function composition)
     PIPELINE,       // |>      (pipeline operator)
     RANGE,          // ..      (inclusive range: 0..10)
     RANGE_EXCLUSIVE,// ..<     (exclusive range: 0..<10)
@@ -406,7 +405,6 @@ inline bool is_operator(TokenType type) {
         case TokenType::LESS_EQUAL:
         case TokenType::GREATER:
         case TokenType::GREATER_EQUAL:
-        case TokenType::COMPOSE:
         case TokenType::PIPELINE:
         case TokenType::RANGE:
         case TokenType::RANGE_EXCLUSIVE:
@@ -801,7 +799,6 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::GREATER, ">"},
         {TokenType::GREATER_EQUAL, ">="},
         {TokenType::ARROW, "->"},
-        {TokenType::COMPOSE, "+>"},
         {TokenType::PIPELINE, "|>"},
         {TokenType::RANGE, ".."},
         {TokenType::RANGE_EXCLUSIVE, "..<"},

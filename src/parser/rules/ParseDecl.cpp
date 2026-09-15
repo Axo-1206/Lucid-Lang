@@ -541,8 +541,8 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     //
     //   parsedExpr != nullptr → expression body. If it's a reference to
     //     another function (IdentifierExprAST / ModuleAccessExprAST /
-    //     CallExprAST / ComposeExprAST / FieldAccessExprAST), it IS the
-    //     init — a function value of the declared type. Otherwise, for the
+    //     CallExprAST / FieldAccessExprAST), it IS the init — a 
+    //     function value of the declared type. Otherwise, for the
     //     curried case, the expression is the innermost group's body
     //     expression, so it needs to be wrapped in a ReturnStmtAST before
     //     being wrapped in the outer anon chain.
@@ -587,7 +587,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 parsedExpr->isa<IdentifierExprAST>() ||
                 parsedExpr->isa<ModuleAccessExprAST>() ||
                 parsedExpr->isa<FieldAccessExprAST>() ||
-                parsedExpr->isa<ComposeExprAST>() ||
                 parsedExpr->isa<CallExprAST>();
 
             if (isPureFunctionRef) {

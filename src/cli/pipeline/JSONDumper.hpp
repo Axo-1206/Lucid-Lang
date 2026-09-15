@@ -294,8 +294,6 @@ private:
     void serializeNullCoalesceExpr(JSONWriter& json, NullCoalesceExprAST* expr);
     void serializePipelineExpr(JSONWriter& json, PipelineExprAST* expr);
     void serializePipelineStep(JSONWriter& json, PipelineStepAST* step);
-    void serializeComposeExpr(JSONWriter& json, ComposeExprAST* expr);
-    void serializeComposeOperand(JSONWriter& json, ComposeOperandAST* operand);
     void serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr);
     void serializeIfExpr(JSONWriter& json, IfExprAST* expr);
     void serializeRangeExpr(JSONWriter& json, RangeExprAST* expr);

@@ -253,8 +253,8 @@ using ParamGroup = std::vector<ParamAST*>;
 /// points at the runtime `ParamAST` nodes) would find no LLVM binding.
 ///
 /// When `init` is a reference expression (an `IdentifierExprAST`,
-/// `ModuleAccessExprAST`, call, or compose) rather than an
-/// `AnonFuncExprAST`, there are no runtime parameters for *this*
+/// `ModuleAccessExprAST`, call) rather than an `AnonFuncExprAST`, 
+/// there are no runtime parameters for *this*
 /// declaration — the reference target's own `AnonFuncExprAST` carries
 /// them, and this declaration is a pure alias.
 ///

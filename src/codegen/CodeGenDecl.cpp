@@ -324,8 +324,8 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
 
     // ─── 3. Reference body: nothing to lower ────────────────────────────
     // If the init is not an AnonFuncExprAST, the function's body is a
-    // reference to another function (or a call, or a compose). No body
-    // IR belongs to this declaration — the referenced function has its
+    // reference to another function or a call. No body IR belongs to 
+    // this declaration — the referenced function has its
     // own body already lowered where it was declared.
     if (!anon) {
         Trace::detail("Skipping body lowering for reference-body function '",
@@ -354,9 +354,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 7. Save the previous function context ──────────────────────────
     llvm::Function* prevFunc = ctx.currentFunction;
     llvm::Value* prevEnv = ctx.currentEnvPtr;
-    AnonFuncExprAST* prevAnon = ctx.currentFunctionAnon;
     ctx.currentFunction = func;
-    ctx.currentFunctionAnon = anon; // `anon` is already in scope from step 4
 
     // ─── 8. Push a live scope for the function body ─────────────────────
     ctx.pushLiveScope();
@@ -412,7 +410,6 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 13. Restore the previous function context ──────────────────────
     ctx.currentFunction = prevFunc;
     ctx.currentEnvPtr = prevEnv;
-    ctx.currentFunctionAnon = prevAnon;
 
     Trace::detail("Lowered body of function '", ctx.pool.lookup(decl->name), "'");
 }

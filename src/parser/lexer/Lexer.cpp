@@ -557,10 +557,6 @@ Token lexOperatorOrPunctuation(LexerState& state) {
             return Token{TokenType::DOT, ".", startLine, startCol};
             
         case '+':
-            if (next == '>') {
-                advance(state); advance(state);
-                return Token{TokenType::COMPOSE, "+>", startLine, startCol};
-            }
             if (next == '=') {
                 advance(state); advance(state);
                 return Token{TokenType::PLUS_ASSIGN, "+=", startLine, startCol};

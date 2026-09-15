@@ -701,9 +701,8 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
             // `init` can be:
             //   - an AnonFuncExprAST (block body) — this is the interesting case
             //   - a reference expression (IdentifierExprAST, ModuleAccessExprAST,
-            //     CallExprAST, ComposeExprAST, FieldAccessExprAST) — a pure alias
-            //     to another function, so its dependencies are whatever the
-            //     reference resolves to, not a body of its own
+            //     CallExprAST, FieldAccessExprAST) — a pure alias to another function, 
+            //     so its dependencies are whatever the reference resolves to, not a body of its own
             //   - nullptr (foreign function) — nothing to walk
             if (func->init && func->init->isa<AnonFuncExprAST>()) {
                 AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();

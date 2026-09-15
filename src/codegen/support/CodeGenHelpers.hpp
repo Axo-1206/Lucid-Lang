@@ -37,7 +37,6 @@ llvm::Value* getArrayLength(
 ///   AnonFuncExprAST     — lowerClosure: alloc_env sets refcount 1.
 ///   CallExprAST         — callee's Rule 3 retain on return gives the
 ///                         caller a claim; the caller takes it over.
-///   ComposeExprAST      — createCompositionWrapper's result.
 ///   PipelineExprAST     — the last step's result.
 ///   IfExprAST           — a PHI of fresh values from both branches, or
 ///                         one branch is a load. Conservative: treated as
@@ -64,7 +63,6 @@ static bool isFreshExpression(ExprAST* expr) {
     switch (expr->kind) {
         case ASTKind::AnonFuncExpr:
         case ASTKind::CallExpr:
-        case ASTKind::ComposeExpr:
         case ASTKind::PipelineExpr:
             return true;
 

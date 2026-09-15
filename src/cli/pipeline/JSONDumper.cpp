@@ -738,7 +738,6 @@ void JSONDumper::serializeExpr(JSONWriter& json, ExprAST* expr) {
         case ASTKind::AssignExpr:        serializeAssignExpr(json, expr->as<AssignExprAST>()); break;
         case ASTKind::NullCoalesceExpr:  serializeNullCoalesceExpr(json, expr->as<NullCoalesceExprAST>()); break;
         case ASTKind::PipelineExpr:      serializePipelineExpr(json, expr->as<PipelineExprAST>()); break;
-        case ASTKind::ComposeExpr:       serializeComposeExpr(json, expr->as<ComposeExprAST>()); break;
         case ASTKind::AnonFuncExpr:      serializeAnonFuncExpr(json, expr->as<AnonFuncExprAST>()); break;
         case ASTKind::IfExpr:            serializeIfExpr(json, expr->as<IfExprAST>()); break;
         case ASTKind::RangeExpr:         serializeRangeExpr(json, expr->as<RangeExprAST>()); break;
@@ -1218,50 +1217,6 @@ void JSONDumper::serializePipelineStep(JSONWriter& json, PipelineStepAST* step) 
     json.endObject();
 }
 
-void JSONDumper::serializeComposeExpr(JSONWriter& json, ComposeExprAST* expr) {
-    json.beginObject();
-    json.kv("kind", "ComposeExpr");
-    if (expr->left) {
-        json.key("left");
-        serializeExpr(json, expr->left);
-    }
-    json.key("operands");
-    json.beginArray();
-    for (auto* operand : expr->operands) {
-        if (operand) serializeComposeOperand(json, operand);
-    }
-    json.endArray();
-    json.kv("isConst", expr->isConst);
-    json.key("resolvedType");
-    if (expr->hasType()) {
-        serializeType(json, expr->resolvedType);
-    } else {
-        json.null();
-    }
-    json.kv("valueState", valueStateToString(expr->valueState));
-    json.key("location");
-    serializeLocation(json, expr->loc);
-    json.endObject();
-}
-
-void JSONDumper::serializeComposeOperand(JSONWriter& json, ComposeOperandAST* operand) {
-    json.beginObject();
-    json.kv("kind", "ComposeOperand");
-    if (operand->callable) {
-        json.key("callable");
-        serializeExpr(json, operand->callable);
-    }
-    json.key("genericArgs");
-    json.beginArray();
-    for (auto* arg : operand->genericArgs) {
-        if (arg) serializeType(json, arg);
-    }
-    json.endArray();
-    json.key("location");
-    serializeLocation(json, operand->loc);
-    json.endObject();
-}
-
 void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) {
     json.beginObject();
     json.kv("kind", "AnonFuncExpr");
@@ -1278,21 +1233,6 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
     json.kv("hasClosure", expr->hasClosure);
     json.kv("isReturned", expr->isReturned);
     
-    // ─── Lexical nesting ────────────────────────────────────────────────
-    // The enclosing function's AnonFuncExprAST — the chain start for
-    // capture resolution. Emit just an identity marker (the enclosing
-    // node's source location) rather than recursing, since the enclosing
-    // node is an ancestor and would create a cycle.
-    json.key("enclosingFunction");
-    if (expr->enclosingFunction) {
-        json.beginObject();
-        json.key("location");
-        serializeLocation(json, expr->enclosingFunction->loc);
-        json.endObject();
-    } else {
-        json.null();
-    }
-    
     // ─── Captures ───────────────────────────────────────────────────────
     // CapturedVariable no longer stores a `decl` pointer; identity is
     // lexical: `name` + `functionDepth`.
@@ -1301,7 +1241,8 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
     for (const auto& cap : expr->captures) {
         json.beginObject();
         json.kv("name", str(cap.name));
-        json.kv("functionDepth", static_cast<uint64_t>(cap.functionDepth));
+        // NOTE: functionDepth is replaced with resolvedDecl, make sure to update this one
+        // json.kv("functionDepth", static_cast<uint64_t>(cap.functionDepth)); 
         json.kv("byReference", cap.byReference);
         json.kv("isClosureValue", cap.isClosureValue);
         json.kv("index", static_cast<uint64_t>(cap.index));

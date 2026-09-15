@@ -390,12 +390,6 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx);
 /// @brief Lower a pipeline step.
 llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, CodeGenContext& ctx);
 
-/// @brief Lower a composition expression.
-llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx);
-
-/// @brief Lower a composition operand.
-llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx);
-
 /// @brief Lower an anonymous function expression.
 llvm::Value* lowerAnonFuncExpr(AnonFuncExprAST* expr, CodeGenContext& ctx);
 

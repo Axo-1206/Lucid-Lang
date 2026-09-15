@@ -81,8 +81,6 @@
 //         case ASTKind::NullCoalesceExpr:   return "NullCoalesceExpr";
 //         case ASTKind::PipelineExpr:       return "PipelineExpr";
 //         case ASTKind::PipelineStep:       return "PipelineStep";
-//         case ASTKind::ComposeExpr:        return "ComposeExpr";
-//         case ASTKind::ComposeOperand:     return "ComposeOperand";
 //         case ASTKind::AnonFuncExpr:       return "AnonFuncExpr";
 //         case ASTKind::IfExpr:             return "IfExpr";
 //         case ASTKind::RangeExpr:          return "RangeExpr";
@@ -293,7 +291,6 @@
 //         case TokenType::SHL_ASSIGN:     return "<<=";
 //         case TokenType::SHR_ASSIGN:     return ">>=";
 //         case TokenType::ARROW:          return "->";
-//         case TokenType::COMPOSE:        return "+>";
 //         case TokenType::PIPELINE:       return "|>";
 //         case TokenType::RANGE:          return "..";
 //         case TokenType::RANGE_EXCLUSIVE:return "..<";

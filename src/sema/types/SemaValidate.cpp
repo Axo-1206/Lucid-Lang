@@ -202,15 +202,6 @@ void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& c
             return;
         }
 
-        case ASTKind::ComposeExpr: {
-            ComposeExprAST* compose = expr->as<ComposeExprAST>();
-            checkLetSelfReference(compose->left, varName, ctx);
-            for (ComposeOperandAST* op : compose->operands) {
-                checkLetSelfReference(op->callable, varName, ctx);
-            }
-            return;
-        }
-
         case ASTKind::AnonFuncExpr: {
             // An anonymous function's body may reference the variable
             // But the variable is in scope, so we check the body

@@ -200,9 +200,7 @@ ArenaAccessExprAST* parseArenaAccessExpr(TokenStream& stream, ParserContext& ctx
 // ─── Pipeline & Composition ───────────────────────────────────────────────
 
 ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* seed);
-ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
 PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx);
-ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx);
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

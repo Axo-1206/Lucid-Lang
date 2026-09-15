@@ -72,13 +72,6 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
 
-        // ─── Composition (right-associative, higher than any binary) ───
-        if (current == TokenType::COMPOSE) {
-            lhs = parseComposeExpr(stream, ctx, lhs);
-            if (!lhs) return nullptr;
-            continue;
-        }
-
         // ─── Assignment (right-associative, looser than any binary) ────
         // Checked before the precedence cutoff because infixPrec() returns
         // the -2 sentinel for every assignment op; letting the cutoff run
@@ -1481,84 +1474,13 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     return step;
 }
 
-ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
-    SourceLocation loc = stream.currentLoc();
-    
-    if (!lhs) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
-                                "expected left-hand side");
-        return nullptr;
-    }
-    
-    std::vector<ComposeOperandAST*> operands;
-    
-    // ─── Parse additional operands ────────────────────────────────────────
-    while (!stream.isAtEnd() && stream.check(TokenType::COMPOSE)) {
-        int count = stream.consumeTrailing(TokenType::COMPOSE);
-        if (count == 2) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.previousLoc(),
-                                    "expected operand after '+>'");
-        } else if (count > 3) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                    "unexpected consecutive '+>'");
-        }
-        
-        ComposeOperandAST* operand = parseComposeOperand(stream, ctx);
-        if (!operand) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected composition operand");
-            return nullptr;
-        }
-        operands.push_back(operand);
-    }
-
-    auto builder = ctx.arena.makeBuilder<ComposeOperandAST*>();
-    for (auto* op : operands) {
-        builder.push_back(op);
-    }
-    
-    auto* compose = ctx.arena.make<ComposeExprAST>(lhs, builder.build());
-    compose->loc = loc;
-    
-    return compose;
-}
-
-ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    ExprAST* callable = parseExpr(stream, ctx);
-    if (!callable) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                "expected composition operand");
-        return nullptr;
-    }
-    
-    // ─── Extract generic arguments if present ─────────────────────────────
-    // FieldAccessExprAST intentionally omitted - no genericArgs field
-    ArenaSpan<TypeAST*> genericArgs;
-    
-    if (callable->isa<IdentifierExprAST>()) {
-        auto* idExpr = callable->as<IdentifierExprAST>();
-        genericArgs = idExpr->genericArgs;
-    } else if (callable->isa<ModuleAccessExprAST>()) {
-        auto* moduleAccess = callable->as<ModuleAccessExprAST>();
-        genericArgs = moduleAccess->genericArgs;
-    }
-    
-    auto* operand = ctx.arena.make<ComposeOperandAST>(callable, genericArgs);
-    operand->loc = loc;
-
-    return operand;
-}
-
 // =============================================================================
 // Precedence Helpers
 // =============================================================================
 
 int infixPrec(TokenType type) {
     switch (type) {
-        case TokenType::DOT:            return 9;   // Field access (highest)
-        case TokenType::COMPOSE:        return 8;   // Composition
+        case TokenType::DOT:            return 8;   // Field access (highest)
         case TokenType::MUL:
         case TokenType::DIV:
         case TokenType::MOD:
