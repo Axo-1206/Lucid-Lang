@@ -28,16 +28,6 @@
 /// By-reference captures require the captured variable to be heap-allocated
 /// if the closure may escape. This is handled by Sema (promotion analysis).
 ///
-/// ─── Function-Typed Captures ───────────────────────────────────────────────
-/// When a captured value has function type (FuncTypeAST), it could be either:
-///   - A plain function pointer (1 word)
-///   - A closure { func, env } (2 words)
-///
-/// If isClosureValue is true, we know it's a closure at compile time.
-/// If isClosureValue is false, it's a plain function.
-/// For parameters/fields where we don't know, Sema sets isClosureValue = true
-/// conservatively, and CodeGen emits runtime checks.
-
 #include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
 #include "codegen/support/CodeGenAlloca.hpp"
@@ -85,42 +75,6 @@ static TypeAST* resolveCaptureType(
 {
     (void)ctx;
     return capture.resolvedDecl ? capture.resolvedDecl->type : nullptr;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Closure-shape normalization helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-llvm::Value* normalizeToClosureType(llvm::Value* value, CodeGenContext& ctx) {
-    if (!value) return nullptr;
-
-    // ─── If it's already a closure type, return as-is ─────────────────────
-    if (value->getType()->isStructTy()) {
-        return value;
-    }
-
-    // ─── If it's a function pointer, wrap it as { func, null } ────────────
-    llvm::Type* closureType = ctx.getClosureType();
-    llvm::Value* result = llvm::UndefValue::get(closureType);
-
-    // Cast function pointer to i8*
-    llvm::Value* funcPtr = value;
-    if (funcPtr->getType() != llvm::PointerType::get(ctx.llvmCtx, 0)) {
-        funcPtr = ctx.builder.CreatePointerCast(
-            funcPtr,
-            llvm::PointerType::get(ctx.llvmCtx, 0),
-            "closure_func_cast"
-        );
-    }
-
-    result = ctx.builder.CreateInsertValue(result, funcPtr, 0);
-    result = ctx.builder.CreateInsertValue(
-        result,
-        llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx.llvmCtx, 0)),
-        1
-    );
-
-    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,13 +158,16 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
             }
 
             if (!capture.byReference && capturedType->isa<FuncTypeAST>()) {
-                if (!storedValue->getType()->isStructTy()) {
-                    storedValue = normalizeToClosureType(storedValue, ctx);
+                FuncTypeAST* capturedFuncType = capturedType->as<FuncTypeAST>();
+                if (capturedFuncType->shape == FuncShape::Cls) {
+                    // A cls-typed capture is always a fat pointer. Retain its
+                    // environment; fn-typed captures are bare pointers and
+                    // have no environment ownership to retain.
+                    llvm::Value* envForRetain = ctx.builder.CreateExtractValue(
+                        storedValue, 1, "capture_env");
+                    llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+                    ctx.builder.CreateCall(retainFn, {envForRetain});
                 }
-                llvm::Value* envForRetain = ctx.builder.CreateExtractValue(
-                    storedValue, 1, "capture_env");
-                llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
-                ctx.builder.CreateCall(retainFn, {envForRetain});
             }
 
             llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
@@ -558,14 +515,5 @@ llvm::Value* emitCallableCall(
                            fnType->getReturnType(), ctx);
 }
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper Functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-bool isClosureNeeded(const AnonFuncExprAST* expr) {
-    if (!expr) return false;
-    return expr->hasClosure || !expr->captures.empty();
-}
 
 } // namespace codegen

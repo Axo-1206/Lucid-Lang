@@ -95,25 +95,10 @@ llvm::Value* emitClosureCall(
 
 /// @brief Call a callable value, whatever shape it is.
 ///
-/// A "callable value" in this codebase is one of three things at the LLVM
-/// level:
-///   1. A closure - the { funcPtr, envPtr } fat-pointer struct built by
-///      lowerClosure. Detected by callee->getType()->isStructTy().
-///   2. A plain named function reference - callee is already a literal
-///      llvm::Function*, the common case for calling a top-level/nested
-///      function by name directly.
-///   3. An indirect function pointer - callee is a bare `ptr`-typed value,
-///      e.g. loaded from a variable holding a (non-closure) function
-///      value. dyn_cast<llvm::Function> fails here even though it's
-///      dynamically the address of a real function, because it reflects
-///      the IR node's static C++ class, not what address it holds at
-///      runtime - this needs an explicit cast to the expected signature
-///      before it can be called.
-///
-/// This is the single place all three cases are discriminated and
-/// dispatched - lowerCallExpr, lowerPipelineStep, and
-/// createCompositionWrapper (CodeGenExpr.cpp) all call through here
-/// instead of each re-implementing the same three-way check.
+/// The AST's static FuncShape selects the dispatch: `fn` values are called as
+/// bare function pointers, while `cls` values are fat pointers containing the
+/// function pointer and environment pointer. All call sites route through
+/// this function so runtime closure detection is unnecessary.
 ///
 /// @param callee The lowered callable value (already loaded if it came
 ///        from an lvalue).
@@ -134,14 +119,5 @@ llvm::Value* emitCallableCall(
     CodeGenContext& ctx,
     const std::string& name = "call"
 );
-
-/// @brief Check if a closure is needed.
-///
-/// A closure is needed if the anonymous function has captures or
-/// is explicitly marked as a closure.
-///
-/// @param expr The anonymous function expression.
-/// @return True if a closure is needed.
-bool isClosureNeeded(const AnonFuncExprAST* expr);
 
 } // namespace codegen

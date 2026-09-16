@@ -123,4 +123,26 @@ uint64_t getTypeSize(CodeGenContext& ctx, TypeAST* type);
 /// @brief Get the alignment of a Lucid type in bytes (compile-time).
 uint64_t getTypeAlign(CodeGenContext& ctx, TypeAST* type);
 
+/// @brief Check whether a Lucid type is an owned buffer — a string or a
+///        dynamic array. Both lower to the same LLVM shape ({ ptr, i64, i64 })
+///        and share the deep-copy ownership semantics described in
+///        CodeGenOwnership.hpp's Pattern B.
+///
+/// Used by the closure capture path to reject by-value captures of owned
+/// buffers, which would require a deep copy that isn't implemented yet.
+/// Not a resource-kind classifier — that's classifyResourceKind in Sema,
+/// and classifyResource in CodeGenOwnership, which answer a different
+/// question (does this binding own a heap resource?) for a different set
+/// of types (all resources, not just buffers).
+inline bool isOwnedBufferType(TypeAST* type) {
+    if (!type) return false;
+    if (type->isa<PrimitiveTypeAST>()) {
+        return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
+    }
+    if (type->isa<ArrayTypeAST>()) {
+        return type->as<ArrayTypeAST>()->isDynamic();
+    }
+    return false;
+}
+
 } // namespace codegen
