@@ -862,12 +862,14 @@ lucid/
     │   │   ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
     │   │   └── LLVMTypesHelpers.hpp        # Work with llvm types
     │   │
+    │   ├── memory/
+    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
+    │   │   ├── CodeGenOwnership.hpp/cpp    # Source of truth for memory management
+    │   │   └── LiveVariableTracker.hpp     # live variable tracking
+    │   │
     │   ├── support/
     │   │   ├── ArenaHelpers.hpp            # Arena-specific code generation helpers.
-    │   │   ├── CodeGenOwnership.hpp/cpp    # Source of truth for memory management
-    │   │   ├── LiveVariableTracker.hpp     # live variable tracking
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
-    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
     │   │   ├── Truthiness.hpp              # Collection of rules for conditions
     │   │   └── CodeGenPanic.hpp/cpp        # Panic, null checks
     │   │

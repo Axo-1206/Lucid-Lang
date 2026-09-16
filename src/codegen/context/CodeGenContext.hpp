@@ -9,7 +9,7 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../runtime/RuntimeFunctionRegistry.hpp"
-#include "../support/LiveVariableTracker.hpp"
+#include "../memory/LiveVariableTracker.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 
 #include <llvm/IR/IRBuilder.h>

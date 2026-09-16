@@ -3,9 +3,9 @@
 
 #include "CodeGen.hpp"
 #include "core/ASTStrings.hpp"
-#include "support/CodeGenAlloca.hpp"
+#include "memory/CodeGenAlloca.hpp"
 #include "support/CodeGenHelpers.hpp"
-#include "support/CodeGenOwnership.hpp"
+#include "memory/CodeGenOwnership.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "support/ArenaHelpers.hpp"
 #include "types/LLVMTypeHelpers.hpp"

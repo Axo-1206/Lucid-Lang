@@ -11,9 +11,9 @@
 
 #include "CodeGen.hpp"
 #include "codegen/runtime/closure/CodeGenClosure.hpp"
-#include "support/CodeGenOwnership.hpp"
+#include "memory/CodeGenOwnership.hpp"
 #include "types/CodeGenType.hpp"
-#include "support/CodeGenAlloca.hpp"
+#include "memory/CodeGenAlloca.hpp"
 #include "support/CodeGenPanic.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"

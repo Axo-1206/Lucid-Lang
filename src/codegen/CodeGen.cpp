@@ -4,7 +4,7 @@
 #include "CodeGen.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/trace/Trace.hpp"
-#include "support/CodeGenOwnership.hpp"
+#include "memory/CodeGenOwnership.hpp"
 
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>

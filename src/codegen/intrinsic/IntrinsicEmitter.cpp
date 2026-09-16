@@ -6,7 +6,7 @@
 #include "LucidIntrinsicEmitter.hpp"
 #include "../types/CodeGenType.hpp"
 #include "../CodeGen.hpp"
-#include "../support/CodeGenAlloca.hpp"
+#include "../memory/CodeGenAlloca.hpp"
 #include "../support/CodeGenPanic.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 #include "core/registry/IntrinsicRegistry.hpp"

@@ -1,5 +1,5 @@
 #include "CodeGenHelpers.hpp"
-#include "CodeGenAlloca.hpp"
+#include "../memory/CodeGenAlloca.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
 #include "codegen/CodeGen.hpp"
 #include "core/ast/ExprAST.hpp"

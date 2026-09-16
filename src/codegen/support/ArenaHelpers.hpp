@@ -29,7 +29,7 @@
 #include "codegen/context/CodeGenContext.hpp"
 #include "codegen/types/LLVMTypeHelpers.hpp"
 #include "codegen/support/CodeGenHelpers.hpp"
-#include "codegen/support/CodeGenAlloca.hpp"
+#include "codegen/memory/CodeGenAlloca.hpp"
 #include "codegen/support/CodeGenPanic.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"

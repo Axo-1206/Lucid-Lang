@@ -3,7 +3,7 @@
 
 #include "CodeGenContext.hpp"
 #include "../intrinsic/LucidIntrinsicEmitter.hpp"
-#include "codegen/support/CodeGenOwnership.hpp"
+#include "codegen/memory/CodeGenOwnership.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/BasicBlock.h>

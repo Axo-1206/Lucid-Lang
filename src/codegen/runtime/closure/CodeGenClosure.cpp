@@ -30,8 +30,8 @@
 ///
 #include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
-#include "codegen/support/CodeGenAlloca.hpp"
-#include "codegen/support/CodeGenOwnership.hpp"
+#include "codegen/memory/CodeGenAlloca.hpp"
+#include "codegen/memory/CodeGenOwnership.hpp"
 #include "codegen/support/CodeGenPanic.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/trace/Trace.hpp"
