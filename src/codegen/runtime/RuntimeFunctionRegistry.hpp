@@ -99,7 +99,6 @@ struct CodeGenContext;
 enum class RuntimeFn {
     // ─── Closures ───────────────────────────────────────────────────────
     AllocEnv,           // void* __lucid_alloc_env(uint64_t size)
-    IsClosure,          // bool __lucid_is_closure(void* value)
     RetainEnv,          // void __lucid_retain_env(void* env)
     ReleaseEnv,         // void __lucid_release_env(void* env)
 

@@ -24,12 +24,6 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
                     getPtrType(ctx.llvmCtx), {getI64Type(ctx.llvmCtx)}, false);
             } } },
 
-        { RuntimeFn::IsClosure, { "__lucid_is_closure",
-            [](CodeGenContext& ctx) {
-                return llvm::FunctionType::get(
-                    getI1Type(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
-            } } },
-
         { RuntimeFn::RetainEnv, { "__lucid_retain_env",
             [](CodeGenContext& ctx) {
                 return llvm::FunctionType::get(

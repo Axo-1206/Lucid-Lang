@@ -54,23 +54,6 @@
 #include <cstring>
 #include <new>
 
-// ─── Magic Number for Closure Detection ──────────────────────────────────────
-// To reliably detect if a pointer is a closure environment, we add a magic
-// number to the header. This is more reliable than alignment checking alone.
-//
-// The magic number is stored in the padding field of ClosureEnvHeader.
-// When a closure environment is allocated, the magic number is set.
-// When __lucid_is_closure is called, it checks if the magic number matches.
-//
-// This is safe because:
-//   1. The padding field is unused otherwise
-//   2. The magic number is a known constant
-//   3. It provides a reliable detection mechanism
-//
-// Magic number: 0x4C55434944 (ASCII "LUCID" in hex)
-// This is unlikely to appear randomly in memory at an 8-byte aligned address.
-static constexpr uint32_t CLOSURE_MAGIC = 0x4C554349;  // "LUCID" (first 4 bytes)
-
 /// @brief Header for every closure environment.
 ///
 /// This header is placed at the beginning of every closure environment
@@ -130,7 +113,7 @@ struct ClosureEnvHeader {
         ClosureEnvHeader* env = new (mem) ClosureEnvHeader;
         env->refcount.store(1, std::memory_order_release);
         env->size = dataSize;
-        env->_padding = CLOSURE_MAGIC;
+        env->_padding = 0;
 
         // Zero-initialize the data portion
         std::memset(env->data(), 0, dataSize);
@@ -198,25 +181,4 @@ struct ClosureEnvHeader {
         return env->refcount.load(std::memory_order_acquire);
     }
 
-    /// @brief Check if a pointer is a valid environment.
-    /// @param ptr Pointer to check.
-    /// @return true if the pointer is a valid environment, false otherwise.
-    static bool isValid(void* ptr) {
-        if (!ptr) {
-            return false;
-        }
-
-        // We can't fully validate a pointer without a magic number.
-        // This is a basic sanity check: the pointer must be 8-byte aligned.
-        // The header is 8-byte aligned, so a valid environment pointer
-        // will always be 8-byte aligned.
-        //
-        // For stronger validation, we could add a magic number to the header,
-        // but that adds overhead and complexity. The alignment check is
-        // sufficient for the current use case.
-        //
-        // Note: This is used by __lucid_is_closure to determine if a value
-        // is a closure environment. It's called frequently, so it should be fast.
-        return (reinterpret_cast<uintptr_t>(ptr) % alignof(ClosureEnvHeader)) == 0;
-    }
 };
