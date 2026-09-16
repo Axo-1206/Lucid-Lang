@@ -541,74 +541,36 @@ bool SemaContext::hasPendingSpawn() const {
 
 // ─── Resource Kind Classification ──────────────────────────────────
 
-ResourceKind SemaContext::classifyResourceKind(
-    TypeAST* type,
-    FuncDeclAST* asFunc,
-    ExprAST* asFieldDefault) const
-{
+ResourceKind SemaContext::classifyResourceKind(TypeAST* type) const {
     if (!type) return ResourceKind::None;
 
     // ─── Function-typed bindings ───────────────────────────────────────
     //
-    // A function-typed declaration owns a refcounted closure env only if
-    // the value it holds is a capturing closure. Whether that's knowable
-    // at the declaration site depends on the declaration kind — see the
-    // doc-comment in SemaContext.hpp for the full table.
+    // Under the `fn`/`cls` design, a function type's shape is part of the
+    // type, not inferred from the initializer. `fn` is a bare pointer and
+    // owns nothing. `cls` is a fat pointer whose environment is refcounted.
     //
-    // Note: `VarDeclAST` never reaches this branch with a FuncTypeAST —
-    // the parser's looksLikeFuncDecl dispatch routes function-typed
-    // let/const declarations to FuncDeclAST before construction. So a
-    // function-typed `type` here means the caller is either a
-    // FuncDeclAST, a ParamAST, or a FieldDeclAST.
+    // So the classifier's answer for a function-typed binding is fully
+    // determined by `type->shape`:
+    //   fn  → None       (nothing to release)
+    //   cls → Refcounted (the environment is refcounted, if non-null)
+    //
+    // This applies uniformly to every binding site: a FuncDeclAST whose
+    // declared type is `cls`, a ParamAST whose type is `cls`, a
+    // FieldDeclAST whose type is `cls`. The binding owns its value's
+    // environment; the value's own caller (or the struct literal that
+    // stored it) is responsible for the retain, per Rule 3.
+    //
+    // `asFunc` and `asFieldDefault` are no longer consulted for the shape
+    // decision. They are reserved for Phase 5 (the field-override case),
+    // where a struct literal's field write transfers ownership of a
+    // closure environment into the struct, and the classifier must
+    // therefore consider the value being stored, not just the field's
+    // declared type.
     if (type->isa<FuncTypeAST>()) {
-        // ─── FuncDeclAST: value is its own init ────────────────────────
-        // The declaration carries the expression that produces its
-        // value. If that expression is a closure literal, capture
-        // analysis has already set `hasClosure` on it.
-        //
-        // A reference-init or call-init FuncDeclAST
-        // (`const alias (int) -> int = sq;`) has an init that is not an
-        // AnonFuncExprAST. Its value flows from elsewhere — Sema would
-        // have to resolve the referenced function to know whether it
-        // captures, which it does not do today. Classified as None.
-        if (asFunc) {
-            bool capturing = asFunc->init
-                && asFunc->init->isa<AnonFuncExprAST>()
-                && asFunc->init->as<AnonFuncExprAST>()->hasClosure;
-            return capturing ? ResourceKind::Refcounted : ResourceKind::None;
-        }
-
-        // ─── FieldDeclAST with a closure-literal default ───────────────
-        // A function-typed field's default value is written at the
-        // struct declaration, in source, and is part of the field's
-        // own AST node. If it is a closure literal, capture analysis
-        // has run on it (when the struct declaration itself was
-        // resolved), and `hasClosure` answers the question.
-        //
-        // A field with no default, or with a non-anon default
-        // (reference/call), falls through to None. The former
-        // has no value at all until a struct literal supplies one; the
-        // latter has the same reference-resolution gap as a
-        // reference-init FuncDeclAST.
-        //
-        // Note: a struct literal can *override* a function-typed field
-        // at construction time. This classifier does not — and cannot —
-        // see the override; it answers for the field's *declaration*.
-        // Handling the override is a call-site concern (Rule 3 at the
-        // struct-literal store), deferred as Step 9 in the plan.
-        if (asFieldDefault && asFieldDefault->isa<AnonFuncExprAST>()) {
-            return asFieldDefault->as<AnonFuncExprAST>()->hasClosure
-                ? ResourceKind::Refcounted
-                : ResourceKind::None;
-        }
-
-        // ─── ParamAST, or FieldDeclAST with no statically-known value ──
-        // The value's shape depends on what the caller supplies (for a
-        // ParamAST) or what a struct literal supplies (for an
-        // overridable FieldDeclAST). Neither is knowable at this
-        // declaration site. Classified as None; escape-path correctness
-        // is Rule 3's responsibility.
-        return ResourceKind::None;
+        return type->as<FuncTypeAST>()->isCls()
+            ? ResourceKind::Refcounted
+            : ResourceKind::None;
     }
 
     // ─── Strings ───────────────────────────────────────────────────────
@@ -625,11 +587,32 @@ ResourceKind SemaContext::classifyResourceKind(
             : ResourceKind::None;
     }
 
+    // ─── Arena ─────────────────────────────────────────────────────────
+    //
+    // Arena is scope-confined. Its backing block is freed by CodeGen's
+    // scope-exit cleanup, not through the generic release mechanism —
+    // so classify as None to keep the ownership model from touching it.
+    // (If CodeGen relies on `resourceKind` to decide what to release,
+    // change this to `OwnedBuffer` and audit CodeGen's scope-exit path.)
+    if (type->isa<ArenaTypeAST>()) {
+        return ResourceKind::None;
+    }
+
+    // ─── ArenaDescriptor ───────────────────────────────────────────────
+    // POD struct {base, size}. No owned resources.
+    if (type->isa<ArenaDescriptorTypeAST>()) {
+        return ResourceKind::None;
+    }
+
     // ─── Structs / TaggedSlots ─────────────────────────────────────────
-    // Phase 4 (T?/T!/T?!) and Phase 5 (struct fields) are stubs today.
-    // When they land, they unwrap or recurse here.
-    //   - NullableTypeAST / FallibleTypeAST / CombinedTypeAST: unwrap inner.
+    //
+    // Phase 5 (T?/T!/T?!) and Phase 5 (struct fields) are stubs today.
+    // When they land, they unwrap or recurse here:
+    //   - NullableTypeAST / FallibleTypeAST / CombinedTypeAST: recurse
+    //     into inner. The ownership of `T?` follows `T` — the nil-ness
+    //     is orthogonal.
     //   - NamedTypeAST pointing at a StructDeclAST: recurse into fields.
+    //     A struct is a resource iff any of its fields is.
     // Both are no-ops for now, matching what CodeGen's classifyResource
     // already does.
     return ResourceKind::None;

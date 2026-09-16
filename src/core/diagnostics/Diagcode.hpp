@@ -172,13 +172,15 @@ enum class DiagCode : uint32_t {
     Sem_InvalidUnary             = 4030,
     Sem_InvalidBinary            = 4031,
     Sem_InvalidRange             = 4032,
+    Sem_FuncShapeMismatch        = 4033,  // fn/cls shape doesn't match body's captures
+
     // Added for RuntimeErrorKind - runtime array/slice checks with no prior
     // compile-time code (a literal-index compile-time OOB check would reuse
     // one of these too, since "index out of bounds" is the same error at
     // either time - see the design decision above).
-    Sem_ArrayIndexOutOfBounds    = 4033,
-    Sem_SliceBoundsOutOfRange    = 4034,
-    Sem_NegativeArraySize        = 4035,
+    Sem_ArrayIndexOutOfBounds    = 4034,
+    Sem_SliceBoundsOutOfRange    = 4035,
+    Sem_NegativeArraySize        = 4036,
     
     // Arithmetic & Numeric Errors (shared with runtime)
     Sem_DivisionByZero           = 4101,  // Division or modulo by zero

@@ -48,150 +48,67 @@ namespace sema {
 
 // ─── isClosureValue Implementation ──────────────────────────────────────────
 
+/// NOTE:
+/// resolvedType must already be set when isClosureValue is called. 
+/// In CaptureAnalysis.cpp, isClosureValue is called from validateAndAddCapture 
+/// (on fieldDecl->defaultVal), and from the old processIdentifier path 
+/// (which is going away — see below). In the new shape, isClosureValue is called 
+/// on a captured variable's declaration's default value, and the default 
+/// value has already been resolved (that's how we know its type). 
+/// So resolvedType is populated. If a future caller invokes it before resolution,
+/// the answer is wrong. Add an assert if you want to catch that.
+///
+/// The anon case is a slight redundancy. If resolvedType is set on the anon, 
+/// resolvedType->as<FuncTypeAST>()->isCls() and hasClosure should agree — 
+/// that's what validateFuncShapeAgainstBody enforces. But checking hasClosure 
+/// first is defensive: it works even if the anon's resolvedType is somehow 
+/// not yet set, and it's a direct read of the field capture analysis actually 
+/// populated. I'd keep both checks in that order.
 bool isClosureValue(ExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
 
-    switch (expr->kind) {
-        case ASTKind::AnonFuncExpr: {
-            auto* anon = expr->as<AnonFuncExprAST>();
-            return anon->hasClosure;
-        }
-
-        case ASTKind::IdentifierExpr: {
-            auto* id = expr->as<IdentifierExprAST>();
-            if (!id->resolvedDecl) return false;
-
-            // ─── Case 1: Function declaration ──────────────────────────────
-            // Under the new design, a FuncDeclAST is never itself a closure.
-            // Any closure it produces lives on its init's AnonFuncExprAST.
-            // So the question "is this function a closure?" is answered by
-            // inspecting the init.
-            if (id->resolvedDecl->isa<FuncDeclAST>()) {
-                auto* funcDecl = id->resolvedDecl->as<FuncDeclAST>();
-                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
-                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-                }
-                // A function whose init is a reference or a call producing a
-                // function value: conservative, we don't know the shape.
-                // CodeGen must emit a runtime check.
-                return funcDecl->init != nullptr;
-            }
-
-            // ─── Case 2: Struct field ──────────────────────────────────────
-            // Fields can hold function values. Sema cannot know at compile
-            // time if the field will hold a plain function or a closure when
-            // the struct literal is created. Conservative: return `true` so
-            // CodeGen can emit a runtime check.
-            if (id->resolvedDecl->isa<FieldDeclAST>()) {
-                auto* fieldDecl = id->resolvedDecl->as<FieldDeclAST>();
-                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                    // If the field has a default value, check if we can
-                    // determine at compile time whether it's a closure.
-                    if (fieldDecl->defaultVal) {
-                        return isClosureValue(fieldDecl->defaultVal, ctx);
-                    }
-                    // No default value — will be initialized at struct
-                    // literal site. Sema cannot know the actual value.
-                    // Conservative: `true`.
-                    return true;
-                }
-                // Non-function fields are not closures.
-                return false;
-            }
-
-            // ─── Case 3: Function parameter ───────────────────────────────
-            // Parameters are passed by the caller. Sema cannot know at
-            // compile time if the caller will pass a plain function or a
-            // closure. Conservative: `true` so CodeGen can emit a runtime
-            // check.
-            if (id->resolvedDecl->isa<ParamAST>()) {
-                auto* param = id->resolvedDecl->as<ParamAST>();
-                if (param->type && param->type->isa<FuncTypeAST>()) {
-                    return true;  // Conservative: CodeGen must do runtime check
-                }
-                return false;
-            }
-
-            // ─── Case 4: Variable declaration ──────────────────────────────
-            // VarDeclAST cannot hold function values in Lucid.
-            // (No type inference, no function-typed variables.)
-            return false;
-        }
-
-        case ASTKind::ModuleAccessExpr: {
-            auto* mod = expr->as<ModuleAccessExprAST>();
-            if (!mod->resolvedDecl) return false;
-
-            // ─── Module member function declaration ────────────────────────
-            if (mod->resolvedDecl->isa<FuncDeclAST>()) {
-                auto* funcDecl = mod->resolvedDecl->as<FuncDeclAST>();
-                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
-                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-                }
-                return funcDecl->init != nullptr;
-            }
-
-            // ─── Module member field ────────────────────────────────────────
-            // Same conservative logic as FieldDeclAST above.
-            if (mod->resolvedDecl->isa<FieldDeclAST>()) {
-                auto* fieldDecl = mod->resolvedDecl->as<FieldDeclAST>();
-                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                    if (fieldDecl->defaultVal) {
-                        return isClosureValue(fieldDecl->defaultVal, ctx);
-                    }
-                    return true;  // Conservative: runtime check in CodeGen
-                }
-                return false;
-            }
-
-            // ─── Module member variables cannot hold function values ──────
-            return false;
-        }
-
-        case ASTKind::FieldAccessExpr: {
-            auto* field = expr->as<FieldAccessExprAST>();
-
-            // ─── Field access to a struct field ────────────────────────────
-            // Same conservative logic as FieldDeclAST above.
-            if (field->resolvedDecl && field->resolvedDecl->isa<FieldDeclAST>()) {
-                auto* fieldDecl = field->resolvedDecl->as<FieldDeclAST>();
-                if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                    if (fieldDecl->defaultVal) {
-                        return isClosureValue(fieldDecl->defaultVal, ctx);
-                    }
-                    return true;  // Conservative: runtime check in CodeGen
-                }
-                return false;
-            }
-
-            // ─── Field access to a function field (resolved to FuncDeclAST) ──
-            if (field->resolvedDecl && field->resolvedDecl->isa<FuncDeclAST>()) {
-                auto* funcDecl = field->resolvedDecl->as<FuncDeclAST>();
-                if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
-                    return funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-                }
-                return funcDecl->init != nullptr;
-            }
-
-            return false;
-        }
-
-        case ASTKind::CallExpr: {
-            // ─── Call expression returning a function value ──────────────
-            // A call expression returns a value. If the return type is a
-            // function type, we don't know at compile time if the callee
-            // returns a plain function or a closure. Conservative: `true`
-            // so CodeGen can emit a runtime check.
-            auto* call = expr->as<CallExprAST>();
-            if (call->resolvedType && call->resolvedType->isa<FuncTypeAST>()) {
-                return true;  // Conservative: runtime check in CodeGen
-            }
-            return false;
-        }
-
-        default:
-            return false;
+    // ─── Read the shape from the expression's resolved type ────────────
+    //
+    // Under the `fn`/`cls` design, every function-typed expression has a
+    // statically-known shape. The shape is either `fn` (bare pointer, no
+    // environment, never a closure value) or `cls` (fat pointer, may or
+    // may not have a non-null environment).
+    //
+    // The function's name is a slight misnomer under the new model: it
+    // answers "does this expression have the *shape* of a closure value?"
+    // which is `cls`, not "does this expression's value definitely have
+    // a non-null environment?" — the latter depends on the value, not
+    // the type. For a `cls`-typed slot, the value may be a null-env
+    // coercion of a bare function; the *slot's* shape is still `cls`,
+    // and any code that handles it must handle the fat pointer.
+    //
+    // The conservative logic that used to live here — "a ParamAST might
+    // receive a bare function or a closure, we can't tell, assume yes" —
+    // is gone. The type tells us. A `cls`-typed param is a closure
+    // *value slot*; a `fn`-typed param is not.
+    if (expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>()) {
+        return expr->resolvedType->as<FuncTypeAST>()->isCls();
     }
+
+    // ─── AnonFuncExprAST: hasClosure is the authoritative answer ───────
+    //
+    // For a closure literal, the shape is determined by whether it
+    // captured anything, not by the declared shape of the slot it's
+    // being assigned to. A capturing anon is `cls`-shaped; a
+    // non-capturing anon is `fn`-shaped (and can coerce to `cls`).
+    //
+    // This matters because an anon may be resolved *before* its target
+    // slot is known — e.g. an anon passed as an argument, where
+    // `resolvedType` is set from the anon's own `funcType` (which was
+    // set by the parser from the declared shape, and by capture
+    // analysis from the body). So `resolvedType` and `hasClosure` agree
+    // here by construction, but `hasClosure` is the more direct answer.
+    if (expr->isa<AnonFuncExprAST>()) {
+        return expr->as<AnonFuncExprAST>()->hasClosure;
+    }
+
+    // Everything else: not a function value.
+    return false;
 }
 
 // ─── Internal CaptureAnalyzer ──────────────────────────────────────────────
@@ -382,61 +299,22 @@ struct CaptureAnalyzer {
             return;
         }
 
-        // ─── Determine if this captured value itself is a closure ──────────
+        // ─── Determine if this captured value is itself a closure ──────────
+        //
+        // Under the new design, the answer for any function-typed declaration
+        // is a direct read of `decl->type`. A `fn`-typed binding is a bare
+        // pointer and never a closure value. A `cls`-typed binding is a fat
+        // pointer and always a closure value, whether its environment is
+        // null or not.
+
+        /// NOTE:
+        /// VarDeclAST - cannot hold function values in Lucid.
+        /// EnumVariantAST - constants, not functions.
+        /// All other declaration types are not function values.
         bool isClosureVal = false;
-
-        // Case 1: It's an AnonFuncExprAST (closure literal)
-        // We know at compile time if this anonymous function captures variables.
-        if (decl->isa<AnonFuncExprAST>()) {
-            isClosureVal = decl->as<AnonFuncExprAST>()->hasClosure;
+        if (decl->type && decl->type->isa<FuncTypeAST>()) {
+            isClosureVal = decl->type->as<FuncTypeAST>()->isCls();
         }
-
-        // Case 2: It's a FuncDeclAST (named function)
-        // Inspect its init — under the new design, the closure (if any)
-        // lives there, not on the FuncDeclAST itself.
-        else if (decl->isa<FuncDeclAST>()) {
-            auto* funcDecl = decl->as<FuncDeclAST>();
-            if (funcDecl->init && funcDecl->init->isa<AnonFuncExprAST>()) {
-                isClosureVal = funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-            } else if (funcDecl->init) {
-                // Reference or call body — conservative: runtime check.
-                isClosureVal = true;
-            }
-        }
-
-        // Case 3: It's a FieldDeclAST (struct field)
-        // Fields can hold function values. Sema cannot know at compile time
-        // if the field will hold a plain function or a closure when the
-        // struct literal is created. Conservative: `true` so CodeGen can
-        // emit a runtime check.
-        else if (decl->isa<FieldDeclAST>()) {
-            auto* fieldDecl = decl->as<FieldDeclAST>();
-            if (fieldDecl->type && fieldDecl->type->isa<FuncTypeAST>()) {
-                if (fieldDecl->defaultVal) {
-                    isClosureVal = isClosureValue(fieldDecl->defaultVal, ctx);
-                } else {
-                    // No default value — will be initialized at struct
-                    // literal site. Conservative: `true`.
-                    isClosureVal = true;
-                }
-            }
-            // Non-function fields are not closures.
-        }
-
-        // Case 4: It's a ParamAST (function parameter)
-        // Parameters are passed by the caller. Sema cannot know at compile time
-        // if the caller will pass a plain function or a closure.
-        // Conservative: `true` so CodeGen can emit a runtime check.
-        else if (decl->isa<ParamAST>()) {
-            auto* param = decl->as<ParamAST>();
-            if (param->type && param->type->isa<FuncTypeAST>()) {
-                isClosureVal = true;
-            }
-        }
-
-        // Case 5: VarDeclAST - cannot hold function values in Lucid.
-        // Case 6: EnumVariantAST - constants, not functions.
-        // All other declaration types are not function values.
 
         // ─── Determine capture by reference vs by value ────────────────────
         // Lucid grammar: read‑only captures may be snapshot‑copied (by‑value).

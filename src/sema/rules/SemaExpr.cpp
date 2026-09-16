@@ -3397,6 +3397,70 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaCon
 // resolveAnonFuncExpr - Anonymous function expression (closure)
 // =============================================================================
 
+// ─── validateFuncShapeAgainstBody ─────────────────────────────────────────
+//
+// After capture analysis has run on an AnonFuncExprAST, verify that the
+// anon's inferred shape (from `hasClosure`) is compatible with the shape
+// declared on its FuncTypeAST.
+//
+// The rule:
+//   - A `cls`-typed stage accepts either a capturing closure (hasClosure
+//     == true) or a non-capturing one (hasClosure == false). A non-capturing
+//     anon assigned to a `cls` slot is the null-env case: a valid fat
+//     pointer with no environment.
+//   - An `fn`-typed stage accepts only a non-capturing anon. A capturing
+//     anon cannot be a bare function pointer — there is nowhere for the
+//     environment to live.
+//
+// Returns true if compatible, false otherwise (diagnostic emitted).
+static bool validateFuncShapeAgainstBody(
+    AnonFuncExprAST* anon,
+    FuncTypeAST* declaredType,
+    BaseAST* diagAnchor,
+    SemaContext& ctx)
+{
+    if (!anon || !declaredType) return true;
+
+    // ─── Only the outermost stage's shape is checked here ─────────────
+    //
+    // A curried function's inner stages are each their own AnonFuncExprAST,
+    // and each is validated against its own stage's declared shape when
+    // resolveAnonFuncExpr recurses into it. So this check runs once per
+    // anon, against the one stage it belongs to.
+    //
+    // `declaredType` here is the stage's FuncTypeAST — for a curried anon
+    // chain, the caller passes the stage's own type, not the outermost.
+    bool bodyCaptures = anon->hasClosure;
+
+    if (declaredType->isFn() && bodyCaptures) {
+        // ─── Wrong marker: declared `fn`, body captures ────────────────
+        //
+        // Report the first captured variable by name, since that's what
+        // makes the diagnostic concrete. The captures span is populated
+        // by analyzeCaptures, which has already run.
+        InternedString firstCapture =
+            anon->captures.empty() ? InternedString()
+                                   : anon->captures[0].name;
+
+        ctx.diagnostics.error(DiagCode::Sem_FuncShapeMismatch, diagAnchor,
+                              "function marked 'fn' but captures variable '",
+                              ctx.pool.lookup(firstCapture), "'");
+        ctx.diagnostics.note(diagAnchor,
+                             "a function that captures state must be marked 'cls'");
+        ctx.diagnostics.note(diagAnchor,
+                             "a 'cls' value is a {func, env} fat pointer with a "
+                             "refcounted environment; a 'fn' value is a bare "
+                             "pointer with nowhere to store captures");
+        // TODO: a "help" suggestion showing the corrected signature would
+        // be useful here, but generating it requires re-printing the
+        // declared type with the outer stage's marker flipped. Deferred.
+        return false;
+    }
+
+    // `cls` with or without captures is fine; `fn` without captures is fine.
+    return true;
+}
+
 TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (!expr->funcType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
@@ -3494,9 +3558,18 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
         analyzeCaptures(expr, ctx);
     }
 
-    // ─── 9. ScopedFunction destructor pops the scope ──────────────────────
+    // ─── 8b. Validate the body's inferred shape against the declared shape ─
+    //
+    // Runs after analyzeCaptures, so `expr->hasClosure` is set from the
+    // body's actual captures. The declared shape comes from `funcType`,
+    // which was resolved at step 1.
+    if (!validateFuncShapeAgainstBody(expr, funcType, expr, ctx)) {
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
 
-    // ─── 10. Determine value state ────────────────────────────────────────
+    // ─── 9. Determine value state ────────────────────────────────────────
     ValueState state = ValueState::Definite;
     if (expectedReturn) {
         if (isNullableType(expectedReturn)) state = ValueState::Unknown;
@@ -3509,7 +3582,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaCon
     expr->isLValue = false;
     expr->isConst = false;
 
-    // ─── 11. Validate against target type if provided ─────────────────────
+    // ─── 10. Validate against target type if provided ─────────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, funcType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,

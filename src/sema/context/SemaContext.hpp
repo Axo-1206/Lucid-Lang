@@ -416,10 +416,7 @@ struct SemaContext {
     ///                        with no default. Consulted only when `type`
     ///                        is a function type.
     /// @return The resource kind.
-    ResourceKind classifyResourceKind(
-        TypeAST* type,
-        FuncDeclAST* asFunc = nullptr,
-        ExprAST* asFieldDefault = nullptr) const;
+    ResourceKind classifyResourceKind(TypeAST* type) const;
 
     // ─── Type Cache Accessors ──────────────────────────────────────────
     PrimitiveTypeAST* getBoolType();

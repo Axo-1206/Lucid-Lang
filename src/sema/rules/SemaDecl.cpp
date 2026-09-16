@@ -563,7 +563,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // short-circuits to false, yielding None — which is correct: a
     // reference-body function's value is the referenced function's own
     // pointer or fat pointer, not a new one this binding owns.
-    decl->resourceKind = ctx.classifyResourceKind(funcType, decl);
+    decl->resourceKind = ctx.classifyResourceKind(funcType);
 }
 
 /// @brief Resolve a function's init expression against its declared type.
@@ -907,7 +907,7 @@ bool resolveStructFieldDeclarations(
         // owning *struct* holds the closure env, not the field binding.
         // Struct-level ownership is Phase 5; the field-level classification
         // stays None for FuncTypeAST, matching CodeGen today.
-        field->resourceKind = ctx.classifyResourceKind(fieldType, nullptr, field->defaultVal);
+        field->resourceKind = ctx.classifyResourceKind(fieldType);
 
         // ─── 2. Reject Arena by value ──────────────────────────────────
         if (isArenaType(fieldType)) {
