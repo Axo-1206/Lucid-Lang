@@ -152,12 +152,9 @@ struct VarDeclAST : ValueDeclAST {
 
     ExprAST* init;
 
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
     llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
-    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)

@@ -3,6 +3,7 @@
 
 #include "CodeGenContext.hpp"
 #include "../intrinsic/LucidIntrinsicEmitter.hpp"
+#include "../types/CodeGenType.hpp"
 #include "codegen/memory/CodeGenOwnership.hpp"
 
 #include <llvm/IR/Function.h>
@@ -53,6 +54,18 @@ llvm::Function* CodeGenContext::getRuntimeFn(RuntimeFn fn) {
 llvm::Function* CodeGenContext::getOrInsertFunction(const std::string& name, llvm::FunctionType* type) {
     llvm::FunctionCallee callee = module->getOrInsertFunction(name, type);
     return llvm::dyn_cast<llvm::Function>(callee.getCallee());
+}
+
+// ─── Module Layout ─────────────────────────────────────────────
+
+ModuleInstanceLayout& CodeGenContext::getOrCreateModuleLayout(ModuleAST* module) {
+    auto it = moduleLayouts.find(module);
+    if (it != moduleLayouts.end()) {
+        return it->second;
+    }
+    // getModuleInstanceType populates the layout as a side effect.
+    getModuleInstanceType(*this, module);
+    return moduleLayouts[module];
 }
 
 // ─── Live Variable Helpers ────────────────────────────────────────────────

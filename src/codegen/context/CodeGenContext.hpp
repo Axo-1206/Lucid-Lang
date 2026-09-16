@@ -29,6 +29,23 @@
 
 namespace codegen {
 
+// ─── Module Instance Layout ─────────────────────────────────────────────
+//
+// Describes the shape of a module's instance struct. The *index assignment*
+// is Sema's (`ValueDeclAST::moduleFieldIndex`); this struct caches the
+// LLVM type and the ordered field list that CodeGen builds from those
+// indices, so repeated lookups don't rebuild the type.
+struct ModuleInstanceLayout {
+    llvm::StructType* type = nullptr;
+    std::vector<ValueDeclAST*> fields;              // sorted by moduleFieldIndex
+    std::unordered_map<ValueDeclAST*, size_t> fieldOf;
+
+    size_t indexOf(ValueDeclAST* decl) const {
+        auto it = fieldOf.find(decl);
+        return it != fieldOf.end() ? it->second : SIZE_MAX;
+    }
+};
+
 /// @brief Code generation context - LLVM state only.
 struct CodeGenContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -55,6 +72,12 @@ struct CodeGenContext {
     
     /// @brief Current module being generated.
     ModuleAST* currentModule = nullptr;
+
+    // ─── Module Layout ──────────────────────────────────────────────────
+
+    std::unordered_map<ModuleAST*, ModuleInstanceLayout> moduleLayouts;
+
+    ModuleInstanceLayout& getOrCreateModuleLayout(ModuleAST* module);
     
     // ─── Global Initialization ──────────────────────────────────────────
     

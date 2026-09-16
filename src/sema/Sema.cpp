@@ -8,6 +8,49 @@
 
 namespace sema {
 
+// ─── assignModuleFieldIndices ─────────────────────────────────────────────
+//
+// Walks the module's declaration list once, in declaration order, and
+// assigns `moduleFieldIndex` to every top-level binding that lives in the
+// module's instance struct.
+//
+// Phase A: top-level `VarDeclAST`s only.
+//
+// Module-level `cls`-shaped `FuncDeclAST`s are deliberately excluded for
+// now. Their fat pointer currently lives in CodeGen's `ctx.values` and is
+// recomputed on each reference, which is correct for non-capturing `cls`
+// closures (null env, stateless) and a known bug for capturing ones. Giving
+// them an instance field requires the corresponding store/load codegen,
+// which is a follow-up. When that follow-up lands, uncomment the second
+// branch below — reserving the slot now would avoid a second ABI change,
+// but produces a dead field in the meantime. This implementation reserves
+// it, because the ABI stability is worth more than the few bytes.
+static void assignModuleFieldIndices(ModuleAST* module) {
+    if (!module) return;
+
+    size_t nextIndex = 0;
+    for (DeclAST* decl : module->decls) {
+        if (!decl) continue;
+
+        if (decl->isa<VarDeclAST>()) {
+            decl->as<VarDeclAST>()->moduleFieldIndex = nextIndex++;
+            continue;
+        }
+
+        // ── Reserved slot for cls-shaped module-level functions ───────
+        // Uncomment when the store/load codegen for module-level cls
+        // closures lands. Until then, including this branch would give
+        // the function an index that no code path reads or writes.
+        //
+        // if (decl->isa<FuncDeclAST>()) {
+        //     FuncDeclAST* fn = decl->as<FuncDeclAST>();
+        //     if (fn->funcType && fn->funcType->shape == FuncShape::Cls) {
+        //         fn->moduleFieldIndex = nextIndex++;
+        //     }
+        // }
+    }
+}
+
 // =============================================================================
 // analyze - Main Entry Point
 // =============================================================================
@@ -68,6 +111,18 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
 /// @param ctx The semantic context.
 void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
+
+    // ─── Compute the module instance layout FIRST ──────────────────────
+    // The layout is a pure structural fact: "the i-th top-level VarDeclAST
+    // (and, once the follow-up lands, cls-shaped FuncDeclAST) occupies
+    // field i of the module's instance struct." It is independent of
+    // type resolution, so it is computed here, before any resolver runs,
+    // and is stable even if a later pass fails and returns early.
+    //
+    // This is what makes `moduleFieldIndex` a Layout Field (set by Sema)
+    // rather than a CodeGen-derived value: CodeGen reads the index, it
+    // never computes it. See the field-category table in BaseAST.hpp.
+    assignModuleFieldIndices(module);
 
     for (DeclAST* decl : module->decls) {
         if (!decl) continue;

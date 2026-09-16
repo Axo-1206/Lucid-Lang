@@ -605,7 +605,6 @@ enum class ResourceKind : uint8_t {
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
-    /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
     TypeAST* type = nullptr;
 
@@ -623,10 +622,30 @@ struct ValueDeclAST : DeclAST {
     /// `const` field would fight the existing two-phase model.
     ResourceKind resourceKind = ResourceKind::None;
     
-    /// @brief Check if this value is immutable (const).
+    /// @brief Index of this binding's slot in its owning module's instance
+    ///        struct, or SIZE_MAX if the binding is not module-level.
+    ///
+    /// Set once by Sema, in `registerTopLevelNames`, for every top-level
+    /// `VarDeclAST` (and, once the follow-up lands, every top-level
+    /// `cls`-shaped `FuncDeclAST`). Read by CodeGen when emitting
+    /// `__init_module_<name>`, `__free_module_<name>`, and every
+    /// module-level access.
+    ///
+    /// This is a Layout Field in the taxonomy at the top of BaseAST.hpp:
+    /// set by Sema, read by later passes, describing the memory layout of
+    /// module state. It replaces the old `VarDeclAST::llvmGlobal` field —
+    /// under the module-as-namespace model there is no per-variable
+    /// `GlobalVariable`; the variable's storage is a field in the module
+    /// instance, and this index is how CodeGen finds it.
+    ///
+    /// Invariant: at most one `ValueDeclAST*` per module has any given
+    /// index. Non-module-level bindings (locals, params, fields) have
+    /// SIZE_MAX.
+    size_t moduleFieldIndex = SIZE_MAX;
+
+    bool isModuleLevel() const { return moduleFieldIndex != SIZE_MAX; }
+
     bool isConst() const { return keyword == DeclKeyword::Const; }
-    
-    /// @brief Check if this value is mutable (let).
     bool isLet() const { return keyword == DeclKeyword::Let; }
     
     explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw, TypeAST* t)

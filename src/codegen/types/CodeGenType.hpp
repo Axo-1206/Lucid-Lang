@@ -26,6 +26,22 @@
 
 namespace codegen {
 
+/// @brief Get (or create) the LLVM struct type for a module's instance.
+///
+/// The instance struct holds one field per top-level binding that lives in
+/// module state, in declaration order. Under the module-as-namespace model
+/// there is no per-variable `GlobalVariable`; this struct is the storage
+/// for every module-level `let`/`const`.
+///
+/// Reads `ValueDeclAST::moduleFieldIndex`, which Sema set during Phase 1.
+/// Does NOT assign indices — that is Sema's job, so that the layout is a
+/// pure structural fact independent of CodeGen's type-resolution order.
+///
+/// Idempotent: repeated calls for the same module return the cached type.
+/// The layout (ordered list of fields, index map) is cached in
+/// `CodeGenContext::moduleLayouts`.
+llvm::StructType* getModuleInstanceType(CodeGenContext& ctx, ModuleAST* module);
+
 // ─── Main Type Mapping ─────────────────────────────────────────────────────
 
 /// @brief Get the LLVM type for a Lucid type annotation.

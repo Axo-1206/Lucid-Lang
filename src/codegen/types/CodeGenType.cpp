@@ -11,6 +11,93 @@
 
 namespace codegen {
 
+namespace {
+std::string sanitizeForLLVMSymbol(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            out.push_back(c);
+        } else {
+            out.push_back('_');
+        }
+    }
+    return out;
+}
+} // namespace
+
+llvm::StructType* getModuleInstanceType(CodeGenContext& ctx, ModuleAST* module) {
+    if (!module) return nullptr;
+
+    // ─── 1. Cache hit ────────────────────────────────────────────────────
+    auto it = ctx.moduleLayouts.find(module);
+    if (it != ctx.moduleLayouts.end() && it->second.type) {
+        return it->second.type;
+    }
+
+    // ─── 2. Collect fields in index order ────────────────────────────────
+    // Sema assigned a contiguous 0..N-1 index to each module-level binding.
+    // Walk the decl list, sort by index, build the type. The list is
+    // already in declaration order and Sema assigned indices in that same
+    // order, so a single pass suffices — but sorting defensively is cheap
+    // and documents the invariant.
+    std::vector<ValueDeclAST*> fields;
+    for (DeclAST* decl : module->decls) {
+        if (!decl) continue;
+        if (!decl->isa<ValueDeclAST>()) continue;
+        ValueDeclAST* v = decl->as<ValueDeclAST>();
+        if (v->moduleFieldIndex == SIZE_MAX) continue;
+        fields.push_back(v);
+    }
+    std::sort(fields.begin(), fields.end(),
+              [](ValueDeclAST* a, ValueDeclAST* b) {
+                  return a->moduleFieldIndex < b->moduleFieldIndex;
+              });
+
+    // ─── 3. Build the LLVM field types ───────────────────────────────────
+    std::vector<llvm::Type*> fieldTypes;
+    fieldTypes.reserve(fields.size());
+    for (ValueDeclAST* v : fields) {
+        llvm::Type* fieldType = nullptr;
+        if (v->isa<VarDeclAST>()) {
+            fieldType = getType(ctx, v->type);
+        } else if (v->isa<FuncDeclAST>()) {
+            // Reserved for the cls-shaped module-level follow-up.
+            fieldType = ctx.getClosureType();
+        }
+        if (!fieldType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, v->loc,
+                "module-level binding '", ctx.pool.lookup(v->name),
+                "' has unknown type; cannot build module instance");
+            continue;
+        }
+        fieldTypes.push_back(fieldType);
+    }
+
+    // ─── 4. Create (or reuse) the named struct type ──────────────────────
+    std::string structName =
+        "module_" + sanitizeForLLVMSymbol(ctx.pool.lookup(module->filePath));
+    llvm::StructType* structType =
+        llvm::StructType::getTypeByName(ctx.llvmCtx, structName);
+    if (!structType) {
+        structType = llvm::StructType::create(ctx.llvmCtx, structName);
+    }
+    if (structType->isOpaque()) {
+        structType->setBody(fieldTypes);
+    }
+
+    // ─── 5. Cache the layout ─────────────────────────────────────────────
+    ModuleInstanceLayout layout;
+    layout.type = structType;
+    layout.fields = std::move(fields);
+    for (size_t i = 0; i < layout.fields.size(); ++i) {
+        layout.fieldOf[layout.fields[i]] = i;
+    }
+    ctx.moduleLayouts[module] = std::move(layout);
+
+    return structType;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 llvm::Type* getType(CodeGenContext& ctx, TypeAST* type) {

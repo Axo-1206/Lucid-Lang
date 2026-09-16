@@ -444,7 +444,7 @@ void lowerGlobalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) 
         zeroInit,
         name
     );
-    decl->llvmGlobal = global;
+    // decl->llvmGlobal = global;
     ctx.storeValue(decl, global);
 
     // ─── Queue for runtime initialization if needed ─────────────────────
