@@ -18,9 +18,9 @@
 ///   so no release or retain is emitted at the declaration. Correctness
 ///   for values that escape through these slots is the escape sites'
 ///   responsibility — see Rule 3 in CodeGenOwnership.hpp.
-/// - The `__lucid_is_closure` runtime API is used by `emitCallableCall`'s
-///   three-way dispatch to decide how to call a value whose runtime shape
-///   is unknown, not by the ownership path.
+/// - The runtime does not perform a closure-shape probe here; the value's
+///   static shape is used instead. Ownership and call dispatch are both
+///   driven by the resolved `FuncTypeAST::shape`, not by runtime detection.
 ///
 /// # Design: Capture Identity
 ///
