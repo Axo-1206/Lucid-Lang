@@ -548,6 +548,7 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         }
 
         size_t fieldIndex = it->second;
+        FieldDeclAST* field = structDecl->fields[fieldIndex];
         initialized[fieldIndex] = true;
 
         // ─── Lower the field value ─────────────────────────────────────────
@@ -563,6 +564,18 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
             }
             if (!fieldValue) return nullptr;
         }
+
+        // ─── fn → cls coercion ─────────────────────────────────────────────
+        // A struct field declared `cls (T) -> U` accepts either a `cls` value
+        // or a `fn` value (the latter widened to a null-env fat pointer).
+        // Run it before the shape-sensitive type comparison below.
+        fieldValue = maybeCoerceFnToCls(
+            fieldValue,
+            init->value->resolvedType,
+            field->type,
+            ctx
+        );
+        if (!fieldValue) return nullptr;
 
         // ─── Get the expected field type from the LLVM struct ──────────────
         llvm::Type* expectedType = llvmStructType->getElementType(fieldIndex);
@@ -624,6 +637,18 @@ llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& 
         
         if (field->defaultVal) {
             llvm::Value* defaultVal = lowerExpression(field->defaultVal, ctx);
+
+            // fn → cls coercion for the constant-default path. This only
+            // handles the constant case; non-constant defaults that produce a
+            // captured closure still need the deeper struct-literal lowering
+            // rewrite mentioned in the refactor plan.
+            defaultVal = maybeCoerceFnToCls(
+                defaultVal,
+                field->defaultVal->resolvedType,
+                field->type,
+                ctx
+            );
+
             if (defaultVal && llvm::isa<llvm::Constant>(defaultVal)) {
                 defaultValue = llvm::cast<llvm::Constant>(defaultVal);
             } else {
@@ -970,19 +995,40 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             if (!argVal) return nullptr;
         }
 
-        // ─── Rule 1 vs Rule 2: retain only on load ────────────────────────
-        // A fresh argument (closure literal, call returning a fresh
-        // closure) carries one temporary claim that the callee's parameter
-        // binding takes over. A load argument (identifier, field, index)
-        // leaves the source binding holding its claim; the callee's
-        // parameter takes a new one, so the caller must retain.
-        //
-        // The guard is on both the resolved type (must be a function type)
-        // and the LLVM shape (must be the closure struct). A plain
-        // function pointer with a function type doesn't trigger the retain.
-        if (arg->resolvedType
-            && arg->resolvedType->isa<FuncTypeAST>()
-            && argVal->getType() == closureType
+        // ─── Determine the parameter's declared type ────────────────────
+        // For a non-variadic call, params[i]. For a variadic call, args
+        // at or beyond fixedParamCount are passed as the element type.
+        TypeAST* paramType = nullptr;
+        if (hasVariadic && i >= fixedParamCount) {
+            ParamAST* variadicParam = calleeFuncType->params[fixedParamCount];
+            if (variadicParam->type->isa<ArrayTypeAST>()) {
+                paramType = variadicParam->type->as<ArrayTypeAST>()->element;
+            }
+        } else if (i < calleeFuncType->params.size()) {
+            paramType = calleeFuncType->params[i]->type;
+        }
+
+        // ─── fn → cls coercion ─────────────────────────────────────────
+        // The callee's parameter is `cls`, the argument is `fn`.
+        // Wrap before the retain check so the check sees the shape the
+        // parameter binding will actually hold.
+        argVal = maybeCoerceFnToCls(
+            argVal,
+            arg->resolvedType,
+            paramType,
+            ctx);
+        if (!argVal) return nullptr;
+
+        // ─── Rule 1 vs Rule 2: retain only on load ──────────────────────
+        // Keyed on the *parameter's* shape: the callee's parameter binding
+        // owns its argument iff the parameter is `cls`. If the parameter
+        // is `fn`, the argument is a bare pointer and there's nothing to
+        // retain. If it's `cls`, the argument is now a fat pointer (either
+        // from the coercion or because the source was already `cls`), and
+        // the caller retains on behalf of the callee's binding.
+        if (paramType
+            && paramType->isa<FuncTypeAST>()
+            && paramType->as<FuncTypeAST>()->shape == FuncShape::Cls
             && !isFreshExpression(arg)) {
 
             llvm::Value* envPtr = ctx.builder.CreateExtractValue(
@@ -2248,6 +2294,26 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
             }
             if (!rhsValue) return nullptr;
         }
+
+        // ─── fn → cls coercion ─────────────────────────────────────────────
+        // If the target slot is `cls` and the RHS is `fn`, wrap it before the
+        // ownership checks below. The wrapped value has a null env, so the
+        // self-assign guard (which extracts field 1) sees a constant null,
+        // and the retain (which is guarded on !isFreshExpression) will
+        // correctly classify the coercion as fresh and skip the retain.
+        //
+        // Note: isFreshExpression inspects `expr->rhs`'s AST kind, not the
+        // value's LLVM shape. A coercion of a load (`f = add;` where add is
+        // a fn) is classified as a load, so the retain fires on a null env.
+        // The runtime is null-safe, so this is correct but emits a
+        // redundant null-checked retain. Optimization folds it; noted in
+        // the plan's "Known limitations" section.
+        rhsValue = maybeCoerceFnToCls(
+            rhsValue,
+            expr->rhs->resolvedType,
+            expr->lhs->resolvedType,
+            ctx);
+        if (!rhsValue) return nullptr;
     }
 
     // ─── Step 5.5: Rule 4 — self-assignment guard ─────────────────────────
@@ -2370,12 +2436,11 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     }
 
     // 3. Process each step sequentially
+    TypeAST* currentType = expr->seed->resolvedType;
     for (PipelineStepAST* step : expr->steps) {
-        // Pass the current value to the step, get the new value
-        currentValue = lowerPipelineStep(step, currentValue, ctx);
-        if (!currentValue) {
-            return nullptr;
-        }
+        currentValue = lowerPipelineStep(step, currentValue, currentType, ctx);
+        if (!currentValue) return nullptr;
+        currentType = step->callable->resolvedType->as<FuncTypeAST>()->returnType;
     }
 
     // 4. Store the final result
@@ -2384,7 +2449,7 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
 }
 
 llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue,
-                               CodeGenContext& ctx) {
+                               TypeAST* upstreamType, CodeGenContext& ctx) {
     if (!step) return nullptr;
 
     TypeAST* callableType = step->callable->resolvedType;
@@ -2411,13 +2476,19 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
     bool hasParameters = !funcType->params.empty();
 
     if (hasUpstream && hasParameters) {
-        // ─── Upstream: always retain (no source expression available) ─────
-        // The upstream value comes from the previous pipeline step as an
-        // opaque llvm::Value* — there's no source ExprAST to classify. The
-        // safe choice is retain: if the previous step was a load whose
-        // source binding dies before this call completes, skipping the
-        // retain would be a use-after-free. Over-retaining leaks; under-
-        // retaining crashes. Prefer the leak.
+        // ─── fn → cls coercion for the upstream value ──────────────────
+        // The upstream is the previous step's result. If this step's
+        // first parameter is `cls` and the upstream's shape is `fn`,
+        // widen before passing.
+        TypeAST* firstParamType = funcType->params[0]->type;
+        upstreamValue = maybeCoerceFnToCls(
+            upstreamValue,
+            upstreamType,
+            firstParamType,
+            ctx);
+        if (!upstreamValue) return nullptr;
+
+        // ─── Retain (existing logic) ────────────────────────────────────
         if (upstreamValue->getType() == closureType) {
             llvm::Value* envPtr = ctx.builder.CreateExtractValue(
                 upstreamValue, 1, "upstream_env_to_retain");

@@ -322,7 +322,9 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 7. Save the previous function context ──────────────────────────
     llvm::Function* prevFunc = ctx.currentFunction;
     llvm::Value* prevEnv = ctx.currentEnvPtr;
+    TypeAST* prevReturnType = ctx.currentDeclaredReturnType;
     ctx.currentFunction = func;
+    ctx.currentDeclaredReturnType = decl->funcType ? decl->funcType->returnType : nullptr;
 
     // ─── 8. Push a live scope for the function body ─────────────────────
     ctx.pushLiveScope();
@@ -343,6 +345,13 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
                 ctx.builder.CreateStore(arg, alloca);
                 param->llvmAlloca = alloca;
                 ctx.storeValue(param, alloca);
+
+                // A cls-typed parameter owns the value it received from the
+                // caller. The caller retained on argument pass, so the callee
+                // must release at function exit.
+                if (ownsResource(param)) {
+                    ctx.markAlive(param);
+                }
             }
         }
         paramTypeIter = paramTypeIter->getNext();
@@ -378,6 +387,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 13. Restore the previous function context ──────────────────────
     ctx.currentFunction = prevFunc;
     ctx.currentEnvPtr = prevEnv;
+    ctx.currentDeclaredReturnType = prevReturnType;
 
     Trace::detail("Lowered body of function '", ctx.pool.lookup(decl->name), "'");
 }
@@ -483,6 +493,18 @@ void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
                                     ctx.pool.lookup(decl->name), "'");
             return;
         }
+
+        // ─── fn → cls coercion ─────────────────────────────────────────────
+        // A `fn`-typed initializer assigned to a `cls`-typed slot is the
+        // implicit widening: wrap the bare pointer in a null-env fat pointer.
+        // This must run before the bfitcast below, because it changes the
+        // value's shape, not just its pointer type.
+        initValue = maybeCoerceFnToCls(
+            initValue,
+            decl->init->resolvedType,
+            decl->type,
+            ctx);
+        if (!initValue) return;
 
         // ─── Bitcast if pointer types differ (opaque pointer safety) ────
         if (initValue->getType() != varType) {

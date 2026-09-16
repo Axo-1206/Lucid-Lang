@@ -101,6 +101,12 @@ struct CodeGenContext {
     
     // ─── Current Function ───────────────────────────────────────────────
     llvm::Function* currentFunction = nullptr;
+    // ─── Current Declared Return Type ───────────────────────────────────
+    // Tracks the AST-side return type of the function body currently being
+    // lowered. This is used by lowerReturnStmt for the implicit `fn -> cls`
+    // widening. It is set by lowerFunctionBody for named functions and by
+    // emitClosureBody for closure bodies, and then restored on exit.
+    TypeAST* currentDeclaredReturnType = nullptr;
 
     // ─── Null Coalesce Context Stack ──────────────────────────────────
     struct NullCoalesceContext {

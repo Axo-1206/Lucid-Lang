@@ -41,6 +41,7 @@
 #include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
 #include "codegen/support/CodeGenAlloca.hpp"
+#include "codegen/support/CodeGenOwnership.hpp"
 #include "codegen/support/CodeGenPanic.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/trace/Trace.hpp"
@@ -366,8 +367,10 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
     // ─── 1. Save the previous function context ──────────────────────────
     llvm::Function* prevFunc = ctx.currentFunction;
     llvm::Value* prevEnv = ctx.currentEnvPtr;
+    TypeAST* prevReturnType = ctx.currentDeclaredReturnType;
 
     ctx.setCurrentFunction(closureFunc);
+    ctx.currentDeclaredReturnType = funcType->returnType;
 
     // ─── 2. Create entry block ──────────────────────────────────────────
     llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
@@ -428,6 +431,10 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
                 ctx.storeValue(param, alloca);
                 param->llvmAlloca = alloca;
                 param->llvmValue = argValue;
+
+                if (ownsResource(param)) {
+                    ctx.markAlive(param);
+                }
             }
         }
     }
@@ -440,11 +447,13 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
                                 "anonymous function has no body");
         ctx.currentFunction = prevFunc;
         ctx.currentEnvPtr = prevEnv;
+        ctx.currentDeclaredReturnType = prevReturnType;
         return false;
     }
 
     ctx.currentFunction = prevFunc;
     ctx.currentEnvPtr = prevEnv;
+    ctx.currentDeclaredReturnType = prevReturnType;
 
     std::string error;
     llvm::raw_string_ostream errorStream(error);

@@ -388,7 +388,7 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx);
 llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx);
 
 /// @brief Lower a pipeline step.
-llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, CodeGenContext& ctx);
+llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue, TypeAST* upstreamType, CodeGenContext& ctx);
 
 /// @brief Lower an anonymous function expression.
 llvm::Value* lowerAnonFuncExpr(AnonFuncExprAST* expr, CodeGenContext& ctx);

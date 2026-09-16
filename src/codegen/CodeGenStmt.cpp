@@ -658,6 +658,18 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
             if (!returnVal) return;
         }
 
+        // A declared `cls` return type accepts a `fn` expression via the
+        // implicit widening. This must happen before the type-cast logic below,
+        // because the shape is part of the runtime representation.
+        if (ctx.currentDeclaredReturnType) {
+            returnVal = maybeCoerceFnToCls(
+                returnVal,
+                stmt->value->resolvedType,
+                ctx.currentDeclaredReturnType,
+                ctx);
+            if (!returnVal) return;
+        }
+
         // Cast to the declared return type if needed.
         if (returnVal->getType() != returnType) {
             if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
@@ -701,8 +713,9 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
         && returnType->isStructTy()
         && returnType->getStructNumElements() == 2
         && stmt->value
-        && stmt->value->resolvedType
-        && stmt->value->resolvedType->isa<FuncTypeAST>()
+        && ctx.currentDeclaredReturnType
+        && ctx.currentDeclaredReturnType->isa<FuncTypeAST>()
+        && ctx.currentDeclaredReturnType->as<FuncTypeAST>()->shape == FuncShape::Cls
         && !isFreshExpression(stmt->value)) {
 
         llvm::Value* envPtr = ctx.builder.CreateExtractValue(

@@ -133,6 +133,41 @@ ResourceKind classifyResource(ValueDeclAST* decl) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// maybeCoerceFnToCls
+// ─────────────────────────────────────────────────────────────────────────────
+
+llvm::Value* maybeCoerceFnToCls(
+    llvm::Value* sourceValue,
+    TypeAST* sourceType,
+    TypeAST* targetType,
+    CodeGenContext& ctx)
+{
+    if (!sourceValue || !sourceType || !targetType) return sourceValue;
+    if (!sourceType->isa<FuncTypeAST>() || !targetType->isa<FuncTypeAST>()) {
+        return sourceValue;
+    }
+
+    FuncTypeAST* srcFunc = sourceType->as<FuncTypeAST>();
+    FuncTypeAST* tgtFunc = targetType->as<FuncTypeAST>();
+
+    // Only `fn → cls` needs a wrap. Anything else is identity.
+    if (srcFunc->shape != FuncShape::Fn || tgtFunc->shape != FuncShape::Cls) {
+        return sourceValue;
+    }
+
+    llvm::StructType* closureType = ctx.getClosureType();
+    llvm::Value* wrapped = llvm::UndefValue::get(closureType);
+    wrapped = ctx.builder.CreateInsertValue(
+        wrapped, sourceValue, 0, "fn_to_cls_func");
+    wrapped = ctx.builder.CreateInsertValue(
+        wrapped,
+        llvm::ConstantPointerNull::get(
+            llvm::PointerType::get(ctx.llvmCtx, 0)),
+        1, "fn_to_cls_env");
+    return wrapped;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ownsResource
 // ─────────────────────────────────────────────────────────────────────────────
 

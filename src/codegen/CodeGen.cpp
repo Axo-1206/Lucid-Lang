@@ -4,6 +4,7 @@
 #include "CodeGen.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/trace/Trace.hpp"
+#include "support/CodeGenOwnership.hpp"
 
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
@@ -214,11 +215,16 @@ void generateGlobalInitializer(CodeGenContext& ctx) {
 
     // ─── Generate initialization for each global ──────────────────────────
     for (const auto& info : ctx.pendingGlobals) {
-        // ─── Lower the initializer expression ────────────────────────────
-        // This may reference symbols from other modules, which are now
-        // available because all modules are already generated.
         llvm::Value* initValue = lowerExpression(info.init, ctx);
         if (initValue) {
+            // Coerce fn → cls if the global's declared type is cls.
+            initValue = maybeCoerceFnToCls(
+                initValue,
+                info.init->resolvedType,
+                info.decl->type,   // the declared type of the global
+                ctx);
+            if (!initValue) continue;
+
             ctx.builder.CreateStore(initValue, info.global);
         }
     }

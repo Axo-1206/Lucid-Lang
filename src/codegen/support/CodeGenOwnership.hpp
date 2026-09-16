@@ -219,6 +219,26 @@ namespace codegen {
 /// @return The resource kind. Null returns None.
 ResourceKind classifyResource(ValueDeclAST* decl);
 
+/// @brief Wrap a bare function pointer in a null-env fat pointer, if the
+///        target type requires `cls` and the source type is `fn`.
+///
+/// This is the CodeGen side of the implicit `fn → cls` widening. Sema has
+/// already accepted the assignment via isAssignable; this function emits
+/// the value-level construction that makes the assignment valid at runtime.
+///
+/// The wrap is a zero-alloc construction: { func, null }. No runtime call,
+/// no heap, no refcount. Downstream ownership treats it as a fresh value
+/// whose env is null, so any retain/release emitted on it is a no-op.
+///
+/// If the source is already `cls`, or the target is already `fn`, or either
+/// type is not a function type, the source is returned unchanged. The caller
+/// does not need to check types.
+llvm::Value* maybeCoerceFnToCls(
+    llvm::Value* sourceValue,
+    TypeAST* sourceType,
+    TypeAST* targetType,
+    CodeGenContext& ctx);
+
 // ─── ownsResource ─────────────────────────────────────────────────────────
 
 /// @brief Does this declaration's value own a heap resource that must be
