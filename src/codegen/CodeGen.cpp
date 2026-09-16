@@ -26,52 +26,71 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
     CodeGenContext ctx(p, d, context);
     ctx.modules = modules;
 
-    // ─── Phase 1: Every module, every declaration, every body ──────────
-    //
-    // For each module, generateModule runs:
-    //   - lowerModuleDeclarations: prototypes and types for `decls`
-    //     *and* `specializations`
-    //   - lowerModuleBodies: bodies for functions in `decls` and
-    //     `specializations`
-    //
-    // By the end of this loop, every LLVM struct type, every function
-    // prototype, and every function body the program needs is in place.
-    // Nothing else will be created after this point except the global
-    // initializer.
-    //
-    // `pendingGlobals` accumulates during this phase: each module-level
-    // `let` with a non-constant initializer is queued when its
-    // llvm::GlobalVariable is created, but its initializer expression is
-    // not lowered yet.
-    for (ModuleAST* module : modules) {
+    // ─── Module ID assignment ────────────────────────────────────────────
+    // The ID is the module's index in the topologically-sorted list.
+    // This is the contract the interpreter relies on when it fills
+    // @__lucid_module_instances: entry i holds the instance pointer for
+    // the module whose ID is i. See the header comment on generate().
+    for (size_t i = 0; i < modules.size(); ++i) {
+        if (modules[i]) ctx.moduleIds[modules[i]] = static_cast<uint32_t>(i);
+    }
+
+    // ─── Phase 1: Every module, every declaration, every body ────────────
+    for (size_t i = 0; i < modules.size(); ++i) {
+        ModuleAST* module = modules[i];
         if (!module) continue;
 
         std::string name = p.lookup(module->filePath);
         ctx.module = new llvm::Module(name, context);
         ctx.currentFile = module->filePath;
         ctx.currentModule = module;
-
         ctx.llvmModules[module] = ctx.module;
 
-        generateModule(module, ctx);
+        // ─── Emit the instance table and size array in the first module ──
+        // Must run before any declaration is lowered, so that a module
+        // whose access sites reference @__lucid_module_instances finds
+        // the global already declared.
+        if (i == 0) {
+            emitModuleInstanceTable(modules, ctx);
+        }
 
+        generateModule(module, ctx);
         result.push_back(std::unique_ptr<llvm::Module>(ctx.module));
     }
 
-    // ─── Phase 2: Global initializer ────────────────────────────────────
+    // ─── Phase 2: Per-module __init_module_<name> / __free_module_<name> ─
     //
-    // __init_globals is generated once, in the first module, after every
-    // declaration and body from every module is in place. It lowers each
-    // pending global's initializer expression and stores the result into
-    // the global's slot.
+    // Emitted after the per-module loop, because they lower initializer
+    // expressions that may reference symbols from other modules (already
+    // lowered in Phase 1).
     //
-    // The sort by (dependencyOrder, orderInModule) inside
-    // generateGlobalInitializer ensures globals initialize in an order
-    // that respects cross-module dependencies.
-    //
-    // Specializations are covered by Phase 1: any global initializer that
-    // references a specialization will find its LLVM type and any LLVM
-    // functions it calls already lowered.
+    // Each generateModuleInit / generateModuleFree call sets
+    // ctx.module and ctx.currentModule to the module it's emitting for,
+    // then restores them. The functions themselves are placed in the
+    // module they belong to — unlike __init_globals, which was emitted
+    // once into the first module.
+    for (ModuleAST* module : modules) {
+        if (!module) continue;
+
+        // Find the llvm::Module we created for this ModuleAST.
+        llvm::Module* savedModule = ctx.module;
+        ModuleAST* savedCurrentModule = ctx.currentModule;
+
+        ctx.module = ctx.llvmModules[module];
+        ctx.currentModule = module;
+
+        generateModuleInit(module, ctx);
+        generateModuleFree(module, ctx);
+
+        ctx.module = savedModule;
+        ctx.currentModule = savedCurrentModule;
+    }
+
+    // ─── Phase 3: Global initializer (unchanged; dead in Commit 3+) ──────
+    // Still runs until Commit 5 deletes it. The old lowerGlobalVar path
+    // still creates GlobalVariables and queues pendingGlobals; this call
+    // still lowers them. After Commit 3, nothing reads the resulting
+    // globals, but the code is harmless until Commit 5 removes it.
     if (!result.empty() && !ctx.pendingGlobals.empty()) {
         ctx.module = result[0].get();
         generateGlobalInitializer(ctx);
@@ -105,6 +124,168 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
 
     Trace::info("Generated IR successfully for module");
     return std::unique_ptr<llvm::Module>(ctx.module);
+}
+
+void emitModuleInstanceTable(const std::vector<ModuleAST*>& modules, CodeGenContext& ctx) {
+    if (!ctx.module || modules.empty()) return;
+
+    llvm::LLVMContext& C = ctx.llvmCtx;
+    const size_t N = modules.size();
+
+    // ─── @__lucid_module_instances : [N x ptr] ──────────────────────────
+    // One entry per module, in module-ID order. Zero-initialized; the
+    // interpreter fills each slot before any user code runs.
+    llvm::ArrayType* tableType = llvm::ArrayType::get(getPtrType(C), N);
+    new llvm::GlobalVariable(
+        *ctx.module,
+        tableType,
+        /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,   // interpreter needs to write it
+        llvm::Constant::getNullValue(tableType),
+        "__lucid_module_instances"
+    );
+
+    // ─── @__module_sizes : [N x i64] ────────────────────────────────────
+    // The interpreter reads entry i to know how many bytes to malloc for
+    // module i's instance. Filled in by CodeGen now (it's a compile-time
+    // constant), not by the interpreter.
+    llvm::ArrayType* sizeType = llvm::ArrayType::get(getI64Type(C), N);
+    std::vector<llvm::Constant*> sizes;
+    sizes.reserve(N);
+    for (ModuleAST* m : modules) {
+        uint64_t sz = 0;
+        if (m) {
+            // Ensure the layout is computed, then read the type's size.
+            llvm::StructType* instTy = getModuleInstanceType(ctx, m);
+            if (instTy && instTy->isSized()) {
+                sz = ctx.module->getDataLayout()
+                          .getTypeAllocSize(instTy).getFixedValue();
+            }
+        }
+        sizes.push_back(llvm::ConstantInt::get(getI64Type(C), sz));
+    }
+    llvm::Constant* sizeInit = llvm::ConstantArray::get(sizeType, sizes);
+    new llvm::GlobalVariable(
+        *ctx.module,
+        sizeType,
+        /*isConstant=*/true,
+        llvm::GlobalValue::ExternalLinkage,
+        sizeInit,
+        "__module_sizes"
+    );
+}
+
+void generateModuleInit(ModuleAST* module, CodeGenContext& ctx) {
+    if (!module || !ctx.module) return;
+
+    ModuleInstanceLayout& layout = ctx.getOrCreateModuleLayout(module);
+    if (layout.fields.empty()) return;  // nothing to initialize
+
+    // ─── Create __init_module_<name>(ptr %inst) ─────────────────────────
+    std::string funcName =
+        "__init_module_" + sanitizeForLLVMSymbol(ctx.pool.lookup(module->filePath));
+
+    llvm::FunctionType* fnType = llvm::FunctionType::get(
+        getVoidType(ctx.llvmCtx),
+        {getPtrType(ctx.llvmCtx)},   // ptr %inst
+        false);
+    llvm::Function* fn = llvm::Function::Create(
+        fnType,
+        llvm::GlobalValue::InternalLinkage,
+        funcName,
+        ctx.module);
+    fn->getArg(0)->setName("inst");
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", fn);
+    ctx.builder.SetInsertPoint(entry);
+    ctx.setCurrentFunction(fn);
+
+    // ─── For each field, lower the init and store into the instance ─────
+    for (size_t i = 0; i < layout.fields.size(); ++i) {
+        ValueDeclAST* decl = layout.fields[i];
+
+        if (!decl->isa<VarDeclAST>()) {
+            // Reserved slot for a cls-shaped module-level FuncDeclAST.
+            // Skipped until the follow-up lands.
+            continue;
+        }
+        VarDeclAST* var = decl->as<VarDeclAST>();
+        if (!var->init) continue;   // no initializer means zero-init is enough
+
+        llvm::Value* initValue = lowerExpression(var->init, ctx);
+        if (!initValue) continue;
+
+        // Match generateGlobalInitializer's coercion handling.
+        initValue = maybeCoerceFnToCls(
+            initValue,
+            var->init->resolvedType,
+            var->type,
+            ctx);
+        if (!initValue) continue;
+
+        // GEP to the field, store.
+        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+            layout.type,
+            fn->getArg(0),
+            static_cast<unsigned>(i),
+            "init_field_" + ctx.pool.lookup(var->name));
+        ctx.builder.CreateStore(initValue, fieldPtr);
+    }
+
+    ctx.builder.CreateRetVoid();
+    ctx.setCurrentFunction(nullptr);
+}
+
+void generateModuleFree(ModuleAST* module, CodeGenContext& ctx) {
+    if (!module || !ctx.module) return;
+
+    ModuleInstanceLayout& layout = ctx.getOrCreateModuleLayout(module);
+    if (layout.fields.empty()) return;
+
+    // ─── Create __free_module_<name>(ptr %inst) ─────────────────────────
+    std::string funcName =
+        "__free_module_" + sanitizeForLLVMSymbol(ctx.pool.lookup(module->filePath));
+
+    llvm::FunctionType* fnType = llvm::FunctionType::get(
+        getVoidType(ctx.llvmCtx),
+        {getPtrType(ctx.llvmCtx)},
+        false);
+    llvm::Function* fn = llvm::Function::Create(
+        fnType,
+        llvm::GlobalValue::InternalLinkage,
+        funcName,
+        ctx.module);
+    fn->getArg(0)->setName("inst");
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", fn);
+    ctx.builder.SetInsertPoint(entry);
+    ctx.setCurrentFunction(fn);
+
+    // ─── Release fields in REVERSE declaration order ────────────────────
+    // Reverse order matches "release in reverse of construction," which
+    // matters when one field's resource was derived from an earlier
+    // field's (e.g. `let b = a.someSlice()`).
+    for (size_t i = layout.fields.size(); i > 0; --i) {
+        ValueDeclAST* decl = layout.fields[i - 1];
+        if (!decl->isa<VarDeclAST>()) continue;
+
+        VarDeclAST* var = decl->as<VarDeclAST>();
+        if (var->resourceKind == ResourceKind::None) continue;
+
+        // Load the field's value, then emit its release.
+        llvm::Type* fieldTy = layout.type->getElementType(i - 1);
+        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+            layout.type,
+            fn->getArg(0),
+            static_cast<unsigned>(i - 1),
+            "free_field_" + ctx.pool.lookup(var->name));
+        llvm::Value* value = ctx.builder.CreateLoad(fieldTy, fieldPtr,
+                                                     "free_load");
+        emitRelease(var, value, ctx);
+    }
+
+    ctx.builder.CreateRetVoid();
+    ctx.setCurrentFunction(nullptr);
 }
 
 // =============================================================================

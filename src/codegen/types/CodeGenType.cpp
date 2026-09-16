@@ -4,27 +4,13 @@
 #include "CodeGenType.hpp"
 #include "core/ASTStrings.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "LLVMTypeHelpers.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Module.h>
 
 namespace codegen {
-
-namespace {
-std::string sanitizeForLLVMSymbol(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
-            out.push_back(c);
-        } else {
-            out.push_back('_');
-        }
-    }
-    return out;
-}
-} // namespace
 
 llvm::StructType* getModuleInstanceType(CodeGenContext& ctx, ModuleAST* module) {
     if (!module) return nullptr;

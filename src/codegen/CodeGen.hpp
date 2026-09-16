@@ -98,6 +98,53 @@ void generateGlobalInitializer(CodeGenContext& ctx);
 void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx);
 
 // =============================================================================
+// Module Instance Support (Phase A - replace all instances on hot reload)
+// =============================================================================
+//
+// Under the module-as-namespace model, each module's top-level state lives
+// in a per-module instance buffer, not in per-variable globals. This section
+// declares the functions that emit:
+//
+//   - @__lucid_module_instances : [N x ptr]  — one pointer per module,
+//                                                set by the interpreter
+//   - @__module_sizes           : [N x i64]  — one instance size per module
+//   - __init_module_<name>      : void(ptr)  — initializes a module instance
+//   - __free_module_<name>      : void(ptr)  — releases a module instance's
+//                                                owned resources
+//
+// The table and size array are emitted into the FIRST module's llvm::Module
+// (the first element of `modules`), before any module's declarations are
+// lowered, so cross-module references resolve from the start.
+
+/// @brief Emit `@__lucid_module_instances` and `@__module_sizes` into the
+///        current module. Called once, at the top of generate(), into the
+///        first module.
+///
+/// @param modules The full topologically-sorted module list. Its size
+///                determines the array bounds; its order determines the
+///                module IDs (index i → ID i).
+/// @param ctx     The code generation context. `ctx.module` must be the
+///                first module's llvm::Module.
+void emitModuleInstanceTable(const std::vector<ModuleAST*>& modules,
+                             CodeGenContext& ctx);
+
+/// @brief Emit `__init_module_<name>` for a module.
+///
+/// The function has signature `void(ptr %inst)`. For each top-level
+/// binding in the module's instance layout, in declaration order, it
+/// lowers the binding's initializer and stores the result into the
+/// corresponding instance field.
+void generateModuleInit(ModuleAST* module, CodeGenContext& ctx);
+
+/// @brief Emit `__free_module_<name>` for a module.
+///
+/// The function has signature `void(ptr %inst)`. For each top-level
+/// binding in the module's instance layout, in REVERSE declaration
+/// order, it loads the field and emits the binding's resource release
+/// via emitRelease.
+void generateModuleFree(ModuleAST* module, CodeGenContext& ctx);
+
+// =============================================================================
 // Declaration Lowering
 // =============================================================================
 //

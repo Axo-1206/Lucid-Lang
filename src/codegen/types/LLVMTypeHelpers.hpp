@@ -765,4 +765,21 @@ inline bool canRepresentInteger(llvm::IntegerType* target, llvm::IntegerType* so
     return targetBits >= sourceBits;
 }
 
+// =============================================================================
+// SANITIZER
+// =============================================================================
+
+inline std::string sanitizeForLLVMSymbol(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            out.push_back(c);
+        } else {
+            out.push_back('_');
+        }
+    }
+    return out;
+}
+
 } // namespace codegen

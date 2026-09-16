@@ -79,6 +79,22 @@ struct CodeGenContext {
 
     ModuleInstanceLayout& getOrCreateModuleLayout(ModuleAST* module);
     
+    // ─── Module ID Assignment ───────────────────────────────────────────────
+    //
+    // Each module gets a stable uint32_t ID, equal to its index in the
+    // topologically-sorted `modules` vector passed to generate(). CodeGen
+    // emits this ID as a constant in every module-level access, so the
+    // interpreter must use the same numbering when it populates
+    // @__lucid_module_instances. The contract is documented on `generate()`.
+    //
+    // Populated at the top of `generate()`, before any module is lowered.
+    std::unordered_map<ModuleAST*, uint32_t> moduleIds;
+
+    uint32_t moduleId(ModuleAST* m) const {
+        auto it = moduleIds.find(m);
+        return it != moduleIds.end() ? it->second : UINT32_MAX;
+    }
+
     // ─── Global Initialization ──────────────────────────────────────────
     
     /// @brief Information about a global variable that needs runtime initialization.
