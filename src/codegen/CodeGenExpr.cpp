@@ -364,28 +364,17 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
     if (decl->isa<FuncDeclAST>()) {
         FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
-        // ─── Capturing function: fat pointer in ctx.values ──────────────
-        // A capturing named function's value is a { func, env } fat pointer
-        // produced by lowerClosure in lowerFunctionDecl. It lives in
-        // ctx.values, NOT ctx.functions — the two maps hold different
-        // value types (llvm::Function* vs llvm::Value*), and the closure
-        // fat pointer is a struct value, not a function. Keeping them
-        // disjoint by category makes lookup unambiguous.
-        //
-        // Under the redesign, "is this a capturing function" is answered by
-        // looking at the init: if init is an AnonFuncExprAST with
-        // hasClosure, the function captures.
-        bool isCapturing = funcDecl->init
-            && funcDecl->init->isa<AnonFuncExprAST>()
-            && funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-
-        if (isCapturing) {
+        // ─── cls-shaped function: fat pointer in ctx.values ──────────────
+        // A cls-shaped function value is the closure fat pointer produced by
+        // lowerFunctionDecl, and it lives in ctx.values rather than
+        // ctx.functions. The static shape is the authoritative signal.
+        FuncShape shape = funcDecl->funcType ? funcDecl->funcType->shape : FuncShape::Fn;
+        if (shape == FuncShape::Cls) {
             llvm::Value* closureVal = ctx.lookupValue(funcDecl);
             if (!closureVal) {
                 ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
-                    "capturing function '", ctx.pool.lookup(funcDecl->name),
-                    "' has no fat-pointer value in ctx.values — "
-                    "lowerFunctionDecl should have stored it");
+                    "cls function '", ctx.pool.lookup(funcDecl->name),
+                    "' has no fat-pointer value — lowerFunctionDecl should have stored it");
                 return nullptr;
             }
             expr->llvmValue = closureVal;
@@ -1023,7 +1012,14 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
         }
     }
 
-    llvm::Value* result = emitCallableCall(calleeVal, args, fnType, ctx, "call");
+    llvm::Value* result = emitCallableCall(
+        calleeVal,
+        args,
+        fnType,
+        calleeFuncType->shape,
+        ctx,
+        "call"
+    );
     expr->llvmValue = result;
     return result;
 }
@@ -1553,20 +1549,17 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
             return nullptr;
         }
 
-        // Capturing functions cannot be accessed cross-module — their value
+        // cls-shaped functions cannot be accessed cross-module — their value
         // is a closure fat pointer produced at the defining module's lowering
-        // time, and there's no bare symbol for the importing module to look
-        // up. This is the same limitation as capturing generic functions.
-        bool isCapturing = funcDecl->init
-            && funcDecl->init->isa<AnonFuncExprAST>()
-            && funcDecl->init->as<AnonFuncExprAST>()->hasClosure;
-        if (isCapturing) {
+        // time, and there's no bare symbol for the importing module to look up.
+        FuncShape shape = funcDecl->funcType ? funcDecl->funcType->shape : FuncShape::Fn;
+        if (shape == FuncShape::Cls) {
             ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
-                "cross-module access to capturing function '",
+                "cross-module access to 'cls' function '",
                 ctx.pool.lookup(funcDecl->name),
                 "' is not supported — its value is a runtime-constructed fat pointer "
                 "tied to the defining module's frame. Export a non-capturing factory "
-                "function (e.g. makeCounter() -> () -> int) that returns the closure.");
+                "function that returns the closure.");
             return nullptr;
         }
     } else if (resolvedDecl->isa<VarDeclAST>()) {
@@ -2595,7 +2588,14 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, llvm::Value* upstreamValue
         ctx.builder.CreateCall(retainFn, {envPtr});
     }
 
-    return emitCallableCall(calleeVal, args, fnType, ctx, "pipeline_call");
+    return emitCallableCall(
+        calleeVal,
+        args,
+        fnType,
+        funcType->shape,
+        ctx,
+        "pipeline_call"
+    );
 }
 
 // =============================================================================

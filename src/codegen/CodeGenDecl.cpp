@@ -49,16 +49,6 @@ static bool isExported(DeclAST* decl, CodeGenContext& ctx) {
 }
 
 /// True iff this declaration's init is an anonymous function expression
-/// that has captures. Under the redesign, a FuncDeclAST is a binding whose
-/// init is either an AnonFuncExprAST (block-body function) or a reference
-/// expression (reference body). Only the first case can be a closure.
-static bool isCapturingFunction(FuncDeclAST* decl) {
-    return decl->init
-        && decl->init->isa<AnonFuncExprAST>()
-        && decl->init->as<AnonFuncExprAST>()->hasClosure;
-}
-
-/// True iff this declaration's init is an anonymous function expression
 /// (with or without captures). Used to decide whether the body needs
 /// lowering at all — a reference body has no body of its own to lower.
 static AnonFuncExprAST* anonInit(FuncDeclAST* decl) {
@@ -171,53 +161,33 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── 2. Capturing function: route through lowerClosure ──────────────
-    // A capturing named function is a closure. Its value is a
-    // { func, env } fat pointer, not a bare llvm::Function. lowerClosure
-    // is the single place that builds a correct closure value.
-    //
-    // Under the redesign, the closure lives on the init:
-    //   decl->init is an AnonFuncExprAST
-    //   decl->init->hasClosure is true
-    //   decl->init->captures is the capture list
-    // There is no separate closureView.
-    AnonFuncExprAST* anon = anonInit(decl);
-    if (anon && anon->hasClosure) {
-        // ─── 2a. Lower through lowerClosure ─────────────────────────────
-        // lowerClosure does the real work:
-        //   - builds the environment struct type from anon->captures
-        //   - creates the closure function (env as first param)
-        //   - allocates the env via __lucid_alloc_env
-        //   - stores each captured variable into its env slot
-        //   - constructs the { func, env } fat pointer
-        //
-        // The env allocation and capture stores are emitted at the
-        // current insertion point, which is inside the enclosing
-        // function's body (for a nested function) — this is correct:
-        // each call to the enclosing function must produce a fresh env.
-        llvm::Value* closureValue = lowerClosure(anon, ctx);
-        if (!closureValue) {
-            // lowerClosure already emitted a diagnostic; nothing more to do.
+    // ─── 2. cls-shaped function: lower as a closure value, not a bare fn ─
+    // A cls-shaped declaration is a runtime fat pointer: either a block-body
+    // closure lowered with lowerClosure, or a reference-body closure whose init
+    // is already the closure value. The runtime shape decides the lowering, not
+    // the presence of a capture flag on the anonymous expression.
+    FuncShape shape = decl->funcType ? decl->funcType->shape : FuncShape::Fn;
+    if (shape == FuncShape::Cls) {
+        llvm::Value* closureValue = nullptr;
+        AnonFuncExprAST* anon = anonInit(decl);
+
+        if (anon) {
+            closureValue = lowerClosure(anon, ctx);
+        } else if (decl->init) {
+            closureValue = lowerExpression(decl->init, ctx);
+        } else {
+            ctx.diagnostics.errorAt(DiagCode::Sem_MissingFuncBody, decl->loc,
+                "cls-declared function '", ctx.pool.lookup(decl->name),
+                "' has no body or initializer");
             return;
         }
 
-        // ─── 2b. Store the fat pointer ──────────────────────────────────
-        // ctx.storeValue puts the closure value into ctx.values[decl],
-        // which is what lowerIdentifierExpr reads and what
-        // emitCleanupForTracker's release path walks.
-        //
-        // Note: ctx.functions[decl] is deliberately NOT set for a
-        // capturing function. The two maps have different value types
-        // (ctx.functions holds llvm::Function*, ctx.values holds
-        // llvm::Value*), and the closure value is a struct, not a
-        // function. Keeping the maps' contents disjoint by category
-        // makes the idempotency guard and lookup logic unambiguous.
+        if (!closureValue) return;
         ctx.storeValue(decl, closureValue);
 
-        Trace::detail("Lowered capturing function '",
+        Trace::detail("Lowered cls-shaped function '",
                       ctx.pool.lookup(decl->name),
-                      "' as a closure (",
-                      anon->captures.size(), " captures)");
+                      "' as a closure value");
         return;
     }
 
@@ -308,17 +278,14 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // ─── 1. Foreign functions have no body ──────────────────────────────
     if (decl->isForeignFunction) return;
 
-    // ─── 2. Capturing functions: body was lowered by lowerClosure ───────
-    // A capturing named function's body was lowered into a separate
-    // closure function by lowerClosure, called from lowerFunctionDecl.
-    // The body's IR belongs in that closure function (which takes env
-    // as its first parameter), not in a bare function with the same
-    // mangled name.
-    AnonFuncExprAST* anon = anonInit(decl);
-    if (anon && anon->hasClosure) {
-        Trace::detail("Skipping body lowering for capturing function '",
+    // ─── 2. cls-shaped functions: body was already lowered as part of the
+    // closure value construction (block-body via lowerClosure, reference-body
+    // by storing the reference as the closure value itself).
+    FuncShape shape = decl->funcType ? decl->funcType->shape : FuncShape::Fn;
+    if (shape == FuncShape::Cls) {
+        Trace::detail("Skipping body lowering for cls-shaped function '",
                       ctx.pool.lookup(decl->name),
-                      "' (body lowered by lowerClosure)");
+                      "' (body lowered during closure lowering)");
         return;
     }
 
@@ -327,6 +294,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     // reference to another function or a call. No body IR belongs to 
     // this declaration — the referenced function has its
     // own body already lowered where it was declared.
+    AnonFuncExprAST* anon = anonInit(decl);
     if (!anon) {
         Trace::detail("Skipping body lowering for reference-body function '",
                       ctx.pool.lookup(decl->name), "'");
