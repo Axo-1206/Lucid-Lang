@@ -58,30 +58,6 @@ namespace sema {
 /// @param ctx The semantic context (contains scope information).
 void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx);
 
-/// @brief Detects if a returned expression contains a closure that escapes.
-///
-/// A closure is considered "escaping" if it's created locally and returned to
-/// the caller. Such closures must be heap-allocated because they outlive the
-/// function call.
-///
-/// Static closures (module members) do NOT need to be marked as escaping
-/// because they live for the entire program lifetime.
-///
-/// @param expr The returned expression.
-/// @param ctx The semantic context.
-///
-/// @example
-///   // Direct closure return - marks as escaping
-///   return (n int) -> int { return n + 1 };
-///
-///   // Module member - not marked as escaping
-///   return module:myClosure;
-///
-///   // Nested function returned - marks as escaping
-///   const counter () -> int = { return count += 1 };
-///   return counter;
-void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx);
-
 /// @brief Helper to determine if a value is a closure (has an environment).
 ///
 /// Traverses the expression to find the underlying function declaration

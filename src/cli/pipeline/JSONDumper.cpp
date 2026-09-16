@@ -1231,7 +1231,6 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
     
     // ─── Closure fields ─────────────────────────────────────────────────
     json.kv("hasClosure", expr->hasClosure);
-    json.kv("isReturned", expr->isReturned);
     
     // ─── Captures ───────────────────────────────────────────────────────
     // CapturedVariable no longer stores a `decl` pointer; identity is

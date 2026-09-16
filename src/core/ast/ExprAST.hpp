@@ -756,10 +756,6 @@ struct AnonFuncExprAST : ExprAST {
     ArenaSpan<CapturedVariable> captures;
     bool hasClosure = false;
 
-    /// True if this closure is returned from its enclosing function, and
-    /// therefore must be heap-allocated rather than scope-confined.
-    bool isReturned = false;
-
     // ─── CodeGen Fields (mutable) ───────────────────────────────────────
     llvm::Function* closureFunction = nullptr;
     llvm::StructType* environmentType = nullptr;

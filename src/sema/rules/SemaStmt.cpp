@@ -709,11 +709,6 @@ bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
-        // ─── DETECT CLOSURE RETURN ───────────────────────────────────────────
-        // Check if the returned expression is a closure that needs to be
-        // marked as escaping (heap-allocated).
-        markClosureIfEscaping(stmt->value, ctx);
-
         // Validate fallible/nullable propagation
         if (stmt->value->valueState == ValueState::Err) {
             if (!isFallibleType(expectedType)) {
