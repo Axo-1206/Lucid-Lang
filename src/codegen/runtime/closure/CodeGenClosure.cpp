@@ -87,37 +87,8 @@ static TypeAST* resolveCaptureType(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Runtime Closure Check Helpers
+// Closure-shape normalization helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-llvm::Value* emitIsClosureCheck(llvm::Value* value, CodeGenContext& ctx) {
-    if (!value) return nullptr;
-
-    // ─── If the value is already a struct, it's a closure ─────────────────
-    // The closure type is { ptr, ptr }. If we see this, return true.
-    if (value->getType()->isStructTy()) {
-        return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 1);
-    }
-
-    // ─── If it's a function pointer, it's not a closure ──────────────────
-    if (llvm::isa<llvm::Function>(value)) {
-        return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
-    }
-
-    // ─── For pointer values, use runtime check ────────────────────────────
-    if (value->getType()->isPointerTy()) {
-        // Use __lucid_is_closure(ptr) -> i1
-        llvm::Function* isClosureFn = ctx.getRuntimeFn(RuntimeFn::IsClosure);
-        if (!isClosureFn) {
-            // Fallback: assume it's not a closure
-            return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
-        }
-        return ctx.builder.CreateCall(isClosureFn, {value}, "is_closure");
-    }
-
-    // ─── Unknown value type ──────────────────────────────────────────────
-    return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
-}
 
 llvm::Value* normalizeToClosureType(llvm::Value* value, CodeGenContext& ctx) {
     if (!value) return nullptr;
@@ -549,71 +520,35 @@ llvm::Value* emitCallableCall(
     llvm::Value* callee,
     llvm::ArrayRef<llvm::Value*> args,
     llvm::FunctionType* fnType,
+    FuncShape shape,
     CodeGenContext& ctx,
-    const std::string& name
-) {
+    const std::string& name)
+{
     if (!callee || !fnType) return nullptr;
 
-    // ─── 1. Closure value: { funcPtr, envPtr } fat pointer struct ─────────
-    if (callee->getType()->isStructTy()) {
-        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(callee, 0, name + "_closure_func");
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(callee, 1, name + "_closure_env");
-        return emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
-    }
-
-    // ─── 2. Plain named function reference ─────────────────────────────────
-    if (llvm::Function* fn = llvm::dyn_cast<llvm::Function>(callee)) {
-        return ctx.builder.CreateCall(fn, args, name);
-    }
-
-    // ─── 3. Indirect function pointer - with runtime closure check ────────
-    if (callee->getType()->isPointerTy()) {
-        // ─── Check if this might be a closure at runtime ──────────────────
-        // Use __lucid_is_closure to determine if the value is a closure.
-        llvm::Function* isClosureFn = ctx.getRuntimeFn(RuntimeFn::IsClosure);
-        llvm::Value* isClosure = ctx.builder.CreateCall(isClosureFn, {callee}, "is_closure");
-
-        llvm::Function* func = ctx.getCurrentFunction();
-        llvm::BasicBlock* closureBranch = llvm::BasicBlock::Create(
-            ctx.llvmCtx, "call_closure", func);
-        llvm::BasicBlock* plainBranch = llvm::BasicBlock::Create(
-            ctx.llvmCtx, "call_plain", func);
-        llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
-            ctx.llvmCtx, "call_merge", func);
-
-        ctx.builder.CreateCondBr(isClosure, closureBranch, plainBranch);
-
-        // ─── Closure branch: load { func, env } and call ──────────────────
-        ctx.builder.SetInsertPoint(closureBranch);
-        // The callee pointer points to a closure struct { func, env }
-        // Load the closure struct
-        llvm::Type* closureType = ctx.getClosureType();
-        llvm::Value* closureVal = ctx.builder.CreateLoad(closureType, callee, "closure_load");
-        llvm::Value* funcPtr = ctx.builder.CreateExtractValue(closureVal, 0, "closure_func");
-        llvm::Value* envPtr = ctx.builder.CreateExtractValue(closureVal, 1, "closure_env");
-        llvm::Value* closureResult = emitClosureCall(funcPtr, envPtr, args, fnType->getReturnType(), ctx);
-        ctx.builder.CreateBr(mergeBlock);
-
-        // ─── Plain branch: cast and call directly ──────────────────────────
-        ctx.builder.SetInsertPoint(plainBranch);
-        llvm::Value* casted = ctx.builder.CreatePointerCast(
-            callee, llvm::PointerType::get(fnType, 0), name + "_cast");
-        llvm::Value* plainResult = ctx.builder.CreateCall(fnType, casted, args, name);
-        ctx.builder.CreateBr(mergeBlock);
-
-        // ─── Merge block: PHI the result ───────────────────────────────────
-        ctx.builder.SetInsertPoint(mergeBlock);
-        llvm::Type* resultType = fnType->getReturnType();
-        if (resultType->isVoidTy()) {
-            return nullptr;
+    if (shape == FuncShape::Fn) {
+        // Bare function pointer (or llvm::Function*).
+        // Cast to the expected signature, call directly.
+        llvm::Value* typed = callee;
+        if (callee->getType() != llvm::PointerType::get(fnType, 0)) {
+            typed = ctx.builder.CreatePointerCast(
+                callee,
+                llvm::PointerType::get(fnType, 0),
+                name + "_fn_cast");
         }
-        llvm::PHINode* phi = ctx.builder.CreatePHI(resultType, 2, "call_result");
-        phi->addIncoming(closureResult, closureBranch);
-        phi->addIncoming(plainResult, plainBranch);
-        return phi;
+        return ctx.builder.CreateCall(fnType, typed, args, name);
     }
-    return nullptr;
+
+    // shape == FuncShape::Cls
+    // Fat pointer { func, env }. Extract both, prepend env.
+    llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
+        callee, 0, name + "_func");
+    llvm::Value* envPtr = ctx.builder.CreateExtractValue(
+        callee, 1, name + "_env");
+    return emitClosureCall(funcPtr, envPtr, args,
+                           fnType->getReturnType(), ctx);
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper Functions

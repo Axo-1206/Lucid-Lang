@@ -130,6 +130,7 @@ llvm::Value* emitCallableCall(
     llvm::Value* callee,
     llvm::ArrayRef<llvm::Value*> args,
     llvm::FunctionType* fnType,
+    FuncShape shape,
     CodeGenContext& ctx,
     const std::string& name = "call"
 );
