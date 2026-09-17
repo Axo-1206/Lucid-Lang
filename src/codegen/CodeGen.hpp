@@ -94,9 +94,6 @@ void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx);
 /// declaration and generates IR for its body.
 void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx);
 
-void generateGlobalInitializer(CodeGenContext& ctx);
-void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx);
-
 // =============================================================================
 // Module Instance Support (Phase A - replace all instances on hot reload)
 // =============================================================================
@@ -236,22 +233,14 @@ void lowerParam(ParamAST* param, CodeGenContext& ctx);
 
 /// @brief Lower a variable declaration.
 ///
-/// Variables can be either module-level (globals) or local (allocas).
-/// Module-level variables use mangled names for AOT compilation.
+/// Local variables get an alloca and runtime init store. Module-level
+/// variables are a no-op here: their storage is an instance field, their
+/// initializer runs in `__init_module_<name>`, and their release runs in
+/// `__free_module_<name>`. See `generateModuleInit` / `generateModuleFree`.
 ///
 /// @param decl The variable declaration.
 /// @param ctx The code generation context.
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Lower a global variable.
-///
-/// Creates an LLVM GlobalVariable with the mangled name.
-/// Handles constant initialization and deferred non-constant init.
-///
-/// @param decl The variable declaration (must be module-level).
-/// @param varType The LLVM type of the variable.
-/// @param ctx The code generation context.
-void lowerGlobalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx);
 
 /// @brief Lower a local variable.
 ///

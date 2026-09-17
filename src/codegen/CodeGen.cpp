@@ -78,12 +78,6 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
         ctx.currentModule = savedCurrentModule;
     }
 
-    // ─── Phase 3: Global initializer (unchanged; dead in Commit 3+) ──────
-    if (!result.empty() && !ctx.pendingGlobals.empty()) {
-        ctx.module = result[0].get();
-        generateGlobalInitializer(ctx);
-    }
-
     return result;
 }
 
@@ -182,7 +176,7 @@ void generateModuleInit(ModuleAST* module, CodeGenContext& ctx) {
         llvm::Value* initValue = lowerExpression(var->init, ctx);
         if (!initValue) continue;
 
-        // Match generateGlobalInitializer's coercion handling.
+        // Match the module-init coercion handling.
         initValue = maybeCoerceFnToCls(
             initValue,
             var->init->resolvedType,
@@ -268,8 +262,10 @@ void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx) {
     // non-generic structs, enums, traits, foreign functions, and globals.
     //
     // A non-generic FuncDeclAST gets its LLVM prototype here.
-    // A non-generic VarDeclAST gets its llvm::GlobalVariable here (with a
-    // null initializer; the actual value is deferred to __init_globals).
+    // A non-generic VarDeclAST is intentionally a no-op at declaration time:
+    // its storage sits in the module instance layout, while initialization and
+    // cleanup are emitted by the per-module __init_module_<name> and
+    // __free_module_<name> helpers.
     // A StructDeclAST — generic template or concrete — is *not* lowered
     // here as a template: a template has no fields and no LLVM struct
     // type is produced for it. Only concrete structs produce LLVM types.
@@ -317,142 +313,6 @@ void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx) {
         if (spec->isa<FuncDeclAST>()) {
             lowerFunctionBody(spec->as<FuncDeclAST>(), ctx);
         }
-    }
-}
-
-// =============================================================================
-// Global Initializer Generation
-// =============================================================================
-
-void generateGlobalInitializer(CodeGenContext& ctx) {
-    if (ctx.pendingGlobals.empty()) {
-        return;
-    }
-
-    // ─── Sort by module dependency order ──────────────────────────────────
-    // ModuleAST::dependencyOrder is set by ModuleResolver.
-    // This ensures globals are initialized in the correct order across modules.
-    std::sort(ctx.pendingGlobals.begin(), ctx.pendingGlobals.end(),
-        [&](const CodeGenContext::GlobalInitInfo& a,
-            const CodeGenContext::GlobalInitInfo& b) {
-            int orderA = a.module ? a.module->dependencyOrder : -1;
-            int orderB = b.module ? b.module->dependencyOrder : -1;
-            if (orderA != orderB) return orderA < orderB;
-            return a.orderInModule < b.orderInModule;
-        });
-
-    // ─── Create __init_globals function ───────────────────────────────────
-    llvm::FunctionType* initType = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(ctx.llvmCtx), false
-    );
-    
-    llvm::Function* initFunc = llvm::Function::Create(
-        initType,
-        llvm::Function::InternalLinkage,
-        "__init_globals",
-        ctx.module
-    );
-    
-    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
-        ctx.llvmCtx,
-        "entry",
-        initFunc
-    );
-    ctx.builder.SetInsertPoint(entryBlock);
-    ctx.setCurrentFunction(initFunc);
-
-    // ─── Generate initialization for each global ──────────────────────────
-    for (const auto& info : ctx.pendingGlobals) {
-        llvm::Value* initValue = lowerExpression(info.init, ctx);
-        if (initValue) {
-            // Coerce fn → cls if the global's declared type is cls.
-            initValue = maybeCoerceFnToCls(
-                initValue,
-                info.init->resolvedType,
-                info.decl->type,   // the declared type of the global
-                ctx);
-            if (!initValue) continue;
-
-            ctx.builder.CreateStore(initValue, info.global);
-        }
-    }
-
-    ctx.builder.CreateRetVoid();
-    ctx.setCurrentFunction(nullptr);
-
-    // ─── Register as global constructor ────────────────────────────────────
-    registerGlobalConstructor(initFunc, ctx);
-
-    Trace::info("Generated global initializer with ", 
-                ctx.pendingGlobals.size(), " pending globals");
-}
-
-void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx) {
-    if (!func) return;
-    
-    llvm::LLVMContext& C = ctx.llvmCtx;
-    llvm::Type* i32 = llvm::Type::getInt32Ty(C);
-    llvm::Type* i8Ptr = llvm::PointerType::get(C, 0);
-    
-    // __init_globals has type void(), but global constructors expect i8*()
-    llvm::FunctionType* ctorFuncType = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(C),
-        {i8Ptr},  // takes a void* data pointer
-        false
-    );
-    llvm::Constant* ctorFuncPtr = llvm::ConstantExpr::getBitCast(
-        func,
-        llvm::PointerType::get(ctorFuncType, 0)
-    );
-    
-    // Create the constructor entry: { priority, func, data }
-    llvm::StructType* ctorStructType = llvm::StructType::get(
-        C,
-        {i32, llvm::PointerType::get(C, 0), llvm::PointerType::get(C, 0)}
-    );
-    
-    llvm::Constant* ctorEntry = llvm::ConstantStruct::get(
-        ctorStructType,
-        llvm::ConstantInt::get(i32, 65535),  // priority (default)
-        ctorFuncPtr,                          // function
-        llvm::Constant::getNullValue(llvm::PointerType::get(C, 0))  // data
-    );
-    
-    // Append to the global constructor list
-    llvm::GlobalVariable* ctorList = ctx.module->getGlobalVariable("llvm.global_ctors");
-    if (ctorList) {
-        // Append to existing list
-        std::vector<llvm::Constant*> existingCtors;
-        if (llvm::ConstantArray* existingArray = 
-            llvm::dyn_cast<llvm::ConstantArray>(ctorList->getInitializer())) {
-            for (auto& op : existingArray->operands()) {
-                existingCtors.push_back(llvm::cast<llvm::Constant>(&op));
-            }
-        }
-        existingCtors.push_back(ctorEntry);
-        
-        llvm::ArrayType* newArrayType = llvm::ArrayType::get(
-            ctorStructType,
-            existingCtors.size()
-        );
-        llvm::Constant* newArray = llvm::ConstantArray::get(
-            newArrayType,
-            existingCtors
-        );
-        ctorList->setInitializer(newArray);
-    } else {
-        // Create new global constructor list
-        llvm::ArrayType* arrayType = llvm::ArrayType::get(ctorStructType, 1);
-        llvm::Constant* arrayInit = llvm::ConstantArray::get(arrayType, {ctorEntry});
-        
-        new llvm::GlobalVariable(
-            *ctx.module,
-            arrayType,
-            false,
-            llvm::GlobalValue::AppendingLinkage,
-            arrayInit,
-            "llvm.global_ctors"
-        );
     }
 }
 

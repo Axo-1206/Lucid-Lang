@@ -120,20 +120,6 @@ struct CodeGenContext {
     /// into the instance struct.
     llvm::Value* loadModuleInstance(ModuleAST* module);
 
-    // ─── Global Initialization ──────────────────────────────────────────
-    
-    /// @brief Information about a global variable that needs runtime initialization.
-    struct GlobalInitInfo {
-        VarDeclAST* decl;                    // The variable declaration
-        ExprAST* init;                       // The initializer expression
-        llvm::GlobalVariable* global;        // The LLVM global variable
-        ModuleAST* module;                   // Which module this global belongs to
-        int orderInModule;                   // Declaration order within module
-    };
-    
-    /// @brief Pending globals that need runtime initialization.
-    std::vector<GlobalInitInfo> pendingGlobals;
-    
     // ─── Type Cache ─────────────────────────────────────────────────────
     
     std::unordered_map<TypeAST*, llvm::Type*> typeCache;

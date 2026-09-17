@@ -399,6 +399,15 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
 void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl || decl->hasSyntaxError) return;
 
+    // ─── Module-level: no per-decl lowering ─────────────────────────────
+    // Under the module-as-namespace model, a module-level `let`/`const`
+    // has no per-variable IR. Its storage is a field in the module instance,
+    // initialization is emitted in `__init_module_<name>`, and release is
+    // emitted in `__free_module_<name>`.
+    if (decl->moduleFieldIndex != SIZE_MAX) {
+        return;
+    }
+
     llvm::Type* varType = getType(ctx, decl->type);
     if (!varType) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
@@ -407,58 +416,7 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Dispatch: module-level vs local ────────────────────────────────
-    bool isModuleLevel = !ctx.currentFunction;
-    if (isModuleLevel) {
-        lowerGlobalVar(decl, varType, ctx);
-    } else {
-        lowerLocalVar(decl, varType, ctx);
-    }
-}
-
-void lowerGlobalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
-    if (!decl->mangledName.isValid()) {
-        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, decl->loc,
-                                "global variable '", ctx.pool.lookup(decl->name),
-                                "' has no mangled name (Sema should have set this)");
-        return;
-    }
-
-    std::string name = ctx.pool.lookup(decl->mangledName);
-
-    // ─── Determine linkage ──────────────────────────────────────────────
-    llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::InternalLinkage;
-    if (isExported(decl, ctx)) {
-        linkage = llvm::GlobalValue::ExternalLinkage;
-    }
-
-    // ─── Create the global with a zero initializer ──────────────────────
-    // Runtime initialization is deferred to __init_globals for non-constant
-    // initializers.
-    llvm::Constant* zeroInit = llvm::Constant::getNullValue(varType);
-    llvm::GlobalVariable* global = new llvm::GlobalVariable(
-        *ctx.module,
-        varType,
-        decl->isConst(),
-        linkage,
-        zeroInit,
-        name
-    );
-    // decl->llvmGlobal = global;
-    ctx.storeValue(decl, global);
-
-    // ─── Queue for runtime initialization if needed ─────────────────────
-    if (decl->init) {
-        ctx.pendingGlobals.push_back({
-            decl,
-            decl->init,
-            global,
-            ctx.currentModule,
-            decl->orderInModule
-        });
-        Trace::detail("Global '", ctx.pool.lookup(decl->name),
-                      "' queued for runtime initialization");
-    }
+    lowerLocalVar(decl, varType, ctx);
 }
 
 void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
