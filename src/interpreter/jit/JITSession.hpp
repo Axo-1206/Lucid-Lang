@@ -47,19 +47,31 @@ public:
     /// @throws JITError if initialization fails.
     void initialize();
 
+    /// @brief Define an absolute symbol in the JIT main dynamic library.
+    /// @param name The un-mangled symbol name.
+    /// @param address The address of the symbol.
+    void defineAbsoluteSymbol(const std::string& name, void* address);
+
     /// @brief Add a module to the JIT.
     /// @param module The LLVM module (takes ownership).
-    /// @param name The module name.
+    /// @param name The module name (optional).
+    /// @return The ResourceTrackerSP associated with the added module.
     /// @throws JITError if addition fails.
-    void addModule(std::unique_ptr<llvm::Module> module, InternedString name);
+    llvm::orc::ResourceTrackerSP addModule(std::unique_ptr<llvm::Module> module, InternedString name = InternedString());
 
-    /// @brief Remove a module from the JIT.
+    /// @brief Remove a module from the JIT by its ResourceTracker.
+    /// @param tracker The resource tracker for the module.
+    /// @return true if removed successfully.
+    /// @throws JITError if removal fails.
+    bool removeModule(llvm::orc::ResourceTrackerSP tracker);
+
+    /// @brief Remove a module from the JIT by name.
     /// @param name The module name.
     /// @return true if the module was found and removed.
     /// @throws JITError if removal fails.
     bool removeModule(InternedString name);
 
-    /// @brief Check if a module is loaded.
+    /// @brief Check if a module is loaded by name.
     bool hasModule(InternedString name) const;
 
     /// @brief Look up a symbol in the JIT.

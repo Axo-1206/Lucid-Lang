@@ -142,7 +142,25 @@ void JITSession::registerLibrarySymbols(const std::string& path, const std::stri
     (void)name;
 }
 
-void JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString name) {
+void JITSession::defineAbsoluteSymbol(const std::string& name, void* address) {
+    if (!m_initialized) {
+        throw JITError(JITError::Kind::InitFailed, "JIT not initialized");
+    }
+
+    llvm::orc::SymbolMap symbols;
+    symbols[m_jit->mangleAndIntern(name)] = {
+        llvm::orc::ExecutorAddr::fromPtr(address),
+        llvm::JITSymbolFlags::Exported
+    };
+    if (auto Err = m_jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols)))) {
+        llvm::handleAllErrors(std::move(Err), [&](const llvm::ErrorInfoBase& EI) {
+            throw JITError(JITError::Kind::InitFailed,
+                          std::string("Failed to define absolute symbol '") + name + "': " + EI.message());
+        });
+    }
+}
+
+llvm::orc::ResourceTrackerSP JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString name) {
     if (!m_initialized) {
         throw JITError(JITError::Kind::ModuleAddFailed, "JIT not initialized");
     }
@@ -177,13 +195,32 @@ void JITSession::addModule(std::unique_ptr<llvm::Module> module, InternedString 
         });
     }
 
-    // Store the tracker for later removal
-    m_trackers[name.id] = tracker;
+    // Store the tracker for later removal if a name was provided
+    if (name.isValid()) {
+        m_trackers[name.id] = tracker;
+    }
+
+    return tracker;
+}
+
+bool JITSession::removeModule(llvm::orc::ResourceTrackerSP tracker) {
+    if (!m_initialized || !tracker) {
+        return false;
+    }
+
+    if (auto Err = tracker->remove()) {
+        llvm::handleAllErrors(std::move(Err), [&](const llvm::ErrorInfoBase& EI) {
+            throw JITError(JITError::Kind::ModuleRemoveFailed,
+                          std::string("Failed to remove module: ") + EI.message());
+        });
+    }
+
+    return true;
 }
 
 bool JITSession::removeModule(InternedString name) {
-    if (!m_initialized) {
-        throw JITError(JITError::Kind::ModuleRemoveFailed, "JIT not initialized");
+    if (!m_initialized || !name.isValid()) {
+        return false;
     }
 
     auto it = m_trackers.find(name.id);
@@ -191,16 +228,9 @@ bool JITSession::removeModule(InternedString name) {
         return false;
     }
 
-    // Remove the module
-    if (auto Err = it->second->remove()) {
-        llvm::handleAllErrors(std::move(Err), [&](const llvm::ErrorInfoBase& EI) {
-            throw JITError(JITError::Kind::ModuleRemoveFailed,
-                          std::string("Failed to remove module: ") + EI.message());
-        });
-    }
-
+    auto tracker = it->second;
     m_trackers.erase(it);
-    return true;
+    return removeModule(tracker);
 }
 
 bool JITSession::hasModule(InternedString name) const {

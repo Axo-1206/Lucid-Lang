@@ -18,21 +18,23 @@ namespace codegen {
 std::vector<std::unique_ptr<llvm::Module>> generate(
     const std::vector<ModuleAST*>& modules,
     StringPool& p, DiagnosticEngine& d,
-    llvm::LLVMContext& context
+    llvm::LLVMContext& context,
+    const CodeGenOptions& options
 ) {
     std::vector<std::unique_ptr<llvm::Module>> result;
     result.reserve(modules.size());
 
     CodeGenContext ctx(p, d, context);
+    ctx.options = options;
     ctx.modules = modules;
 
     // ─── Module ID assignment ────────────────────────────────────────────
-    // The ID is the module's index in the topologically-sorted list.
-    // This is the contract the interpreter relies on when it fills
-    // @__lucid_module_instances: entry i holds the instance pointer for
-    // the module whose ID is i. See the header comment on generate().
-    for (size_t i = 0; i < modules.size(); ++i) {
-        if (modules[i]) ctx.moduleIds[modules[i]] = static_cast<uint32_t>(i);
+    if (options.moduleIds) {
+        ctx.moduleIds = *options.moduleIds;
+    } else {
+        for (size_t i = 0; i < modules.size(); ++i) {
+            if (modules[i]) ctx.moduleIds[modules[i]] = static_cast<uint32_t>(i);
+        }
     }
 
     // ─── Phase 1: Every module, every declaration, every body ────────────
@@ -46,29 +48,18 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
         ctx.currentModule = module;
         ctx.llvmModules[module] = ctx.module;
 
-        // ─── Emit the instance table and size array in the first module ──
-        // Must run before any declaration is lowered, so that a module
-        // whose access sites reference @__lucid_module_instances finds
-        // the global already declared.
-        if (i == 0) {
-            emitModuleInstanceTable(modules, ctx);
-        }
+        // Pre-declare @__lucid_module_instances in every module
+        ctx.getOrDeclareModuleTable();
 
         generateModule(module, ctx);
         result.push_back(std::unique_ptr<llvm::Module>(ctx.module));
     }
 
-    // ─── Phase 2: Per-module __init_module_<name> / __free_module_<name> ─
+    // ─── Phase 2: Per-module __module_size_<name> / __init_module_<name> / __free_module_<name> ─
     //
     // Emitted after the per-module loop, because they lower initializer
     // expressions that may reference symbols from other modules (already
     // lowered in Phase 1).
-    //
-    // Each generateModuleInit / generateModuleFree call sets
-    // ctx.module and ctx.currentModule to the module it's emitting for,
-    // then restores them. The functions themselves are placed in the
-    // module they belong to — unlike __init_globals, which was emitted
-    // once into the first module.
     for (ModuleAST* module : modules) {
         if (!module) continue;
 
@@ -79,6 +70,7 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
         ctx.module = ctx.llvmModules[module];
         ctx.currentModule = module;
 
+        generateModuleSize(module, ctx);
         generateModuleInit(module, ctx);
         generateModuleFree(module, ctx);
 
@@ -87,10 +79,6 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
     }
 
     // ─── Phase 3: Global initializer (unchanged; dead in Commit 3+) ──────
-    // Still runs until Commit 5 deletes it. The old lowerGlobalVar path
-    // still creates GlobalVariables and queues pendingGlobals; this call
-    // still lowers them. After Commit 3, nothing reads the resulting
-    // globals, but the code is harmless until Commit 5 removes it.
     if (!result.empty() && !ctx.pendingGlobals.empty()) {
         ctx.module = result[0].get();
         generateGlobalInitializer(ctx);
@@ -126,53 +114,32 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
     return std::unique_ptr<llvm::Module>(ctx.module);
 }
 
-void emitModuleInstanceTable(const std::vector<ModuleAST*>& modules, CodeGenContext& ctx) {
-    if (!ctx.module || modules.empty()) return;
+void generateModuleSize(ModuleAST* module, CodeGenContext& ctx) {
+    if (!module || !ctx.module) return;
 
-    llvm::LLVMContext& C = ctx.llvmCtx;
-    const size_t N = modules.size();
+    std::string funcName =
+        "__module_size_" + sanitizeForLLVMSymbol(ctx.pool.lookup(module->filePath));
 
-    // ─── @__lucid_module_instances : [N x ptr] ──────────────────────────
-    // One entry per module, in module-ID order. Zero-initialized; the
-    // interpreter fills each slot before any user code runs.
-    llvm::ArrayType* tableType = llvm::ArrayType::get(getPtrType(C), N);
-    new llvm::GlobalVariable(
-        *ctx.module,
-        tableType,
-        /*isConstant=*/false,
-        llvm::GlobalValue::ExternalLinkage,   // interpreter needs to write it
-        llvm::Constant::getNullValue(tableType),
-        "__lucid_module_instances"
-    );
-
-    // ─── @__module_sizes : [N x i64] ────────────────────────────────────
-    // The interpreter reads entry i to know how many bytes to malloc for
-    // module i's instance. Filled in by CodeGen now (it's a compile-time
-    // constant), not by the interpreter.
-    llvm::ArrayType* sizeType = llvm::ArrayType::get(getI64Type(C), N);
-    std::vector<llvm::Constant*> sizes;
-    sizes.reserve(N);
-    for (ModuleAST* m : modules) {
-        uint64_t sz = 0;
-        if (m) {
-            // Ensure the layout is computed, then read the type's size.
-            llvm::StructType* instTy = getModuleInstanceType(ctx, m);
-            if (instTy && instTy->isSized()) {
-                sz = ctx.module->getDataLayout()
-                          .getTypeAllocSize(instTy).getFixedValue();
-            }
-        }
-        sizes.push_back(llvm::ConstantInt::get(getI64Type(C), sz));
-    }
-    llvm::Constant* sizeInit = llvm::ConstantArray::get(sizeType, sizes);
-    new llvm::GlobalVariable(
-        *ctx.module,
-        sizeType,
-        /*isConstant=*/true,
+    llvm::FunctionType* fnType = llvm::FunctionType::get(
+        getI64Type(ctx.llvmCtx),
+        false);
+    llvm::Function* fn = llvm::Function::Create(
+        fnType,
         llvm::GlobalValue::ExternalLinkage,
-        sizeInit,
-        "__module_sizes"
-    );
+        funcName,
+        ctx.module);
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", fn);
+    ctx.builder.SetInsertPoint(entry);
+
+    uint64_t sz = 0;
+    llvm::StructType* instTy = getModuleInstanceType(ctx, module);
+    if (instTy && instTy->isSized()) {
+        sz = ctx.module->getDataLayout()
+                  .getTypeAllocSize(instTy).getFixedValue();
+    }
+
+    ctx.builder.CreateRet(llvm::ConstantInt::get(getI64Type(ctx.llvmCtx), sz));
 }
 
 void generateModuleInit(ModuleAST* module, CodeGenContext& ctx) {
@@ -191,7 +158,7 @@ void generateModuleInit(ModuleAST* module, CodeGenContext& ctx) {
         false);
     llvm::Function* fn = llvm::Function::Create(
         fnType,
-        llvm::GlobalValue::InternalLinkage,
+        llvm::GlobalValue::ExternalLinkage,
         funcName,
         ctx.module);
     fn->getArg(0)->setName("inst");
@@ -252,7 +219,7 @@ void generateModuleFree(ModuleAST* module, CodeGenContext& ctx) {
         false);
     llvm::Function* fn = llvm::Function::Create(
         fnType,
-        llvm::GlobalValue::InternalLinkage,
+        llvm::GlobalValue::ExternalLinkage,
         funcName,
         ctx.module);
     fn->getArg(0)->setName("inst");

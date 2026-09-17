@@ -63,16 +63,16 @@ namespace codegen {
 /// to an LLVM Module and returns a vector of unique pointers.
 ///
 /// @param modules The modules to generate IR for.
+/// @param p The string pool.
+/// @param d The diagnostic engine.
 /// @param context The LLVM context to use.
+/// @param options Code generation options (module capacity, ID map).
 /// @return A vector of LLVM modules, one per input module.
-///
-/// @example
-///   llvm::LLVMContext llvmCtx;
-///   auto modules = CodeGen::generate(astModules, llvmCtx);
 std::vector<std::unique_ptr<llvm::Module>> generate(
     const std::vector<ModuleAST*>& modules,
     StringPool& p, DiagnosticEngine& d,
-    llvm::LLVMContext& context
+    llvm::LLVMContext& context,
+    const CodeGenOptions& options = {}
 );
 
 // =============================================================================
@@ -105,28 +105,16 @@ void registerGlobalConstructor(llvm::Function* func, CodeGenContext& ctx);
 // in a per-module instance buffer, not in per-variable globals. This section
 // declares the functions that emit:
 //
-//   - @__lucid_module_instances : [N x ptr]  — one pointer per module,
-//                                                set by the interpreter
-//   - @__module_sizes           : [N x i64]  — one instance size per module
+//   - @__lucid_module_instances : [N x ptr]  — declaration in every module,
+//                                                resolved to interpreter absolute symbol
+//   - __module_size_<name>      : i64()      — returns instance size in bytes
 //   - __init_module_<name>      : void(ptr)  — initializes a module instance
 //   - __free_module_<name>      : void(ptr)  — releases a module instance's
 //                                                owned resources
-//
-// The table and size array are emitted into the FIRST module's llvm::Module
-// (the first element of `modules`), before any module's declarations are
-// lowered, so cross-module references resolve from the start.
 
-/// @brief Emit `@__lucid_module_instances` and `@__module_sizes` into the
-///        current module. Called once, at the top of generate(), into the
-///        first module.
-///
-/// @param modules The full topologically-sorted module list. Its size
-///                determines the array bounds; its order determines the
-///                module IDs (index i → ID i).
-/// @param ctx     The code generation context. `ctx.module` must be the
-///                first module's llvm::Module.
-void emitModuleInstanceTable(const std::vector<ModuleAST*>& modules,
-                             CodeGenContext& ctx);
+/// @brief Emit `uint64_t __module_size_<name>()` for a module.
+/// Returns the size in bytes required for this module's instance buffer.
+void generateModuleSize(ModuleAST* module, CodeGenContext& ctx);
 
 /// @brief Emit `__init_module_<name>` for a module.
 ///

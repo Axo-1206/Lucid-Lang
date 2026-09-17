@@ -29,6 +29,16 @@
 
 namespace codegen {
 
+// ─── Code Generation Options ───────────────────────────────────────────
+struct CodeGenOptions {
+    /// Number of slots in @__lucid_module_instances. Must be uniform
+    /// across every module in a program.
+    uint32_t moduleCapacity = 256;
+
+    /// Pre-assigned module IDs. If null, CodeGen assigns by position.
+    const std::unordered_map<ModuleAST*, uint32_t>* moduleIds = nullptr;
+};
+
 // ─── Module Instance Layout ─────────────────────────────────────────────
 //
 // Describes the shape of a module's instance struct. The *index assignment*
@@ -53,6 +63,7 @@ struct CodeGenContext {
     StringPool& pool;
     DiagnosticEngine& diagnostics;
     llvm::LLVMContext& llvmCtx;
+    CodeGenOptions options;
 
     // ─── Current Source File ───────────────────────────────────────────
     InternedString currentFile;
@@ -81,11 +92,8 @@ struct CodeGenContext {
     
     // ─── Module ID Assignment ───────────────────────────────────────────────
     //
-    // Each module gets a stable uint32_t ID, equal to its index in the
-    // topologically-sorted `modules` vector passed to generate(). CodeGen
-    // emits this ID as a constant in every module-level access, so the
-    // interpreter must use the same numbering when it populates
-    // @__lucid_module_instances. The contract is documented on `generate()`.
+    // Each module gets a stable uint32_t ID. CodeGen emits this ID as a
+    // constant in every module-level access.
     //
     // Populated at the top of `generate()`, before any module is lowered.
     std::unordered_map<ModuleAST*, uint32_t> moduleIds;
@@ -97,14 +105,9 @@ struct CodeGenContext {
 
     // ─── Module Instance Table ──────────────────────────────────────────────
     //
-    // The table is emitted once, into the first module, as:
-    //     @__lucid_module_instances = global [N x ptr] zeroinitializer
-    // with ExternalLinkage. Any other module that references it gets a
-    // `declare` in its own llvm::Module; the JIT (or the linker) resolves it
-    // to the first module's definition.
-    //
-    // This helper returns the global (definition in the first module,
-    // declaration elsewhere), creating the declaration on first use.
+    // Emitted as a declaration in every module:
+    //     @__lucid_module_instances = external global [N x ptr]
+    // The JIT resolves it to the interpreter's registered absolute symbol.
 
     /// @brief Get or declare `@__lucid_module_instances` in the current module.
     llvm::GlobalVariable* getOrDeclareModuleTable();

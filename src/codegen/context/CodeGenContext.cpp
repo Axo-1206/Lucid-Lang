@@ -71,7 +71,7 @@ ModuleInstanceLayout& CodeGenContext::getOrCreateModuleLayout(ModuleAST* module)
 // ─── Module Instance Table ──────────────────────────────────────────────
 
 llvm::GlobalVariable* CodeGenContext::getOrDeclareModuleTable() {
-    const size_t N = modules.size() ? modules.size() : 1;
+    const size_t N = options.moduleCapacity > 0 ? options.moduleCapacity : 256;
     llvm::ArrayType* tableType =
         llvm::ArrayType::get(getPtrType(llvmCtx), N);
 
@@ -79,9 +79,7 @@ llvm::GlobalVariable* CodeGenContext::getOrDeclareModuleTable() {
         return existing;
     }
 
-    // Declare it. If we're the first module, CodeGen.cpp already created
-    // the definition (see emitModuleInstanceTable); this path only fires
-    // for non-first modules, creating a declaration.
+    // Declare it. Resolved by JIT to interpreter's absolute symbol.
     return new llvm::GlobalVariable(
         *module,
         tableType,

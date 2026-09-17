@@ -1,43 +1,35 @@
 /// @file core/InterpreterContext.hpp
-/// @brief Interpreter context holding shared state.
+/// @brief Compatibility interpreter context holding shared state.
 
 #pragma once
 
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/ast/BaseAST.hpp"
-#include "core/ast/ExprAST.hpp"
-#include "ModuleRegistry.hpp"
+#include "InterpreterSession.hpp"
+#include "InterpreterProgram.hpp"
 #include "../support/InterpreterOptions.hpp"
 #include "../support/PanicHandler.hpp"
 #include "../jit/JITSession.hpp"
 #include "../dynlink/DynamicLinker.hpp"
 
-#include <unordered_map>
 #include <memory>
 #include <vector>
 
 namespace interpreter {
 
-/// @brief Central context for the interpreter.
+/// @brief Compatibility context for the interpreter.
 struct InterpreterContext {
-    // ─── Resources ──────────────────────────────────────────────────────
     StringPool& pool;
     DiagnosticEngine& diagnostics;
-
-    // ─── State ─────────────────────────────────────────────────────────
     InterpreterOptions options;
-    PanicHandler panicHandler;
-    DynamicLinker linker;
-    JITSession jit;
-    ModuleRegistry moduleRegistry;
+    InterpreterSession session;
+    std::unique_ptr<InterpreterProgram> program;
 
-    // ─── Constructor ────────────────────────────────────────────────────
     InterpreterContext(StringPool& p, DiagnosticEngine& d)
         : pool(p)
         , diagnostics(d)
-        , jit(p)
-        , moduleRegistry(p) {}
+        , session(p, d) {}
 
     // Non-copyable
     InterpreterContext(const InterpreterContext&) = delete;
@@ -45,29 +37,36 @@ struct InterpreterContext {
 
     // ─── Convenience Accessors ────────────────────────────────────────
 
+    JITSession& jit() { return session.jit(); }
+    DynamicLinker& linker() { return session.linker(); }
+    PanicHandler& panicHandler() { return session.panicHandler(); }
+
+    ModuleRegistry* getModuleRegistry() {
+        return program ? &program->registry() : nullptr;
+    }
+
     ModuleInfo* getActiveModule() {
-        return moduleRegistry.getActiveModule();
+        return program ? program->registry().getActiveModule() : nullptr;
     }
 
     const ModuleInfo* getActiveModule() const {
-        return moduleRegistry.getActiveModule();
+        return program ? program->registry().getActiveModule() : nullptr;
     }
 
     bool hasModule(InternedString name) const {
-        return moduleRegistry.hasModule(name);
+        return program ? program->registry().hasModule(name) : false;
     }
 
     ModuleInfo* getModuleInfo(InternedString name) {
-        return moduleRegistry.getModuleInfo(name);
+        return program ? program->registry().getModuleInfo(name) : nullptr;
     }
 
     const ModuleInfo* getModuleInfo(InternedString name) const {
-        return moduleRegistry.getModuleInfo(name);
+        return program ? program->registry().getModuleInfo(name) : nullptr;
     }
-    
-    /// @brief Check if any modules have semantic errors.
+
     bool hasErrorModules() const {
-        return moduleRegistry.hasErrorModules();
+        return program ? program->registry().hasErrorModules() : false;
     }
 };
 
