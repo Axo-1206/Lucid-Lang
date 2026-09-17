@@ -30,24 +30,6 @@ namespace codegen {
 // Local Helpers
 // =============================================================================
 
-/// @brief Check if a declaration is exported, using the CodeGenContext's pool.
-/// 
-/// ─── Why This Takes the Context ─────────────────────────────────────────
-/// `DeclAST` intentionally has no StringPool reference — it's a pure data
-/// node. To compare an attribute name (an InternedString) against "export",
-/// we need the same pool that interned the attribute names. The context
-/// carries that pool.
-static bool isExported(DeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return false;
-    InternedString exportName = ctx.pool.intern("export");
-    for (AttributeAST* attr : decl->attributes) {
-        if (attr && attr->name == exportName) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// True iff this declaration's init is an anonymous function expression
 /// (with or without captures). Used to decide whether the body needs
 /// lowering at all — a reference body has no body of its own to lower.
@@ -210,7 +192,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
 
     // ─── 3.3. Determine linkage ─────────────────────────────────────────
     llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::InternalLinkage;
-    if (isExported(decl, ctx)) {
+    if (decl->isExported) {
         linkage = llvm::GlobalValue::ExternalLinkage;
     }
 
@@ -368,7 +350,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
     }
 
     // ─── 10.1. If this is exported main, call __lucid_shutdown() ────────
-    bool isMain = (ctx.pool.lookup(decl->name) == "main") && isExported(decl, ctx);
+    bool isMain = (ctx.pool.lookup(decl->name) == "main") && decl->isExported;
     if (isMain) {
         llvm::BasicBlock* curBlock = ctx.builder.GetInsertBlock();
         if (curBlock && !curBlock->getTerminator()) {
