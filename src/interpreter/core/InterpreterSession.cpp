@@ -4,6 +4,7 @@
 #include "InterpreterSession.hpp"
 #include "../support/InterpreterError.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 namespace interpreter {
@@ -15,7 +16,14 @@ InterpreterSession::InterpreterSession(StringPool& pool,
     , m_diag(diag)
     , m_options(options)
     , m_jit(pool) {
-    m_instanceTable.assign(kDefaultModuleCapacity, nullptr);
+    // m_instanceTable is sized in initialize(), not here. See the
+    // address-stability comment on the member in the header — the
+    // vector's data() pointer is registered with the JIT, so sizing
+    // must be coupled to that registration, which lives in initialize().
+    //
+    // Sizing it here as well would be redundant and, worse, would
+    // invite a future reader to add a resize elsewhere on the
+    // assumption that the constructor "owns" the initial sizing.
 }
 
 InterpreterSession::~InterpreterSession() {
@@ -30,7 +38,9 @@ void InterpreterSession::initialize() {
     try {
         m_jit.initialize();
 
-        // Reset and register instance table as absolute symbol
+        // Reset and register instance table as absolute symbol. This is
+        // the ONLY place m_instanceTable is sized; the address must
+        // remain stable for the lifetime of the JIT registration below.
         m_instanceTable.assign(kDefaultModuleCapacity, nullptr);
         m_jit.defineAbsoluteSymbol("__lucid_module_instances", m_instanceTable.data());
 
@@ -55,7 +65,12 @@ void InterpreterSession::shutdown() {
         return;
     }
 
-    // Instance table slots are cleared
+    // Instance table slots are cleared. The vector itself is NOT resized
+    // or reallocated — that's deferred to the next initialize(), which
+    // will re-register the (possibly same, possibly different) address
+    // with the JIT. Between shutdown() and the next initialize(), no JIT
+    // code exists to dereference the old address, so leaving the buffer
+    // allocated is safe and avoids a needless free/realloc cycle.
     std::fill(m_instanceTable.begin(), m_instanceTable.end(), nullptr);
     m_initialized = false;
 }

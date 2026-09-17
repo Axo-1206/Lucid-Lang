@@ -1,12 +1,11 @@
 /// @file core/InterpreterSession.hpp
-/// @brief Session-level state: JIT, DynamicLinker, PanicHandler, instance table buffer.
+/// @brief Session-level state: JIT, DynamicLinker, instance table buffer.
 
 #pragma once
 
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "../support/InterpreterOptions.hpp"
-#include "../support/PanicHandler.hpp"
 #include "../jit/JITSession.hpp"
 #include "../dynlink/DynamicLinker.hpp"
 
@@ -17,7 +16,7 @@ namespace interpreter {
 
 /// @brief Long-lived interpreter session.
 ///
-/// Owns the JIT, DynamicLinker, PanicHandler, and the backing storage for
+/// Owns the JIT, DynamicLinker, and the backing storage for
 /// @__lucid_module_instances registered as an absolute symbol.
 class InterpreterSession {
 public:
@@ -53,9 +52,6 @@ public:
     /// @brief Get the diagnostic engine.
     DiagnosticEngine& diagnostics() { return m_diag; }
 
-    /// @brief Get the panic handler.
-    PanicHandler& panicHandler() { return m_panic; }
-
     /// @brief Get the options.
     const InterpreterOptions& options() const { return m_options; }
     InterpreterOptions& options() { return m_options; }
@@ -74,10 +70,21 @@ private:
     StringPool& m_pool;
     DiagnosticEngine& m_diag;
     InterpreterOptions m_options;
-    PanicHandler m_panic;
     DynamicLinker m_linker;
     JITSession m_jit;
 
+    /// Backing storage for the `__lucid_module_instances` absolute symbol.
+    ///
+    /// ─── Address Stability ──────────────────────────────────────────────
+    /// This vector's data() address is registered with the JIT as an
+    /// absolute symbol during initialize(). The address MUST NOT change
+    /// while the session is initialized: reallocating the underlying
+    /// buffer would leave the JIT's registered pointer dangling.
+    ///
+    /// The vector is sized exactly once, in initialize(), to
+    /// kDefaultModuleCapacity. No code path resizes it afterward. If a
+    /// future change needs a larger capacity, initialize() must be
+    /// re-run (after shutdown()) so the JIT re-registers the new address.
     std::vector<void*> m_instanceTable;
     bool m_initialized = false;
 };

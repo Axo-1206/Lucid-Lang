@@ -9,7 +9,6 @@
 #include "InterpreterSession.hpp"
 #include "InterpreterProgram.hpp"
 #include "../support/InterpreterOptions.hpp"
-#include "../support/PanicHandler.hpp"
 #include "../jit/JITSession.hpp"
 #include "../dynlink/DynamicLinker.hpp"
 
@@ -19,6 +18,17 @@
 namespace interpreter {
 
 /// @brief Compatibility context for the interpreter.
+///
+/// ─── Session and Program Lifetime ────────────────────────────────────
+/// The context owns both an InterpreterSession (by value) and an
+/// InterpreterProgram (by unique_ptr). session is declared first, so it
+/// is destroyed last; the destructor body calls program->teardown(session)
+/// while both are still alive, and then program's own destructor only
+/// asserts that teardown happened.
+///
+/// This mirrors the Interpreter facade's lifetime discipline. See
+/// InterpreterProgram's class doc for why the program does not hold a
+/// reference to the session.
 struct InterpreterContext {
     StringPool& pool;
     DiagnosticEngine& diagnostics;
@@ -31,6 +41,16 @@ struct InterpreterContext {
         , diagnostics(d)
         , session(p, d) {}
 
+    ~InterpreterContext() {
+        // Tear down the program while the session is still alive. Member
+        // destruction order (session declared before program, destroyed
+        // after) means both are valid in this destructor body.
+        if (program) {
+            program->teardown(session);
+            program.reset();
+        }
+    }
+
     // Non-copyable
     InterpreterContext(const InterpreterContext&) = delete;
     InterpreterContext& operator=(const InterpreterContext&) = delete;
@@ -39,7 +59,6 @@ struct InterpreterContext {
 
     JITSession& jit() { return session.jit(); }
     DynamicLinker& linker() { return session.linker(); }
-    PanicHandler& panicHandler() { return session.panicHandler(); }
 
     ModuleRegistry* getModuleRegistry() {
         return program ? &program->registry() : nullptr;
