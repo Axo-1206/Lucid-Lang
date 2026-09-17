@@ -239,17 +239,12 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 6. Generate mangled name for exported globals ───────────────────
+    // `decl->isExported` is set by AttributeValidator when it validates an
+    // @[export] attribute on this declaration. No need to re-walk the
+    // attribute list here.
     bool isModuleLevel = isModuleLevelDeclaration(decl, ctx);
-    bool isExported = false;
-    InternedString exportName = ctx.pool.intern("export");
-    for (const AttributeAST* attr : decl->attributes) {
-        if (attr->name == exportName) {
-            isExported = true;
-            break;
-        }
-    }
     
-    if (isModuleLevel && isExported) {
+    if (isModuleLevel && decl->isExported) {
         InternedString mangled = generateMangledName(decl, ctx);
         if (mangled.isValid()) {
             decl->mangledName = mangled;
