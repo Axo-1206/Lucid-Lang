@@ -21,6 +21,21 @@ namespace interpreter {
 ///
 /// Owns the module instances, stable module IDs, ResourceTrackers,
 /// and handles atomic load, reload, execution, and teardown.
+///
+/// ─── Session Lifetime ────────────────────────────────────────────────
+/// An InterpreterProgram does NOT own its InterpreterSession and does
+/// NOT hold a reference to it. Every method that needs the session
+/// receives it as a parameter. The owner (Interpreter or
+/// InterpreterContext) is responsible for calling teardown(session)
+/// before the session is destroyed — see the destructor note below.
+///
+/// This is deliberate: the session is a long-lived host that outlives
+/// any single program (load, reload, unload programs within one
+/// session). Co-ownership via shared_ptr would be semantically wrong;
+/// a stored reference would be a dangling-reference hazard the moment
+/// a caller kept the program past the session's scope. Passing the
+/// session explicitly makes the dependency visible at every call site
+/// and forces the owner to sequence teardown before destruction.
 class InterpreterProgram {
 public:
     struct LoadedModule {
@@ -30,7 +45,6 @@ public:
         uint64_t instanceSize = 0;
         void* instance = nullptr;
         llvm::orc::ResourceTrackerSP tracker;
-        std::vector<InternedString> dependencies;
     };
 
     /// @brief Load a program from scratch. Fails atomically.
@@ -42,6 +56,10 @@ public:
         const std::vector<ModuleAST*>& modules
     );
 
+    /// @brief Destructor. Does NOT tear down — the owner must call
+    ///        teardown(session) before destroying the program, while
+    ///        the session is still alive. In debug builds, asserts that
+    ///        teardown was called.
     ~InterpreterProgram();
 
     // Non-copyable
@@ -66,6 +84,15 @@ public:
         InternedString entryPoint = InternedString()
     );
 
+    /// @brief Tear down all owned resources (instances, JIT modules, registry).
+    ///
+    /// Must be called by the owner before the session is destroyed and
+    /// before this program is destroyed. After this call the program is
+    /// empty and must not be run.
+    ///
+    /// Idempotent: calling it twice is a no-op the second time.
+    void teardown(InterpreterSession& session);
+
     /// @brief Get all loaded module ASTs.
     const std::vector<ModuleAST*>& modules() const { return m_moduleAsts; }
 
@@ -85,9 +112,6 @@ public:
 private:
     explicit InterpreterProgram(InterpreterSession& session);
 
-    // Teardown everything owned by this program
-    void teardown(InterpreterSession& session);
-
     // Free a single loaded module
     void unloadOne(InterpreterSession& session, LoadedModule& entry);
 
@@ -97,10 +121,10 @@ private:
     // Helper to generate a unique module name from an AST
     InternedString generateModuleName(StringPool& pool, ModuleAST* module);
 
-    // Find entry point in loaded modules
-    InternedString findEntryPoint(InterpreterSession& session, InternedString entryPoint);
+    // Find entry point in loaded modules. Returns the FuncDeclAST whose
+    // mangledName is the symbol to look up, or nullptr if not found.
+    FuncDeclAST* findEntryPoint(InterpreterSession& session, InternedString entryPoint);
 
-    InterpreterSession& m_session;
     std::vector<LoadedModule> m_modules;
     std::vector<ModuleAST*> m_moduleAsts;
     std::unordered_map<std::string, uint32_t> m_idByPath;

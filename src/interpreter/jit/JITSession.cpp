@@ -208,11 +208,24 @@ bool JITSession::removeModule(llvm::orc::ResourceTrackerSP tracker) {
         return false;
     }
 
+    // ─── Non-throwing by design ──────────────────────────────────────────
+    // ResourceTracker::remove() can fail with ResourceTrackerDefunct (the
+    // tracker was already dead — its JITDylib was closed, or a previous
+    // removal made it defunct) or SymbolsCouldNotBeRemoved (a symbol is
+    // mid-materialization). Neither is a state the interpreter can act
+    // on: a defunct tracker's resources are already gone, and a
+    // mid-materialization symbol is unreachable from the interpreter
+    // because the module's instance-table slot was nulled by the caller
+    // before this call. Log and return false; callers are expected to
+    // treat a false return as "the module's symbols are still present,
+    // but nothing can reach them."
     if (auto Err = tracker->remove()) {
-        llvm::handleAllErrors(std::move(Err), [&](const llvm::ErrorInfoBase& EI) {
-            throw JITError(JITError::Kind::ModuleRemoveFailed,
-                          std::string("Failed to remove module: ") + EI.message());
-        });
+        std::string msg;
+        llvm::raw_string_ostream OS(msg);
+        llvm::logAllUnhandledErrors(std::move(Err), OS,
+                                    "JITSession::removeModule: ");
+        std::cerr << "Warning: " << OS.str() << "\n";
+        return false;
     }
 
     return true;
