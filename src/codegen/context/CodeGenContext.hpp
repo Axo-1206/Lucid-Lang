@@ -95,6 +95,28 @@ struct CodeGenContext {
         return it != moduleIds.end() ? it->second : UINT32_MAX;
     }
 
+    // ─── Module Instance Table ──────────────────────────────────────────────
+    //
+    // The table is emitted once, into the first module, as:
+    //     @__lucid_module_instances = global [N x ptr] zeroinitializer
+    // with ExternalLinkage. Any other module that references it gets a
+    // `declare` in its own llvm::Module; the JIT (or the linker) resolves it
+    // to the first module's definition.
+    //
+    // This helper returns the global (definition in the first module,
+    // declaration elsewhere), creating the declaration on first use.
+
+    /// @brief Get or declare `@__lucid_module_instances` in the current module.
+    llvm::GlobalVariable* getOrDeclareModuleTable();
+
+    /// @brief Load the instance pointer for the given module, at the current
+    ///        insertion point. Emits:
+    ///            %slot = getelementptr [N x ptr], ptr @__lucid_module_instances, i64 0, i64 <id>
+    ///            %inst = load ptr, ptr %slot
+    /// and returns the loaded pointer. The caller is responsible for GEPing
+    /// into the instance struct.
+    llvm::Value* loadModuleInstance(ModuleAST* module);
+
     // ─── Global Initialization ──────────────────────────────────────────
     
     /// @brief Information about a global variable that needs runtime initialization.

@@ -338,6 +338,45 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
 
     // ─── Normal identifier handling ──────────────────────────────────────────
     if (decl->isa<VarDeclAST>() || decl->isa<ParamAST>()) {
+        ValueDeclAST* vdecl = decl->as<ValueDeclAST>();
+
+        // ─── Module-level variable: load through the instance table ─────────
+        if (vdecl->moduleFieldIndex != SIZE_MAX) {
+            ModuleAST* home = vdecl->declaringModule;
+            if (!home) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                    "module-level binding '", ctx.pool.lookup(expr->name),
+                    "' has no known home module");
+                return nullptr;
+            }
+
+            llvm::Value* inst = ctx.loadModuleInstance(home);
+            ModuleInstanceLayout& layout = ctx.getOrCreateModuleLayout(home);
+            llvm::StructType* instTy = layout.type;
+            if (!instTy) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                    "module instance for '", ctx.pool.lookup(expr->name),
+                    "' has no LLVM type");
+                return nullptr;
+            }
+
+            llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+                instTy, inst, static_cast<unsigned>(vdecl->moduleFieldIndex),
+                "mod_field_" + ctx.pool.lookup(expr->name));
+
+            if (expr->isLValue) {
+                expr->llvmValue = fieldPtr;
+                return fieldPtr;
+            }
+
+            llvm::Type* fieldTy = instTy->getElementType(vdecl->moduleFieldIndex);
+            if (!fieldTy) return nullptr;
+            expr->llvmValue = ctx.builder.CreateLoad(
+                fieldTy, fieldPtr, "load_" + ctx.pool.lookup(expr->name));
+            return expr->llvmValue;
+        }
+        
+        // ─── Local var or param ─────────────────────────────────────────
         llvm::Value* binding = ctx.lookupValue(decl);
         if (!binding) {
             ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
@@ -1543,37 +1582,47 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
 // Module Access Expression
 // =============================================================================
 
-llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Lower `mod:fnName` — a cross-module function reference.
+///
+/// Functions are not module state. A non-`cls` function is resolved by
+/// mangled name in the target module's llvm::Module, and the resulting
+/// llvm::Function* is callable from the current module directly (the JIT
+/// or linker resolves the cross-module symbol at the point of use).
+///
+/// A `cls`-shaped function is rejected: its value is a fat pointer
+/// constructed at the defining module's lowering time, with no bare
+/// symbol for the importing module to look up. See the diagnostic.
+static llvm::Value* lowerModuleFuncAccess(ModuleAccessExprAST* expr, ModuleAST* targetModule, CodeGenContext& ctx) {
+    FuncDeclAST* funcDecl = expr->resolvedDecl->as<FuncDeclAST>();
 
-    ValueDeclAST* resolvedDecl = expr->resolvedDecl;
-    if (!resolvedDecl) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                                "module member '", ctx.pool.lookup(expr->moduleName),
-                                ":", ctx.pool.lookup(expr->memberName), 
-                                "' was not resolved");
+    // ─── cls-shaped functions cannot be accessed cross-module ───────────
+    FuncShape shape = funcDecl->funcType ? funcDecl->funcType->shape : FuncShape::Fn;
+    if (shape == FuncShape::Cls) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
+            "cross-module access to 'cls' function '",
+            ctx.pool.lookup(funcDecl->name),
+            "' is not supported — its value is a runtime-constructed fat pointer "
+            "tied to the defining module's frame. Export a non-capturing factory "
+            "function that returns the closure.");
         return nullptr;
     }
 
-    // ModuleAccessExprAST doesn't have resolvedModule field.
-    // We need to look it up from the current module's imports.
-    ModuleAST* targetModule = nullptr;
-    if (ctx.currentModule) {
-        auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
-        if (it != ctx.currentModule->resolvedImports.end()) {
-            targetModule = it->second;
-        }
+    // ─── Cache hit: already resolved in this module ─────────────────────
+    if (llvm::Function* cached = ctx.lookupFunction(funcDecl)) {
+        expr->llvmValue = cached;
+        return cached;
     }
 
-
-    if (!targetModule) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
-                                "module '", ctx.pool.lookup(expr->moduleName),
-                                "' not found");
+    // ─── Mangled name is required ───────────────────────────────────────
+    if (!funcDecl->mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+                                "function '", ctx.pool.lookup(funcDecl->name),
+                                "' has no mangled name");
         return nullptr;
     }
+    std::string mangledName = ctx.pool.lookup(funcDecl->mangledName);
 
-    // ─── Get the LLVM module ──────────────────────────────────────────────
+    // ─── Resolve through the target module's llvm::Module ───────────────
     llvm::Module* targetLLVMModule = ctx.getLLVMModule(targetModule);
     if (!targetLLVMModule) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
@@ -1582,115 +1631,164 @@ llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    // ─── Get the mangled name ──────────────────────────────────────────────
-    std::string mangledName;
-    if (resolvedDecl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
-        if (funcDecl->mangledName.isValid()) {
-            mangledName = ctx.pool.lookup(funcDecl->mangledName);
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
-                                    "function '", ctx.pool.lookup(funcDecl->name),
-                                    "' has no mangled name");
-            return nullptr;
-        }
-
-        // cls-shaped functions cannot be accessed cross-module — their value
-        // is a closure fat pointer produced at the defining module's lowering
-        // time, and there's no bare symbol for the importing module to look up.
-        FuncShape shape = funcDecl->funcType ? funcDecl->funcType->shape : FuncShape::Fn;
-        if (shape == FuncShape::Cls) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_GenericInstantiate, expr->loc,
-                "cross-module access to 'cls' function '",
-                ctx.pool.lookup(funcDecl->name),
-                "' is not supported — its value is a runtime-constructed fat pointer "
-                "tied to the defining module's frame. Export a non-capturing factory "
-                "function that returns the closure.");
-            return nullptr;
-        }
-    } else if (resolvedDecl->isa<VarDeclAST>()) {
-        VarDeclAST* varDecl = resolvedDecl->as<VarDeclAST>();
-        if (varDecl->mangledName.isValid()) {
-            mangledName = ctx.pool.lookup(varDecl->mangledName);
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
-                                    "variable '", ctx.pool.lookup(varDecl->name),
-                                    "' has no mangled name");
-            return nullptr;
-        }
-    } else {
-        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
-                                "module member '", ctx.pool.lookup(expr->memberName),
-                                "' has unknown declaration type");
-        return nullptr;
-    }
-
-    // ─── Look up by declaration type ──────────────────────────────────────
-    llvm::Value* symbol = nullptr;
-
-    if (resolvedDecl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = resolvedDecl->as<FuncDeclAST>();
-        
-        // ─── Check if already cached in current context ────────────────────
-        symbol = ctx.lookupFunction(funcDecl);
-        if (symbol) {
-            expr->llvmValue = symbol;
-            return symbol;
-        }
-        
-        // ─── Non-generic: look up by mangled name ────────────────────────────
-        symbol = targetLLVMModule->getFunction(mangledName);
-        if (symbol) {
-            ctx.storeFunction(funcDecl, llvm::cast<llvm::Function>(symbol));
-            expr->llvmValue = symbol;
-            return symbol;
-        }
-    } else if (resolvedDecl->isa<VarDeclAST>()) {
-        symbol = targetLLVMModule->getGlobalVariable(mangledName);
-        if (symbol) {
-            ctx.storeValue(resolvedDecl, symbol);
-        }
-    }
-
-    if (!symbol) {
+    llvm::Function* fn = targetLLVMModule->getFunction(mangledName);
+    if (!fn) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedMember, expr->loc,
-                                "symbol '", mangledName, 
+                                "function '", mangledName,
                                 "' not found in module '",
                                 ctx.pool.lookup(expr->moduleName), "'");
         return nullptr;
     }
 
-    // ─── Return the symbol (or load it if it's a variable) ──────────────
-    if (resolvedDecl->isa<FuncDeclAST>()) {
-        expr->llvmValue = symbol;
-        return symbol;
-    }
+    ctx.storeFunction(funcDecl, fn);
+    expr->llvmValue = fn;
+    return fn;
+}
 
-    if (expr->isLValue) {
-        expr->llvmValue = symbol;
-        return symbol;
-    }
+/// @brief Lower `mod:varName` — a cross-module variable reference.
+///
+/// Under the module-as-namespace model, a module-level variable's storage
+/// is a field in its owning module's instance. The load goes:
+///
+///     %table = @__lucid_module_instances
+///     %slot  = gep [N x ptr], %table, 0, <targetModuleId>
+///     %inst  = load ptr, %slot
+///     %field = gep %struct.module_<target>, %inst, 0, <fieldIndex>
+///     %value = load <fieldType>, %field        ; or return %field for lvalues
+///
+/// No per-variable GlobalVariable is involved.
+static llvm::Value* lowerModuleVarAccess(ModuleAccessExprAST* expr, ModuleAST* targetModule, CodeGenContext& ctx) {
+    VarDeclAST* varDecl = expr->resolvedDecl->as<VarDeclAST>();
 
-    // Load the variable value
-    llvm::Type* varType = getType(ctx, resolvedDecl->type);
-    if (!varType) {
-        if (auto* globalVar = llvm::dyn_cast<llvm::GlobalVariable>(symbol)) {
-            varType = globalVar->getValueType();
-        }
-    }
-
-    if (!varType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
-                                "variable '", ctx.pool.lookup(expr->memberName),
-                                "' has no type information");
+    // ─── The variable must have a module instance slot ──────────────────
+    // Sema assigned this in Phase 1. A module-level variable always has
+    // one; if it doesn't, Sema let a non-module-level binding be reached
+    // through `mod:name`, which is a Sema bug.
+    if (varDecl->moduleFieldIndex == SIZE_MAX) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+            "module member '", ctx.pool.lookup(expr->memberName),
+            "' is not module-level (Sema should have rejected this)");
         return nullptr;
     }
 
-    llvm::Value* loaded = ctx.builder.CreateLoad(varType, symbol, 
+    // ─── Ensure the target module's instance layout exists ──────────────
+    // Idempotent: Commit 2's emitModuleInstanceTable already computed this
+    // for every module, so this is a cache hit in the common case.
+    ModuleInstanceLayout& layout = ctx.getOrCreateModuleLayout(targetModule);
+    llvm::StructType* instTy = layout.type;
+    if (!instTy) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+            "module instance for '", ctx.pool.lookup(expr->moduleName),
+            "' has no LLVM type");
+        return nullptr;
+    }
+
+    // ─── Load the instance pointer through the table ────────────────────
+    llvm::Value* inst = ctx.loadModuleInstance(targetModule);
+    if (!inst) return nullptr;
+
+    // ─── GEP to the field ───────────────────────────────────────────────
+    llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+        instTy,
+        inst,
+        static_cast<unsigned>(varDecl->moduleFieldIndex),
+        "mod_field_" + ctx.pool.lookup(expr->memberName));
+
+    // ─── Lvalue: hand back the field pointer, no load ───────────────────
+    // `mod:x = value;` and `&mod:x` both need the address, not the value.
+    if (expr->isLValue) {
+        expr->llvmValue = fieldPtr;
+        return fieldPtr;
+    }
+
+    // ─── Rvalue: load the field ─────────────────────────────────────────
+    // The field's LLVM type comes from the instance struct, not from
+    // getType(ctx, varDecl->type) — they should agree, but reading the
+    // field type from the struct is authoritative and handles the case
+    // where the struct's field type was coerced (e.g. `fn → cls` widening
+    // applied to a function-typed field, if that ever lands).
+    llvm::Type* fieldTy = instTy->getElementType(varDecl->moduleFieldIndex);
+    if (!fieldTy) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, expr->loc,
+            "module member '", ctx.pool.lookup(expr->memberName),
+            "' has no LLVM field type");
+        return nullptr;
+    }
+
+    llvm::Value* loaded = ctx.builder.CreateLoad(
+        fieldTy,
+        fieldPtr,
         "module_load_" + ctx.pool.lookup(expr->memberName));
+
     expr->llvmValue = loaded;
     return loaded;
 }
+
+llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ctx) {
+    if (!expr) return nullptr;
+
+    ValueDeclAST* resolvedDecl = expr->resolvedDecl;
+    if (!resolvedDecl) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                                "module member '", ctx.pool.lookup(expr->moduleName),
+                                ":", ctx.pool.lookup(expr->memberName),
+                                "' was not resolved");
+        return nullptr;
+    }
+
+    // ─── Resolve the target module ───────────────────────────────────────
+    ModuleAST* targetModule = nullptr;
+    if (ctx.currentModule) {
+        auto it = ctx.currentModule->resolvedImports.find(expr->moduleName);
+        if (it != ctx.currentModule->resolvedImports.end()) {
+            targetModule = it->second;
+        }
+    }
+
+    if (!targetModule) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, expr->loc,
+                                "module '", ctx.pool.lookup(expr->moduleName),
+                                "' not found");
+        return nullptr;
+    }
+
+    // ─── Prefer the resolved decl's own home module ──────────────────────
+    // `targetModule` comes from the import-alias table; `declaringModule`
+    // comes from Sema's Phase 1 walk. They should agree. If they don't,
+    // the resolved decl is authoritative (it's what `resolvedDecl` points
+    // to), so prefer it and assert in debug builds.
+    if (resolvedDecl->declaringModule) {
+        AST_ASSERT_MSG(resolvedDecl->declaringModule == targetModule,
+            "lowerModuleAccessExpr: resolved decl's declaringModule "
+            "does not match the resolved import target");
+        targetModule = resolvedDecl->declaringModule;
+    }
+
+    // ─── FuncDeclAST: resolved by symbol (unchanged) ─────────────────────
+    // Functions are not module state. A `fn`-shaped function is a bare
+    // symbol resolved by mangled name in the target module; a `cls`-shaped
+    // function is rejected outright (its fat pointer is tied to the
+    // defining module's frame — see the guard below). Neither path touches
+    // the instance table.
+    if (resolvedDecl->isa<FuncDeclAST>()) {
+        return lowerModuleFuncAccess(expr, targetModule, ctx);
+    }
+
+    // ─── VarDeclAST: load through the target module's instance ──────────
+    if (resolvedDecl->isa<VarDeclAST>()) {
+        return lowerModuleVarAccess(expr, targetModule, ctx);
+    }
+
+    // ─── Anything else: no runtime representation ───────────────────────
+    ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
+                            "module member '", ctx.pool.lookup(expr->memberName),
+                            "' has unsupported declaration type");
+    return nullptr;
+}
+
+// =============================================================================
+// Arena Access Expression
+// =============================================================================
 
 llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;

@@ -363,6 +363,8 @@ struct DeclAST : BaseAST {
     std::optional<DocComment> doc;
     ArenaSpan<AttributeAST*>  attributes;
     const InternedString      name;
+    
+    ModuleAST* declaringModule = nullptr;
 
     // ─── We only need orderInModule for deterministic initialization ──────
     // The module information is already encoded in the mangled name.

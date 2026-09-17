@@ -31,6 +31,7 @@ static void assignModuleFieldIndices(ModuleAST* module) {
     size_t nextIndex = 0;
     for (DeclAST* decl : module->decls) {
         if (!decl) continue;
+        decl->declaringModule = module;
 
         if (decl->isa<VarDeclAST>()) {
             decl->as<VarDeclAST>()->moduleFieldIndex = nextIndex++;

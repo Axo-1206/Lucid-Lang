@@ -68,6 +68,43 @@ ModuleInstanceLayout& CodeGenContext::getOrCreateModuleLayout(ModuleAST* module)
     return moduleLayouts[module];
 }
 
+// ─── Module Instance Table ──────────────────────────────────────────────
+
+llvm::GlobalVariable* CodeGenContext::getOrDeclareModuleTable() {
+    const size_t N = modules.size() ? modules.size() : 1;
+    llvm::ArrayType* tableType =
+        llvm::ArrayType::get(getPtrType(llvmCtx), N);
+
+    if (llvm::GlobalVariable* existing = module->getGlobalVariable("__lucid_module_instances", /*AllowInternal=*/true)) {
+        return existing;
+    }
+
+    // Declare it. If we're the first module, CodeGen.cpp already created
+    // the definition (see emitModuleInstanceTable); this path only fires
+    // for non-first modules, creating a declaration.
+    return new llvm::GlobalVariable(
+        *module,
+        tableType,
+        /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,
+        /*Initializer=*/nullptr,   // declaration only
+        "__lucid_module_instances");
+}
+
+llvm::Value* CodeGenContext::loadModuleInstance(ModuleAST* target) {
+    uint32_t id = moduleId(target);
+    assert(id != UINT32_MAX && "loadModuleInstance: unknown module");
+
+    llvm::GlobalVariable* table = getOrDeclareModuleTable();
+    llvm::Value* slot = builder.CreateConstInBoundsGEP2_64(
+        table->getValueType(),   // [N x ptr]
+        table,
+        0,
+        static_cast<uint64_t>(id),
+        "module_slot");
+    return builder.CreateLoad(getPtrType(llvmCtx), slot, "module_inst");
+}
+
 // ─── Live Variable Helpers ────────────────────────────────────────────────
 
 void CodeGenContext::emitCleanupForTracker(const LiveVariableTracker& tracker) {
