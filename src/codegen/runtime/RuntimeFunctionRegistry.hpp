@@ -107,9 +107,10 @@ enum class RuntimeFn {
     Free,               // void __lucid_free(void* ptr)
     
     // ─── Arena ──────────────────────────────────────────────────────────
-    ArenaCreate,        // ArenaDescriptor __lucid_arena_create(uint64_t size)
+    ArenaCreate,        // void __lucid_arena_create(ArenaDescriptor* out, uint64_t size)
     ArenaAlloc,         // void* __lucid_arena_alloc(Arena* arena, uint64_t size, uint64_t alignment)
     ArenaReset,         // void __lucid_arena_reset(Arena* arena)
+    ArenaFree,          // void __lucid_arena_free(Arena* arena)
     ArenaCapacity,      // uint64_t __lucid_arena_capacity(const Arena* arena)
     ArenaRemaining,     // uint64_t __lucid_arena_remaining(const Arena* arena)
     ArenaIsEmpty,       // bool __lucid_arena_is_empty(const Arena* arena)
@@ -161,10 +162,10 @@ enum class RuntimeFn {
                         // @note: future_handle_ptr is a void**, NOT a void*
                         // @note: CodeGen must pass an alloca i8* as the 3rd argument
     
-    Await,              // void __lucid_await(void* future_handle)
-                        //   - future_handle: the FutureHandle* to wait for (i8*)
+    Await,              // void* __lucid_await(void* future_handle_ptr)
+                        //   - future_handle_ptr: pointer to FutureHandle* storage (void**)
                         //   - blocks until the future is ready
-                        //   - consumes the future (linear type)
+                        //   - consumes the future and returns result (void*)
     
     Spawn,              // void* __lucid_spawn(void* callable, void* args, void* thread_handle_ptr)
                         //   - callable: function to execute (i8*)
@@ -174,10 +175,10 @@ enum class RuntimeFn {
                         // @note: thread_handle_ptr is a void**, NOT a void*
                         // @note: CodeGen must pass an alloca i8* as the 3rd argument
     
-    Join,               // void __lucid_join(void* thread_handle)
-                        //   - thread_handle: the ThreadHandle* to wait for (i8*)
+    Join,               // void* __lucid_join(void* thread_handle_ptr)
+                        //   - thread_handle_ptr: pointer to ThreadHandle* storage (void**)
                         //   - blocks until the thread completes
-                        //   - consumes the thread (linear type)
+                        //   - consumes the thread and returns result (void*)
     
     Shutdown,           // void __lucid_shutdown()
                         //   - signals all threads to stop

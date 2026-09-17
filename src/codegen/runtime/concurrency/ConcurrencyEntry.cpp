@@ -69,20 +69,21 @@ void* __lucid_async(void* callable, void* args, void* future_handle_ptr) {
 
 /// @brief Block until a future is ready.
 /// @param future_handle_ptr Pointer to the FutureHandle* to await.
+/// @return The result pointer stored in the future handle.
 ///
 /// ─── Usage ──────────────────────────────────────────────────────────────────
 /// Called from CodeGenStmt.cpp in lowerAwaitStmt() when an await statement
 /// is encountered. This function blocks the current thread until the future
-/// is ready.
+/// is ready, extracts the result, and cleans up the handle.
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// await result
-///   → __lucid_await(&result_future)
+///   → result = __lucid_await(&result_future)
 ///
 /// After this call, the future is marked as consumed and cannot be awaited again.
-void __lucid_await(void* future_handle_ptr) {
+void* __lucid_await(void* future_handle_ptr) {
     if (!future_handle_ptr) {
-        return;
+        return nullptr;
     }
 
     lucid::runtime::FutureHandle** futurePtr =
@@ -90,7 +91,7 @@ void __lucid_await(void* future_handle_ptr) {
     lucid::runtime::FutureHandle* handle = *futurePtr;
 
     if (!handle) {
-        return;
+        return nullptr;
     }
 
     // ─── 1. Check if already consumed ────────────────────────────────────────
@@ -98,7 +99,7 @@ void __lucid_await(void* future_handle_ptr) {
     if (state == lucid::runtime::FutureState::Consumed) {
         // Double await - linear type violation
         // In a real implementation, we would panic here
-        return;
+        return nullptr;
     }
 
     // ─── 2. Wait until ready ──────────────────────────────────────────────────
@@ -113,15 +114,17 @@ void __lucid_await(void* future_handle_ptr) {
     // ─── 3. Check for errors ──────────────────────────────────────────────────
     if (state == lucid::runtime::FutureState::Error) {
         // In a real implementation, we would panic here
-        return;
+        return nullptr;
     }
 
     // ─── 4. Mark as consumed ──────────────────────────────────────────────────
     handle->state.store(lucid::runtime::FutureState::Consumed, std::memory_order_release);
 
-    // ─── 5. Release our reference ────────────────────────────────────────────
+    // ─── 5. Extract result and release our reference ─────────────────────────
+    void* result = handle->result;
     lucid::runtime::FutureHandle::release(handle);
     *futurePtr = nullptr;
+    return result;
 }
 
 // ─── Spawn / Join ───────────────────────────────────────────────────────────
@@ -170,20 +173,21 @@ void* __lucid_spawn(void* callable, void* args, void* thread_handle_ptr) {
 
 /// @brief Block until a thread is complete.
 /// @param thread_handle_ptr Pointer to the ThreadHandle* to join.
+/// @return The result pointer stored in the thread handle.
 ///
 /// ─── Usage ──────────────────────────────────────────────────────────────────
 /// Called from CodeGenStmt.cpp in lowerJoinStmt() when a join statement
 /// is encountered. This function blocks the current thread until the
-/// spawned thread completes.
+/// spawned thread completes, extracts the result, and cleans up the handle.
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// join result
-///   → __lucid_join(&result_thread)
+///   → result = __lucid_join(&result_thread)
 ///
 /// After this call, the thread is marked as consumed and cannot be joined again.
-void __lucid_join(void* thread_handle_ptr) {
+void* __lucid_join(void* thread_handle_ptr) {
     if (!thread_handle_ptr) {
-        return;
+        return nullptr;
     }
 
     lucid::runtime::ThreadHandle** threadPtr =
@@ -191,14 +195,14 @@ void __lucid_join(void* thread_handle_ptr) {
     lucid::runtime::ThreadHandle* handle = *threadPtr;
 
     if (!handle) {
-        return;
+        return nullptr;
     }
 
     // ─── 1. Check if already consumed ────────────────────────────────────────
     lucid::runtime::ThreadState state = handle->state.load(std::memory_order_acquire);
     if (state == lucid::runtime::ThreadState::Consumed) {
         // Double join - linear type violation
-        return;
+        return nullptr;
     }
 
     // ─── 2. Wait until done ──────────────────────────────────────────────────
@@ -210,15 +214,17 @@ void __lucid_join(void* thread_handle_ptr) {
 
     // ─── 3. Check for errors ──────────────────────────────────────────────────
     if (state == lucid::runtime::ThreadState::Error) {
-        return;
+        return nullptr;
     }
 
     // ─── 4. Mark as consumed ──────────────────────────────────────────────────
     handle->state.store(lucid::runtime::ThreadState::Consumed, std::memory_order_release);
 
-    // ─── 5. Release our reference ────────────────────────────────────────────
+    // ─── 5. Extract result and release our reference ─────────────────────────
+    void* result = handle->result;
     lucid::runtime::ThreadHandle::release(handle);
     *threadPtr = nullptr;
+    return result;
 }
 
 // ─── Shutdown ──────────────────────────────────────────────────────────────

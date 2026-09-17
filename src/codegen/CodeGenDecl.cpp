@@ -367,6 +367,16 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
         }
     }
 
+    // ─── 10.1. If this is exported main, call __lucid_shutdown() ────────
+    bool isMain = (ctx.pool.lookup(decl->name) == "main") && isExported(decl, ctx);
+    if (isMain) {
+        llvm::BasicBlock* curBlock = ctx.builder.GetInsertBlock();
+        if (curBlock && !curBlock->getTerminator()) {
+            llvm::Function* shutdownFn = ctx.getRuntimeFn(RuntimeFn::Shutdown);
+            ctx.builder.CreateCall(shutdownFn, {});
+        }
+    }
+
     // ─── 11. Ensure a terminator exists (void functions) ────────────────
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
         if (decl->funcType->returnType) {

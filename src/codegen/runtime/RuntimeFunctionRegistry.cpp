@@ -52,10 +52,11 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
         // ─── Arena ──────────────────────────────────────────────────────────
         { RuntimeFn::ArenaCreate, { "__lucid_arena_create",
             [](CodeGenContext& ctx) {
-                // ArenaDescriptor __lucid_arena_create(uint64_t size)
-                // Returns: { i8* base, i64 size }
+                // void __lucid_arena_create(ArenaDescriptor* out, uint64_t size)
                 return llvm::FunctionType::get(
-                    ctx.getArenaDescriptorType(), {getI64Type(ctx.llvmCtx)}, false);
+                    getVoidType(ctx.llvmCtx),
+                    {getPtrType(ctx.llvmCtx), getI64Type(ctx.llvmCtx)},
+                    false);
             } } },
 
         { RuntimeFn::ArenaAlloc, { "__lucid_arena_alloc",
@@ -69,6 +70,13 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
 
         { RuntimeFn::ArenaReset, { "__lucid_arena_reset",
             [](CodeGenContext& ctx) {
+                return llvm::FunctionType::get(
+                    getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
+            } } },
+
+        { RuntimeFn::ArenaFree, { "__lucid_arena_free",
+            [](CodeGenContext& ctx) {
+                // void __lucid_arena_free(Arena* arena)
                 return llvm::FunctionType::get(
                     getVoidType(ctx.llvmCtx), {getPtrType(ctx.llvmCtx)}, false);
             } } },
@@ -140,6 +148,9 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
 
         { RuntimeFn::CharToStr, { "__lucid_char_to_str",
             [](CodeGenContext& ctx) {
+                // string __lucid_char_to_str(int32 codepoint)
+                // Note: Lucid `char` is an 8-bit byte at AST level; CodeGen zero-extends
+                // it to i32 for Unicode codepoint compatibility when calling this runtime function.
                 return llvm::FunctionType::get(
                     ctx.getStringType(), {getI32Type(ctx.llvmCtx)}, false);
             } } },
@@ -182,10 +193,10 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
 
         { RuntimeFn::Await, { "__lucid_await",
             [](CodeGenContext& ctx) {
-                // void __lucid_await(void* future_handle)
-                // Blocks the current thread until the future is ready.
+                // void* __lucid_await(void* future_handle_ptr)
+                // Blocks the current thread until the future is ready and returns result.
                 return llvm::FunctionType::get(
-                    getVoidType(ctx.llvmCtx),
+                    getPtrType(ctx.llvmCtx),
                     {getPtrType(ctx.llvmCtx)},
                     false);
             } } },
@@ -202,10 +213,10 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
 
         { RuntimeFn::Join, { "__lucid_join",
             [](CodeGenContext& ctx) {
-                // void __lucid_join(void* thread_handle)
-                // Blocks the current thread until the thread completes.
+                // void* __lucid_join(void* thread_handle_ptr)
+                // Blocks the current thread until the thread completes and returns result.
                 return llvm::FunctionType::get(
-                    getVoidType(ctx.llvmCtx),
+                    getPtrType(ctx.llvmCtx),
                     {getPtrType(ctx.llvmCtx)},
                     false);
             } } },

@@ -590,12 +590,9 @@ ResourceKind SemaContext::classifyResourceKind(TypeAST* type) const {
     // ─── Arena ─────────────────────────────────────────────────────────
     //
     // Arena is scope-confined. Its backing block is freed by CodeGen's
-    // scope-exit cleanup, not through the generic release mechanism —
-    // so classify as None to keep the ownership model from touching it.
-    // (If CodeGen relies on `resourceKind` to decide what to release,
-    // change this to `OwnedBuffer` and audit CodeGen's scope-exit path.)
+    // scope-exit cleanup through the release mechanism.
     if (type->isa<ArenaTypeAST>()) {
-        return ResourceKind::None;
+        return ResourceKind::Arena;
     }
 
     // ─── ArenaDescriptor ───────────────────────────────────────────────

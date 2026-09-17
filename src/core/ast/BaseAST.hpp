@@ -705,6 +705,7 @@ enum class ResourceKind : uint8_t {
     None,          // owns nothing
     Refcounted,    // closure env
     OwnedBuffer,   // string or dynamic array
+    Arena,         // arena memory pool
 };
 
 /// @brief Base class for declarations that produce values (can appear in expressions).

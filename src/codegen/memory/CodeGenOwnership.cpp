@@ -220,6 +220,16 @@ void emitRelease(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx) {
             emitNullCheckedRelease(dataPtr, freeFn, ctx, "release_buffer");
             return;
         }
+
+        case ResourceKind::Arena: {
+            // Arena struct {base: ptr, size: i64, cursor: i64}. Field 0 is base.
+            if (!isStringOrArrayShaped(value)) return;
+            llvm::Value* basePtr = ctx.builder.CreateExtractValue(
+                value, 0, "arena_base_to_release");
+            llvm::Function* freeFn = ctx.getRuntimeFn(RuntimeFn::Free);
+            emitNullCheckedRelease(basePtr, freeFn, ctx, "release_arena");
+            return;
+        }
     }
 }
 
@@ -250,6 +260,10 @@ void emitRetain(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx) {
         case ResourceKind::OwnedBuffer:
             // Deep-copy semantics: the destination already owns a fresh
             // allocation. No retain needed. Documented, not omitted.
+            return;
+
+        case ResourceKind::Arena:
+            // Arenas are linear/scope-confined; cannot be copied/retained.
             return;
     }
 }

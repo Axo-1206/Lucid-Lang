@@ -46,26 +46,43 @@ extern "C" {
 
 // ─── Arena Create ──────────────────────────────────────────────────────────
 
-ArenaDescriptor __lucid_arena_create(uint64_t size) {
-    ArenaDescriptor desc = {nullptr, 0};
+void __lucid_arena_create(ArenaDescriptor* out, uint64_t size) {
+    if (!out) {
+        return;
+    }
+    
+    out->base = nullptr;
+    out->size = 0;
     
     // ─── Reject size 0 ──────────────────────────────────────────────────────
     if (size == 0) {
-        return desc;  // Arena::create(0) is not allowed
+        return;  // Arena::create(0) is not allowed
     }
     
     // ─── Allocate memory ──────────────────────────────────────────────────
-    uint64_t alignedSize = (size + 4095) & ~4095;
-    void* memory = std::malloc(alignedSize);
+    void* memory = std::malloc(size);
     if (!memory) {
-        return desc;  // Allocation failed
+        return;  // Allocation failed
     }
     
-    std::memset(memory, 0, alignedSize);
+    std::memset(memory, 0, size);
     
-    desc.base = memory;
-    desc.size = alignedSize;
-    return desc;
+    out->base = memory;
+    out->size = size;
+}
+
+// ─── Arena Free ───────────────────────────────────────────────────────────
+
+void __lucid_arena_free(Arena* arena_ptr) {
+    if (!arena_ptr) {
+        return;
+    }
+    if (arena_ptr->base) {
+        std::free(arena_ptr->base);
+        arena_ptr->base = nullptr;
+    }
+    arena_ptr->size = 0;
+    arena_ptr->cursor = 0;
 }
 
 // ─── Arena Alloc ───────────────────────────────────────────────────────────
@@ -108,9 +125,6 @@ void* __lucid_arena_alloc(Arena* arena_ptr, uint64_t size, uint64_t alignment) {
 void __lucid_arena_reset(Arena* arena_ptr) {
     if (arena_ptr) {
         arena_ptr->cursor = 0;
-        if (arena_ptr->base && arena_ptr->size > 0) {
-            std::memset(arena_ptr->base, 0, arena_ptr->size);
-        }
     }
 }
 

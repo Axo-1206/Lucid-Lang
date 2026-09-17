@@ -634,12 +634,6 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
 
     llvm::Type* returnType = func->getReturnType();
 
-    bool isMain = false;
-    std::string funcName = func->getName().str();
-    if (funcName == "main" || funcName == "__lucid_main") {
-        isMain = true;
-    }
-
     // ─── 1. Lower the return value BEFORE any cleanup ────────────────────
     // emitUnwindTo(0) below releases every alive binding in every
     // enclosing scope. If the return expression references any of them,
@@ -729,13 +723,7 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     // ─── 3. Emit cleanup for ALL scopes before returning ─────────────────
     ctx.emitUnwindTo(0);
 
-    // ─── 4. If this is main, call __lucid_shutdown() before returning ────
-    if (isMain) {
-        llvm::Function* shutdownFn = ctx.getRuntimeFn(RuntimeFn::Shutdown);
-        ctx.builder.CreateCall(shutdownFn, {});
-    }
-
-    // ─── 5. Emit the ret ────────────────────────────────────────────────
+    // ─── 4. Emit the ret ────────────────────────────────────────────────
     if (returnVal) {
         ctx.builder.CreateRet(returnVal);
     } else {
@@ -1015,16 +1003,17 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
             continue;
         }
 
-        // ─── 4. Load the future handle from the binding ────────────────────
-        llvm::Type* handleType = llvm::PointerType::get(ctx.llvmCtx, 0);
-        llvm::Value* futureHandle = ctx.builder.CreateLoad(
-            handleType,
-            bindingValue,
-            "future_handle_load"
+        // ─── 4. Call __lucid_await with handle storage pointer ────────────
+        // Pass the alloca pointer (bindingValue) directly so the runtime can
+        // dereference it as FutureHandle** and clear it upon completion.
+        llvm::Value* result = ctx.builder.CreateCall(
+            awaitFn,
+            {bindingValue},
+            "await_result"
         );
 
-        // ─── 5. Call __lucid_await ──────────────────────────────────────────
-        ctx.builder.CreateCall(awaitFn, {futureHandle});
+        // ─── 5. Store the awaited result back into the binding ─────────────
+        ctx.builder.CreateStore(result, bindingValue);
 
         // ─── 6. Mark the binding as consumed ────────────────────────────────
         ctx.markConsumed(decl);
@@ -1241,16 +1230,17 @@ void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
             continue;
         }
 
-        // ─── 4. Load the thread handle from the binding ────────────────────
-        llvm::Type* handleType = llvm::PointerType::get(ctx.llvmCtx, 0);
-        llvm::Value* threadHandle = ctx.builder.CreateLoad(
-            handleType,
-            bindingValue,
-            "thread_handle_load"
+        // ─── 4. Call __lucid_join with handle storage pointer ─────────────
+        // Pass the alloca pointer (bindingValue) directly so the runtime can
+        // dereference it as ThreadHandle** and clear it upon completion.
+        llvm::Value* result = ctx.builder.CreateCall(
+            joinFn,
+            {bindingValue},
+            "join_result"
         );
 
-        // ─── 5. Call __lucid_join ───────────────────────────────────────────
-        ctx.builder.CreateCall(joinFn, {threadHandle});
+        // ─── 5. Store the joined result back into the binding ──────────────
+        ctx.builder.CreateStore(result, bindingValue);
 
         // ─── 6. Mark the binding as consumed ────────────────────────────────
         ctx.markConsumed(decl);

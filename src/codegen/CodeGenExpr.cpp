@@ -1870,18 +1870,24 @@ llvm::Value* lowerArenaAccessExpr(ArenaAccessExprAST* expr, CodeGenContext& ctx)
                 size = ctx.builder.CreateIntCast(size, i64, false, "arena_size_cast");
             }
             
-            // ─── Call __lucid_arena_create(size) ──────────────────────────
+            // ─── Call __lucid_arena_create(&desc, size) ───────────────────
+            llvm::StructType* descType = ctx.getArenaDescriptorType();
+            llvm::AllocaInst* descSlot = createAlloca("arena_desc_slot", descType, ctx);
             llvm::Function* createFn = ctx.getRuntimeFn(RuntimeFn::ArenaCreate);
-            llvm::Value* desc = ctx.builder.CreateCall(createFn, {size}, "arena_create_result");
+            ctx.builder.CreateCall(createFn, {descSlot, size});
             
+            // ─── Extract fields from ArenaDescriptor ───────────────────────
+            llvm::Value* basePtr = ctx.builder.CreateStructGEP(descType, descSlot, 0, "arena_base_gep");
+            llvm::Value* base = ctx.builder.CreateLoad(llvm::PointerType::get(ctx.llvmCtx, 0), basePtr, "arena_base");
+            llvm::Value* sizePtr = ctx.builder.CreateStructGEP(descType, descSlot, 1, "arena_size_gep");
+            llvm::Value* descSize = ctx.builder.CreateLoad(i64, sizePtr, "arena_size");
+
             // ─── Check for allocation failure ──────────────────────────────
-            llvm::Value* base = ctx.builder.CreateExtractValue(desc, 0, "arena_base");
             llvm::Value* isNull = ctx.builder.CreateIsNull(base, "arena_create_failed");
             
             // ─── Convert ArenaDescriptor to Arena ──────────────────────────
             // Arena { base: i8*, size: i64, cursor: i64 }
             llvm::Value* arena = llvm::UndefValue::get(arenaType);
-            llvm::Value* descSize = ctx.builder.CreateExtractValue(desc, 1, "arena_size");
             arena = ctx.builder.CreateInsertValue(arena, base, 0);
             arena = ctx.builder.CreateInsertValue(arena, descSize, 1);
             arena = ctx.builder.CreateInsertValue(arena, llvm::ConstantInt::get(i64, 0), 2);

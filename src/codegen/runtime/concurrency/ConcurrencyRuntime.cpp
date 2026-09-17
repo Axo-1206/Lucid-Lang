@@ -1,5 +1,5 @@
-/// @file runtime/RuntimeFunctionRegistry.cpp
-/// @brief Implementation of the runtime function registry.
+/// @file ConcurrencyRuntime.cpp
+/// @brief Implementation of the Lucid concurrency runtime.
 ///
 /// ─── Concurrency ABI Note ──────────────────────────────────────────────────────
 /// The async and spawn functions have a 3rd parameter that is a pointer to
@@ -50,6 +50,9 @@ void FutureHandle::release(FutureHandle* handle) {
 }
 
 void FutureHandle::setReady(void* result) {
+    // Plain non-atomic write to `result` is safely published to the consumer
+    // because `state` is stored with memory_order_release and read with
+    // memory_order_acquire.
     this->result = result;
     this->state.store(FutureState::Ready, std::memory_order_release);
 }
@@ -91,6 +94,9 @@ void ThreadHandle::release(ThreadHandle* handle) {
 }
 
 void ThreadHandle::setDone(void* result) {
+    // Plain non-atomic write to `result` is safely published to the consumer
+    // because `state` is stored with memory_order_release and read with
+    // memory_order_acquire.
     this->result = result;
     this->state.store(ThreadState::Done, std::memory_order_release);
 }

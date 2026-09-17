@@ -17,6 +17,8 @@
 #include <mutex>
 #include <atomic>
 
+extern "C" void __lucid_panic(const char* message);
+
 // ─── Allocation Registry ──────────────────────────────────────────────────────
 // Tracks all live heap allocations to detect double-free and use-after-free.
 
@@ -24,12 +26,6 @@ static std::unordered_map<void*, size_t> g_allocationRegistry;
 static std::mutex g_allocationMutex;
 static std::atomic<uint64_t> g_totalAllocated{0};
 static std::atomic<uint64_t> g_totalFreed{0};
-
-// ─── Helper: Check if a pointer is a valid allocation ──────────────────────
-static bool isValidAllocation(void* ptr) {
-    std::lock_guard<std::mutex> lock(g_allocationMutex);
-    return g_allocationRegistry.find(ptr) != g_allocationRegistry.end();
-}
 
 // ─── Helper: Register an allocation ──────────────────────────────────────────
 static void registerAllocation(void* ptr, size_t size) {
@@ -64,6 +60,7 @@ void* __lucid_alloc(uint64_t size) {
 
     void* ptr = std::malloc(alignedSize);
     if (!ptr) {
+        __lucid_panic("runtime: memory allocation failed");
         return nullptr;
     }
 
@@ -81,16 +78,10 @@ void __lucid_free(void* ptr) {
         return;  // Freeing null is a no-op
     }
 
-    // Check if this is a valid allocation
-    if (!isValidAllocation(ptr)) {
-        // Double free or invalid pointer - we could panic here
-        // For now, just return silently (in production, this would panic)
-        return;
-    }
-
-    // Unregister the allocation
+    // Unregister the allocation (detects double-free under lock)
     if (!unregisterAllocation(ptr)) {
-        return;  // Already freed
+        __lucid_panic("runtime: double free or invalid pointer");
+        return;
     }
 
     // Free the memory
