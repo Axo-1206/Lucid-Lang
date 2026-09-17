@@ -42,14 +42,23 @@ ModuleInfo& ModuleRegistry::registerModule(InternedString name, ModuleAST* ast) 
     auto it = m_modules.find(name.id);
     if (it != m_modules.end()) {
         // ─── Update existing module ─────────────────────────────────────
-        // Keep the same name and dependencies, just update the AST.
-        // This is what happens on hot-reload.
+        // Keep the same name, dependencies, and active state; just update
+        // the AST. This is what happens on hot-reload.
+        //
+        // `isActive` is deliberately NOT touched here. Active is a UI/CLI
+        // concept — "which module the user is currently looking at, or
+        // which one runs first" — not a property of "which module was
+        // just loaded." Reloading module A while module B is active must
+        // not silently make A active. Only setActiveModule changes it.
         it->second.ast = ast;
-        it->second.isActive = true;
         return it->second;
     }
 
     // ─── Create new module entry ──────────────────────────────────────
+    // A newly-registered module is marked active, matching the historical
+    // behavior of "the most recently loaded module is the active one."
+    // Subsequent registerModule calls that update this entry will leave
+    // the flag alone.
     ModuleInfo info;
     info.name = name;
     info.ast = ast;
@@ -255,7 +264,35 @@ std::vector<ModuleInfo*> ModuleRegistry::getAffectedModules(InternedString chang
         return result;
     }
 
-    // BFS to find all modules that depend on the changed module
+    // ─── BFS over the reverse-dependency graph ────────────────────────────
+    //
+    // Starting from `changedModule`, walk to every module that (transitively)
+    // depends on it. The result is the set of modules a hot-reload of
+    // `changedModule` must also recompile.
+    //
+    // ─── Why BFS Order Is a Valid Reload Order ────────────────────────────
+    //
+    // Callers (InterpreterProgram::reload) re-lower and reinstall the
+    // returned modules in the order they appear here. That order must
+    // respect the dependency graph: a module must appear before any
+    // module that depends on it, so that when the later module's IR is
+    // generated, the earlier module's symbols are already the new
+    // versions.
+    //
+    // BFS produces such an order. Proof sketch: a dependent is enqueued
+    // only when we visit one of its dependencies (the edge that got us
+    // to it). That dependency was itself enqueued earlier, so it appears
+    // earlier in `result`. By induction on the path length from
+    // `changedModule`, every module in `result` appears after all of its
+    // in-set dependencies.
+    //
+    // This is the property the reload path relies on. If this ever
+    // changes to a different traversal, or if `result` is ever sorted by
+    // anything other than BFS order, the reload ordering guarantee must
+    // be re-verified. A topological sort would also be correct; BFS is
+    // simply the cheapest way to get a topologically-valid order for
+    // this graph shape (all edges point "upward" from dependencies to
+    // dependents, and we start at the root).
     std::queue<InternedString> queue;
     std::set<uint32_t> visited;
     
@@ -269,12 +306,15 @@ std::vector<ModuleInfo*> ModuleRegistry::getAffectedModules(InternedString chang
         auto info = getModuleInfo(current);
         if (!info) continue;
 
-        // Add this module to results (except the original)
+        // Add this module to results (except the original). The original
+        // is handled separately by the caller, which knows the concrete
+        // AST to reload (the ModuleInfo carries only the *current* AST,
+        // not the fresh one being introduced).
         if (current.id != changedModule.id) {
             result.push_back(info);
         }
 
-        // Add all dependents to queue
+        // Enqueue all not-yet-visited dependents.
         for (const auto& depName : info->dependents) {
             if (visited.find(depName.id) == visited.end()) {
                 visited.insert(depName.id);
