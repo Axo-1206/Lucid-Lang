@@ -364,6 +364,7 @@ struct DeclAST : BaseAST {
     ArenaSpan<AttributeAST*>  attributes;
     const InternedString      name;
     
+    bool isExported = false;
     ModuleAST* declaringModule = nullptr;
 
     // ─── We only need orderInModule for deterministic initialization ──────

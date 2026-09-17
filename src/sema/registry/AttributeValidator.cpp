@@ -65,7 +65,11 @@ bool validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
 
     // ─── Dispatch to specific validator ────────────────────────────────────
     if (name == "export") {
-        return validateExport(attr, owner, ctx);
+        bool ok = validateExport(attr, owner, ctx);
+        if (ok) {
+            owner->isExported = true;
+        }
+        return ok;
     }
     if (name == "foreign") {
         return validateForeign(attr, owner, ctx);
