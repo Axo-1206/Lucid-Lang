@@ -2436,6 +2436,29 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetTyp
     expr->isLValue = false;
     expr->isConst = false;
 
+    // ─── Step 8: Try to fold at compile time ────────────────────────────────
+    //
+    // #typeof, #nameof, #sizeof, #alignof are constant-foldable when
+    // their arguments are resolvable. The const evaluator owns the
+    // fold: it caches the resulting ConstantValue per IntrinsicCallExprAST,
+    // sets isConst = true, and (if the intrinsic's return type wasn't
+    // already set) stamps the resolved type. We call it here so that
+    // by the time this function returns, the fold has already happened
+    // and every later consumer sees a folded value.
+    //
+    // For non-foldable intrinsics (#sqrt, #memcpy, ...) the evaluator
+    // returns Unknown and does nothing. The call is cheap and the
+    // guard on isCompilerHandled keeps it off the hot path for
+    // LLVM-emitted intrinsics.
+    if (info && info->isCompilerHandled) {
+        ConstantValue folded = ConstEvaluator::evaluate(ctx, expr, targetType);
+        if (folded.isEvaluated() && !folded.isError()) {
+            // evaluate() already set expr->isConst = true and cached
+            // the value. Nothing else to do here — CodeGen will read
+            // the cache.
+        }
+    }
+
     return resultType;
 }
 

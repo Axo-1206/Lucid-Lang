@@ -53,12 +53,57 @@ static llvm::Type* getArrayElementType(CodeGenContext& ctx, TypeAST* arrayType) 
     return getType(ctx, arr->element);
 }
 
+// ─── Emit Folded Value ────────────────────────────────────
+
+static llvm::Value* emitConstantValue(const ConstantValue& val, ExprAST* expr, CodeGenContext& ctx) {
+    using K = ConstantValue::Kind;
+
+    switch (val.kind) {
+        case K::String: {
+            // The expression's resolved type must be `string` for the
+            // emitted {ptr, len, cap} struct to match downstream code.
+            AST_ASSERT_MSG(
+                expr->resolvedType && sema::isStringType(expr->resolvedType),
+                "folded String ConstantValue on a non-string expression");
+            return ctx.createStringLiteral(ctx.pool.lookup(val.asString()));
+        }
+        case K::Int: {
+            llvm::Type* targetTy = expr->resolvedType
+                ? getType(ctx, expr->resolvedType)
+                : nullptr;
+            if (!targetTy || !targetTy->isIntegerTy()) {
+                targetTy = llvm::Type::getInt64Ty(ctx.llvmCtx);
+            }
+            return llvm::ConstantInt::get(targetTy, val.asInt());
+        }
+        case K::Bool: {
+            llvm::Type* i1 = llvm::Type::getInt1Ty(ctx.llvmCtx);
+            return llvm::ConstantInt::get(i1, val.asBool() ? 1 : 0);
+        }
+        default:
+            return nullptr;
+    }
+}
+
 // =============================================================================
 // Expression Lowering - Dispatch
 // =============================================================================
 
 llvm::Value* lowerExpression(ExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
+
+    // ─── Folded value short-circuit ────────────────────────────────────
+    // If Sema folded this expression, emit the constant. This is the
+    // single place folded values are consumed; every expression kind
+    // benefits, not just intrinsics.
+    if (expr->isConst && expr->constValue.isEvaluated()) {
+        if (llvm::Value* folded = emitConstantValue(expr->constValue, expr, ctx)) {
+            expr->llvmValue = folded;
+            return folded;
+        }
+        // Fall through for ConstantValue kinds emitConstantValue can't
+        // emit yet. Not an error — the per-kind lowerer handles it.
+    }
 
     switch (expr->kind) {
         case ASTKind::LiteralExpr:       return lowerLiteralExpr(expr->as<LiteralExprAST>(), ctx);

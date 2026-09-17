@@ -20,7 +20,6 @@
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
-#include "ConstValue.hpp"
 #include "../context/SemaContext.hpp"
 #include "../support/TypeNarrowHelpers.hpp"
 
@@ -230,7 +229,27 @@ private:
     static ConstantValue evalNullCoalesce(SemaContext& ctx, NullCoalesceExprAST* expr);
     static ConstantValue evalIfExpr(SemaContext& ctx, IfExprAST* expr);
     static ConstantValue evalRangeExpr(SemaContext& ctx, RangeExprAST* expr);
+
+    // ─── Intrinsic Folding ──────────────────────────────────────────────
+    //
+    // Compiler-handled intrinsics whose value is fully determined at
+    // compile time are evaluated here. Intrinsics that need codegen
+    // (#sqrt, #memcpy, ...) return ConstantValue::unknown() so the
+    // caller can fall back to the intrinsic's normal return type.
+    //
+    // Four intrinsics are foldable today:
+    //   #typeof(T)   -> string literal naming the resolved type
+    //   #nameof(x)   -> string literal naming the entity
+    //   #sizeof(T)   -> int64, only for primitive types
+    //   #alignof(T)  -> int64, only for primitive types
+    //
+    // Non-foldable intrinsics (#sizeof(MyStruct), #tostr(x), ...) return
+    // Unknown, which is a "cannot be folded" signal, not an error.
     static ConstantValue evalIntrinsicCall(SemaContext& ctx, IntrinsicCallExprAST* expr);
+    static ConstantValue evalIntrinsicTypeof(SemaContext& ctx, IntrinsicCallExprAST* expr);
+    static ConstantValue evalIntrinsicNameof(SemaContext& ctx, IntrinsicCallExprAST* expr);
+    static ConstantValue evalIntrinsicSizeof(SemaContext& ctx, IntrinsicCallExprAST* expr);
+    static ConstantValue evalIntrinsicAlignof(SemaContext& ctx, IntrinsicCallExprAST* expr);
 
     // ─── Statement Execution (for const functions) ──────────────────────
 

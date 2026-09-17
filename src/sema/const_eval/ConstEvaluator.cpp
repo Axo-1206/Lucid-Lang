@@ -3,10 +3,12 @@
 
 #include "ConstEvaluator.hpp"
 #include "ConstEvalHelpers.hpp"
+#include "core/ASTStrings.hpp"
 #include "sema/context/SemaContext.hpp"
 #include "sema/types/SemaType.hpp"
 #include "sema/Sema.hpp"
 #include "sema/support/Truthiness.hpp"
+#include "core/registry/IntrinsicRegistry.hpp"
 
 #include <cmath>
 
@@ -109,22 +111,23 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
         case ASTKind::RangeExpr:
             result = evalRangeExpr(ctx, expr->as<RangeExprAST>());
             break;
+        case ASTKind::IntrinsicCallExpr:
+            result = evalIntrinsicCall(ctx, expr->as<IntrinsicCallExprAST>());
+            break;
         default:
             return ConstantValue::unknown();
     }
 
     // ─── Cache the result and update AST metadata ──────────────────────
+    //
+    // This is the ONLY place `constValue` is written. Every consumer —
+    // CodeGen, later Sema passes, future tooling — reads it from the node.
+    // Keeping the write here means the two fields `isConst` and
+    // `constValue` are stamped together, so they can never disagree.
     if (result.isEvaluated() && !result.isError()) {
-        // Store in cache for future lookups
         m_evalCache[expr] = result;
-        
-        // Update AST metadata (lightweight: just the flag and type)
         expr->isConst = true;
-        
-        // Only set the type if it wasn't already resolved by the main pass.
-        // The main pass's type is authoritative — it has the generic args and
-        // the specialization pointer. The const evaluator's derived type can
-        // disagree for parameterized types like `Box<int>`.
+        expr->constValue = result;
         if (!expr->resolvedType) {
             expr->resolvedType = getConstantType(ctx, result);
         }
@@ -722,6 +725,269 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
     }
 
     topologicalSort(ctx, m_deps);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// INTRINSIC FOLDING
+// ═════════════════════════════════════════════════════════════════════════
+//
+// A foldable intrinsic is one whose value can be determined from the
+// resolved types of its arguments alone, without layout, without a
+// target machine, and without side effects. #typeof and #nameof are
+// pure type-level queries; #sizeof and #alignof are pure *primitive*
+// queries (see evalIntrinsicSizeof for why user structs are excluded).
+//
+// Every fold returns a ConstantValue whose kind matches what the
+// intrinsic would produce at runtime:
+//   #typeof / #nameof  ->  Kind::String
+//   #sizeof / #alignof ->  Kind::Int
+//
+// Returning Kind::Unknown is the correct response for any intrinsic
+// that is valid but not foldable at compile time. It is NOT an error:
+// the caller (resolveIntrinsicCallExpr) will fall through to the
+// normal getIntrinsicReturnType path and CodeGen will emit the call.
+
+// ─── evalIntrinsicCall — dispatcher ─────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalIntrinsicCall(SemaContext& ctx, IntrinsicCallExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (!info) {
+        // Unknown intrinsic — validateIntrinsicCall will have already
+        // emitted Sem_UnknownIntrinsic, but if for some reason this
+        // path is reached first, do not double-report. Return Unknown
+        // so a caller that checks for isEvaluated() simply sees "no
+        // value available" rather than a spurious error.
+        return ConstantValue::unknown();
+    }
+
+    switch (info->kind) {
+        case IntrinsicKind::Typeof:
+            return evalIntrinsicTypeof(ctx, expr);
+        case IntrinsicKind::Nameof:
+            return evalIntrinsicNameof(ctx, expr);
+        case IntrinsicKind::Sizeof:
+            return evalIntrinsicSizeof(ctx, expr);
+        case IntrinsicKind::Alignof:
+            return evalIntrinsicAlignof(ctx, expr);
+
+        default:
+            // Every other intrinsic — #sqrt, #memcpy, #str_len,
+            // #simd_add, #alloc, #scope_exit, #bitcast, ...
+            // — is either runtime-only, side-effecting, or both.
+            // Not foldable. Not an error.
+            return ConstantValue::unknown();
+    }
+}
+
+// ─── evalIntrinsicTypeof — #typeof(T) / #typeof(x) ──────────────────────
+//
+// Produces a string literal naming the resolved type.
+//
+// Two argument shapes are valid and are handled identically:
+//   1. #typeof(SomeType)  — argument is an IdentifierExprAST whose
+//      `isType` flag is set, with the resolved type node on
+//      `resolvedTypeNode`. This form is produced by resolveTypeArgument
+//      in IntrinsicValidator.cpp, which is also what #sizeof / #bitcast
+//      use.
+//   2. #typeof(x)         — argument is a value expression whose
+//      `resolvedType` has been set by the ordinary expression resolver.
+//
+// Both paths converge on a TypeAST*, and typeToString does the rest.
+// The key invariant is that typeToString is deterministic: two calls
+// that produce the same TypeAST* must produce the same string. That is
+// already true — it is what every diagnostic message depends on.
+ConstantValue ConstEvaluator::evalIntrinsicTypeof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
+    if (expr->args.size() != 1) {
+        // validateIntrinsicCall already reported Sem_ArgCountMismatch.
+        return ConstantValue::unknown();
+    }
+
+    ExprAST* arg = expr->args[0];
+    TypeAST* argType = nullptr;
+
+    // ─── Type position: #typeof(SomeType) ────────────────────────────
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType && id->resolvedTypeNode) {
+            argType = id->resolvedTypeNode;
+        }
+    }
+
+    // ─── Value position: #typeof(expr) ───────────────────────────────
+    if (!argType) {
+        argType = arg->resolvedType;
+    }
+
+    if (!argType || argType->isa<UnknownTypeAST>()) {
+        // The argument couldn't be resolved to a type. Don't emit a
+        // new diagnostic here — the caller's validation pass owns
+        // that. Return Unknown so the intrinsic's static return
+        // type (string) is used and the error, if any, was reported
+        // by resolveIntrinsicCallExpr.
+        return ConstantValue::unknown();
+    }
+
+    std::string typeStr = typeToString(argType, ctx.pool);
+    InternedString interned = ctx.pool.intern(typeStr);
+
+    ConstantValue result(interned);
+    result.type = ctx.getStringType();
+    return result;
+}
+
+// ─── evalIntrinsicNameof — #nameof(entity) ──────────────────────────────
+//
+// Produces a string literal naming the entity. Valid entities are:
+//
+//   IdentifierExprAST  — #nameof(myVar), #nameof(SomeType), #nameof(fn)
+//                        yields the identifier's name.
+//
+//   FieldAccessExprAST — #nameof(obj.field) yields the *field's* name,
+//                        not the object's. This is what makes
+//                        #nameof(self.someField) useful for building
+//                        reflection-ish tables.
+//
+//   ModuleAccessExprAST — #nameof(mod:member) yields the member name.
+//
+// Every other shape has no name to give and is a hard error. This is
+// the one fold that must be able to reject its argument, unlike
+// #typeof, which is happy with any resolved expression.
+ConstantValue ConstEvaluator::evalIntrinsicNameof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
+    if (expr->args.size() != 1) {
+        // validateIntrinsicCall already reported Sem_ArgCountMismatch.
+        return ConstantValue::unknown();
+    }
+
+    ExprAST* arg = expr->args[0];
+    InternedString name;
+
+    if (arg->isa<IdentifierExprAST>()) {
+        name = arg->as<IdentifierExprAST>()->name;
+    } else if (arg->isa<FieldAccessExprAST>()) {
+        name = arg->as<FieldAccessExprAST>()->fieldName;
+    } else if (arg->isa<ModuleAccessExprAST>()) {
+        name = arg->as<ModuleAccessExprAST>()->memberName;
+    } else {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#nameof requires a named entity "
+                              "(identifier, field access, or module member)");
+        return ConstantValue::error();
+    }
+
+    if (name.isEmpty()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#nameof argument has no name");
+        return ConstantValue::error();
+    }
+
+    ConstantValue result(name);
+    result.type = ctx.getStringType();
+    return result;
+}
+
+// ─── evalIntrinsicSizeof — #sizeof(T) ───────────────────────────────────
+//
+// Only primitive types are folded. This is a deliberate restriction:
+//
+//   #sizeof(int32) is 4 on every target Lucid supports. It is a
+//   property of the type itself, not of the machine.
+//
+//   #sizeof(MyStruct) depends on the target's DataLayout — field
+//   alignment, padding rules, and the ABI all affect the answer.
+//   Sema runs before any target is chosen (see Architecture.md
+//   §3.3: "Semantic analysis is a multi-step walk ... the compiler
+//   never produces IR for a file with semantic errors" and §4:
+//   IRLowering is "the ONLY place in the codebase that imports
+//   LLVM headers"). Pulling DataLayout into Sema would break that
+//   separation for one intrinsic.
+//
+// So: fold the target-independent case, return Unknown for the
+// target-dependent one, and let CodeGen compute the struct size at
+// emit time, where it already has the DataLayout it needs.
+ConstantValue ConstEvaluator::evalIntrinsicSizeof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
+    if (expr->args.size() != 1) {
+        return ConstantValue::unknown();
+    }
+
+    ExprAST* arg = expr->args[0];
+    TypeAST* type = nullptr;
+
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType && id->resolvedTypeNode) {
+            type = id->resolvedTypeNode;
+        }
+    }
+    if (!type) {
+        type = arg->resolvedType;
+    }
+    if (!type || type->isa<UnknownTypeAST>()) {
+        return ConstantValue::unknown();
+    }
+
+    // ─── Primitive types: target-independent ─────────────────────────
+    if (type->isa<PrimitiveTypeAST>()) {
+        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
+
+        size_t bits = getPrimitiveBitWidth(kind);
+        if (bits == 0) {
+            // String, Float, Double, Decimal — bit width is not
+            // the right notion, or is target-dependent. Defer.
+            return ConstantValue::unknown();
+        }
+        return ConstantValue(static_cast<int64_t>(bits / 8));
+    }
+
+    // ─── Bool is a special case: 1 byte on every target ──────────────
+    // (Bool has bit width 8 via getPrimitiveBitWidth, so it's
+    //  already covered above; this comment exists so a future reader
+    //  doesn't add a second Bool branch.)
+
+    // ─── Everything else: defer to CodeGen ───────────────────────────
+    return ConstantValue::unknown();
+}
+
+// ─── evalIntrinsicAlignof — #alignof(T) ─────────────────────────────────
+//
+// Same restriction as #sizeof, same reasoning. For primitives, the
+// alignment equals the size on all targets Lucid supports (natural
+// alignment, no packed primitives). For user types, alignment
+// depends on DataLayout.
+ConstantValue ConstEvaluator::evalIntrinsicAlignof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
+    if (expr->args.size() != 1) {
+        return ConstantValue::unknown();
+    }
+
+    ExprAST* arg = expr->args[0];
+    TypeAST* type = nullptr;
+
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType && id->resolvedTypeNode) {
+            type = id->resolvedTypeNode;
+        }
+    }
+    if (!type) {
+        type = arg->resolvedType;
+    }
+    if (!type || type->isa<UnknownTypeAST>()) {
+        return ConstantValue::unknown();
+    }
+
+    if (type->isa<PrimitiveTypeAST>()) {
+        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
+
+        size_t bits = getPrimitiveBitWidth(kind);
+        if (bits == 0) {
+            return ConstantValue::unknown();
+        }
+        return ConstantValue(static_cast<int64_t>(bits / 8));
+    }
+
+    return ConstantValue::unknown();
 }
 
 } // namespace sema

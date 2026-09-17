@@ -450,57 +450,170 @@ struct TypeAST : BaseAST {
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+struct ConstantValue {
+    enum class Kind : uint8_t {
+        Unknown,    ///< Not yet evaluated
+        Error,      ///< Evaluation failed
+        Void,       ///< No value (void function)
+        Bool,       ///< true/false
+        Int,        ///< Integer (any size)
+        Float,      ///< Floating point (any precision)
+        String,     ///< String literal
+        Char,       ///< Character literal
+        Enum,       ///< Enum variant
+        Struct,     ///< Struct value
+        Array,      ///< Array value
+        Function,   ///< Const function pointer (for later calls)
+        Nil,        ///< nil sentinel
+        Err,        ///< err sentinel
+    };
+
+    Kind kind = Kind::Unknown;
+    TypeAST* type = nullptr;
+
+    // ─── Value Storage ────────────────────────────────────────────────
+    // Using variant to store different value types efficiently
+    std::variant<
+        std::monostate,                                              // Unknown, Error, Void
+        bool,                                                        // Bool
+        int64_t,                                                     // Int
+        double,                                                      // Float
+        InternedString,                                              // String, Char, Enum
+        std::vector<ConstantValue>,                                  // Array
+        std::unordered_map<InternedString, ConstantValue>,           // Struct
+        FuncDeclAST*                                          // Function
+    > value;
+
+    // ─── Constructors ──────────────────────────────────────────────────
+
+    ConstantValue() : kind(Kind::Unknown) {}
+
+    explicit ConstantValue(bool v) : kind(Kind::Bool), value(v) {}
+
+    explicit ConstantValue(int64_t v) : kind(Kind::Int), value(v) {}
+
+    explicit ConstantValue(double v) : kind(Kind::Float), value(v) {}
+
+    explicit ConstantValue(InternedString v) : kind(Kind::String), value(v) {}
+
+    explicit ConstantValue(FuncDeclAST* f) : kind(Kind::Function), value(f) {}
+
+    // ─── Factory Methods ──────────────────────────────────────────────
+
+    static ConstantValue nil() {
+        ConstantValue v;
+        v.kind = Kind::Nil;
+        return v;
+    }
+
+    static ConstantValue err() {
+        ConstantValue v;
+        v.kind = Kind::Err;
+        return v;
+    }
+
+    static ConstantValue error() {
+        ConstantValue v;
+        v.kind = Kind::Error;
+        return v;
+    }
+
+    static ConstantValue voidValue() {
+        ConstantValue v;
+        v.kind = Kind::Void;
+        return v;
+    }
+
+    static ConstantValue unknown() {
+        return ConstantValue();
+    }
+
+    // ─── Predicates ────────────────────────────────────────────────────
+
+    bool isEvaluated() const {
+        return kind != Kind::Unknown && kind != Kind::Error;
+    }
+
+    bool isError() const {
+        return kind == Kind::Error;
+    }
+
+    bool isUnknown() const {
+        return kind == Kind::Unknown;
+    }
+
+    bool isBool() const { return kind == Kind::Bool; }
+    bool isInt() const { return kind == Kind::Int; }
+    bool isFloat() const { return kind == Kind::Float; }
+    bool isString() const { return kind == Kind::String; }
+    bool isChar() const { return kind == Kind::Char; }
+    bool isVoid() const { return kind == Kind::Void; }
+    bool isFunction() const { return kind == Kind::Function; }
+    bool isNil() const { return kind == Kind::Nil; }
+    bool isErr() const { return kind == Kind::Err; }
+    bool isStruct() const { return kind == Kind::Struct; }
+    bool isArray() const { return kind == Kind::Array; }
+    bool isEnum() const { return kind == Kind::Enum; }
+
+    // ─── Accessors ────────────────────────────────────────────────────
+
+    bool asBool() const {
+        return std::get<bool>(value);
+    }
+
+    int64_t asInt() const {
+        return std::get<int64_t>(value);
+    }
+
+    double asFloat() const {
+        return std::get<double>(value);
+    }
+
+    InternedString asString() const {
+        return std::get<InternedString>(value);
+    }
+
+    FuncDeclAST* asFunction() const {
+        return std::get<FuncDeclAST*>(value);
+    }
+
+    const std::vector<ConstantValue>& asArray() const {
+        return std::get<std::vector<ConstantValue>>(value);
+    }
+
+    const std::unordered_map<InternedString, ConstantValue>& asStruct() const {
+        return std::get<std::unordered_map<InternedString, ConstantValue>>(value);
+    }
+
+    // ─── Mutating Accessors ──────────────────────────────────────────
+
+    std::vector<ConstantValue>& asArrayMut() {
+        return std::get<std::vector<ConstantValue>>(value);
+    }
+
+    std::unordered_map<InternedString, ConstantValue>& asStructMut() {
+        return std::get<std::unordered_map<InternedString, ConstantValue>>(value);
+    }
+
+    // ─── Comparison ───────────────────────────────────────────────────
+
+    bool operator==(const ConstantValue& other) const {
+        if (kind != other.kind) return false;
+        if (type != other.type) return false;
+        return value == other.value;
+    }
+
+    bool operator!=(const ConstantValue& other) const {
+        return !(*this == other);
+    }
+};
+
 enum class ValueState {
     None,       // For any call expression that return no value
     Definite,   // Produces a definite value (T)
     Nil,        // Produces nil (T?)
     Err,        // Produces err (T!)
     Unknown,    // Unknown at compile-time (needs runtime evaluation)
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CapturedVariable — Information about a variable captured by a closure.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief A variable captured by a closure.
-struct CapturedVariable {
-    // ─── Lexical Identity (invariant under generic substitution) ───────
-    InternedString name;
-
-    /// The declaration this capture resolves to, in the specialized
-    /// context. Set by Sema's capture analysis; valid for CodeGen
-    /// because substitution rebuilds the anon before capture analysis
-    /// runs on it, so the declaration pointer is never stale.
-    ValueDeclAST* resolvedDecl = nullptr;
-
-    // ─── Capture Flags (computed once by capture analysis) ─────────────
-    /// True if this closure may write to the captured variable, and
-    /// therefore must share one heap slot with every other holder (the
-    /// enclosing frame, and any other closure capturing the same
-    /// declaration). False if the closure only reads it, in which case
-    /// it may instead be snapshot-copied into the environment at
-    /// construction time.
-    bool byReference = false;
-
-    /// True if the *value* being captured is itself a closure — meaning
-    /// the environment slot must hold a fat pointer `{ func, env }` and
-    /// the closure's environment must be retained, rather than holding
-    /// a bare function pointer.
-    ///
-    /// Conservative: `true` for function-typed parameters and struct
-    /// fields where the actual value isn't known at compile time, so
-    /// CodeGen can emit a runtime shape check.
-    bool isClosureValue = false;
-
-    // ─── Environment Layout (set by Sema, per closure) ─────────────────
-    /// Index of this capture's slot in the owning closure's environment
-    /// struct. Assigned on insert; distinct for each closure that
-    /// captures the same variable.
-    size_t index = 0;
-
-    // ─── CodeGen Annotation (set during lowering) ──────────────────────
-    /// The LLVM value holding this capture's slot in the environment.
-    llvm::Value* envSlot = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -515,6 +628,21 @@ struct ExprAST : BaseAST {
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
     bool isConst = false;                   // Is this a compile-time constant?
+    
+    /// @brief The folded constant value, if this expression was
+    ///        const-evaluated by Sema.
+    ///
+    /// Written only by ConstEvaluator::evaluate's post-amble. Read by
+    /// CodeGen before falling back to runtime lowering, and by other
+    /// Sema passes that want the compile-time value without re-running
+    /// the evaluator.
+    ///
+    /// Invariant: `isConst == true` iff `constValue.isEvaluated()`.
+    /// A default-constructed ConstantValue has Kind::Unknown, which
+    /// isEvaluated() reports as false — so the two fields agree at
+    /// construction and stay in sync because only one place writes
+    /// them, together.
+    ConstantValue constValue;
     
     // ─── CodeGen Fields (set by CodeGen) ──────────────────────────────
     llvm::Value* llvmValue = nullptr;       // The generated LLVM value
@@ -858,4 +986,49 @@ struct UnknownStmtAST : StmtAST {
 struct UnknownTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownType;
     UnknownTypeAST() : TypeAST(ASTKind::UnknownType) { hasSyntaxError = true; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CapturedVariable — Information about a variable captured by a closure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief A variable captured by a closure.
+struct CapturedVariable {
+    // ─── Lexical Identity (invariant under generic substitution) ───────
+    InternedString name;
+
+    /// The declaration this capture resolves to, in the specialized
+    /// context. Set by Sema's capture analysis; valid for CodeGen
+    /// because substitution rebuilds the anon before capture analysis
+    /// runs on it, so the declaration pointer is never stale.
+    ValueDeclAST* resolvedDecl = nullptr;
+
+    // ─── Capture Flags (computed once by capture analysis) ─────────────
+    /// True if this closure may write to the captured variable, and
+    /// therefore must share one heap slot with every other holder (the
+    /// enclosing frame, and any other closure capturing the same
+    /// declaration). False if the closure only reads it, in which case
+    /// it may instead be snapshot-copied into the environment at
+    /// construction time.
+    bool byReference = false;
+
+    /// True if the *value* being captured is itself a closure — meaning
+    /// the environment slot must hold a fat pointer `{ func, env }` and
+    /// the closure's environment must be retained, rather than holding
+    /// a bare function pointer.
+    ///
+    /// Conservative: `true` for function-typed parameters and struct
+    /// fields where the actual value isn't known at compile time, so
+    /// CodeGen can emit a runtime shape check.
+    bool isClosureValue = false;
+
+    // ─── Environment Layout (set by Sema, per closure) ─────────────────
+    /// Index of this capture's slot in the owning closure's environment
+    /// struct. Assigned on insert; distinct for each closure that
+    /// captures the same variable.
+    size_t index = 0;
+
+    // ─── CodeGen Annotation (set during lowering) ──────────────────────
+    /// The LLVM value holding this capture's slot in the environment.
+    llvm::Value* envSlot = nullptr;
 };
