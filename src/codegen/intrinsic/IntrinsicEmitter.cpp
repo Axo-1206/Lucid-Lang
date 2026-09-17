@@ -138,66 +138,66 @@ llvm::Value* emitIntrinsicFromAST(IntrinsicCallExprAST* expr, CodeGenContext& ct
     }
 
     // ─── Special-case: #sizeof(T) / #alignof(T) ──────────────────────────
-    // These intrinsics operate on types, not values. The type comes from
-    // expr->resolvedType. They have no value arguments.
+    // The type is args[0] (a compile-time type argument). No value args
+    // are lowered — emitLucidTypeIntrinsic reads the type from the AST.
     if (info->kind == IntrinsicKind::Sizeof || info->kind == IntrinsicKind::Alignof) {
+        if (expr->args.size() != 1) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
+                                   "' requires 1 argument: (type)");
+            return nullptr;
+        }
         return emitIntrinsic(expr->intrinsicName, {}, expr, ctx);
     }
 
     // ─── Special-case: #bitcast(T, x) ─────────────────────────────────────
-    // The type comes from expr->resolvedType. The value is args[0].
-    // We lower the value argument normally.
+    // args[0] is the target type (compile-time). args[1] is the value.
     if (info->kind == IntrinsicKind::Bitcast) {
-        if (expr->args.empty()) {
+        if (expr->args.size() != 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#bitcast' requires a value argument");
+                                   "intrinsic '#bitcast' requires 2 arguments: (type, value)");
             return nullptr;
         }
-        // Lower the value argument
-        llvm::Value* argVal = lowerExpression(expr->args[0], ctx);
+        llvm::Value* argVal = lowerExpression(expr->args[1], ctx);
         if (!argVal) return nullptr;
-        if (expr->args[0]->isLValue) {
-            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
+        if (expr->args[1]->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->args[1]->resolvedType);
             if (elemType) {
                 argVal = loadIfNeeded(argVal, elemType, ctx);
             }
         }
-        // Delegate to emitIntrinsic with the value argument
         return emitIntrinsic(expr->intrinsicName, {argVal}, expr, ctx);
     }
 
     // ─── Special-case: #alloc(T, count) ──────────────────────────────────
-    // The type comes from expr->resolvedType. The count is args[0].
+    // args[0] is the element type (compile-time). args[1] is the count.
     if (info->kind == IntrinsicKind::Alloc) {
-        if (expr->args.empty()) {
+        if (expr->args.size() != 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#alloc' requires a count argument");
+                                   "intrinsic '#alloc' requires 2 arguments: (type, count)");
             return nullptr;
         }
-        // Lower the count argument
-        llvm::Value* countVal = lowerExpression(expr->args[0], ctx);
+        llvm::Value* countVal = lowerExpression(expr->args[1], ctx);
         if (!countVal) return nullptr;
-        if (expr->args[0]->isLValue) {
-            llvm::Type* elemType = getType(ctx, expr->args[0]->resolvedType);
+        if (expr->args[1]->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->args[1]->resolvedType);
             if (elemType) {
                 countVal = loadIfNeeded(countVal, elemType, ctx);
             }
         }
-        // Delegate to emitIntrinsic with the count argument
         return emitIntrinsic(expr->intrinsicName, {countVal}, expr, ctx);
     }
 
     // ─── Special-case: #simd_splat(type, lanes, scalar) ──────────────────
-    // The type comes from expr->resolvedType. lanes and scalar are args[0] and args[1].
+    // args[0] is the type (compile-time). args[1] = lanes, args[2] = scalar.
     if (info->kind == IntrinsicKind::SimdSplat) {
-        if (expr->args.size() < 2) {
+        if (expr->args.size() != 3) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#simd_splat' requires 2 value arguments: (lanes, scalar)");
+                                   "intrinsic '#simd_splat' requires 3 arguments: (type, lanes, scalar)");
             return nullptr;
         }
-        // Lower lanes (arg 0) and scalar (arg 1)
         std::vector<llvm::Value*> valueArgs;
-        for (size_t i = 0; i < expr->args.size(); ++i) {
+        for (size_t i = 1; i < expr->args.size(); ++i) {
             llvm::Value* argVal = lowerExpression(expr->args[i], ctx);
             if (!argVal) return nullptr;
             if (expr->args[i]->isLValue) {
@@ -208,7 +208,6 @@ llvm::Value* emitIntrinsicFromAST(IntrinsicCallExprAST* expr, CodeGenContext& ct
             }
             valueArgs.push_back(argVal);
         }
-        // Delegate to emitIntrinsic with the value arguments
         return emitIntrinsic(expr->intrinsicName, valueArgs, expr, ctx);
     }
 

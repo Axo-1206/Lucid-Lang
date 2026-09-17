@@ -29,6 +29,21 @@ static std::string getLucidTypeName(CodeGenContext& ctx, TypeAST* type) {
     return getTypeName(ctx, type);
 }
 
+// ─── Helper: Resolve a type from an intrinsic type argument ───────────────
+// Matches ConstEvaluator / IntrinsicValidator: args[0] may be an
+// IdentifierExprAST with isType=true and resolvedTypeNode set.
+
+static TypeAST* resolveIntrinsicTypeArg(ExprAST* arg) {
+    if (!arg) return nullptr;
+    if (arg->isa<IdentifierExprAST>()) {
+        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
+        if (id->isType && id->resolvedTypeNode) {
+            return id->resolvedTypeNode;
+        }
+    }
+    return arg->resolvedType;
+}
+
 // ─── Helper: concatenate two strings via the runtime ─────────────────────
 
 static llvm::Value* emitStrConcat(llvm::Value* a, llvm::Value* b, CodeGenContext& ctx) {
@@ -346,8 +361,10 @@ llvm::Value* emitLucidTypeIntrinsic(
 
     // ─── #sizeof(T) ──────────────────────────────────────────────────────
     if (kind == IntrinsicKind::Sizeof) {
-        if (expr && expr->resolvedType) {
-            TypeAST* type = expr->resolvedType;
+        TypeAST* type = (expr && !expr->args.empty())
+            ? resolveIntrinsicTypeArg(expr->args[0])
+            : nullptr;
+        if (type) {
             
             // ─── Safety net: reject generic parameters ──────────────────────
             if (type->isa<NamedTypeAST>()) {
@@ -378,8 +395,10 @@ llvm::Value* emitLucidTypeIntrinsic(
 
     // ─── #alignof(T) ──────────────────────────────────────────────────────
     if (kind == IntrinsicKind::Alignof) {
-        if (expr && expr->resolvedType) {
-            TypeAST* type = expr->resolvedType;
+        TypeAST* type = (expr && !expr->args.empty())
+            ? resolveIntrinsicTypeArg(expr->args[0])
+            : nullptr;
+        if (type) {
             
             // ─── Safety net: reject generic parameters ──────────────────────
             if (type->isa<NamedTypeAST>()) {
@@ -450,7 +469,7 @@ llvm::Value* emitLucidTypeIntrinsic(
                                     "#bitcast: type sizes must match: ",
                                     typeToString(expr->resolvedType, ctx.pool), " (",
                                     targetSize, " bytes) vs ",
-                                    typeToString(expr->args[0]->resolvedType, ctx.pool), " (",
+                                    typeToString(expr->args[1]->resolvedType, ctx.pool), " (",
                                     valueSize, " bytes)");
             return nullptr;
         }

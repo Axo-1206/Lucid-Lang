@@ -76,11 +76,16 @@ llvm::Value* emitLLVMMathIntrinsic(
             llvm::Value* cmp = ctx.builder.CreateICmp(pred, a, b);
             return ctx.builder.CreateSelect(cmp, a, b);
         } else if (a->getType()->isFloatingPointTy()) {
-            llvm::CmpInst::Predicate pred = (kind == IntrinsicKind::Min)
-                ? llvm::CmpInst::FCMP_OLT
-                : llvm::CmpInst::FCMP_OGT;
-            llvm::Value* cmp = ctx.builder.CreateFCmp(pred, a, b);
-            return ctx.builder.CreateSelect(cmp, a, b);
+            llvm::Intrinsic::ID id = (kind == IntrinsicKind::Min)
+                ? llvm::Intrinsic::minimum
+                : llvm::Intrinsic::maximum;
+            llvm::Function* intrinsic = ctx.getLLVMIntrinsicDecl(id, {a->getType()});
+            if (!intrinsic) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
+                                       "could not get LLVM intrinsic for '#", name, "'");
+                return nullptr;
+            }
+            return ctx.builder.CreateCall(intrinsic, {a, b});
         } else {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
                                    "intrinsic '#", name, "' requires numeric arguments");
@@ -438,17 +443,37 @@ llvm::Value* emitLLVMSIMDIntrinsic(
         return 0;
     };
 
-    // ─── Helper: Perform bounds check and emit panic if out of bounds ────
-    auto checkIndexBounds = [&](uint64_t index, uint64_t laneCount, 
-                                const std::string& operation) -> bool {
-        if (index >= laneCount) {
-            emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx,
-                      "SIMD " + operation + " index " + std::to_string(index) + 
-                      " out of bounds for vector of length " + std::to_string(laneCount),
-                      loc);
-            return false;
+    // ─── Helper: Runtime bounds check for SIMD lane index ────────────────
+    // Mirrors lowerIndexExpr: branch to fallback in ?? context, panic otherwise.
+    auto emitSimdIndexBoundsCheck = [&](llvm::Value* idx, uint64_t laneCount,
+                                        const char* operation) -> llvm::Value* {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
+        if (idx->getType() != i32) {
+            idx = ctx.builder.CreateIntCast(idx, i32, true, "simd_idx_cast");
         }
-        return true;
+
+        llvm::Value* laneCountVal = llvm::ConstantInt::get(i32, laneCount);
+        llvm::Value* inBounds = ctx.builder.CreateICmpULT(idx, laneCountVal, "simd_in_bounds");
+
+        llvm::Function* func = ctx.getCurrentFunction();
+        llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(
+            ctx.llvmCtx, "simd_idx_continue", func);
+
+        if (ctx.isInsideNullCoalesce()) {
+            llvm::BasicBlock* fallbackBlock = ctx.getNullCoalesceFallbackBlock();
+            ctx.builder.CreateCondBr(inBounds, continueBlock, fallbackBlock);
+        } else {
+            llvm::BasicBlock* panicBlock = llvm::BasicBlock::Create(
+                ctx.llvmCtx, "simd_idx_panic", func);
+            ctx.builder.CreateCondBr(inBounds, continueBlock, panicBlock);
+
+            ctx.builder.SetInsertPoint(panicBlock);
+            emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, ctx,
+                      std::string("SIMD ") + operation + " index out of bounds", loc);
+        }
+
+        ctx.builder.SetInsertPoint(continueBlock);
+        return idx;
     };
 
     // ─── SIMD Arithmetic (lane-wise) ──────────────────────────────────────
@@ -552,14 +577,14 @@ llvm::Value* emitLLVMSIMDIntrinsic(
             return nullptr;
         }
 
-        llvm::CmpInst::Predicate pred;
-        if (a->getType()->getScalarType()->isIntegerTy()) {
-            pred = (kind == IntrinsicKind::SimdMin) ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SGT;
-        } else {
-            pred = (kind == IntrinsicKind::SimdMin) ? llvm::CmpInst::FCMP_OLT : llvm::CmpInst::FCMP_OGT;
-        }
+        bool isInteger = a->getType()->getScalarType()->isIntegerTy();
+        llvm::CmpInst::Predicate pred = (kind == IntrinsicKind::SimdMin)
+            ? (isInteger ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::FCMP_OLT)
+            : (isInteger ? llvm::CmpInst::ICMP_SGT : llvm::CmpInst::FCMP_OGT);
 
-        llvm::Value* cmp = ctx.builder.CreateICmp(pred, a, b);
+        llvm::Value* cmp = isInteger
+            ? ctx.builder.CreateICmp(pred, a, b)
+            : ctx.builder.CreateFCmp(pred, a, b);
         return ctx.builder.CreateSelect(cmp, a, b);
     }
 
@@ -715,21 +740,8 @@ llvm::Value* emitLLVMSIMDIntrinsic(
         llvm::VectorType* vecType = llvm::cast<llvm::VectorType>(vec->getType());
         uint64_t laneCount = vecType->getElementCount().getKnownMinValue();
 
-        // Index must be a compile-time constant (Sema already validates this)
-        if (!isConstantInt(idx)) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "index to '#simd_extract' must be a compile-time constant");
-            return nullptr;
-        }
-
-        uint64_t index = getConstantIntValue(idx);
-        
-        // ─── Bounds check ──────────────────────────────────────────────────
-        if (!checkIndexBounds(index, laneCount, "extract")) {
-            return nullptr;
-        }
-        
-        return ctx.builder.CreateExtractElement(vec, index);
+        idx = emitSimdIndexBoundsCheck(idx, laneCount, "extract");
+        return ctx.builder.CreateExtractElement(vec, idx);
     }
 
     // ─── SIMD Insert ──────────────────────────────────────────────────────
@@ -762,21 +774,8 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 
         uint64_t laneCount = vecType->getElementCount().getKnownMinValue();
 
-        // Index must be a compile-time constant (Sema already validates this)
-        if (!isConstantInt(idx)) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "index to '#simd_insert' must be a compile-time constant");
-            return nullptr;
-        }
-
-        uint64_t index = getConstantIntValue(idx);
-        
-        // ─── Bounds check ──────────────────────────────────────────────────
-        if (!checkIndexBounds(index, laneCount, "insert")) {
-            return nullptr;
-        }
-        
-        return ctx.builder.CreateInsertElement(vec, val, index);
+        idx = emitSimdIndexBoundsCheck(idx, laneCount, "insert");
+        return ctx.builder.CreateInsertElement(vec, val, idx);
     }
 
     // ─── Unknown SIMD intrinsic ──────────────────────────────────────────

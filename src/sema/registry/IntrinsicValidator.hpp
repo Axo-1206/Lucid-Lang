@@ -68,5 +68,6 @@ bool validateTostr(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx);
 bool validateAlignof(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateNameof(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 } // namespace sema

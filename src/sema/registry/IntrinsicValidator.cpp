@@ -6,6 +6,7 @@
 #include "core/ASTStrings.hpp"
 #include "ArgTypeValidators.hpp"
 #include "sema/Sema.hpp"
+#include "sema/const_eval/ConstEvaluator.hpp"
 #include "core/trace/Trace.hpp"
 
 namespace sema {
@@ -159,10 +160,14 @@ bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         case IntrinsicKind::Alignof:
             return validateAlignof(expr, ctx);
         case IntrinsicKind::Typeof:
-        case IntrinsicKind::Nameof:
         case IntrinsicKind::Ptrstr:
-        case IntrinsicKind::Addrof:
             return true;
+
+        case IntrinsicKind::Nameof:
+            return validateNameof(expr, ctx);
+
+        case IntrinsicKind::Addrof:
+            return validatePointerOp(expr, ctx);
 
         case IntrinsicKind::Tostr:
             return validateTostr(expr, ctx);
@@ -482,8 +487,6 @@ bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         expr->args[0], ctx.getStringType(), ctx
     );
     if (!result || result->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
-                              "fence ordering expects a string literal");
         return false;
     }
 
@@ -554,7 +557,17 @@ bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     switch (info->kind) {
         case IntrinsicKind::Addrof:
-            // addrof can take any expression - returns *T
+            if (expr->args.size() != 1) {
+                ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                      "#addrof expects 1 argument");
+                return false;
+            }
+            if (!expr->args[0]->isLValue) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
+                                      "#addrof requires an l-value "
+                                      "(something with a memory address)");
+                return false;
+            }
             return true;
 
         case IntrinsicKind::ToRef:
@@ -587,44 +600,36 @@ bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
     if (!info) return false;
 
-    // ─── All atomics require a pointer as the first argument ──────────────
-    if (expr->args.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                              "atomic intrinsic requires a pointer argument");
-        return false;
-    }
+    // Arg count is enforced by validateIntrinsicArgCount (registry matches
+    // grammar: load = ptr + ordering, store/add/... = ptr + val + ordering,
+    // cas = ptr + expected + desired + ordering).
 
-    // ─── Validate the pointer argument ────────────────────────────────────
     if (!validatePtrArg(expr->args[0], "ptr", ctx)) {
         return false;
     }
 
-    // ─── Validate ordering (last argument, if present) ────────────────────
-    if (expr->args.size() >= 2) {
-        ExprAST* lastArg = expr->args[expr->args.size() - 1];
-        TypeAST* result = resolveExprWithTarget(
-            lastArg, ctx.getStringType(), ctx
-        );
-        if (!result || result->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
-                                  "atomic ordering expects a string literal");
-            return false;
-        }
+    // ─── Validate ordering (always the last argument) ─────────────────────
+    ExprAST* lastArg = expr->args[expr->args.size() - 1];
+    TypeAST* result = resolveExprWithTarget(
+        lastArg, ctx.getStringType(), ctx
+    );
+    if (!result || result->isa<UnknownTypeAST>()) {
+        return false;
+    }
 
-        const LiteralExprAST* lit = lastArg->as<LiteralExprAST>();
-        if (!lit) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
-                                  "atomic ordering must be a string literal");
-            return false;
-        }
+    const LiteralExprAST* lit = lastArg->as<LiteralExprAST>();
+    if (!lit) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
+                              "atomic ordering must be a string literal");
+        return false;
+    }
 
-        std::string ordering = ctx.pool.lookup(lit->value);
-        if (!IntrinsicRegistry::isValidFenceOrdering(ordering)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
-                                  "invalid ordering — must be: relaxed, acquire, "
-                                  "release, acq_rel, or seq_cst");
-            return false;
-        }
+    std::string ordering = ctx.pool.lookup(lit->value);
+    if (!IntrinsicRegistry::isValidFenceOrdering(ordering)) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, lastArg,
+                              "invalid ordering — must be: relaxed, acquire, "
+                              "release, acq_rel, or seq_cst");
+        return false;
     }
 
     return true;
@@ -667,15 +672,16 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Validate lanes
+        // Validate lanes (compile-time integer constant)
         ExprAST* lanesArg = expr->args[1];
-        if (!lanesArg->isa<LiteralExprAST>()) {
+        std::optional<int64_t> laneCountOpt = ConstEvaluator::evaluateAsInt(ctx, lanesArg);
+        if (!laneCountOpt.has_value()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
-                                "#simd_splat: lanes must be an integer literal");
+                                "#simd_splat: lanes must be a compile-time integer constant");
             return false;
         }
-        
-        int64_t laneCount = ctx.parseConstantInt(lanesArg);
+
+        int64_t laneCount = laneCountOpt.value();
         if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
                                 "#simd_splat: lane count must be > 0");
@@ -736,15 +742,16 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
         
-        // Validate lanes
+        // Validate lanes (compile-time integer constant)
         ExprAST* lanesArg = expr->args[1];
-        if (!lanesArg->isa<LiteralExprAST>()) {
+        std::optional<int64_t> laneCountOpt = ConstEvaluator::evaluateAsInt(ctx, lanesArg);
+        if (!laneCountOpt.has_value()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, lanesArg,
-                                  "#simd_load: lanes must be an integer literal");
+                                  "#simd_load: lanes must be a compile-time integer constant");
             return false;
         }
-        
-        int64_t laneCount = ctx.parseConstantInt(lanesArg);
+
+        int64_t laneCount = laneCountOpt.value();
         if (laneCount <= 0) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, lanesArg,
                                   "#simd_load: lane count must be > 0");
@@ -885,19 +892,30 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         }
         
         ExprAST* idx = expr->args[1];
-        if (!idx || !idx->isa<LiteralExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "#simd_extract: index must be an integer literal");
+        TypeAST* idxType = resolveExpr(idx, ctx);
+        if (!idxType || !isIntegerType(idxType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, idx,
+                                  "#simd_extract: index must be an integer");
             return false;
         }
-        
-        int64_t index = ctx.parseConstantInt(idx);
-        if (index < 0) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
-                                  "#simd_extract: index must be >= 0");
-            return false;
+
+        // Compile-time index: validate bounds now; runtime index is checked in CodeGen.
+        if (std::optional<int64_t> indexOpt = ConstEvaluator::evaluateAsInt(ctx, idx)) {
+            if (*indexOpt < 0) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, idx,
+                                      "#simd_extract: index must be >= 0");
+                return false;
+            }
+            uint64_t laneCount = getSimdLaneCount(vec->resolvedType);
+            if (static_cast<uint64_t>(*indexOpt) >= laneCount) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, idx,
+                                      "#simd_extract: index ", *indexOpt,
+                                      " out of bounds for vector of length ", laneCount);
+                return false;
+            }
         }
-        
+
+        expr->resolvedType = getSimdElementType(vec->resolvedType);
         return true;
     }
     
@@ -932,12 +950,29 @@ bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         }
         
         ExprAST* idx = expr->args[1];
-        if (!idx || !idx->isa<LiteralExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
-                                  "#simd_insert: index must be an integer literal");
+        TypeAST* idxType = resolveExpr(idx, ctx);
+        if (!idxType || !isIntegerType(idxType)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, idx,
+                                  "#simd_insert: index must be an integer");
             return false;
         }
-        
+
+        if (std::optional<int64_t> indexOpt = ConstEvaluator::evaluateAsInt(ctx, idx)) {
+            if (*indexOpt < 0) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, idx,
+                                      "#simd_insert: index must be >= 0");
+                return false;
+            }
+            uint64_t laneCount = getSimdLaneCount(vec->resolvedType);
+            if (static_cast<uint64_t>(*indexOpt) >= laneCount) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, idx,
+                                      "#simd_insert: index ", *indexOpt,
+                                      " out of bounds for vector of length ", laneCount);
+                return false;
+            }
+        }
+
+        expr->resolvedType = vec->resolvedType;
         return true;
     }
     
@@ -955,26 +990,19 @@ bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     switch (info->kind) {
         case IntrinsicKind::Alloc: {
-            if (expr->args.empty()) {
+            if (expr->args.size() != 2) {
                 ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                                     "#alloc expects 2 arguments: (type, count)");
                 return false;
             }
-            
+
             TypeAST* elementType = resolveTypeArgument(expr->args[0], ctx);
-            
             if (!elementType) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->args[0],
                                     "#alloc expects a type as the first argument");
                 return false;
             }
-            
-            if (expr->args.size() < 2) {
-                ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                    "#alloc expects 2 arguments: (type, count)");
-                return false;
-            }
-            
+
             if (!validateIntArg(expr->args[1], "count", ctx)) {
                 return false;
             }
@@ -1023,10 +1051,28 @@ bool validateBitcast(IntrinsicCallExprAST* expr, SemaContext& ctx) {
                               "#bitcast: value argument has unknown type");
         return false;
     }
-    
+
+    // Primitive-to-primitive: check size in Sema (target-independent).
+    // Struct/user types defer to CodeGen where DataLayout is available.
+    if (targetType->isa<PrimitiveTypeAST>() && valueType->isa<PrimitiveTypeAST>()) {
+        size_t targetBits = getPrimitiveBitWidth(
+            targetType->as<PrimitiveTypeAST>()->primitiveKind);
+        size_t valueBits = getPrimitiveBitWidth(
+            valueType->as<PrimitiveTypeAST>()->primitiveKind);
+        if (targetBits != 0 && valueBits != 0 && targetBits != valueBits) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "#bitcast: type sizes must match: ",
+                                  typeToString(targetType, ctx.pool), " (",
+                                  targetBits, " bits) vs ",
+                                  typeToString(valueType, ctx.pool), " (",
+                                  valueBits, " bits)");
+            return false;
+        }
+    }
+
     expr->resolvedType = targetType;
     expr->valueState = ValueState::Definite;
-    
+
     return true;
 }
 
@@ -1095,6 +1141,28 @@ bool validateSizeof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
     
+    return true;
+}
+
+// ─── validateNameof ───────────────────────────────────────────────────────
+
+bool validateNameof(IntrinsicCallExprAST* expr, SemaContext& ctx) {
+    if (expr->args.size() != 1) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#nameof expects 1 argument");
+        return false;
+    }
+
+    ExprAST* arg = expr->args[0];
+    if (!arg->isa<IdentifierExprAST>() &&
+        !arg->isa<FieldAccessExprAST>() &&
+        !arg->isa<ModuleAccessExprAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                              "#nameof requires a named entity "
+                              "(identifier, field access, or module access)");
+        return false;
+    }
+
     return true;
 }
 
@@ -1236,18 +1304,6 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                                  "cannot pass nil to non-nullable parameter in #scope_exit callback");
-            return false;
-        }
-
-        if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                                  "cannot pass err to non-fallible parameter in #scope_exit callback");
-            return false;
-        }
-
         argsBuilder.push_back(arg);
     }
 
@@ -1266,6 +1322,8 @@ bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
 
+    // BlockStmtAST::scopeExits is populated here during Sema validation,
+    // not during CodeGen. CodeGen reads these registrations at block exit.
     ScopeExitRegistration* registration = ctx.arena.make<ScopeExitRegistration>();
     registration->callExpr = expr;
     registration->callback = funcDecl;

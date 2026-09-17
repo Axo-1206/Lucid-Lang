@@ -58,13 +58,13 @@ static const IntrinsicEntry INTRINSIC_TABLE[] = {
 
     // ─── Atomics ────────────────────────────────────────────────────────────
     {"atomic_load",  IntrinsicKind::AtomicLoad,  IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_store", IntrinsicKind::AtomicStore, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, true},
-    {"atomic_add",   IntrinsicKind::AtomicAdd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_sub",   IntrinsicKind::AtomicSub,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_and",   IntrinsicKind::AtomicAnd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_or",    IntrinsicKind::AtomicOr,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_xor",   IntrinsicKind::AtomicXor,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"atomic_cas",   IntrinsicKind::AtomicCas,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_store", IntrinsicKind::AtomicStore, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, true},
+    {"atomic_add",   IntrinsicKind::AtomicAdd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_sub",   IntrinsicKind::AtomicSub,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_and",   IntrinsicKind::AtomicAnd,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_or",    IntrinsicKind::AtomicOr,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_xor",   IntrinsicKind::AtomicXor,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
+    {"atomic_cas",   IntrinsicKind::AtomicCas,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 4, 4, false, true, false},
 
     // ─── Type & Value Inspection ──────────────────────────────────────────
     {"sizeof",    IntrinsicKind::Sizeof,  IntrinsicEmitterKind::Lucid, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, false},
@@ -114,7 +114,7 @@ static const IntrinsicEntry INTRINSIC_TABLE[] = {
     {"simd_fma",      IntrinsicKind::SimdFma,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
     {"simd_min",      IntrinsicKind::SimdMin,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
     {"simd_max",      IntrinsicKind::SimdMax,     IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
-    {"simd_load",     IntrinsicKind::SimdLoad,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 1, 1, false, true, false},
+    {"simd_load",     IntrinsicKind::SimdLoad,    IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
     {"simd_store",    IntrinsicKind::SimdStore,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, true},
     {"simd_splat",    IntrinsicKind::SimdSplat,   IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 3, 3, false, true, false},
     {"simd_extract",  IntrinsicKind::SimdExtract, IntrinsicEmitterKind::LLVM, llvm::Intrinsic::not_intrinsic, 2, 2, false, true, false},
