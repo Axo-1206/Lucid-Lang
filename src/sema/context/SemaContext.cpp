@@ -392,26 +392,6 @@ TypeDeclAST* SemaContext::lookupTypeByAlias(InternedString alias, InternedString
     return lookupModuleTypeMember(module, memberName);
 }
 
-// ─── Export Checking ─────────────────────────────────────────────────────
-
-bool SemaContext::isExported(DeclAST* decl) const {
-    if (!decl) return false;
-    for (AttributeAST* attr : decl->attributes) {
-        if (attr->name == pool.intern("export")) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool SemaContext::isTypeExported(TypeDeclAST* decl) const {
-    return isExported(decl);
-}
-
-bool SemaContext::isValueExported(ValueDeclAST* decl) const {
-    return isExported(decl);
-}
-
 // ─── Module Member Keyword Info ──────────────────────────────────────────
 
 DeclKeyword SemaContext::lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {

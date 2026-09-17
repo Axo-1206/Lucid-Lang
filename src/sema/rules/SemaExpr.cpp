@@ -856,7 +856,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType,
     expr->resolvedDecl = decl;
 
     // ─── Step 4: Check if the member is exported ────────────────────────────
-    if (!ctx.isValueExported(decl)) {
+    if (!decl->isExported) {
         ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
                               "' in module '", ctx.pool.lookup(expr->moduleName),

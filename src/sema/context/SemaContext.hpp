@@ -332,11 +332,6 @@ struct SemaContext {
     ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const;
     TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const;
     
-    // ─── Export Checking ──────────────────────────────────────────────
-    bool isExported(DeclAST* decl) const;
-    bool isTypeExported(TypeDeclAST* decl) const;
-    bool isValueExported(ValueDeclAST* decl) const;
-    
     // ─── Module Member Keyword Info ────────────────────────────────────
     DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const;
     bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const;

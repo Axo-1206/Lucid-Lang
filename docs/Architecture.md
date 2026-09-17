@@ -935,8 +935,7 @@ lucid/
     │   └── support/
     │       ├── InterpreterOptions.hpp   # Configuration options
     │       ├── InterpreterError.hpp     # Error types
-    │       ├── ExecutionResult.hpp      # Result of execution
-    │       └── PanicHandler.hpp/cpp     # Runtime panic handling
+    │       └── ExecutionResult.hpp      # Result of execution
     │
     ├── compiler/                       # AOT backend (lucid build)
     │   └── aot/                        # AOT-only backend

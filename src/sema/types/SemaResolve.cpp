@@ -392,7 +392,7 @@ TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
     }
 
     // Check if the type is exported
-    if (!ctx.isTypeExported(decl)) {
+    if (!decl->isExported) {
         ctx.diagnostics.error(DiagCode::Sem_PrivateMember, type,
                               "type '", ctx.pool.lookup(type->typeName), "' in module '",
                               ctx.pool.lookup(type->moduleName), "' is not exported");
