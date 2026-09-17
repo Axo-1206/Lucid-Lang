@@ -26,15 +26,33 @@ static InternedString buildMangledName(const std::string& components, SemaContex
 
 InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
-    
+
+    // ─── 0. Export short-circuit ─────────────────────────────────────────
+    // An @[export]ed function's symbol is exactly its source name. No module
+    // path, no signature encoding. This is what makes `@[export] const main`
+    // produce the symbol `main` that the C runtime and the interpreter's
+    // entry-point lookup both expect.
+    //
+    // For a generic function template, this returns the source name for the
+    // *template*. Each specialization still goes through
+    // generateMangledNameForGeneric and receives its own distinct mangled
+    // name; the template itself is never lowered to LLVM IR (lowerDeclaration
+    // skips generics). So an exported generic function's source-named symbol
+    // never exists at runtime — the flag is effectively a no-op for
+    // templates, which is fine because exporting a template is meaningless
+    // (callers can't reference it without instantiating).
+    if (decl->isExported) {
+        return decl->name;
+    }
+
     std::string result;
-    
+
     // ─── 1. Module path ──────────────────────────────────────────────────
     result += getMangledModulePath(ctx) + "_";
-    
+
     // ─── 2. Function name ──────────────────────────────────────────────────
     result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
+
     // ─── 3. Generic parameters (if any) ──────────────────────────────────
     if (!decl->genericParams.empty()) {
         result += "_G";
@@ -45,7 +63,7 @@ InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx) {
             );
         }
     }
-    
+
     // ─── 4. Parameter types ──────────────────────────────────────────────
     result += "_P";
     const FuncTypeAST* funcType = decl->funcType;
@@ -55,52 +73,68 @@ InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx) {
         }
         funcType = funcType->getNext();
     }
-    
+
     // ─── 5. Return type ──────────────────────────────────────────────────
     if (decl->funcType->returnType) {
         result += "_R" + typeToMangleString(decl->funcType->returnType, ctx);
     } else {
         result += "_RV";  // void
     }
-    
+
     return buildMangledName(result, ctx);
 }
 
 InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
-    
+
+    // ─── 0. Export short-circuit ─────────────────────────────────────────
+    // See the FuncDeclAST overload for the rationale.
+    if (decl->isExported) {
+        return decl->name;
+    }
+
     std::string result;
-    
+
     // ─── 1. Module path ──────────────────────────────────────────────────
     result += getMangledModulePath(ctx) + "_";
-    
+
     // ─── 2. Variable name ──────────────────────────────────────────────────
     result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
+
     // ─── 3. Type ──────────────────────────────────────────────────────────
     if (decl->type) {
         result += "_T" + typeToMangleString(decl->type, ctx);
     } else {
         result += "_TV";  // void (should not happen for variables)
     }
-    
+
     // ─── 4. Mutability ──────────────────────────────────────────────────
     result += decl->isConst() ? "_C" : "_M";  // Const or Mutable
-    
+
     return buildMangledName(result, ctx);
 }
 
 InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
-    
+
+    // NOTE: `decl->isExported` is deliberately NOT consulted here. An enum's
+    // mangled name doubles as its LLVM type name (see CodeGenDecl.cpp's
+    // lowerEnumDecl), and the module-path prefix is what prevents two
+    // modules' `enum Status` from colliding in the LLVM module. Making an
+    // exported enum's mangled name equal to its source name would
+    // reintroduce that collision. Export-awareness for enums belongs in the
+    // `.luci` writer (Architecture §9.2), which serializes the typed AST
+    // for downstream consumers — it does not need the enum's LLVM type name
+    // to be the source name.
+
     std::string result;
-    
+
     // ─── 1. Module path ──────────────────────────────────────────────────
     result += getMangledModulePath(ctx) + "_";
-    
+
     // ─── 2. Enum name ──────────────────────────────────────────────────
     result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
+
     // ─── 3. Backing type (for disambiguation) ──────────────────────────────
     // This helps distinguish enums with different backing types
     // but the same name (unlikely, but safe for consistency).
@@ -110,26 +144,30 @@ InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
         // Default backing type is int32
         result += "_B" + typeToMangleString(ctx.getIntType(), ctx);
     }
-    
+
     // ─── 4. Variant count (for disambiguation) ─────────────────────────────
     // Two enums with the same name and same backing type but different
     // variants would be different types. This ensures uniqueness.
     result += "_V" + std::to_string(decl->variants.size());
-    
+
     return buildMangledName(result, ctx);
 }
 
 InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
-    
+
+    // NOTE: `decl->isExported` is deliberately NOT consulted here. See the
+    // EnumDeclAST overload above for the full rationale — the same
+    // type-name-collision argument applies.
+
     std::string result;
-    
+
     // ─── 1. Module path ──────────────────────────────────────────────────
     result += getMangledModulePath(ctx) + "_";
-    
+
     // ─── 2. Struct name ──────────────────────────────────────────────────
     result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
+
     // ─── 3. Generic parameters (if any) ──────────────────────────────────
     if (!decl->genericParams.empty()) {
         result += "_G";
@@ -140,7 +178,7 @@ InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
             );
         }
     }
-    
+
     return buildMangledName(result, ctx);
 }
 
@@ -148,20 +186,20 @@ InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
 
 std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
     if (!type) return "V";  // void
-    
+
     switch (type->kind) {
         case ASTKind::PrimitiveType: {
             const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
             char code = encodePrimitiveKind(prim->primitiveKind);
             return std::string(1, code);
         }
-        
+
         case ASTKind::NamedType: {
             const NamedTypeAST* named = type->as<NamedTypeAST>();
             std::string name = sanitizeForMangledName(
                 ctx.pool.lookup(named->name)
             );
-            
+
             // Add generic arguments if present
             if (!named->genericArgs.empty()) {
                 name += "_G";
@@ -172,7 +210,7 @@ std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
             }
             return name;
         }
-        
+
         case ASTKind::ArrayType: {
             const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
             std::string result = "A";
@@ -186,42 +224,42 @@ std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
             result += typeToMangleString(arr->element, ctx);
             return result;
         }
-        
+
         case ASTKind::PtrType: {
             const PtrTypeAST* ptr = type->as<PtrTypeAST>();
             return "P" + typeToMangleString(ptr->inner, ctx);
         }
-        
+
         case ASTKind::RefType: {
             const RefTypeAST* ref = type->as<RefTypeAST>();
             return "R" + typeToMangleString(ref->inner, ctx);
         }
-        
+
         case ASTKind::NullableType: {
             const NullableTypeAST* nullable = type->as<NullableTypeAST>();
             return "N" + typeToMangleString(nullable->inner, ctx);
         }
-        
+
         case ASTKind::FallibleType: {
             const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
             return "F" + typeToMangleString(fallible->inner, ctx);
         }
-        
+
         case ASTKind::CombinedType: {
             const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
             return "X" + typeToMangleString(combined->inner, ctx);
         }
-        
+
         case ASTKind::FuncType: {
             const FuncTypeAST* func = type->as<FuncTypeAST>();
             std::string result = "F";
-            
+
             // Parameter types
             for (ParamAST* param : func->params) {
                 result += typeToMangleString(param->type, ctx);
             }
             result += "_";
-            
+
             // Return type
             if (func->returnType) {
                 result += typeToMangleString(func->returnType, ctx);
@@ -230,17 +268,17 @@ std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
             }
             return result;
         }
-        
+
         case ASTKind::FutureType: {
             const FutureTypeAST* future = type->as<FutureTypeAST>();
             return "U" + typeToMangleString(future->inner, ctx);
         }
-        
+
         case ASTKind::ThreadType: {
             const ThreadTypeAST* thread = type->as<ThreadTypeAST>();
             return "H" + typeToMangleString(thread->inner, ctx);
         }
-        
+
         default:
             return "?" + astKindToString(type->kind);
     }
@@ -385,14 +423,14 @@ static std::string typeToMangleStringSubstituted(
 
 std::string sanitizeForMangledName(const std::string& str) {
     std::string result = str;
-    
+
     // Replace special characters with underscores
     for (char& c : result) {
         if (!std::isalnum(static_cast<unsigned char>(c))) {
             c = '_';
         }
     }
-    
+
     return result;
 }
 
@@ -400,16 +438,16 @@ std::string getMangledModulePath(SemaContext& ctx) {
     if (!ctx.currentModule) {
         return "global";
     }
-    
+
     std::string path = ctx.pool.lookup(ctx.currentModule->filePath);
-    
+
     // Replace path separators and dots with underscores
     for (char& c : path) {
         if (c == '/' || c == '\\' || c == '.') {
             c = '_';
         }
     }
-    
+
     return path;
 }
 
@@ -453,6 +491,15 @@ InternedString generateMangledNameForGeneric(
     if (!decl || typeArgs.empty()) {
         return InternedString(0);
     }
+
+    // NOTE: `decl->isExported` is deliberately NOT consulted here. A
+    // specialization is a distinct symbol with its own concrete signature
+    // and must remain distinct. The template's exported-ness — even if we
+    // were to give it meaning — does not transfer to its specializations,
+    // because a C caller naming the specialization would need to know the
+    // concrete type arguments, at which point the source name alone is
+    // meaningless. Exporting a generic is effectively a no-op; see the
+    // FuncDeclAST overload of generateMangledName.
 
     std::string result;
 
