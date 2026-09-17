@@ -210,6 +210,7 @@ void JSONDumper::serializeVarDecl(JSONWriter& json, VarDeclAST* decl) {
     json.beginObject();
     json.kv("kind", "VarDecl");
     json.kv("name", str(decl->name));
+    json.kv("isExported", decl->isExported);
     json.kv("keyword", declKeywordToString(decl->keyword));
     
     if (decl->type) {
@@ -247,6 +248,7 @@ void JSONDumper::serializeFuncDecl(JSONWriter& json, FuncDeclAST* decl) {
     json.beginObject();
     json.kv("kind", "FuncDecl");
     json.kv("name", str(decl->name));
+    json.kv("isExported", decl->isExported);
     json.kv("keyword", declKeywordToString(decl->keyword));
     
     json.key("genericParams");
@@ -291,6 +293,7 @@ void JSONDumper::serializeStructDecl(JSONWriter& json, StructDeclAST* decl) {
     json.beginObject();
     json.kv("kind", "StructDecl");
     json.kv("name", str(decl->name));
+    json.kv("isExported", decl->isExported);
     
     json.key("genericParams");
     json.beginArray();
@@ -324,6 +327,7 @@ void JSONDumper::serializeEnumDecl(JSONWriter& json, EnumDeclAST* decl) {
     json.beginObject();
     json.kv("kind", "EnumDecl");
     json.kv("name", str(decl->name));
+    json.kv("isExported", decl->isExported);
     
     if (decl->backingType) {
         json.key("backingType");
@@ -346,6 +350,7 @@ void JSONDumper::serializeTraitDecl(JSONWriter& json, TraitDeclAST* decl) {
     json.beginObject();
     json.kv("kind", "TraitDecl");
     json.kv("name", str(decl->name));
+    json.kv("isExported", decl->isExported);
     
     json.key("genericParams");
     json.beginArray();
