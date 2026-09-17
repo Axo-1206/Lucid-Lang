@@ -693,16 +693,26 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 3. Generate mangled name ────────────────────────────────────────────
-    // This is CRITICAL for CodeGen to create unique enum types.
-    // Without mangling, two enums with the same name in different modules
-    // would collide in LLVM.
+    // Keeps every declaration's mangled name unique across the loaded
+    // module set. For enums, the mangled name is currently used for
+    // diagnostics and (in future) `.luci` generation, not for LLVM type
+    // identity — getEnumType lowers enums to a bare IntegerType, which
+    // LLVM interns per-LLVMContext by bit width. Two enums with the same
+    // backing kind share an IntegerType today regardless of their
+    // mangled names, so no cross-module collision exists at the enum
+    // level yet.
+    //
+    // The invariant is kept because it is load-bearing for other
+    // declaration kinds (structs in particular — see the NOTE in
+    // MangledName.cpp's StructDeclAST overload for the shared-
+    // LLVMContext collision that reasoning protects against) and
+    // because a future tagged-union enum lowering will want to name
+    // its LLVM struct after the mangled name and would inherit the
+    // same hazard if the invariant were dropped.
     //
     // Example:
     //   module1: enum Status { Ok = 0, Err = 1 }
     //   module2: enum Status { Active = 0, Inactive = 1 }
-    //   Both would be named "Status" without mangling → conflict!
-    //
-    // With mangling:
     //   module1 → _Lmodule1_Status_Bi_V2
     //   module2 → _Lmodule2_Status_Bi_V2
     InternedString mangled = generateMangledName(decl, ctx);

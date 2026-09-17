@@ -117,15 +117,22 @@ InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx) {
 InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
 
-    // NOTE: `decl->isExported` is deliberately NOT consulted here. An enum's
-    // mangled name doubles as its LLVM type name (see CodeGenDecl.cpp's
-    // lowerEnumDecl), and the module-path prefix is what prevents two
-    // modules' `enum Status` from colliding in the LLVM module. Making an
-    // exported enum's mangled name equal to its source name would
-    // reintroduce that collision. Export-awareness for enums belongs in the
-    // `.luci` writer (Architecture §9.2), which serializes the typed AST
-    // for downstream consumers — it does not need the enum's LLVM type name
-    // to be the source name.
+    // NOTE: `decl->isExported` is deliberately NOT consulted here.
+    //
+    // See the StructDeclAST overload above for the full reasoning. The
+    // same interface-name-vs-LLVM-type-name distinction applies, and
+    // the same `.luci` writer will be the consumer that reads the flag.
+    //
+    // Enums differ from structs in one respect: getEnumType lowers them
+    // to a bare llvm::IntegerType, which LLVM interns per-LLVMContext
+    // by bit width — so two enums with the same backing kind already
+    // share an LLVM type today, and no mangled-name-based lookup
+    // distinguishes them. The mangled name here is used for diagnostic
+    // and `.luci` purposes, not for type identity. Keeping it fully
+    // mangled preserves the invariant that every declaration's mangled
+    // name is unique across the loaded module set, so a future change
+    // that starts relying on it (e.g., a tagged-union enum lowering
+    // that names its LLVM struct) inherits that invariant for free.
 
     std::string result;
 
@@ -156,9 +163,26 @@ InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
 InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
     if (!decl) return InternedString(0);
 
-    // NOTE: `decl->isExported` is deliberately NOT consulted here. See the
-    // EnumDeclAST overload above for the full rationale — the same
-    // type-name-collision argument applies.
+    // NOTE: `decl->isExported` is deliberately NOT consulted here.
+    //
+    // CodeGen's getStructType (CodeGenType.cpp) uses this mangled name as
+    // the LLVM struct type's *name*, and creates it via
+    // `StructType::getTypeByName(ctx.llvmCtx, name)` — a lookup that is
+    // scoped to the shared LLVMContext, not to any one llvm::Module.
+    // Because a single codegen run lowers every loaded module into the
+    // same context, two structs named `Player` in different modules
+    // would alias the same llvm::StructType if their mangled names
+    // matched. The module-path prefix below is what keeps them distinct.
+    //
+    // Export-awareness for structs belongs in the `.luci` writer
+    // (Architecture §9.2), which serializes the typed AST's exported
+    // subset and reads `decl->name` + `decl->isExported` directly. It
+    // does not go through `decl->mangledName`, because the interface
+    // name and the LLVM type name are different concerns.
+    //
+    // Setting `@[export]` on a struct is therefore a valid interface
+    // marker with no effect on this function's output. See the
+    // EnumDeclAST overload for the same reasoning applied to enums.
 
     std::string result;
 

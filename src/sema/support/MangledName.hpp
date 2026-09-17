@@ -4,16 +4,23 @@
 /// ─── Export Behavior ─────────────────────────────────────────────────────
 ///
 /// A declaration carrying `@[export]` has `decl->isExported == true` (set by
-/// Sema's attribute validator) and is mangled to exactly its source name:
-/// no module path, no signature suffix. This is what makes the symbol
-/// `main` from `@[export] const main fn () -> int` findable by the C runtime
-/// and by `InterpreterProgram::run`'s entry-point lookup.
+/// Sema's attribute validator). For functions and variables, the mangled
+/// name is exactly the source name: no module path, no signature suffix.
+/// That is what makes the symbol `main` from `@[export] const main` findable
+/// by the C runtime and by `InterpreterProgram::run`'s entry-point lookup.
 ///
-/// Export-aware mangling currently applies to functions and variables only.
 /// Structs and enums deliberately keep their fully-mangled names even when
-/// `@[export]`ed, because their mangled name is used as the LLVM type name
-/// and the module-path prefix is what prevents two modules' `enum Status`
-/// from colliding. See the individual overloads in MangledName.cpp.
+/// `@[export]`ed. For structs the reason is concrete: getStructType uses
+/// the mangled name as the LLVM struct's name and looks it up via
+/// `StructType::getTypeByName`, which is scoped to the shared LLVMContext;
+/// a source-named exported struct would alias any same-named struct in
+/// another module. See the StructDeclAST overload below for the full case.
+///
+/// Enums do not yet have an LLVM type name of their own (getEnumType
+/// returns a bare IntegerType interned by bit width), so the struct
+/// hazard does not apply to them today. They are kept mangled anyway to
+/// preserve the cross-declaration "every mangled name is unique" invariant,
+/// which a future tagged-union enum lowering would rely on.
 
 #pragma once
 
