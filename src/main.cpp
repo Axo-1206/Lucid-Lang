@@ -332,7 +332,7 @@ int main(int argc, char* argv[]) {
     // ─── Emit-IR Command ──────────────────────────────────────────────────
     // Parses the file, runs semantic analysis, generates LLVM IR, and
     // writes the IR as text. Useful for codegen inspection and testing.
-    // Pipeline stops at: CodeGen (IR generation; no execution)
+    // Pipeline stops at: EmitIR (IR generation; no execution)
     // Requires: rootFilePath (the file to lower)
     // Options: -o, --verbose
     if (command == "emit-ir") {
@@ -341,7 +341,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         opts.command = cli::CLIOptions::Command::EmitIR;
-        opts.stopAt = cli::PipelineStage::CodeGen;
+        opts.stopAt = cli::PipelineStage::EmitIR;
         return cli::commands::emitIRCommand(opts);
     }
 

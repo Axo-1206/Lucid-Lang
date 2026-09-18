@@ -11,6 +11,7 @@
 #include "../runtime/RuntimeFunctionRegistry.hpp"
 #include "../memory/LiveVariableTracker.hpp"
 #include "../types/LLVMTypeHelpers.hpp"
+#include "../CodeGenDefaults.hpp"
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
@@ -33,7 +34,7 @@ namespace codegen {
 struct CodeGenOptions {
     /// Number of slots in @__lucid_module_instances. Must be uniform
     /// across every module in a program.
-    uint32_t moduleCapacity = 256;
+    uint32_t moduleCapacity = defaults::kModuleCapacity;
 
     /// Pre-assigned module IDs. If null, CodeGen assigns by position.
     const std::unordered_map<ModuleAST*, uint32_t>* moduleIds = nullptr;

@@ -7,6 +7,11 @@
 
 #include "core/diagnostics/Diagnostic.hpp"
 #include "parser/ModuleResolver.hpp"
+#include "codegen/CodeGen.hpp"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
 #include <sstream>
@@ -211,18 +216,100 @@ PipelineResult runPipeline(const CLIOptions& opts, CLIContext& ctx) {
     }
 
     // ─── 4. Code Generation Stage ──────────────────────────────────────
-    // This stage runs for run and build commands
-    // Skip codegen if there were errors (can't generate valid IR from invalid AST)
+    // Runs for CodeGen, EmitIR, and Build. Does NOT run for Execute —
+    // the run command's interpreter regenerates IR with its own JIT
+    // context, and generating it here too would be wasted work.
+    // Skipped entirely when there are errors, since we can't lower an
+    // invalid AST.
     if (!ctx.diagnostics.hasErrors()) {
-        if (opts.stopAt == PipelineStage::CodeGen || 
-            opts.stopAt == PipelineStage::Execute ||
+        if (opts.stopAt == PipelineStage::CodeGen ||
+            opts.stopAt == PipelineStage::EmitIR ||
             opts.stopAt == PipelineStage::Build) {
-            
-            Trace::info("Generating code");
-            
-            // TODO: Implement code generation
-            result.llvmIR = "; LLVM IR generation not yet implemented\n";
-            Trace::info("Stopped at CodeGen stage (LLVM IR generation)");
+
+            Trace::info("Generating LLVM IR");
+
+            // ─── Context and options ──────────────────────────────────
+            // The pipeline owns this LLVMContext for the duration of
+            // the CodeGen stage only. It exists so codegen::generate
+            // has somewhere to allocate its IR objects; once we've
+            // serialized the IR to text and returned, the context is
+            // destroyed and every llvm::Module within it is freed.
+            //
+            // The interpreter path (InterpreterProgram::load) uses its
+            // own JIT-owned context instead. The two paths share
+            // codegen::generate but not the context that wraps it: the
+            // pipeline produces text and discards the modules; the
+            // interpreter keeps the modules alive and hands them to ORC.
+            //
+            // CodeGenOptions is left at its defaults:
+            //
+            //   moduleCapacity = 256
+            //       Sizes the `__lucid_module_instances` array declared
+            //       in every module's IR. Must be uniform across every
+            //       module in a program, and must match what the
+            //       interpreter uses so that emit-ir output is
+            //       structurally identical to the IR the interpreter
+            //       would generate for the same source. The default
+            //       equals InterpreterSession::kDefaultModuleCapacity.
+            //
+            //   moduleIds = nullptr
+            //       CodeGen assigns IDs by module position when no
+            //       external map is supplied. The interpreter passes a
+            //       map keyed on its session instance table; the
+            //       pipeline has no such table and takes the positional
+            //       fallback, which produces the same IDs for the same
+            //       module order.
+            llvm::LLVMContext llvmCtx;
+            codegen::CodeGenOptions cgOptions;
+
+            std::vector<std::unique_ptr<llvm::Module>> irModules;
+            try {
+                irModules = codegen::generate(
+                    result.modules,
+                    ctx.stringPool,
+                    ctx.diagnostics,
+                    llvmCtx,
+                    cgOptions);
+            } catch (const std::exception& e) {
+                ctx.diagnostics.error(DiagCode::Backend_CodegenError, nullptr,
+                                      "codegen failed: ", e.what());
+                result.success = false;
+                result.exitCode = 1;
+                return result;
+            }
+
+            // ─── Failure detection ────────────────────────────────────
+            // codegen::generate does not throw on a per-module failure;
+            // it reports through the DiagnosticEngine and may still
+            // return a module object for a module that failed
+            // verification. The error signal is therefore
+            // diagnostics.hasErrors(), not the size of the returned
+            // vector.
+            if (ctx.diagnostics.hasErrors()) {
+                result.success = false;
+                result.exitCode = 1;
+                return result;
+            }
+
+            // ─── Serialize to text ────────────────────────────────────
+            // Populate result.llvmIR for every stage that runs codegen.
+            // CodeGen and Build don't consume it today, but the cost is
+            // negligible and it makes the result self-describing.
+            std::string irText;
+            llvm::raw_string_ostream os(irText);
+            for (size_t i = 0; i < irModules.size(); ++i) {
+                if (!irModules[i]) continue;
+                if (i > 0) {
+                    os << "\n; ================ module boundary ================\n\n";
+                }
+                irModules[i]->print(os, nullptr);
+            }
+            os.flush();
+            result.llvmIR = std::move(irText);
+
+            Trace::info("Generated IR for ",
+                        std::to_string(irModules.size()),
+                        " module(s)");
         }
     } else {
         Trace::detail("Skipping code generation due to errors");

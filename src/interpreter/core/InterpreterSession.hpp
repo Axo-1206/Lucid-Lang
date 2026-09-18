@@ -5,6 +5,7 @@
 
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "codegen/CodeGenDefaults.hpp"
 #include "../support/InterpreterOptions.hpp"
 #include "../jit/JITSession.hpp"
 #include "../dynlink/DynamicLinker.hpp"
@@ -20,7 +21,7 @@ namespace interpreter {
 /// @__lucid_module_instances registered as an absolute symbol.
 class InterpreterSession {
 public:
-    static constexpr uint32_t kDefaultModuleCapacity = 256;
+    static constexpr uint32_t kDefaultModuleCapacity = codegen::defaults::kModuleCapacity;
 
     InterpreterSession(StringPool& pool,
                        DiagnosticEngine& diag,

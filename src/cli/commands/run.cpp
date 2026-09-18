@@ -25,9 +25,18 @@ int runCommand(const CLIOptions& opts) {
 
     bool verbose = opts.verbose || opts.interpreter.verbose;
 
-    // ─── Run pipeline up to CodeGen ────────────────────────────────────
+    // ─── Run pipeline up to Sema ───────────────────────────────────────
+    // Stop at Sema, not CodeGen: the interpreter does its own codegen
+    // with its JIT-owned LLVM context. Running the pipeline's codegen
+    // here would produce IR in a context we're about to throw away,
+    // and the interpreter would regenerate the same IR moments later.
+    //
+    // The pipeline's IR-generation branch is for the emit-ir command
+    // (and, eventually, build), where the IR is the product. For run,
+    // the product is execution, and the interpreter owns the codegen
+    // path that produces it.
     CLIOptions pipelineOpts = opts;
-    pipelineOpts.stopAt = PipelineStage::CodeGen;
+    pipelineOpts.stopAt = PipelineStage::Sema;
 
     pipeline::PipelineResult result = pipeline::runPipeline(pipelineOpts, ctx);
 

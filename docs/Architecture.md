@@ -856,6 +856,7 @@ lucid/
     │   ├── CodeGenDecl.cpp      # Declaration lowering
     │   ├── CodeGenStmt.cpp      # Statement lowering
     │   ├── CodeGenExpr.cpp      # Expression lowering
+    │   ├── CodeGenDefaults.hpp  # Program-wide constants that every codegen caller must agree on.
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
@@ -969,7 +970,8 @@ lucid/
     │   ├── commands/
     │   │   ├── sema.hpp/cpp            # 'sema' command - parse + semantic analysis.
     │   │   ├── parse.hpp/cpp           # 'parse' command - parse-only mode for debugging.
-    │   │   └── run.hpp/cpp                 # lucid run (.luc source or .bc bitcode)
+    │   │   ├── emit-ir.hpp/cpp         # 'lucid emit-ir' command - emit LLVM IR as text.
+    │   │   └── run.hpp/cpp             # lucid run (.luc source or .bc bitcode)
     │   ├── pipeline/
     │   │   ├── JSONDumper.hpp/cpp      # Serialization for all AST nodes and diagnostics.
     │   │   └── Pipeline.hpp/cpp        # Compiler pipeline with configurable stop points and output.

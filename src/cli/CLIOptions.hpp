@@ -19,8 +19,16 @@ enum class PipelineStage {
     Parse,
     /// Stop after semantic analysis (validated AST)
     Sema,
-    /// Stop after code generation (LLVM IR)
+    /// Stop after LLVM IR generation, keeping the IR in memory.
     CodeGen,
+    /// Stop after LLVM IR generation, with the IR serialized to text
+    /// for the `emit-ir` command.
+    ///
+    /// CodeGen and EmitIR currently run the same codegen pass and
+    /// differ only in whether the caller intends to consume the IR as
+    /// text. Keeping them distinct lets that divergence grow without
+    /// renaming an enum value later.
+    EmitIR,
     /// Full execution (default for 'run')
     Execute,
     /// AOT compilation

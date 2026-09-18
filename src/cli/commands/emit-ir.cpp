@@ -18,13 +18,9 @@ int emitIRCommand(const CLIOptions& opts) {
     std::filesystem::path packageRoot = std::filesystem::current_path();
     CLIContext ctx(packageRoot);
 
-    // ─── Run pipeline up to CodeGen ────────────────────────────────────
-    // Note: this uses PipelineStage::CodeGen for now. When the
-    // PipelineStage::EmitIR enum value lands (alongside the actual
-    // codegen implementation), this will switch to it. Until then,
-    // CodeGen is where the pipeline's IR branch runs.
+    // ─── Run pipeline up to EmitIR ─────────────────────────────────────
     CLIOptions pipelineOpts = opts;
-    pipelineOpts.stopAt = PipelineStage::CodeGen;
+    pipelineOpts.stopAt = PipelineStage::EmitIR;
 
     pipeline::PipelineResult result = pipeline::runPipeline(pipelineOpts, ctx);
 
