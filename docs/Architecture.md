@@ -776,6 +776,8 @@ lucid/
     │   │   └── TypeAST.hpp                 # type annotation nodes
     │   ├── builtins/
     │   │   └── ArenaMethod.hpp             # only method enum + parsing
+    │   ├── trace/
+    │   │   └── Trace.hpp/cpp
     │   ├── registry/
     │   │   ├── AttributeRegistry.hpp/cpp
     │   │   └── IntrinsicRegistry.hpp/cpp
@@ -964,20 +966,18 @@ lucid/
     │   └── game.luc
     │
     ├── cli/                            # command-line interface
-    │   ├── frontend/
-    │   │   ├── JSONDumper.hpp/cpp      # Serialization for all AST nodes and diagnostics.
-    │   │   ├── parse.hpp/cpp           # 'parse' command - parse-only mode for debugging.
+    │   ├── commands/
     │   │   ├── sema.hpp/cpp            # 'sema' command - parse + semantic analysis.
+    │   │   ├── parse.hpp/cpp           # 'parse' command - parse-only mode for debugging.
+    │   │   └── run.hpp/cpp                 # lucid run (.luc source or .bc bitcode)
+    │   ├── pipeline/
+    │   │   ├── JSONDumper.hpp/cpp      # Serialization for all AST nodes and diagnostics.
     │   │   └── Pipeline.hpp/cpp        # Compiler pipeline with configurable stop points and output.
     │   ├── CLIContext.hpp              # Shared CLI context for a single run session.
     │   ├── CLIOptions.hpp              # Unified CLI options for all commands.
     │   ├── DependencyGraph.hpp         # Bi‑directional dependency graph for hot‑reload.
     │   ├── FileWatcher.hpp             # File watcher for hot‑reload.
-    │   ├── RunOptions.hpp/cpp
-    │   ├── Trace.hpp/cpp
-    │   ├── run.hpp/cpp                 # lucid run (.luc source or .bc bitcode)
-    │   └── build.hpp                   # lucid build [--lib [--static] [--shared]] [--emit-bc]
-    │                                   # (not implemented yet — see Architecture §10)
+    │   └── RunOptions.hpp/cpp
     │
     └── debug/                          # developer tools (not user-facing)
 
