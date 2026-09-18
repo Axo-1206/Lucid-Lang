@@ -175,6 +175,20 @@ add_definitions(${LLVM_DEFINITIONS})
 # Automatically gather all .cpp files within src/ and its nested directories
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 
+# Force a single, consistent runtime library across the whole build.
+# This MUST match what vcpkg used to build LLVM (its default x64-windows
+# triplet builds Release/`/MD`). If you build Debug with `/MDd`, LLVM's
+# class layouts disagree with your translation units and every LLVM
+# assertion fires on valid code.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+
+# Default to Release if the caller didn't pick one. vcpkg ships Release;
+# building Debug against a Release LLVM library is the same ABI mismatch
+# as the runtime-library one above, one level up.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+endif()
+
 # Create executable
 add_executable(lucid-comp ${SOURCES})
 
