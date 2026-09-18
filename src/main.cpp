@@ -290,7 +290,7 @@ int main(int argc, char* argv[]) {
         }
         opts.command = cli::CLIOptions::Command::Run;
         opts.stopAt = cli::PipelineStage::Execute;
-        return cli::runCommand(opts);
+        return cli::commands::runCommand(opts);
     }
 
     // ─── Parse Command ────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ int main(int argc, char* argv[]) {
         }
         opts.command = cli::CLIOptions::Command::Parse;
         opts.stopAt = cli::PipelineStage::Parse;
-        return cli::frontend::parseCommand(opts);
+        return cli::commands::parseCommand(opts);
     }
 
     // ─── Sema Command ─────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ int main(int argc, char* argv[]) {
         }
         opts.command = cli::CLIOptions::Command::Sema;
         opts.stopAt = cli::PipelineStage::Sema;
-        return cli::frontend::semaCommand(opts);
+        return cli::commands::semaCommand(opts);
     }
 
     // ─── Build Command ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-/// @file cli/frontend/JSONDumper.hpp
+/// @file cli/pipeline/JSONDumper.hpp
 /// @brief Complete JSON serialization for all AST nodes and diagnostics.
 
 #pragma once
@@ -20,8 +20,7 @@
 #include <unordered_map>
 #include <sstream>
 
-namespace cli {
-namespace frontend {
+namespace cli::pipeline {
 
 // ─── JSON Writer ─────────────────────────────────────────────────────────
 
@@ -325,5 +324,4 @@ private:
     std::unordered_map<InternedString, ModuleAST*> moduleMap;
 };
 
-} // namespace frontend
-} // namespace cli
+} // namespace cli::pipeline

@@ -1,4 +1,4 @@
-/// @file cli/frontend/Pipeline.cpp
+/// @file cli/pipeline/Pipeline.cpp
 /// @brief Implementation of the unified compiler pipeline.
 
 #include "Pipeline.hpp"
@@ -13,8 +13,7 @@
 #include <iostream>
 #include <filesystem>
 
-namespace cli {
-namespace frontend {
+namespace cli::pipeline {
 
 // ─── File I/O Helpers ──────────────────────────────────────────────────
 
@@ -343,5 +342,4 @@ int writePipelineOutput(const CLIOptions& opts,
     return 0;
 }
 
-} // namespace frontend
-} // namespace cli
+} // namespace cli::pipeline

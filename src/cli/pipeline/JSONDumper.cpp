@@ -8,8 +8,7 @@
 #include <iomanip>
 #include <iostream>
 
-namespace cli {
-namespace frontend {
+namespace cli::pipeline {
 
 // ─── Constructor ─────────────────────────────────────────────────────────
 
@@ -1608,5 +1607,4 @@ void JSONDumper::serializeDiagnostics(JSONWriter& json, const DiagnosticEngine& 
     json.endObject();
 }
 
-} // namespace frontend
-} // namespace cli
+} // namespace cli::pipeline
