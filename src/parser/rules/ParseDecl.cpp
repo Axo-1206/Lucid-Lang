@@ -16,6 +16,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "parser/Parser.hpp"
+#include "parser/support/ErrorRecovery.hpp"
 
 #include <vector>
 
@@ -326,7 +327,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 }
 
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
-    // ─── 1. Parse keyword ──────────────────────────────────────────────────
+    // 1. Keyword
     SourceLocation keywordLoc = stream.currentLoc();
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst && !stream.match(TokenType::LET)) {
@@ -336,20 +337,14 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
 
-    // ─── 2. Parse function name ────────────────────────────────────────────
+    // 2. Name
     InternedString name;
     if (stream.check(TokenType::IDENTIFIER)) {
-        Token nameTok = stream.consume();
-        name = ctx.pool.intern(nameTok.value);
+        name = ctx.pool.intern(stream.consume().value);
     } else if (is_function_type_keyword(stream.peekType()) ||
                stream.check(TokenType::LESS)) {
-        // The name is missing, but the marker or generic list still follows.
-        // This is a function declaration with a missing name — recover here
-        // rather than falling into parseVarDecl, which has no business
-        // parsing a marker-led header.
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier,
-                                stream.currentLoc(),
-                                "expected function name");
+                                stream.currentLoc(), "expected function name");
         name = ctx.pool.intern("");
     } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier,
@@ -358,188 +353,184 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    // ─── 3. Parse generic parameters ───────────────────────────────────────
+    // 3. Generics
     ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
-
-    // ─── 3b. Invariant: generic ⇒ const ────────────────────────────────────
-    //
-    // A generic function declaration denotes a family, not a value. No
-    // expression form in the language produces a family, so a `let`-bound
-    // generic could never be reassigned. Report at the keyword token, where
-    // the user wrote the wrong thing, but don't rewrite the AST — Sema skips
-    // declarations marked `hasSyntaxError`.
     bool genericLetError = (!isConst && !genericParams.empty());
     if (genericLetError) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_GenericRequiresConst,
-                                keywordLoc,
+        ctx.diagnostics.errorAt(DiagCode::Sem_GenericRequiresConst, keywordLoc,
                                 "a generic function must be declared 'const'");
-        ctx.diagnostics.noteAt(keywordLoc,
-            "a generic function is a definition, not a reassignable value: "
-            "no expression form produces a generic-family value, so 'let' "
-            "has nothing it could ever be reassigned to");
     }
 
-    // ─── 4. Parse the signature chain (shared with parseFuncType) ──────────
+    // 4. Header: marked bound cluster + return type after first '->'
     //
-    // Under the new grammar, every stage of the chain carries its own `fn`
-    // or `cls` marker. `parseFuncTypeParts` reads the marked stages and the
-    // final return type; `buildFuncTypeChain` right-nests them into the
-    // FuncTypeAST the declaration and its call sites will use.
-    //
-    // This is the *declared* signature. Its ParamAST nodes are type-only —
-    // CodeGen will iterate `init`'s AnonFuncExprAST to get the runtime
-    // parameters (see the FuncDeclAST doc comment).
-    SourceLocation funcTypeLoc = stream.currentLoc();
-    FuncTypeParts parts = parseFuncTypeParts(stream, ctx, /*allowNames=*/true);
+    // We collect the bound cluster here and stop at the first '->'.
+    // Everything after is parsed by parseType (which recurses into
+    // parseFuncType for arrow-separated stages).
+    SourceLocation headerLoc = stream.currentLoc();
+    std::vector<std::vector<ParamAST*>> groups;
+    std::vector<FuncShape>              shapes;
 
-    FuncTypeAST* funcType = buildFuncTypeChain(ctx, parts);
-    if (funcType) funcType->loc = funcTypeLoc;
+    while (is_function_type_keyword(stream.peekType())) {
+        Token markerTok = stream.consume();
+        FuncShape shape = (markerTok.type == TokenType::TYPE_FN)
+                          ? FuncShape::Fn : FuncShape::Cls;
+        shapes.push_back(shape);
 
-    // ─── 5. Parse body portion ─────────────────────────────────────────────
-    //
-    // At this point we know the header, but not yet whether the body is a
-    // block, a reference, or some other expression. Defer the decision about
-    // how to wrap it into step 7, once the body is known to exist.
-    //
-    //   `parsedBlock` is the block body if the source had one.
-    //   `parsedExpr`  is the expression body if the source had one.
-    //   both null → foreign function (no body).
-    StmtAST* parsedBlock = nullptr;
-    ExprAST* parsedExpr = nullptr;
-    bool hasBodyError = false;
+        if (!stream.check(TokenType::LPAREN)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
+                                    stream.currentLoc(),
+                                    "expected '(' after '", markerTok.value, "'");
+            groups.push_back({});
+            break;
+        }
+        std::vector<ParamAST*> group = parseParamList(stream, ctx, /*allowNames=*/true);
+        groups.push_back(std::move(group));
 
-    // ─── 5a. Consume optional '=' before the body ──────────────────────────
-    bool hasExplicitAssign = false;
-    if (stream.match(TokenType::ASSIGN)) {
-        hasExplicitAssign = true;
-    } else if (!stream.check(TokenType::LBRACE) && !stream.check(TokenType::SEMICOLON)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '=', '{', or ';', got '", stream.peekValue(), "'");
+        if (stream.check(TokenType::ARROW)) break;
+        if (!is_function_type_keyword(stream.peekType())) break;
+    }
+
+    if (groups.empty()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, headerLoc,
+                                "expected 'fn' or 'cls' before parameter group, got '",
+                                stream.peekValue(), "'");
+        groups.push_back({});
+        shapes.push_back(FuncShape::Fn);
+    }
+
+    TypeAST* restType = nullptr;
+    if (stream.match(TokenType::ARROW)) {
+        restType = parseType(stream, ctx);
+        if (!restType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType,
+                                    stream.currentLoc(),
+                                    "expected return type after '->'");
+            restType = ctx.arena.make<UnknownTypeAST>();
+            restType->hasSyntaxError = true;
+        }
+    }
+
+    // Build the declared FuncTypeAST chain.
+    TypeAST* cur = restType;
+    std::vector<FuncTypeAST*> stageTypes(groups.size());
+    for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+        auto* ft = ctx.arena.make<FuncTypeAST>();
+        auto pb = ctx.arena.makeBuilder<ParamAST*>();
+        for (ParamAST* p : groups[i]) pb.push_back(p);
+        ft->params = pb.build();
+        ft->shape = shapes[i];
+        ft->returnType = cur;
+        ft->loc = headerLoc;
+        stageTypes[i] = ft;
+        cur = ft;
+    }
+    FuncTypeAST* declaredType = stageTypes[0];
+
+    // 5. '=' (optional — foreign functions don't have one)
+    bool hasExplicitAssign = stream.match(TokenType::ASSIGN);
+    if (!hasExplicitAssign &&
+        !stream.check(TokenType::LBRACE) &&
+        !stream.check(TokenType::SEMICOLON)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
+                                stream.currentLoc(),
+                                "expected '=', '{', or ';', got '",
+                                stream.peekValue(), "'");
         synchronizeToBoundary(stream, ctx,
             {TokenType::LBRACE, TokenType::ASSIGN, TokenType::SEMICOLON});
-
-        if (stream.match(TokenType::ASSIGN)) {
-            hasExplicitAssign = true;
-        }
+        hasExplicitAssign = stream.match(TokenType::ASSIGN);
     }
 
-    // ─── 5b. Parse the body itself ─────────────────────────────────────────
+    // 6. Body
+    ExprAST* init = nullptr;
+    bool bodyError = false;
+
     if (stream.check(TokenType::LBRACE)) {
+        // Block body: build an anon chain with declaredType's nodes.
         if (!hasExplicitAssign) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.previousLoc(),
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
+                                    stream.previousLoc(),
                                     "expected '=' before function body");
         }
-
-        parsedBlock = parseBlock(stream, ctx);
-        if (!parsedBlock) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                    "expected block body");
-            parsedBlock = ctx.arena.make<UnknownStmtAST>();
-            parsedBlock->hasSyntaxError = true;
-            hasBodyError = true;
+        StmtAST* block = parseBlock(stream, ctx);
+        if (!block) {
+            block = ctx.arena.make<UnknownStmtAST>();
+            block->hasSyntaxError = true;
+            bodyError = true;
         }
+
+        // Build the anon chain bottom-up. Innermost stage gets the block.
+        StmtAST* currentBody = block;
+        AnonFuncExprAST* currentAnon = nullptr;
+        for (int i = static_cast<int>(stageTypes.size()) - 1; i >= 0; --i) {
+            currentAnon = ctx.arena.make<AnonFuncExprAST>(stageTypes[i], currentBody);
+            currentAnon->loc = headerLoc;
+
+            if (i == 0) break;
+            auto* ret = ctx.arena.make<ReturnStmtAST>();
+            ret->loc = headerLoc;
+            ret->value = currentAnon;
+            currentBody = ret;
+        }
+        init = currentAnon;
     } else if (hasExplicitAssign) {
-        // ─── Expression body ───────────────────────────────────────────────
+        // Expression body: reference or call.
         if (looksLikeAnonFunc(stream, ctx)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration,
                                     stream.currentLoc(),
                                     "anonymous function not allowed at declaration site");
             ctx.diagnostics.noteAt(stream.currentLoc(),
                                    "Use a block body instead: '{ ... }'");
-            parsedExpr = ctx.arena.make<UnknownExprAST>();
-            parsedExpr->hasSyntaxError = true;
-            hasBodyError = true;
+            init = ctx.arena.make<UnknownExprAST>();
+            init->hasSyntaxError = true;
+            bodyError = true;
             synchronizeTo(stream, ctx, TokenType::SEMICOLON);
         } else {
-            parsedExpr = parseRequiredExpr(stream, ctx, "function body expression");
-            if (parsedExpr && parsedExpr->hasSyntaxError) {
-                hasBodyError = true;
-            }
-        }
-    }
-    // else: no init → foreign function
-
-    // ─── 6. Convert the parsed body into an ExprAST init ───────────────────
-    //
-    // Two body forms are possible:
-    //
-    //   parsedBlock != nullptr → block body. Hand it to buildAnonFuncChain,
-    //     which wraps it in one AnonFuncExprAST per stage (the innermost
-    //     stage holds the block directly; each outer stage holds a
-    //     `return <inner anon>;`).
-    //
-    //   parsedExpr != nullptr → expression body. If it's a reference to
-    //     another function value (IdentifierExprAST, ModuleAccessExprAST,
-    //     FieldAccessExprAST, CallExprAST), it IS the init — a value of the
-    //     declared type, already fully curried. Otherwise it's a plain
-    //     expression whose value must be returned from the innermost stage,
-    //     so wrap it in a ReturnStmtAST first.
-    //
-    // `nullptr` means a foreign function (no init).
-    ExprAST* finalInit = nullptr;
-
-    if (parsedBlock == nullptr && parsedExpr == nullptr) {
-        // Foreign function: no init.
-        finalInit = nullptr;
-    } else {
-        StmtAST* innermostBody = nullptr;
-
-        if (parsedBlock) {
-            innermostBody = parsedBlock;
-        } else {
-            // Expression body: pure function reference or plain expression?
-            bool isPureFunctionRef =
-                parsedExpr->isa<IdentifierExprAST>() ||
-                parsedExpr->isa<ModuleAccessExprAST>() ||
-                parsedExpr->isa<FieldAccessExprAST>() ||
-                parsedExpr->isa<CallExprAST>();
-
-            if (isPureFunctionRef) {
-                finalInit = parsedExpr;
+            ExprAST* expr = parseRequiredExpr(stream, ctx, "function body expression");
+            if (!expr) {
+                init = ctx.arena.make<UnknownExprAST>();
+                init->hasSyntaxError = true;
+                bodyError = true;
+            } else if (expr->isa<IdentifierExprAST>() ||
+                       expr->isa<ModuleAccessExprAST>() ||
+                       expr->isa<FieldAccessExprAST>() ||
+                       expr->isa<CallExprAST>()) {
+                init = expr;
             } else {
+                // Plain expression — no signature to wrap it in here.
+                // Wrap in a ReturnStmt for the innermost stage.
                 auto* ret = ctx.arena.make<ReturnStmtAST>();
-                ret->loc = parsedExpr ? parsedExpr->loc : stream.currentLoc();
-                ret->value = parsedExpr;
-                innermostBody = ret;
+                ret->loc = expr->loc;
+                ret->value = expr;
+
+                StmtAST* currentBody = ret;
+                AnonFuncExprAST* currentAnon = nullptr;
+                for (int i = static_cast<int>(stageTypes.size()) - 1; i >= 0; --i) {
+                    currentAnon = ctx.arena.make<AnonFuncExprAST>(stageTypes[i], currentBody);
+                    currentAnon->loc = headerLoc;
+
+                    if (i == 0) break;
+                    auto* innerRet = ctx.arena.make<ReturnStmtAST>();
+                    innerRet->loc = headerLoc;
+                    innerRet->value = currentAnon;
+                    currentBody = innerRet;
+                }
+                init = currentAnon;
             }
         }
-
-        if (innermostBody != nullptr) {
-            finalInit = buildAnonFuncChain(ctx, parts, innermostBody);
-        }
     }
+    // else: foreign function, init stays nullptr.
 
-    // ─── 7. Build FuncDeclAST ──────────────────────────────────────────────
+    // 7. Build FuncDeclAST
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(
-        name, keyword, genericParams, funcType, finalInit);
+        name, keyword, genericParams, declaredType, init);
 
-    // ─── 8. Error state ────────────────────────────────────────────────────
-    //
-    // Two groups of conditions:
-    //   - body-side: hasBodyError, finalInit->hasSyntaxError
-    //   - signature-side: any stage's params, or the final return type,
-    //     carries a syntax error; plus the parser-side errors we recorded
-    //     (missing name, generic-let violation).
-    bool signatureHasError = false;
-    for (const auto& stage : parts.stages) {
-        for (ParamAST* p : stage.params) {
-            if (p && p->hasSyntaxError) { signatureHasError = true; break; }
-        }
-        if (signatureHasError) break;
-    }
-    if (parts.finalReturnType && parts.finalReturnType->hasSyntaxError) {
-        signatureHasError = true;
-    }
-
-    if (hasBodyError || genericLetError || signatureHasError ||
-        (finalInit && finalInit->hasSyntaxError) ||
-        name.isEmpty()) {
+    if (bodyError || genericLetError || name.isEmpty() ||
+        (init && init->hasSyntaxError)) {
         funcDecl->hasSyntaxError = true;
     }
-
     return funcDecl;
 }
 

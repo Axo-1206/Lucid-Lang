@@ -116,6 +116,7 @@ struct IndexExprAST;
 struct SliceExprAST;
 struct FieldAccessExprAST;
 struct ModuleAccessExprAST;
+struct ArenaAccessExprAST;
 struct NullCoalesceExprAST;
 struct AssignExprAST;
 struct PipelineExprAST;

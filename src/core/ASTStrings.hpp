@@ -81,6 +81,7 @@ inline std::string astKindToString(ASTKind kind) {
         case ASTKind::SliceExpr:           return "SliceExpr";
         case ASTKind::FieldAccessExpr:     return "FieldAccessExpr";
         case ASTKind::ModuleAccessExpr:    return "ModuleAccessExpr";
+        case ASTKind::ArenaAccessExpr:     return "ArenaAccessExpr";
         case ASTKind::AssignExpr:          return "AssignExpr";
         case ASTKind::NullableChainExpr:   return "NullableChainExpr";
         case ASTKind::NullCoalesceExpr:    return "NullCoalesceExpr";

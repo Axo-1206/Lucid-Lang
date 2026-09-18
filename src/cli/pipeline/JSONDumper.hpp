@@ -239,7 +239,7 @@ private:
     void serializeExpr(JSONWriter& json, ExprAST* expr);
     void serializeType(JSONWriter& json, TypeAST* type);
     void serializeDiagnostics(JSONWriter& json, const DiagnosticEngine& diagnostics);
-    void serializeLocation(JSONWriter& json, const SourceLocation& loc, ModuleAST* module = nullptr);
+    void serializeLocation(JSONWriter& json, const SourceLocation& loc);
 
     // ─── Declaration Serializers ──────────────────────────────────────
 
@@ -289,6 +289,7 @@ private:
     void serializeSliceExpr(JSONWriter& json, SliceExprAST* expr);
     void serializeFieldAccessExpr(JSONWriter& json, FieldAccessExprAST* expr);
     void serializeModuleAccessExpr(JSONWriter& json, ModuleAccessExprAST* expr);
+    void serializeArenaAccessExpr(JSONWriter& json, ArenaAccessExprAST* expr);
     void serializeAssignExpr(JSONWriter& json, AssignExprAST* expr);
     void serializeNullCoalesceExpr(JSONWriter& json, NullCoalesceExprAST* expr);
     void serializePipelineExpr(JSONWriter& json, PipelineExprAST* expr);

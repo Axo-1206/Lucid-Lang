@@ -1,0 +1,22 @@
+const makeAdder fn(base int) -> cls(int) -> int = {
+    const add cls(x int) -> int = { 
+        return x + base; 
+    };
+    return add;
+};
+
+const test fn(base int) cls(x int) -> int = {
+    return x + base;
+};
+
+@[export] const main fn() -> int = {
+    let add5 cls(n int) -> int = makeAdder(5);
+    let A int = 10;
+    const B int = 20;
+
+    add5 = cls(a int) -> int {
+        return A + B;
+    };
+
+    return add5(10);
+};

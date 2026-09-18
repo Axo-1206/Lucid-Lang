@@ -628,38 +628,113 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation funcTypeLoc = stream.currentLoc();
 
-    // ─── 1. Parse the signature chain (shared) ─────────────────────────────
-    FuncTypeParts parts = parseFuncTypeParts(stream, ctx, /*allowNames=*/true);
+    // ─── 1. Collect marked bound groups until the first '->' ─────────────
+    std::vector<std::vector<ParamAST*>> groups;
+    std::vector<FuncShape>              shapes;
 
-    // ─── 2. Parse the body ─────────────────────────────────────────────────
+    while (is_function_type_keyword(stream.peekType())) {
+        Token markerTok = stream.consume();
+        FuncShape shape = (markerTok.type == TokenType::TYPE_FN)
+                          ? FuncShape::Fn : FuncShape::Cls;
+        shapes.push_back(shape);
+
+        if (!stream.check(TokenType::LPAREN)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
+                                    stream.currentLoc(),
+                                    "expected '(' after '", markerTok.value, "'");
+            groups.push_back({});
+            break;
+        }
+
+        std::vector<ParamAST*> group = parseParamList(stream, ctx, /*allowNames=*/true);
+        groups.push_back(std::move(group));
+
+        // Stop at the first '->' — the bound cluster ends there.
+        if (stream.check(TokenType::ARROW)) break;
+
+        // Another marker → another adjacent bound stage. Otherwise the
+        // header has ended (void return), and the body follows.
+        if (!is_function_type_keyword(stream.peekType())) break;
+    }
+
+    if (groups.empty()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, funcTypeLoc,
+                                "expected 'fn' or 'cls' before parameter group, got '",
+                                stream.peekValue(), "'");
+        groups.push_back({});
+        shapes.push_back(FuncShape::Fn);
+    }
+
+    // ─── 2. Return type: parseType handles everything after '->' ─────────
+    // Everything after the first '->' is a *type*, not another bound group.
+    // If it's `cls(int) -> int`, parseType recurses into parseFuncType and
+    // returns a FuncTypeAST for that.
+    TypeAST* restType = nullptr;
+    if (stream.match(TokenType::ARROW)) {
+        restType = parseType(stream, ctx);
+        if (!restType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType,
+                                    stream.currentLoc(),
+                                    "expected return type after '->'");
+            restType = ctx.arena.make<UnknownTypeAST>();
+            restType->hasSyntaxError = true;
+        }
+    }
+
+    // ─── 3. Body ──────────────────────────────────────────────────────────
+    StmtAST* body = nullptr;
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '{', got '", stream.peekValue(), "'");
-        auto* placeholder = ctx.arena.make<UnknownStmtAST>();
-        placeholder->hasSyntaxError = true;
-        placeholder->loc = stream.currentLoc();
-
-        auto* anon = buildAnonFuncChain(ctx, parts, placeholder);
-        anon->loc = funcTypeLoc;
-        anon->hasSyntaxError = true;
-        return anon;
-    }
-
-    StmtAST* body = parseBlock(stream, ctx);
-    if (!body) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                "expected block body");
+                                "expected '{' for anonymous function body, got '",
+                                stream.peekValue(), "'");
         body = ctx.arena.make<UnknownStmtAST>();
         body->hasSyntaxError = true;
+        body->loc = stream.currentLoc();
+    } else {
+        body = parseBlock(stream, ctx);
+        if (!body) {
+            body = ctx.arena.make<UnknownStmtAST>();
+            body->hasSyntaxError = true;
+        }
     }
 
-    // ─── 3. Build the anon chain ───────────────────────────────────────────
-    auto* anon = buildAnonFuncChain(ctx, parts, body);
-    anon->loc = funcTypeLoc;
-    if (body->hasSyntaxError) {
-        anon->hasSyntaxError = true;
+    // ─── 4. Build the FuncTypeAST chain (only the bound groups) ───────────
+    TypeAST* cur = restType;
+    std::vector<FuncTypeAST*> stageTypes(groups.size());
+    for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+        auto* ft = ctx.arena.make<FuncTypeAST>();
+        auto pb = ctx.arena.makeBuilder<ParamAST*>();
+        for (ParamAST* p : groups[i]) pb.push_back(p);
+        ft->params = pb.build();
+        ft->shape = shapes[i];
+        ft->returnType = cur;
+        ft->loc = funcTypeLoc;
+        stageTypes[i] = ft;
+        cur = ft;
     }
-    return anon;
+    FuncTypeAST* outerType = stageTypes[0];
+
+    // ─── 5. Wrap the body in the anon chain ───────────────────────────────
+    // Innermost bound stage gets the user's body.
+    StmtAST* currentBody = body;
+    AnonFuncExprAST* currentAnon = nullptr;
+    for (int i = static_cast<int>(stageTypes.size()) - 1; i >= 0; --i) {
+        currentAnon = ctx.arena.make<AnonFuncExprAST>(stageTypes[i], currentBody);
+        currentAnon->loc = funcTypeLoc;
+
+        if (i == 0) break;
+
+        auto* ret = ctx.arena.make<ReturnStmtAST>();
+        ret->loc = funcTypeLoc;
+        ret->value = currentAnon;
+        currentBody = ret;
+    }
+
+    if (body->hasSyntaxError || (restType && restType->hasSyntaxError)) {
+        currentAnon->hasSyntaxError = true;
+    }
+
+    return currentAnon;
 }
 
 // =============================================================================

@@ -456,67 +456,98 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
-// parseFuncType - Parses a function type with per-stage fn/cls markers
+// parseFuncType - Parses function types with adjacent groups
 // =============================================================================
 
 /// @brief Parse a function type.
 ///
 /// Grammar:
-///   func_type = stage { '->' stage } [ '->' type ]
-///   stage     = ( 'fn' | 'cls' ) unnamed_group
-///
-/// Each stage is marked with `fn` or `cls`, and the marker applies to that
-/// stage only. Stages may be arrow-separated or adjacent; adjacency is a
-/// shorthand for the arrow form and desugars the same way.
-///
-/// The result is a right-nested chain: the outermost FuncTypeAST is the
-/// first stage, its returnType is the second stage (another FuncTypeAST),
-/// and so on, with the innermost stage's returnType being the final
-/// (non-function) return type, or nullptr for void.
-///
-/// Examples:
-///   fn (a int) -> int
-///     → one stage: shape=Fn, params=[a], returnType=int
-///
-///   fn (a int) cls (b int) -> int
-///     → outer: shape=Fn,  params=[a], returnType=inner
-///     → inner: shape=Cls, params=[b], returnType=int
-///
-///   fn (a int) fn (b int) -> int
-///     → outer: shape=Fn, params=[a], returnType=inner
-///     → inner: shape=Fn, params=[b], returnType=int
-///
-///   fn (n int) -> cls (int) -> int
-///     → outer: shape=Fn,  params=[n], returnType=inner
-///     → inner: shape=Cls, params=[],  returnType=int
+///   func_type = unnamed_cluster { [ '->' ] unnamed_cluster } [ '->' type ]
 ///
 /// Parameter names are NEVER allowed in a function type.
 ///
 /// @param stream The token stream
 /// @param ctx The parsing context
-/// @return TypeAST* The parsed function type (a FuncTypeAST chain)
+/// @return TypeAST* The parsed function type
 TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
 
-    FuncTypeParts parts = parseFuncTypeParts(stream, ctx, /*allowNames=*/false);
+    std::vector<std::vector<ParamAST*>> groups;
+    std::vector<FuncShape>              shapes;
+    TypeAST* restType = nullptr;
+    bool sawArrow = false;
 
-    FuncTypeAST* chain = buildFuncTypeChain(ctx, parts);
+    while (is_function_type_keyword(stream.peekType())) {
+        Token markerTok = stream.consume();
+        FuncShape shape = (markerTok.type == TokenType::TYPE_FN)
+                          ? FuncShape::Fn : FuncShape::Cls;
+        shapes.push_back(shape);
 
-    // Propagate error state from any stage that failed.
-    for (const auto& stage : parts.stages) {
-        for (ParamAST* p : stage.params) {
-            if (p && p->hasSyntaxError) {
-                chain->hasSyntaxError = true;
-                break;
-            }
+        if (!stream.check(TokenType::LPAREN)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
+                                    stream.currentLoc(),
+                                    "expected '(' after '", markerTok.value, "'");
+            auto* ft = ctx.arena.make<FuncTypeAST>();
+            ft->shape = shape;
+            ft->params = ctx.arena.makeBuilder<ParamAST*>().build();
+            ft->loc = loc;
+            ft->hasSyntaxError = true;
+            return ft;
         }
-    }
-    if (parts.finalReturnType && parts.finalReturnType->hasSyntaxError) {
-        chain->hasSyntaxError = true;
+
+        std::vector<ParamAST*> group = parseParamList(stream, ctx, /*allowNames=*/false);
+        groups.push_back(std::move(group));
+
+        if (!stream.match(TokenType::ARROW)) {
+            // No more stages, no return type: void.
+            sawArrow = false;
+            break;
+        }
+        sawArrow = true;
+
+        if (!is_function_type_keyword(stream.peekType())) {
+            // Return type — parse and stop.
+            restType = parseType(stream, ctx);
+            if (!restType) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType,
+                                        stream.currentLoc(),
+                                        "expected return type, got '",
+                                        stream.peekValue(), "'");
+                restType = ctx.arena.make<UnknownTypeAST>();
+                restType->hasSyntaxError = true;
+            }
+            break;
+        }
+        // else: another stage — loop.
     }
 
-    chain->loc = loc;
-    return chain;
+    if (groups.empty()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                                "expected 'fn' or 'cls' before parameter group, got '",
+                                stream.peekValue(), "'");
+        auto* ft = ctx.arena.make<FuncTypeAST>();
+        ft->shape = FuncShape::Fn;
+        ft->params = ctx.arena.makeBuilder<ParamAST*>().build();
+        ft->loc = loc;
+        ft->hasSyntaxError = true;
+        return ft;
+    }
+
+    // Single chain-building site.
+    TypeAST* cur = restType;
+    FuncTypeAST* outer = nullptr;
+    for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+        auto* ft = ctx.arena.make<FuncTypeAST>();
+        auto pb = ctx.arena.makeBuilder<ParamAST*>();
+        for (ParamAST* p : groups[i]) pb.push_back(p);
+        ft->params = pb.build();
+        ft->shape = shapes[i];
+        ft->returnType = cur;
+        ft->loc = loc;
+        cur = ft;
+        outer = ft;
+    }
+    return outer;
 }
 
 // =============================================================================

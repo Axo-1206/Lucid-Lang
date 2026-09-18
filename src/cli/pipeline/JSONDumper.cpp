@@ -211,6 +211,12 @@ void JSONDumper::serializeVarDecl(JSONWriter& json, VarDeclAST* decl) {
     json.kv("name", str(decl->name));
     json.kv("isExported", decl->isExported);
     json.kv("keyword", declKeywordToString(decl->keyword));
+
+    if (decl->isModuleLevel()) {
+        json.kv("moduleFieldIndex", static_cast<uint64_t>(decl->moduleFieldIndex));
+    } else {
+        json.kvNull("moduleFieldIndex");
+    }
     
     if (decl->type) {
         json.key("type");
@@ -739,6 +745,7 @@ void JSONDumper::serializeExpr(JSONWriter& json, ExprAST* expr) {
         case ASTKind::SliceExpr:         serializeSliceExpr(json, expr->as<SliceExprAST>()); break;
         case ASTKind::FieldAccessExpr:   serializeFieldAccessExpr(json, expr->as<FieldAccessExprAST>()); break;
         case ASTKind::ModuleAccessExpr:  serializeModuleAccessExpr(json, expr->as<ModuleAccessExprAST>()); break;
+        case ASTKind::ArenaAccessExpr:   serializeArenaAccessExpr(json, expr->as<ArenaAccessExprAST>()); break;
         case ASTKind::AssignExpr:        serializeAssignExpr(json, expr->as<AssignExprAST>()); break;
         case ASTKind::NullCoalesceExpr:  serializeNullCoalesceExpr(json, expr->as<NullCoalesceExprAST>()); break;
         case ASTKind::PipelineExpr:      serializePipelineExpr(json, expr->as<PipelineExprAST>()); break;
@@ -785,7 +792,6 @@ void JSONDumper::serializeIdentifierExpr(JSONWriter& json, IdentifierExprAST* ex
     }
     json.endArray();
     
-    json.kv("resolved", expr->resolvedDecl != nullptr);
     json.key("resolvedDecl");
     serializeDeclRef(json, expr->resolvedDecl);
     
@@ -1111,7 +1117,49 @@ void JSONDumper::serializeModuleAccessExpr(JSONWriter& json, ModuleAccessExprAST
     json.key("resolvedDecl");
     serializeDeclRef(json, expr->resolvedDecl);
     
-    json.kv("resolved", expr->resolvedDecl != nullptr);
+    json.kv("isConst", expr->isConst);
+    json.key("resolvedType");
+    if (expr->hasType()) {
+        serializeType(json, expr->resolvedType);
+    } else {
+        json.null();
+    }
+    json.kv("valueState", valueStateToString(expr->valueState));
+    json.kv("isLValue", expr->isLValue);
+    json.key("location");
+    serializeLocation(json, expr->loc);
+    json.endObject();
+}
+
+void JSONDumper::serializeArenaAccessExpr(JSONWriter& json, ArenaAccessExprAST* expr) {
+    json.beginObject();
+    json.kv("kind", "ArenaAccessExpr");
+    json.kv("methodName", str(expr->methodName));
+    json.kv("isStatic", expr->isStatic);
+
+    json.key("arenaExpr");
+    if (expr->arenaExpr) {
+        serializeExpr(json, expr->arenaExpr);
+    } else {
+        json.null();
+    }
+
+    json.key("genericArgs");
+    json.beginArray();
+    for (auto* arg : expr->genericArgs) {
+        if (arg) serializeType(json, arg);
+    }
+    json.endArray();
+
+    json.key("args");
+    json.beginArray();
+    for (auto* arg : expr->args) {
+        if (arg) serializeExpr(json, arg);
+    }
+    json.endArray();
+
+    json.key("resolvedDecl");
+    serializeDeclRef(json, expr->resolvedDecl);
     json.kv("isConst", expr->isConst);
     json.key("resolvedType");
     if (expr->hasType()) {
@@ -1237,15 +1285,15 @@ void JSONDumper::serializeAnonFuncExpr(JSONWriter& json, AnonFuncExprAST* expr) 
     json.kv("hasClosure", expr->hasClosure);
     
     // ─── Captures ───────────────────────────────────────────────────────
-    // CapturedVariable no longer stores a `decl` pointer; identity is
-    // lexical: `name` + `functionDepth`.
+    // The environment slot is a code-generation detail and is intentionally
+    // omitted; the resolved declaration is the useful semantic identity.
     json.key("captures");
     json.beginArray();
     for (const auto& cap : expr->captures) {
         json.beginObject();
         json.kv("name", str(cap.name));
-        // NOTE: functionDepth is replaced with resolvedDecl, make sure to update this one
-        // json.kv("functionDepth", static_cast<uint64_t>(cap.functionDepth)); 
+        json.key("resolvedDecl");
+        serializeDeclRef(json, cap.resolvedDecl);
         json.kv("byReference", cap.byReference);
         json.kv("isClosureValue", cap.isClosureValue);
         json.kv("index", static_cast<uint64_t>(cap.index));
@@ -1514,6 +1562,16 @@ void JSONDumper::serializePtrType(JSONWriter& json, PtrTypeAST* type) {
 void JSONDumper::serializeFuncType(JSONWriter& json, FuncTypeAST* type) {
     json.beginObject();
     json.kv("kind", "FuncType");
+
+    // ─── Shape marker ───────────────────────────────────────────────────
+    // `fn` → bare function pointer, one word, no environment, not a resource
+    // `cls` → closure fat pointer {func, env}, two words, refcounted env
+    //
+    // Every stage in a curry chain carries its own shape. Emitting it here
+    // is what makes the dump able to distinguish `fn (a int) -> cls (b int)
+    // -> int` from `fn (a int) -> fn (b int) -> int`.
+    json.kv("shape", type->isCls() ? "cls" : "fn");
+
     json.key("params");
     json.beginArray();
     for (auto* param : type->params) {
@@ -1562,13 +1620,10 @@ void JSONDumper::serializeThreadType(JSONWriter& json, ThreadTypeAST* type) {
 
 // ─── Location ─────────────────────────────────────────────────────
 
-void JSONDumper::serializeLocation(JSONWriter& json, const SourceLocation& loc, ModuleAST* module) {
+void JSONDumper::serializeLocation(JSONWriter& json, const SourceLocation& loc) {
     json.beginObject();
     json.kv("line", static_cast<uint64_t>(loc.line()));
     json.kv("column", static_cast<uint64_t>(loc.column()));
-    if (module && module->filePath.isValid()) {
-        json.kv("file", getModulePath(module->filePath));
-    }
     json.endObject();
 }
 
