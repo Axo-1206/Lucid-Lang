@@ -11,9 +11,7 @@
 
 namespace cli {
 
-/**
- * @brief Pipeline stages where execution can stop.
- */
+/// @brief Pipeline stages where execution can stop.
 enum class PipelineStage {
     /// Stop after lexing (tokens only)
     Lex,
@@ -29,9 +27,7 @@ enum class PipelineStage {
     Build,
 };
 
-/**
- * @brief Output formats for structured data.
- */
+/// @brief Output formats for structured data.
 enum class OutputFormat {
     /// Human-readable text with emojis and formatting (default)
     Text,
@@ -41,9 +37,7 @@ enum class OutputFormat {
     JsonPretty,
 };
 
-/**
- * @brief Unified CLI options for all commands.
- */
+/// @brief Unified CLI options for all commands.
 struct CLIOptions {
     // ─── Command ──────────────────────────────────────────────────────
     enum class Command {
@@ -51,7 +45,8 @@ struct CLIOptions {
         Run,        // Full execution (default)
         Parse,      // Parse only (stop after AST)
         Sema,       // Parse + semantic analysis
-        CodeGen,    // Parse + sema + LLVM IR emission
+        CodeGen,    // Parse + sema + LLVM IR generation (internal)
+        EmitIR,     // Parse + sema + IR generation, write IR as text
         Build,      // AOT compile to native binary
         Repl,       // Interactive REPL
     } command = Command::Unknown;
@@ -95,9 +90,6 @@ struct CLIOptions {
 
     /// @brief Output file (build command only).
     std::string buildOutputFile = "a.out";
-
-    /// @brief Emit LLVM IR instead of native code (build command).
-    bool emitLLVM = false;
 
     /// @brief Target triple (empty = host) (build command).
     std::string targetTriple;

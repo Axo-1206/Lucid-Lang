@@ -85,6 +85,7 @@
 #include "cli/commands/run.hpp"
 #include "cli/commands/parse.hpp"
 #include "cli/commands/sema.hpp"
+#include "cli/commands/emit-ir.hpp"
 #include "interpreter/support/InterpreterOptions.hpp"
 
 /**
@@ -107,11 +108,12 @@
 void printUsage() {
     std::cout << "Lucid Compiler v0.1.0\n\n"
               << "Usage:\n"
-              << "  lucid run   <file.luc> [options]   -- JIT interpret and execute\n"
-              << "  lucid parse <file.luc> [options]   -- Parse only (stop after AST)\n"
-              << "  lucid sema  <file.luc> [options]   -- Parse + semantic analysis\n"
-              << "  lucid build <file.luc> [options]   -- AOT compile to native binary\n"
-              << "  lucid repl                         -- Interactive REPL\n\n"
+              << "  lucid run     <file.luc> [options]  -- JIT interpret and execute\n"
+              << "  lucid parse   <file.luc> [options]  -- Parse only (stop after AST)\n"
+              << "  lucid sema    <file.luc> [options]  -- Parse + semantic analysis\n"
+              << "  lucid emit-ir <file.luc> [options]  -- Emit LLVM IR as text\n"
+              << "  lucid build   <file.luc> [options]  -- AOT compile to native binary\n"
+              << "  lucid repl                          -- Interactive REPL\n\n"
               << "Run options:\n"
               << "  --verbose            Enable verbose output\n"
               << "  --trace              Show detailed progress trace\n"
@@ -124,9 +126,11 @@ void printUsage() {
               << "  --json-pretty        Output as pretty JSON (human-readable)\n"
               << "  -o <file>            Write output to file (instead of stdout)\n"
               << "  --verbose            Show parsing/semantic progress\n\n"
+              << "Emit-IR options:\n"
+              << "  -o <file>            Write IR to file (instead of stdout)\n"
+              << "  --verbose            Show codegen progress\n\n"
               << "Build options (future):\n"
               << "  -o <file>            Output file name (default: a.out)\n"
-              << "  --emit-llvm          Emit LLVM IR instead of native code\n"
               << "  --target <triple>    Target triple (default: host)\n";
 }
 
@@ -323,6 +327,22 @@ int main(int argc, char* argv[]) {
         opts.command = cli::CLIOptions::Command::Sema;
         opts.stopAt = cli::PipelineStage::Sema;
         return cli::commands::semaCommand(opts);
+    }
+
+    // ─── Emit-IR Command ──────────────────────────────────────────────────
+    // Parses the file, runs semantic analysis, generates LLVM IR, and
+    // writes the IR as text. Useful for codegen inspection and testing.
+    // Pipeline stops at: CodeGen (IR generation; no execution)
+    // Requires: rootFilePath (the file to lower)
+    // Options: -o, --verbose
+    if (command == "emit-ir") {
+        if (opts.rootFilePath.empty()) {
+            std::cerr << "Error: No file specified for 'emit-ir' command.\n";
+            return 1;
+        }
+        opts.command = cli::CLIOptions::Command::EmitIR;
+        opts.stopAt = cli::PipelineStage::CodeGen;
+        return cli::commands::emitIRCommand(opts);
     }
 
     // ─── Build Command ────────────────────────────────────────────────────
