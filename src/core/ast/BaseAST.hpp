@@ -703,11 +703,55 @@ enum class DeclKeyword {
     Const   // immutable
 };
 
+/// @brief What kind of heap resource a binding owns, if any.
+///
+/// ─── The One Place This Is Decided ─────────────────────────────────────────
+/// Sema writes this, once, when it resolves a declaration's type. CodeGen
+/// reads it at every allocation and every free site. The whole point of
+/// caching it on the declaration is that the answer is a property of the
+/// *declaration's type*, not of the use site, and re-deriving it at every
+/// use site means re-walking the type at every use site — which is both
+/// wasteful and a place for two walkers to disagree.
+///
+/// ─── What Each Kind Means For CodeGen ──────────────────────────────────────
+/// The kind determines both how the binding is destroyed and how it is
+/// copied. CodeGen has exactly one free decision point, `Ownership::drop`,
+/// which switches on this value. Allocation is dispatched at creation
+/// sites, but every creation site ends in the same allocator and produces
+/// a value whose kind is the one listed here.
+///
+///   None        — owns nothing. Copy is a bit copy. Drop is a no-op.
+///   Refcounted  — a closure environment. Copy retains. Drop releases.
+///                 A move zeroes the source.
+///   OwnedBuffer — a string or dynamic array. Copy deep-copies. Drop frees
+///                 the buffer, unless cap == 0 (static literal).
+///   Arena       — a bump allocator. Sema rejects copy. Drop frees the base.
+///                 A move zeroes the source.
+///   Handle      — a Future<T> or Thread<T>. Sema rejects copy. The only
+///                 legal drop is consumption by await/join; reaching scope
+///                 exit with a live handle is a Sema error, so CodeGen's
+///                 drop is a no-op that exists only to be exhaustive.
+///   Aggregate   — a struct, tuple, T?, T!, or fixed array that contains
+///                 at least one resource. Copy and drop are per-field,
+///                 generated lazily as `__copy_<type>` / `__drop_<type>`.
+///                 Sema only needs to say "yes, this owns something"; the
+///                 glue is derived by walking the type in CodeGen.
+///
+/// ─── Why Aggregate Is Not "the field kinds, OR'd together" ─────────────────
+/// Because "does this struct own anything" and "what is the glue for this
+/// struct" are different questions with different answers. A struct with a
+/// Refcounted field and a struct with two Refcounted fields are both
+/// Aggregate; their glue differs. CodeGen's drop-glue generator walks the
+/// field list to produce the right sequence, and it needs to know only
+/// that it should walk — the per-field kinds it reads from the field
+/// declarations themselves.
 enum class ResourceKind : uint8_t {
     None,          // owns nothing
     Refcounted,    // closure env
     OwnedBuffer,   // string or dynamic array
     Arena,         // arena memory pool
+    Handle,        // Future<T> / Thread<T>, linear, consumed by await/join
+    Aggregate,     // struct/tuple/T?/T!/fixed-array containing a resource
 };
 
 /// @brief Base class for declarations that produce values (can appear in expressions).
