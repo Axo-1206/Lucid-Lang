@@ -10,7 +10,6 @@
 ///   - CodeGenDecl.cpp   : Function, variable, struct, enum declarations
 ///   - CodeGenStmt.cpp   : Statements (if, for, while, return, block)
 ///   - CodeGenExpr.cpp   : Expressions (literals, binary, calls, intrinsics)
-///   - CodeGenGeneric.cpp: Generic instantiation and type-erased generation
 ///   - CodeGenType.cpp   : Lucid → LLVM type mapping
 ///   - closure/          : Closure environment and capture handling
 ///
@@ -143,7 +142,7 @@ void generateModuleFree(ModuleAST* module, CodeGenContext& ctx);
 // lowerDeclaration() dispatches to the appropriate handler based on kind.
 // Each handler follows a consistent pattern:
 //   1. Check if already lowered
-//   2. Handle generic vs non-generic
+//   2. Skip generic templates (lowerDeclaration) and assert specialization
 //   3. Create the LLVM object
 //   4. Store in context
 //
@@ -257,9 +256,10 @@ void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx);
 /// @brief Lower a struct declaration to an LLVM struct type.
 ///
 /// ─── Generic Struct Handling ────────────────────────────────────────────
-/// Generic structs follow the hybrid strategy:
-///   - With @[specialize]: Lazy generation per instantiation
-///   - Without @[specialize]: Type-erased with tagged slots
+/// Generics are specialization-only. A generic template never reaches this
+/// function: lowerDeclaration skips it, and AST_ASSERT_MSG enforces the
+/// invariant. Only concrete specializations (from
+/// `ModuleAST::specializations`) are lowered.
 ///
 /// ─── Self-Reference Handling ────────────────────────────────────────────
 /// Self-referential structs are handled by:

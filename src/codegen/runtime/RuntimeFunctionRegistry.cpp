@@ -20,8 +20,14 @@ const std::unordered_map<RuntimeFn, RuntimeFunctionInfo>& runtimeFunctionTable()
         // ─── Closures ───────────────────────────────────────────────────────
         { RuntimeFn::AllocEnv, { "__lucid_alloc_env",
             [](CodeGenContext& ctx) {
+                // void* __lucid_alloc_env(uint64_t size, void (*drop)(void* data))
+                // `drop` (may be null) releases whatever the captured data
+                // owns (retained closure envs); the runtime calls it when the
+                // env's refcount reaches zero. See ClosureEnvironment.hpp.
                 return llvm::FunctionType::get(
-                    getPtrType(ctx.llvmCtx), {getI64Type(ctx.llvmCtx)}, false);
+                    getPtrType(ctx.llvmCtx),
+                    {getI64Type(ctx.llvmCtx), getPtrType(ctx.llvmCtx)},
+                    false);
             } } },
 
         { RuntimeFn::RetainEnv, { "__lucid_retain_env",

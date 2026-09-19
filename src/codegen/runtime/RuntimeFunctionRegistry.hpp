@@ -98,7 +98,7 @@ struct CodeGenContext;
 /// @see CodeGenStmt.cpp - lowerSpawnStmt(), lowerJoinStmt()
 enum class RuntimeFn {
     // ─── Closures ───────────────────────────────────────────────────────
-    AllocEnv,           // void* __lucid_alloc_env(uint64_t size)
+    AllocEnv,           // void* __lucid_alloc_env(uint64_t size, void (*drop)(void* data))
     RetainEnv,          // void __lucid_retain_env(void* env)
     ReleaseEnv,         // void __lucid_release_env(void* env)
 

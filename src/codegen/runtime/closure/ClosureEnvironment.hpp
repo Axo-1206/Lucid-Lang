@@ -12,11 +12,11 @@
 ///
 ///   ┌─────────────────────────────────────────────────────────────────────┐
 ///   │  ┌──────────────────────────────────────────────────────────────┐   │
-///   │  │  ClosureEnvHeader (24-32 bytes)                              │   │
+///   │  │  ClosureEnvHeader (16 bytes)                                 │   │
 ///   │  │  ┌─────────────────────────────────────────────────────────┐ │   │
-///   │  │  │  refcount: atomic<uint32_t>   (4 bytes, 8-byte aligned) │ │   │
+///   │  │  │  refcount: atomic<uint32_t>   (4 bytes)                 │ │   │
 ///   │  │  │  size: uint32_t               (4 bytes)                 │ │   │
-///   │  │  │  padding: uint32_t            (4 bytes, for alignment)  │ │   │
+///   │  │  │  drop: void(*)(void*)         (8 bytes, may be null)    │ │   │
 ///   │  │  └─────────────────────────────────────────────────────────┘ │   │
 ///   │  └──────────────────────────────────────────────────────────────┘   │
 ///   │  ┌──────────────────────────────────────────────────────────────┐   │
@@ -34,7 +34,23 @@
 /// ─── Refcount Semantics ──────────────────────────────────────────────────────
 /// - Starts at 1 when allocated (the closure that created it holds the ref)
 /// - Retain: increments the count by 1
-/// - Release: decrements the count by 1; if it reaches 0, free the memory
+/// - Release: decrements the count by 1; if it reaches 0, run the env's drop
+///   function (if any) and then free the memory
+///
+/// ─── Drop Glue ───────────────────────────────────────────────────────────────
+/// A by-value capture of a `cls` value retains that value's environment, so
+/// the capturing environment owns one claim on it. Nothing in this header
+/// knows the layout of the captured data, so the compiler emits a small
+/// per-closure "drop" function that releases those claims, and passes it to
+/// `__lucid_alloc_env`. It is stored in the header and invoked with a pointer
+/// to the DATA portion when the refcount reaches zero. A null drop function
+/// means the environment owns nothing that needs releasing.
+///
+/// ─── Alignment ───────────────────────────────────────────────────────────────
+/// The header is exactly 16 bytes and 16-byte aligned, so the data portion
+/// (which follows it directly) is 16-byte aligned too. Captured values are
+/// LLVM structs that assume their natural alignment (pointers, i64, double,
+/// { ptr, i64, i64 }); a 12-byte header would leave them misaligned by 4.
 ///
 /// ─── Thread Safety ──────────────────────────────────────────────────────────
 /// Uses std::atomic with memory_order_acq_rel for correct synchronization
@@ -61,8 +77,14 @@
 /// portion, allowing safe allocation, deallocation, and refcounting.
 ///
 /// @note The header is followed immediately by the captured data.
-/// @note The header is 8-byte aligned for efficient atomic operations.
-struct ClosureEnvHeader {
+/// @note The header is 16 bytes and 16-byte aligned, so the data portion is
+///       16-byte aligned (malloc returns 16-byte aligned blocks on the
+///       supported 64-bit targets).
+struct alignas(16) ClosureEnvHeader {
+    /// Signature of the per-closure drop function emitted by the compiler.
+    /// Receives a pointer to the data portion of the environment.
+    using DropFn = void (*)(void* data);
+
     // ─── Fields ──────────────────────────────────────────────────────────────
 
     /// Reference count - number of references to this environment.
@@ -72,12 +94,11 @@ struct ClosureEnvHeader {
     /// Size of the data portion in bytes (does NOT include the header).
     uint32_t size;
 
-    // ─── Padding ─────────────────────────────────────────────────────────────
-    // Ensures 8-byte alignment of the header for optimal atomic operations.
-    // This padding guarantees the header starts at an 8-byte aligned address
-    // when the environment is allocated with malloc (which returns 8-byte
-    // aligned pointers on 64-bit systems).
-    uint32_t _padding;
+    // ─── Drop glue ───────────────────────────────────────────────────────────
+    // Releases whatever the captured data owns (e.g. retained closure
+    // environments). Called exactly once, with data(), right before the
+    // block is freed. May be null.
+    DropFn drop;
 
     // ─── Methods ─────────────────────────────────────────────────────────────
 
@@ -97,9 +118,10 @@ struct ClosureEnvHeader {
 
     /// @brief Allocate a new environment with a single reference.
     /// @param dataSize Size of the data portion in bytes.
+    /// @param drop Optional drop function run when the refcount reaches zero.
     /// @return Pointer to the environment (header + data), or nullptr on failure.
     /// @note The data portion is zero-initialized.
-    static ClosureEnvHeader* allocate(uint32_t dataSize) {
+    static ClosureEnvHeader* allocate(uint32_t dataSize, DropFn drop = nullptr) {
         // Calculate total size: header + data
         size_t totalSize = sizeof(ClosureEnvHeader) + dataSize;
 
@@ -113,7 +135,7 @@ struct ClosureEnvHeader {
         ClosureEnvHeader* env = new (mem) ClosureEnvHeader;
         env->refcount.store(1, std::memory_order_release);
         env->size = dataSize;
-        env->_padding = 0;
+        env->drop = drop;
 
         // Zero-initialize the data portion
         std::memset(env->data(), 0, dataSize);
@@ -124,9 +146,11 @@ struct ClosureEnvHeader {
     /// @brief Allocate a new environment with a single reference and copy data.
     /// @param dataPtr Pointer to the data to copy.
     /// @param dataSize Size of the data portion in bytes.
+    /// @param drop Optional drop function run when the refcount reaches zero.
     /// @return Pointer to the environment (header + data), or nullptr on failure.
-    static ClosureEnvHeader* allocateWithData(const void* dataPtr, uint32_t dataSize) {
-        ClosureEnvHeader* env = allocate(dataSize);
+    static ClosureEnvHeader* allocateWithData(const void* dataPtr, uint32_t dataSize,
+                                              DropFn drop = nullptr) {
+        ClosureEnvHeader* env = allocate(dataSize, drop);
         if (!env) {
             return nullptr;
         }
@@ -148,7 +172,7 @@ struct ClosureEnvHeader {
         env->refcount.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    /// @brief Release (decrement reference count, free if zero).
+    /// @brief Release (decrement reference count, drop and free if zero).
     /// @param env Pointer to the environment (may be nullptr).
     /// @return true if the environment was freed, false otherwise.
     static bool release(ClosureEnvHeader* env) {
@@ -159,8 +183,13 @@ struct ClosureEnvHeader {
         // Decrement the reference count
         uint32_t oldCount = env->refcount.fetch_sub(1, std::memory_order_acq_rel);
 
-        // If this was the last reference (oldCount == 1), free the memory
+        // If this was the last reference (oldCount == 1), drop and free
         if (oldCount == 1) {
+            // Release what the captured data owns (e.g. retained closure
+            // environments) BEFORE the memory holding it goes away.
+            if (env->drop) {
+                env->drop(env->data());
+            }
             // Destroy the header (call destructor - trivial for this type)
             env->~ClosureEnvHeader();
             // Free the memory
@@ -182,3 +211,7 @@ struct ClosureEnvHeader {
     }
 
 };
+
+// The compiler-generated code relies on this exact layout (data at +16).
+static_assert(sizeof(ClosureEnvHeader) == 16, "ClosureEnvHeader must be 16 bytes");
+static_assert(alignof(ClosureEnvHeader) == 16, "ClosureEnvHeader must be 16-byte aligned");

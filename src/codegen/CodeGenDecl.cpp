@@ -5,7 +5,7 @@
 /// This file lowers Lucid declarations to LLVM IR. It handles:
 ///   - Global variables (module-level `let`/`const`)
 ///   - Local variables (function-scope `let`/`const`)
-///   - Function declarations (including foreign, generic, closure)
+///   - Function declarations (foreign, bare, and cls-shaped closure values)
 ///   - Struct declarations (LLVM struct type creation)
 ///   - Enum declarations (LLVM integer type + variant constants)
 
@@ -15,6 +15,7 @@
 #include "types/CodeGenType.hpp"
 #include "memory/CodeGenAlloca.hpp"
 #include "support/CodeGenPanic.hpp"
+#include "support/CodeGenHelpers.hpp"   // isFreshExpression
 #include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"
 
@@ -349,7 +350,15 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
         }
     }
 
-    // ─── 10.1. If this is exported main, call __lucid_shutdown() ────────
+    // ─── 11. Pop the function scope (emits cleanup) ─────────────────────
+    // MUST come before the fallback terminator below: popLiveScope skips its
+    // cleanup when the current block already ends in a terminator (an explicit
+    // `return` has already unwound). Adding the fallback `ret` first made every
+    // fall-through path skip the release of owning parameters (leak).
+    ctx.popLiveScope();
+
+    // ─── 11.1. If this is exported main, call __lucid_shutdown() ────────
+    // After cleanup, so releases still see a live runtime.
     bool isMain = (ctx.pool.lookup(decl->name) == "main") && decl->isExported;
     if (isMain) {
         llvm::BasicBlock* curBlock = ctx.builder.GetInsertBlock();
@@ -359,7 +368,7 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
         }
     }
 
-    // ─── 11. Ensure a terminator exists (void functions) ────────────────
+    // ─── 12. Ensure a terminator exists (void functions) ────────────────
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
         if (decl->funcType->returnType) {
             llvm::Type* retType = getType(ctx, decl->funcType->returnType);
@@ -372,9 +381,6 @@ void lowerFunctionBody(FuncDeclAST* decl, CodeGenContext& ctx) {
             ctx.builder.CreateRetVoid();
         }
     }
-
-    // ─── 12. Pop the function scope (emits cleanup) ─────────────────────
-    ctx.popLiveScope();
 
     // ─── 13. Restore the previous function context ──────────────────────
     ctx.currentFunction = prevFunc;
@@ -461,6 +467,17 @@ void lowerLocalVar(VarDeclAST* decl, llvm::Type* varType, CodeGenContext& ctx) {
             if (initValue->getType()->isPointerTy() && varType->isPointerTy()) {
                 initValue = ctx.builder.CreateBitCast(initValue, varType);
             }
+        }
+
+        // ─── Rule 1 vs Rule 2: transfer a fresh value, retain a copy ───
+        // `let f = |x| ...` (fresh): the temporary claim from lowerClosure
+        // transfers to the binding. `let g = f;` (a load): `f` keeps its own
+        // claim, so `g` must take a new one — otherwise both bindings release
+        // the same single claim at scope exit (double release). Same rule as
+        // lowerAssignExpr / lowerCallExpr / lowerReturnStmt.
+        if (classifyResource(decl) == ResourceKind::Refcounted
+            && !isFreshExpression(decl->init)) {
+            emitRetain(decl, initValue, ctx);
         }
 
         ctx.builder.CreateStore(initValue, alloca);

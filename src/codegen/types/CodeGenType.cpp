@@ -245,9 +245,8 @@ llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* named) {
     std::string typeName = ctx.pool.lookup(named->name);
 
     // ─── 1. Resolve struct/enum via resolvedDecl ──────────────────────────
-    // Sema has already resolved every type. If resolvedDecl points to a
-    // generic StructDeclAST, it means Sema chose the @[erased] path and
-    // kept the template — CodeGen will generate the erased version.
+    // Sema has already resolved every type, and resolvedDecl always points
+    // to a concrete (specialized) declaration. There is no erased path.
     if (named->resolvedDecl) {
         if (named->resolvedDecl->isa<StructDeclAST>()) {
             StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();

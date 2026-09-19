@@ -10,7 +10,6 @@
 ///   - Strings               (data pointer, owned by the binding)
 ///   - Dynamic arrays [*]T   (data pointer, owned by the binding)
 ///   - Structs with any of the above as a field   (Phase 5)
-///   - TaggedSlot-wrapped resources (Phase 4)
 ///
 /// Before this file existed, every call site that needed to release one of
 /// these inlined its own type dispatch — emitCleanupForTracker had one,
@@ -361,8 +360,8 @@ void emitRelease(ValueDeclAST* decl, llvm::Value* value, CodeGenContext& ctx);
 ///   - OwnedBuffer → no-op (deep-copy semantics; see Pattern B above).
 ///   - None        → no-op.
 ///
-/// Struct and TaggedSlot resource kinds are Phase 4 / Phase 5 stubs:
-/// they currently classify as None, so emitRetain is a no-op on them.
+/// A Struct resource kind is a Phase 5 stub: structs currently classify as
+/// None, so emitRetain is a no-op on them.
 ///
 /// @param decl  The declaration the value belongs to. Consulted for
 ///              resource-kind dispatch (`decl->resourceKind`, via

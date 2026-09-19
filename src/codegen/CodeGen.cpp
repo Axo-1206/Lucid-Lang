@@ -5,6 +5,7 @@
 #include "core/memory/StringPool.hpp"
 #include "core/trace/Trace.hpp"
 #include "memory/CodeGenOwnership.hpp"
+#include "support/CodeGenHelpers.hpp"   // isFreshExpression
 
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
@@ -183,6 +184,15 @@ void generateModuleInit(ModuleAST* module, CodeGenContext& ctx) {
             var->type,
             ctx);
         if (!initValue) continue;
+
+        // Rule 1 vs Rule 2 (see lowerLocalVar): a module-level `let g = f;`
+        // copies an existing cls binding, so the new field needs its own
+        // claim. __free_module_<name> releases every Refcounted field, so
+        // without this retain both fields release one claim.
+        if (var->resourceKind == ResourceKind::Refcounted
+            && !isFreshExpression(var->init)) {
+            emitRetain(var, initValue, ctx);
+        }
 
         // GEP to the field, store.
         llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(

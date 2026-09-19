@@ -87,6 +87,149 @@ llvm::Type* getCaptureFieldType(CodeGenContext& ctx, const CapturedVariable& cap
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Env Ownership + Body Isolation Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief True iff this capture makes the environment OWN a claim on a
+///        closure environment.
+///
+/// By-value capture of a `cls` value copies the fat pointer and retains its
+/// env (see lowerClosure). That retained claim lives inside the capturing
+/// environment, so it must be released when the capturing environment dies.
+/// This one predicate drives BOTH the retain in lowerClosure and the drop
+/// function below, so the two can never drift apart.
+static bool capturesOwnedClosureEnv(const CapturedVariable& capture) {
+    if (capture.byReference) return false;
+    if (!capture.resolvedDecl || !capture.resolvedDecl->type) return false;
+    TypeAST* type = capture.resolvedDecl->type;
+    return type->isa<FuncTypeAST>()
+        && type->as<FuncTypeAST>()->shape == FuncShape::Cls;
+}
+
+static std::atomic<size_t> g_envDropCounter{0};
+
+/// @brief Emit `void closure_env_drop_N(ptr data)` for this closure, or return
+///        nullptr if its environment owns nothing that needs releasing.
+///
+/// The runtime calls it with a pointer to the environment's DATA portion when
+/// the last reference goes away (see ClosureEnvHeader::release). It releases
+/// the env of every by-value `cls` capture — the claims taken by the retains
+/// in lowerClosure. Without it those retains are never balanced and every
+/// captured closure env leaks.
+///
+/// __lucid_release_env is null-safe, so a captured non-capturing closure
+/// (null env) needs no check here.
+static llvm::Function* buildEnvDropFunction(AnonFuncExprAST* expr,
+                                            llvm::StructType* envType,
+                                            CodeGenContext& ctx) {
+    bool needed = false;
+    for (const CapturedVariable& capture : expr->captures) {
+        if (capturesOwnedClosureEnv(capture)) { needed = true; break; }
+    }
+    if (!needed) return nullptr;
+
+    // Emitting a new function must not disturb the caller's insertion point.
+    llvm::IRBuilderBase::InsertPointGuard guard(ctx.builder);
+
+    llvm::Type* ptrTy = llvm::PointerType::get(ctx.llvmCtx, 0);
+    llvm::FunctionType* fnTy = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(ctx.llvmCtx), {ptrTy}, false);
+    llvm::Function* dropFn = llvm::Function::Create(
+        fnTy, llvm::Function::InternalLinkage,
+        "closure_env_drop_" + std::to_string(++g_envDropCounter), ctx.module);
+    dropFn->getArg(0)->setName("data");
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx.llvmCtx, "entry", dropFn);
+    ctx.builder.SetInsertPoint(entry);
+
+    llvm::Function* releaseFn = ctx.getRuntimeFn(RuntimeFn::ReleaseEnv);
+    for (const CapturedVariable& capture : expr->captures) {
+        if (!capturesOwnedClosureEnv(capture)) continue;
+
+        std::string name = ctx.pool.lookup(capture.name);
+        llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
+            envType, dropFn->getArg(0), capture.index, "drop_field_" + name);
+        llvm::Value* fat = ctx.builder.CreateLoad(
+            envType->getElementType(capture.index), fieldPtr, "drop_cls_" + name);
+        llvm::Value* env = ctx.builder.CreateExtractValue(fat, 1, "drop_env_" + name);
+        ctx.builder.CreateCall(releaseFn, {env});
+    }
+    ctx.builder.CreateRetVoid();
+    return dropFn;
+}
+
+namespace {
+
+/// @brief RAII isolation for lowering ONE closure body.
+///
+/// A closure body is a different llvm::Function from the code that contains
+/// the closure expression, but CodeGenContext keeps its per-function state in
+/// single shared members. Lowering the body without isolating that state:
+///   - leaves the IRBuilder inside the closure function, so the env
+///     allocation and capture stores that lowerClosure emits next land in the
+///     wrong function;
+///   - lets `return` inside the closure (emitUnwindTo(0)) emit cleanup for the
+///     ENCLOSING function's live variables, whose allocas belong to another
+///     function (invalid IR), and puts the closure's own params in the
+///     enclosing function's tracker so they are never released;
+///   - lets the capture bindings written into ctx.values overwrite the
+///     enclosing function's bindings for the same declarations.
+///
+/// The constructor takes everything out of the context; the destructor puts it
+/// back on every exit path (including early returns and errors).
+struct ClosureBodyScope {
+    CodeGenContext& ctx;
+    llvm::IRBuilderBase::InsertPointGuard insertGuard;   // restores block + point
+    llvm::Function* prevFunc;
+    llvm::Value* prevEnv;
+    TypeAST* prevReturnType;
+    decltype(CodeGenContext::liveTrackers) prevTrackers;
+    decltype(CodeGenContext::loops) prevLoops;
+    decltype(CodeGenContext::nullCoalesceStack) prevNullCoalesce;
+    std::vector<std::pair<ValueDeclAST*, llvm::Value*>> savedBindings;
+
+    explicit ClosureBodyScope(CodeGenContext& c)
+        : ctx(c),
+          insertGuard(c.builder),
+          prevFunc(c.currentFunction),
+          prevEnv(c.currentEnvPtr),
+          prevReturnType(c.currentDeclaredReturnType),
+          prevTrackers(std::move(c.liveTrackers)),
+          prevLoops(std::move(c.loops)),
+          prevNullCoalesce(std::move(c.nullCoalesceStack)) {
+        // Moved-from vectors are valid but unspecified; make them empty.
+        c.liveTrackers.clear();
+        c.loops.clear();
+        c.nullCoalesceStack.clear();
+    }
+
+    /// Remember the enclosing binding of `decl` before the closure body
+    /// rebinds it to its own env-loaded value / spill slot.
+    void saveBinding(ValueDeclAST* decl) {
+        savedBindings.emplace_back(decl, ctx.lookupValue(decl));
+    }
+
+    ~ClosureBodyScope() {
+        // Reverse order: if a decl was saved twice, the earliest (= the
+        // enclosing function's) binding is applied last and wins.
+        for (auto it = savedBindings.rbegin(); it != savedBindings.rend(); ++it) {
+            if (it->second) ctx.values[it->first] = it->second;
+            else            ctx.values.erase(it->first);
+        }
+        ctx.currentFunction = prevFunc;
+        ctx.currentEnvPtr = prevEnv;
+        ctx.currentDeclaredReturnType = prevReturnType;
+        ctx.liveTrackers = std::move(prevTrackers);
+        ctx.loops = std::move(prevLoops);
+        ctx.nullCoalesceStack = std::move(prevNullCoalesce);
+        // insertGuard's destructor runs after this body and restores the
+        // builder's insertion point.
+    }
+};
+
+} // anonymous namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Entry Point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -107,11 +250,17 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
 
     if (hasCaptures) {
         llvm::Function* allocEnv = ctx.getRuntimeFn(RuntimeFn::AllocEnv);
-        llvm::DataLayout dl(ctx.module);
+        const llvm::DataLayout& dl = ctx.module->getDataLayout();
         uint64_t envSize = dl.getTypeAllocSize(envType);
         llvm::Value* envSizeVal = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(ctx.llvmCtx), envSize);
-        envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal}, "env_ptr");
+        // Drop glue releases the envs of by-value cls captures when this
+        // environment dies. Null when the env owns nothing to release.
+        llvm::Function* dropFn = buildEnvDropFunction(expr, envType, ctx);
+        llvm::Value* dropVal = dropFn
+            ? static_cast<llvm::Value*>(dropFn)
+            : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx.llvmCtx, 0));
+        envPtr = ctx.builder.CreateCall(allocEnv, {envSizeVal, dropVal}, "env_ptr");
         envPtr = ctx.builder.CreatePointerCast(
             envPtr, llvm::PointerType::get(envType, 0), "typed_env");
 
@@ -147,8 +296,14 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
                 }
                 storedValue = binding;
             } else {
-                if (llvm::isa<llvm::AllocaInst>(binding)
-                    || llvm::isa<llvm::GlobalVariable>(binding)) {
+                // A variable's binding is the ADDRESS of its storage: an
+                // alloca, or (inside another closure) the pointer loaded from
+                // that closure's env for a by-reference capture. Module-level
+                // bindings never reach here — they live in the module
+                // instance, not in ctx.values. A cls-shaped FuncDeclAST is
+                // the exception: its binding is the fat-pointer VALUE.
+                if (binding->getType()->isPointerTy()
+                    && !capture.resolvedDecl->isa<FuncDeclAST>()) {
                     storedValue = ctx.builder.CreateLoad(
                         fieldType, binding,
                         "capture_" + ctx.pool.lookup(capture.name));
@@ -157,17 +312,15 @@ llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx) {
                 }
             }
 
-            if (!capture.byReference && capturedType->isa<FuncTypeAST>()) {
-                FuncTypeAST* capturedFuncType = capturedType->as<FuncTypeAST>();
-                if (capturedFuncType->shape == FuncShape::Cls) {
-                    // A cls-typed capture is always a fat pointer. Retain its
-                    // environment; fn-typed captures are bare pointers and
-                    // have no environment ownership to retain.
-                    llvm::Value* envForRetain = ctx.builder.CreateExtractValue(
-                        storedValue, 1, "capture_env");
-                    llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
-                    ctx.builder.CreateCall(retainFn, {envForRetain});
-                }
+            if (capturesOwnedClosureEnv(capture)) {
+                // A cls-typed capture is always a fat pointer. Retain its
+                // environment; the matching release is the drop function
+                // (buildEnvDropFunction). fn-typed captures are bare pointers
+                // and have no environment ownership to retain.
+                llvm::Value* envForRetain = ctx.builder.CreateExtractValue(
+                    storedValue, 1, "capture_env");
+                llvm::Function* retainFn = ctx.getRuntimeFn(RuntimeFn::RetainEnv);
+                ctx.builder.CreateCall(retainFn, {envForRetain});
             }
 
             llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
@@ -321,25 +474,29 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
         return false;
     }
 
-    // ─── 1. Save the previous function context ──────────────────────────
-    llvm::Function* prevFunc = ctx.currentFunction;
-    llvm::Value* prevEnv = ctx.currentEnvPtr;
-    TypeAST* prevReturnType = ctx.currentDeclaredReturnType;
+    // ─── 1. Isolate per-function state ───────────────────────────────────
+    // Saves the builder insertion point, current function / return type,
+    // live trackers, loop stack, null-coalesce stack, and (via saveBinding)
+    // the enclosing bindings of captured declarations. Everything is restored
+    // when `scope` is destroyed, on every exit path.
+    ClosureBodyScope scope(ctx);
 
     ctx.setCurrentFunction(closureFunc);
     ctx.currentDeclaredReturnType = funcType->returnType;
 
-    // ─── 2. Create entry block ──────────────────────────────────────────
+    // ─── 2. Create entry block + the closure's own function-level scope ──
     llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(
         ctx.llvmCtx, "entry", closureFunc);
     ctx.builder.SetInsertPoint(entryBlock);
 
+    // Owns the closure's params. Popped below, BEFORE the fallback
+    // terminator, so fall-through paths release them too.
+    ctx.pushLiveScope();
+
     // ─── 3. Load captured values from the environment ───────────────────
     // This runs FIRST, before parameters and body, because the body's
     // identifier expressions resolve against `ctx.values` — the same map
-    // these loads populate. Populating it after body lowering (as an
-    // earlier revision did) left every captured name unresolved at the
-    // point the body actually needed it.
+    // these loads populate.
     //
     // By-reference captures: the env field holds a pointer to the
     //   captured binding's storage. Store that pointer directly under
@@ -347,29 +504,33 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
     // By-value captures: the env field holds a copy. Spill it into a
     //   fresh alloca so mutations inside the closure do not reach the
     //   original, and store the alloca under `resolvedDecl`.
-    for (size_t i = 0; i < expr->captures.size(); ++i) {
-        const CapturedVariable& capture = expr->captures[i];
-        if (!capture.name.isValid()) continue;
+    //
+    // The closure BORROWS these values: the env owns the claim (see
+    // buildEnvDropFunction), so nothing captured is marked alive here.
+    //
+    // `resolvedDecl` is the ENCLOSING function's declaration, so its entry in
+    // ctx.values is rebound here; saveBinding lets `scope` put it back for
+    // the capture stores lowerClosure emits after this returns.
+    for (const CapturedVariable& capture : expr->captures) {
+        if (!capture.name.isValid() || !capture.resolvedDecl) continue;
 
         llvm::Value* fieldPtr = ctx.builder.CreateStructGEP(
-            envType, envPtr, i,
+            envType, envPtr, capture.index,
             "captured_" + ctx.pool.lookup(capture.name));
-        llvm::Type* fieldType = envType->getElementType(i);
+        llvm::Type* fieldType = envType->getElementType(capture.index);
         llvm::Value* capturedValue = ctx.builder.CreateLoad(
             fieldType, fieldPtr,
             "load_captured_" + ctx.pool.lookup(capture.name));
 
+        scope.saveBinding(capture.resolvedDecl);
         if (capture.byReference) {
-            if (!capture.resolvedDecl) continue;
             ctx.storeValue(capture.resolvedDecl, capturedValue);
         } else {
             llvm::AllocaInst* spill = ctx.builder.CreateAlloca(
                 fieldType, nullptr,
                 "capture_spill_" + ctx.pool.lookup(capture.name));
             ctx.builder.CreateStore(capturedValue, spill);
-            if (capture.resolvedDecl) {
-                ctx.storeValue(capture.resolvedDecl, spill);
-            }
+            ctx.storeValue(capture.resolvedDecl, spill);
         }
     }
 
@@ -397,20 +558,30 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
     }
 
     // ─── 5. Lower the body ──────────────────────────────────────────────
-    if (expr->body) {
-        lowerStatement(expr->body, ctx);
-    } else {
+    if (!expr->body) {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, expr->loc,
                                 "anonymous function has no body");
-        ctx.currentFunction = prevFunc;
-        ctx.currentEnvPtr = prevEnv;
-        ctx.currentDeclaredReturnType = prevReturnType;
         return false;
     }
+    lowerStatement(expr->body, ctx);
 
-    ctx.currentFunction = prevFunc;
-    ctx.currentEnvPtr = prevEnv;
-    ctx.currentDeclaredReturnType = prevReturnType;
+    // ─── 6. Pop the function scope, THEN ensure a terminator ────────────
+    // Order matters: popLiveScope skips its cleanup when the block already
+    // ends in a terminator (an explicit `return` already unwound), so the
+    // fallback terminator must be added after it, or fall-through paths would
+    // never release the closure's owning params.
+    ctx.popLiveScope();
+
+    llvm::BasicBlock* endBlock = ctx.builder.GetInsertBlock();
+    if (endBlock && !endBlock->getTerminator()) {
+        llvm::Type* retType = closureFunc->getReturnType();
+        if (retType->isVoidTy()) {
+            ctx.builder.CreateRetVoid();
+        } else {
+            // Sema reports missing returns; keep the IR well-formed.
+            ctx.builder.CreateRet(llvm::UndefValue::get(retType));
+        }
+    }
 
     std::string error;
     llvm::raw_string_ostream errorStream(error);

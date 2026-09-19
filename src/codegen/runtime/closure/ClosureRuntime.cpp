@@ -28,8 +28,12 @@ extern "C" {
 
 /// @brief Allocate a closure environment.
 /// @param size Size of the data portion in bytes.
+/// @param drop Optional (may be null). Called with a pointer to the data
+///        portion when the last reference is released, before the memory is
+///        freed. The compiler emits one per closure that captures a `cls`
+///        value by value, to release the captured environments.
 /// @return Pointer to the environment (header + data), or nullptr on failure.
-void* __lucid_alloc_env(uint64_t size) {
+void* __lucid_alloc_env(uint64_t size, void (*drop)(void*)) {
     // Validate size
     if (size == 0) {
         return nullptr;
@@ -39,7 +43,7 @@ void* __lucid_alloc_env(uint64_t size) {
         return nullptr;
     }
 
-    return ClosureEnvHeader::allocate(static_cast<uint32_t>(size));
+    return ClosureEnvHeader::allocate(static_cast<uint32_t>(size), drop);
 }
 
 /// @brief Retain a closure environment (increment reference count).
