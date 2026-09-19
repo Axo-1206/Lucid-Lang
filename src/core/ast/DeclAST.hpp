@@ -76,17 +76,6 @@
 #include <memory>
 #include <optional>
 
-// ─── LLVM Headers ──────────────────────────────────────────────────────────
-// These are needed for CodeGen annotation fields. Parser and Sema don't use
-// these fields, but including the headers is fine because they're already
-// included indirectly via ExprAST.hpp -> llvm/IR/Intrinsics.h.
-#include <llvm/IR/Value.h>
-#include <llvm/IR/Function.h>
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/GlobalVariable.h>
-#include <llvm/IR/Constants.h>
-#include <llvm/IR/DerivedTypes.h>
-
 // ─── ImportDeclAST ─────────────────────────────────────────────────────────
 
 /// @brief Represents a `import` declaration – imports symbols from another module.
@@ -152,9 +141,8 @@ struct VarDeclAST : ValueDeclAST {
 
     ExprAST* init;
 
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
-    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
@@ -185,11 +173,6 @@ struct ParamAST : ValueDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const bool isVariadic;        // True if variadic (`...type`)
     const bool isConstParam;      // True if read-only reference (`const type`)
-    
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::Value* llvmValue = nullptr;          // The LLVM argument value
-    llvm::AllocaInst* llvmAlloca = nullptr;    // The alloca for the param
-    llvm::Type* llvmType = nullptr;            // LLVM type (may differ from AST type)
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, TypeAST* t, bool variadic = false, bool isConstParam = false)
@@ -320,9 +303,8 @@ struct FuncDeclAST : ValueDeclAST {
     // No `captures`, `hasClosure`, `isReturned`, or `closureView`.
     // Those live on `init` when `init` is an `AnonFuncExprAST`.
 
-    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     InternedString mangledName;
-    llvm::Function* llvmFunction = nullptr;
 
     // ─── Constructor ────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw,
@@ -359,9 +341,6 @@ struct EnumVariantAST : ValueDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const int64_t value;              // Explicit integer value
-    
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::ConstantInt* llvmValue = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumVariantAST(InternedString n, int64_t v)
@@ -409,10 +388,6 @@ struct FieldDeclAST : ValueDeclAST {
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     size_t fieldIndex = 0;     // position in struct layout
 
-    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
-    llvm::Type* llvmType = nullptr;
-    uint64_t byteOffset = 0;
-
     // ─── Constructor ────────────────────────────────────────────────────
     FieldDeclAST(InternedString n, TypeAST* t, ExprAST* dv, bool isConstField)
         : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let, t)
@@ -455,11 +430,8 @@ struct StructDeclAST : TypeDeclAST {
     ArenaSpan<NamedTypeAST*> traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
     
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────────
-    llvm::StructType* llvmType = nullptr;
+    // ─── Semantic / Layout Fields (set by Sema) ─────────────────────────
     InternedString mangledName;        // Mangled name for AOT compilation
-    
-    // Physical layout - computed by CodeGen using LLVM DataLayout
     uint64_t totalSize = 0;
     uint64_t alignment = 0;
 
@@ -507,12 +479,7 @@ struct EnumDeclAST : TypeDeclAST {
     ArenaSpan<EnumVariantAST*> variants;
     PrimitiveTypeAST* backingType;
     
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    // Changed from ArenaSpan to std::vector because LLVM objects
-    // are not allocated in the AST arena.
-    std::vector<llvm::ConstantInt*> variantConstants;
-    llvm::IntegerType* backingLLVMType = nullptr;
-    uint64_t byteSize = 0;
+    // ─── Semantic / Layout Fields (set by Sema) ─────────────────────────
     InternedString mangledName;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -522,16 +489,6 @@ struct EnumDeclAST : TypeDeclAST {
         : TypeDeclAST(ASTKind::EnumDecl, n)
         , variants(vars)
         , backingType(backing) {}
-    
-    // ─── Helper to find variant constant by name ──────────────────────
-    llvm::ConstantInt* constantForVariant(InternedString name) const {
-        for (size_t i = 0; i < variants.size(); ++i) {
-            if (variants[i]->name == name) {
-                return i < variantConstants.size() ? variantConstants[i] : nullptr;
-            }
-        }
-        return nullptr;
-    }
 };
 
 // ─── TraitFieldDeclAST ────────────────────────────────────────────────────

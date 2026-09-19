@@ -56,14 +56,6 @@
 #include <unordered_map>
 #include <cassert>
 
-// ─── LLVM Headers ──────────────────────────────────────────────────────────
-// These are needed for CodeGen annotation fields. Parser and Sema don't use
-// these fields, but including the headers is fine.
-#include <llvm/IR/Value.h>
-#include <llvm/IR/Function.h>
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/Constants.h>
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declarations — every AST family forward-declared here so any header
 // can accept a visitor or hold a pointer without pulling in the full family.
@@ -645,9 +637,6 @@ struct ExprAST : BaseAST {
     /// construction and stay in sync because only one place writes
     /// them, together.
     ConstantValue constValue;
-    
-    // ─── CodeGen Fields (set by CodeGen) ──────────────────────────────
-    llvm::Value* llvmValue = nullptr;       // The generated LLVM value
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
@@ -1074,8 +1063,4 @@ struct CapturedVariable {
     /// struct. Assigned on insert; distinct for each closure that
     /// captures the same variable.
     size_t index = 0;
-
-    // ─── CodeGen Annotation (set during lowering) ──────────────────────
-    /// The LLVM value holding this capture's slot in the environment.
-    llvm::Value* envSlot = nullptr;
 };

@@ -16,7 +16,6 @@
 #include "TypeAST.hpp"
 #include "DeclAST.hpp"
 #include "core/memory/InternedString.hpp"
-#include "llvm/IR/Intrinsics.h"
 
 #include <string>
 #include <optional>
@@ -392,11 +391,6 @@ struct IntrinsicCallExprAST : ExprAST {
 
     const InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
     ArenaSpan<ExprAST*> args;           // value arguments in order
-    
-    // LLVM intrinsic ID - set during semantic analysis
-    // Use std::optional because not all intrinsics map to LLVM intrinsics
-    // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
-    std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
 
     explicit IntrinsicCallExprAST(InternedString n) 
         : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
@@ -755,10 +749,6 @@ struct AnonFuncExprAST : ExprAST {
     /// Invariant: `hasClosure == (captures.size() > 0)`.
     ArenaSpan<CapturedVariable> captures;
     bool hasClosure = false;
-
-    // ─── CodeGen Fields (mutable) ───────────────────────────────────────
-    llvm::Function* closureFunction = nullptr;
-    llvm::StructType* environmentType = nullptr;
 
     bool hasParams() const { return funcType && !funcType->params.empty(); }
 
