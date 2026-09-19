@@ -776,16 +776,50 @@ struct ValueDeclAST : DeclAST {
 
     /// What kind of heap resource this binding owns, if any.
     ///
-    /// Set once, by Sema, when the declaration's type is resolved.
-    /// Read by CodeGen at every release / retain / ownership-decision
-    /// site. Cached on the declaration because the answer is a
-    /// property of the declaration, not of the use site, and
-    /// re-deriving it at every use site means re-walking `type` at
-    /// every use site — which is both wasteful and a place for the
-    /// walkers to disagree.
+    /// ─── The Contract ─────────────────────────────────────────────────────
+    /// This field is written exactly once, by Sema, at the moment the
+    /// declaration's type is resolved. It is read by CodeGen at every
+    /// allocation and every free site. The writer is
+    /// `SemaContext::classifyResourceKind`, and it is the only writer.
     ///
-    /// `mutable` because Phase 2 Sema writes it after construction;
-    /// `const` field would fight the existing two-phase model.
+    /// Every `ValueDeclAST` — every `VarDeclAST`, `ParamAST`, `FuncDeclAST`,
+    /// `FieldDeclAST`, `EnumVariantAST` — has this field populated before
+    /// CodeGen runs. Sema's call sites are:
+    ///
+    ///   - `resolveVarDecl` — local and module-level variables
+    ///   - `resolveParam` — function parameters
+    ///   - `resolveFuncDecl` — function declarations
+    ///   - `resolveStructFieldDeclarations` — struct fields
+    ///   - `resolveEnumDecl` — enum variants (always None)
+    ///   - `resolveAsyncStmt` / `resolveSpawnStmt` — Future/Thread bindings
+    ///   - `resolveForStmt` — loop index and value bindings
+    ///   - `finalizeInstantiatedFunction` — generic specializations
+    ///
+    /// A debug-build assertion in `generate()` walks every module's
+    /// declarations and asserts each `ValueDeclAST` was classified. A
+    /// binding that reaches CodeGen with its default `None` when it should
+    /// have been classified is a Sema bug, and the assertion catches it at
+    /// the boundary rather than as a codegen miscompile.
+    ///
+    /// ─── Why On Declarations, Not Expressions ─────────────────────────────
+    /// An expression's resource kind is derived on demand, from its resolved
+    /// type, at the point of use — `Ownership::drop(expr->resolvedType,
+    /// value)`. It is not cached on the expression, because an expression
+    /// has no lifetime: it is evaluated, its value is consumed or stored,
+    /// and it is gone. Every use site that needs the classification
+    /// computes it from the type it already has.
+    ///
+    /// A declaration *does* have a lifetime — scope entry to scope exit —
+    /// and its binding owns a resource for the duration of that lifetime.
+    /// Every use site within that lifetime must agree on what the binding
+    /// owns, so the classification is cached once and read many times.
+    ///
+    /// ─── What Each Kind Means ─────────────────────────────────────────────
+    /// See the `ResourceKind` enum above for the per-kind semantics and
+    /// the reasoning behind the `Aggregate` case.
+    ///
+    /// `mutable` because Sema writes it after construction; a `const`
+    /// field would fight the existing two-phase model.
     ResourceKind resourceKind = ResourceKind::None;
     
     /// @brief Index of this binding's slot in its owning module's instance

@@ -541,12 +541,13 @@ ResourceKind SemaContext::classifyResourceKind(TypeAST* type) const {
     // environment; the value's own caller (or the struct literal that
     // stored it) is responsible for the retain, per Rule 3.
     //
-    // `asFunc` and `asFieldDefault` are no longer consulted for the shape
-    // decision. They are reserved for Phase 5 (the field-override case),
-    // where a struct literal's field write transfers ownership of a
-    // closure environment into the struct, and the classifier must
-    // therefore consider the value being stored, not just the field's
-    // declared type.
+    // The classifier's only input is the declared type. It does not
+    // consult the initializer, the use site, or any surrounding context.
+    // That is deliberate: the answer is a property of the declaration's
+    // type, and a classifier that took additional context would have to
+    // be re-run at every use site that disagreed with the declaration's
+    // cached answer — which is exactly the drift the caching exists to
+    // prevent.
     if (type->isa<FuncTypeAST>()) {
         return type->as<FuncTypeAST>()->isCls()
             ? ResourceKind::Refcounted

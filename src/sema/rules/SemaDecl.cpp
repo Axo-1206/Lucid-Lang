@@ -913,8 +913,10 @@ bool resolveStructFieldDeclarations(
         // function value, not a closure the field owns. If a field of
         // function type is initialized with a capturing closure, the
         // owning *struct* holds the closure env, not the field binding.
-        // Struct-level ownership is Phase 5; the field-level classification
-        // stays None for FuncTypeAST, matching CodeGen today.
+        // Struct-level ownership lands in Phase 4, together with the
+        // aggregate classification and the per-field drop glue; until
+        // then, the field-level classification returns None for
+        // FuncTypeAST, matching CodeGen today.
         field->resourceKind = ctx.classifyResourceKind(fieldType);
 
         // ─── 2. Reject Arena by value ──────────────────────────────────
