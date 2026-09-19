@@ -24,7 +24,7 @@
     - [Foreign Symbol Resolution](#foreign-symbol-resolution)
     - [Hot-Reload](#hot-reload)
   - [6. Backend — Compiler (AOT)](#6-backend--compiler-aot)
-  - [7. Runtime](#7-runtime)
+  - [7. Runtime (outdated, need an update)](#7-runtime-outdated-need-an-update)
     - [Memory (`memory.hpp/cpp`)](#memory-memoryhppcpp)
     - [Threading (`threading.hpp/cpp`)](#threading-threadinghppcpp)
     - [FFI (`ffi/`)](#ffi-ffi)
@@ -435,7 +435,7 @@ On Windows: `link.exe` with `/lib:name.lib`. The result is a native `.exe`,
 
 ---
 
-## 7. Runtime
+## 7. Runtime (outdated, need an update)
 
 **Location:** `src/runtime/`
 
@@ -812,15 +812,15 @@ lucid/
     │   │
     │   ├── context/                        # Context components
     │   │   ├── ContextStack.hpp/cpp        
-    │   │   ├── Generic.hpp/cpp        
-    │   │   ├── TypeIdRegistry.hpp          # Registry for mapping concrete types to runtime type id.
+    │   │   ├── Generic.hpp/cpp             # Generic substitution and instantiation utilities.
+    │   │   ├── Instantiation.cpp           # Generic instantiation — orchestration, caching, validation.
     │   │   └── SemaContext.hpp/cpp         # Unified context (composition)
     │   │
     │   ├── rules/                          # Analysis rules
     │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
     │   │   ├── SemaStmt.cpp                # if, for, while, switch, return, block
     │   │   ├── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
-    │   │   └── LibValidator.hpp/cpp        # validates `import lib;` against lib.luci (see Architecture §9.2)
+    │   │   └── LibValidator.hpp/cpp        # validates `import lib;` against lib.luci (see Architecture §9.2) (NOTE: not implemented)
     │   │
     │   ├── types/
     │   │   ├── SemaResolve.cpp             # Resolves type annotations to their semantic representations.
@@ -850,13 +850,17 @@ lucid/
     │       ├── Truthiness.hpp              # Collection of rules for conditions
     │       └── TypeNarrowHelpers.hpp/cpp
     │
+    ├── runtime-abi/
+    │   ├── functions.def    # The single source of truth for the runtime ABI surface.
+    │   └── lucid_abi.h      # The ABI contract between CodeGen, the runtime, and the interpreter.
+    │
     ├── codegen/
-    │   ├── CodeGen.hpp          # Public API
-    │   ├── CodeGen.cpp          # Orchestrator
+    │   ├── CodeGen.hpp/cpp      # Orchestrator
     │   ├── CodeGenDecl.cpp      # Declaration lowering
     │   ├── CodeGenStmt.cpp      # Statement lowering
     │   ├── CodeGenExpr.cpp      # Expression lowering
     │   ├── CodeGenDefaults.hpp  # Program-wide constants that every codegen caller must agree on.
+    │   ├── Manifest.hpp         # The plain-data contract between CodeGen and its consumers.
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
@@ -891,9 +895,6 @@ lucid/
     │   │   ├── string/
     │   │   │   └── StringRuntime.cpp           # String operations
     │   │   │
-    │   │   ├── tag/
-    │   │   │   └── TagLookupRuntime.cpp
-    │   │   │
     │   │   ├── closure/
     │   │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
     │   │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
@@ -911,25 +912,22 @@ lucid/
     │       └── LLVMIntrinsicEmitter.hpp/cpp
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
-    │   ├── Interpreter.hpp              # Public API - single entry point
-    │   ├── Interpreter.cpp              # Orchestration logic
+    │   ├── Interpreter.hpp             # Public API - single entry point
+    │   ├── Interpreter.cpp             # Orchestration logic
     │   │
     │   ├── core/
-    │   │   ├── InterpreterContext.hpp   # Context holding all state
-    │   │   ├── ModuleLoader.hpp         # Loads modules into JIT
-    │   │   ├── ModuleLoader.cpp
-    │   │   ├── ModuleRegistry.hpp       # Tracks loaded modules
-    │   │   └── ModuleRegistry.cpp
+    │   │   ├── InterpreterContext.hpp          # Context holding all state
+    │   │   ├── InterpreterProgram.hpp/cpp      # Program-level state: loaded modules, IDs, instances, load/reload/run/teardown.
+    │   │   ├── InterpreterSession.hppp/cpp     # Session-level state: JIT, DynamicLinker, instance table buffer.
+    │   │   └── ModuleRegistry.hpp/cpp          # Track loaded modules and their dependencies - NO VERSIONS.
     │   │
     │   ├── execution/
     │   │
     │   ├── jit/
-    │   │   ├── JITSession.hpp           # LLVM ORC JIT wrapper
-    │   │   ├── JITSession.cpp
-    │   │   ├── JITCompiler.hpp          # Compiles IR modules
-    │   │   └── JITCompiler.cpp
+    │   │   ├── JITSession.hpp           # ORC JIT session management.
+    │   │   └── JITSession.cpp
     │   │
-    │   ├── dynlink/
+    │   ├── dynlink/ (currently outdated, work on this one latter)
     │   │   ├── DynamicLinker.hpp        # Platform-agnostic library loader
     │   │   ├── DynamicLinker.cpp
     │   │   ├── LibraryHandle.hpp        # RAII wrapper for dlopen/LoadLibrary
@@ -940,7 +938,7 @@ lucid/
     │       ├── InterpreterError.hpp     # Error types
     │       └── ExecutionResult.hpp      # Result of execution
     │
-    ├── compiler/                       # AOT backend (lucid build)
+    ├── compiler/ (not implemented this is for reference) # AOT backend (lucid build)
     │   └── aot/                        # AOT-only backend
     │       ├── ModuleMerge.hpp/cpp     # llvm::Linker::linkModules — per-file
     │       │                           # Modules → one whole-program Module
