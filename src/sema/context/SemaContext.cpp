@@ -581,17 +581,29 @@ ResourceKind SemaContext::classifyResourceKind(TypeAST* type) const {
         return ResourceKind::None;
     }
 
-    // ─── Structs / TaggedSlots ─────────────────────────────────────────
+    // ─── Handle (linear async/spawn handles) ─────────────────────────────
+    // Future<T> and Thread<T> are linear handles. The inner type's resource
+    // kind is deliberately not consulted: the handle itself is a single
+    // pointer, and the boxed result is freed by the await/join site, not by
+    // scope-exit cleanup of the handle binding.
+    if (type->isa<FutureTypeAST>() || type->isa<ThreadTypeAST>()) {
+        return ResourceKind::Handle;
+    }
+
+    // ─── Aggregate (Phase 4) ───────────────────────────────────────────────
     //
-    // Phase 5 (T?/T!/T?!) and Phase 5 (struct fields) are stubs today.
-    // When they land, they unwrap or recurse here:
-    //   - NullableTypeAST / FallibleTypeAST / CombinedTypeAST: recurse
-    //     into inner. The ownership of `T?` follows `T` — the nil-ness
-    //     is orthogonal.
-    //   - NamedTypeAST pointing at a StructDeclAST: recurse into fields.
-    //     A struct is a resource iff any of its fields is.
-    // Both are no-ops for now, matching what CodeGen's classifyResource
-    // already does.
+    // A struct, tuple, T?, T!, or fixed array that contains at least one
+    // resource. Sema's job is only to answer "yes, this owns something" or
+    // "no, it does not." CodeGen derives the per-field copy and drop glue
+    // by walking the type.
+    //
+    // Phase 1 adds the enumerator but does not implement the walk. Until
+    // Phase 4, returning None here is correct: no program that compiles
+    // today can construct a resource-owning aggregate, because the resource
+    // kinds that would make it one — Refcounted, OwnedBuffer, Arena — are
+    // already handled above, and Handle is linear and rejected from
+    // aggregates by Sema. The walk lands in Phase 4, together with the
+    // codegen-side drop glue that consumes it.
     return ResourceKind::None;
 }
 

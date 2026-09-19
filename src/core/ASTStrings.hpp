@@ -16,6 +16,10 @@
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/memory/StringPool.hpp"
+
+#include <llvm/IR/Type.h>
+#include <llvm/IR/Value.h>
+#include <llvm/Support/raw_ostream.h>
 #include <string>
 #include <cstdint>
 

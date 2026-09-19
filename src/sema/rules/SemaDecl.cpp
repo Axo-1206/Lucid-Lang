@@ -116,8 +116,10 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 1b. Classify the resource kind ────────────────────────────────────
-    // VarDeclAST never holds a FuncTypeAST (parser guarantee), so the
-    // `asFunc` argument is always null here.
+    // This runs on the declared type before the initializer is checked. The
+    // binding's lifetime begins at declaration, and the ownership classification
+    // is therefore fixed from the type alone before any value-specific
+    // semantics are considered.
     decl->resourceKind = ctx.classifyResourceKind(declaredType);
 
     // ─── 2. Validate const type ────────────────────────────────────────────
@@ -467,6 +469,12 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
+    // ─── 4b. Classify the resource kind ────────────────────────────────────
+    // The function binding owns its closure environment only when the type is a
+    // `cls`; otherwise it is just a bare function pointer with no owned heap
+    // resource.
+    decl->resourceKind = ctx.classifyResourceKind(funcType);
+
     // ─── 5. Foreign functions: no body, no init ───────────────────────────
     if (decl->isForeignFunction) {
         decl->mangledName = decl->name;
@@ -549,16 +557,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 9. Classify the resource kind ────────────────────────────────────
-    // Runs after step 8b, so `decl->init->as<AnonFuncExprAST>()->hasClosure`
-    // is set. A non-capturing function's init is a non-capturing anon,
-    // yielding None; a capturing function's init is a capturing anon,
-    // yielding Refcounted. A reference-body function's init is not an
-    // AnonFuncExprAST at all, so the classifier's hasClosure check
-    // short-circuits to false, yielding None — which is correct: a
-    // reference-body function's value is the referenced function's own
-    // pointer or fat pointer, not a new one this binding owns.
-    decl->resourceKind = ctx.classifyResourceKind(funcType);
 }
 
 /// @brief Resolve a function's init expression against its declared type.
@@ -675,6 +673,11 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     // are values of the enum type. The enum type itself is the type.
     for (EnumVariantAST* variant : decl->variants) {
         validateAllAttributes(variant, ctx);
+
+        // Enum variants are values of the enum, not independent heap-owning
+        // bindings. They never own a resource on their own, so the classification
+        // is explicitly set to None rather than relying on a missed default.
+        variant->resourceKind = ResourceKind::None;
 
         // Check duplicate variant values
         for (EnumVariantAST* existing : decl->variants) {

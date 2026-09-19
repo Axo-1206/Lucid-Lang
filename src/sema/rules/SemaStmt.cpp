@@ -459,6 +459,7 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
         // ─── Resolve AND REGISTER the index binding ──────────────────────
         if (stmt->indexVar) {
             TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+            stmt->indexVar->resourceKind = ctx.classifyResourceKind(indexType);
             ctx.insertValue(stmt->indexVar);
             if (indexType && !isNumericType(indexType)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
@@ -532,6 +533,7 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
         // ─── Resolve AND REGISTER the index binding ──────────────────────
         if (stmt->indexVar) {
             TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+            stmt->indexVar->resourceKind = ctx.classifyResourceKind(indexType);
             ctx.insertValue(stmt->indexVar);
             if (indexType && !isIntegerType(indexType)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
@@ -543,6 +545,7 @@ bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
         // ─── Resolve AND REGISTER the value binding ──────────────────────
         if (stmt->valueVar) {
             TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
+            stmt->valueVar->resourceKind = ctx.classifyResourceKind(valueType);
             ctx.insertValue(stmt->valueVar);
         }
         
@@ -973,6 +976,9 @@ bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
     FutureTypeAST* futureType = resolvedType->as<FutureTypeAST>();
     TypeAST* innerType = futureType->inner;
 
+    // ─── Classify the binding before registration ──────────────────────────
+    stmt->binding->resourceKind = ctx.classifyResourceKind(resolvedType);
+
     // ─── Register the binding in the current scope ──────────────────────────
     // The binding already has its type in `binding->type` (the FutureTypeAST).
     // We don't need to store `resolvedType` anywhere.
@@ -1157,6 +1163,9 @@ bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
     // ─── Get the inner type for call validation ────────────────────────────
     const ThreadTypeAST* threadType = resolvedType->as<ThreadTypeAST>();
     TypeAST* innerType = threadType->inner;
+
+    // ─── Classify the binding before registration ──────────────────────────
+    stmt->binding->resourceKind = ctx.classifyResourceKind(resolvedType);
 
     // ─── Register the binding in the current scope ──────────────────────────
     // The binding already has its type in `binding->type` (the ThreadTypeAST).

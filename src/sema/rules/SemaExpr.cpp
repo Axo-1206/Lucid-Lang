@@ -2423,12 +2423,9 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetTyp
     // ─── Step 5: Get value state ──────────────────────────────────────────────
     ValueState state = getIntrinsicValueState(expr, ctx);
 
-    // ─── Step 6: Store LLVM intrinsic ID if available ────────────────────────
+    // ─── Step 6: Resolve intrinsic metadata without caching LLVM IDs ───────
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
     const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
-    if (info && info->isValid()) {
-        expr->intrinsicID = info->llvmID;
-    }
 
     // ─── Step 7: Store results ──────────────────────────────────────────────────
     expr->resolvedType = resultType;
