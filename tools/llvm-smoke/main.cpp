@@ -12,36 +12,95 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/Support/raw_ostream.h>
 
-int main() {
-    llvm::LLVMContext ctx;
-    auto mod = std::make_unique<llvm::Module>("smoke", ctx);
+static llvm::GlobalVariable* addModuleTable(llvm::Module& module,
+                                            llvm::LLVMContext& ctx) {
+    auto* tableType = llvm::ArrayType::get(
+        llvm::PointerType::get(ctx, 0),
+        256
+    );
+    return new llvm::GlobalVariable(
+        module,
+        tableType,
+        /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,
+        /*Initializer=*/nullptr,
+        "__lucid_module_instances"
+    );
+}
 
-    llvm::errs() << "[smoke] ctx       = " << (void*)&ctx << "\n";
-    llvm::errs() << "[smoke] mod->ctx  = " << (void*)&mod->getContext() << "\n";
+static void testWindowsPathModuleName(llvm::LLVMContext& ctx) {
+    llvm::errs() << "[smoke] TEST A: Windows-style module name\n";
+    auto mod = std::make_unique<llvm::Module>(
+        "C:\\Users\\TaiAx\\Desktop\\Lucid\\tests\\codegen\\test.luc",
+        ctx);
+    auto* moduleTable = addModuleTable(*mod, ctx);
+    llvm::errs() << "[smoke] TEST A table = " << (void*)moduleTable << "\n";
 
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
-    llvm::errs() << "[smoke] i32       = " << (void*)i32 << "\n";
-
     llvm::FunctionType* fnTy = llvm::FunctionType::get(i32, {}, false);
-    llvm::errs() << "[smoke] fnTy      = " << (void*)fnTy
-                 << " params=" << fnTy->getNumParams() << "\n";
-
     llvm::Function* fn = llvm::Function::Create(
         fnTy,
         llvm::GlobalValue::ExternalLinkage,
+        "__module_size_C__Users_TaiAx_Desktop_Lucid_tests_codegen_test_luc",
+        mod.get());
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
+    llvm::IRBuilder<> builder(entry);
+    builder.CreateRet(llvm::ConstantInt::get(i32, 0));
+
+    llvm::errs() << "[smoke] TEST A about to print\n";
+    llvm::errs().flush();
+    mod->print(llvm::errs(), nullptr);
+    llvm::errs() << "[smoke] TEST A printed OK\n";
+    llvm::errs().flush();
+}
+
+static void testMixedReturnFunctions(llvm::LLVMContext& ctx) {
+    llvm::errs() << "[smoke] TEST B: mixed i32/i64 functions\n";
+    auto mod = std::make_unique<llvm::Module>("mixed-functions", ctx);
+    auto* moduleTable = addModuleTable(*mod, ctx);
+    llvm::errs() << "[smoke] TEST B table = " << (void*)moduleTable << "\n";
+
+    llvm::FunctionType* mainType = llvm::FunctionType::get(
+        llvm::Type::getInt32Ty(ctx), {}, false);
+    llvm::Function* mainFn = llvm::Function::Create(
+        mainType,
+        llvm::GlobalValue::ExternalLinkage,
         "main",
         mod.get());
-    llvm::errs() << "[smoke] fn        = " << (void*)fn << "\n";
+    llvm::BasicBlock* mainEntry = llvm::BasicBlock::Create(ctx, "entry", mainFn);
+    llvm::IRBuilder<> mainBuilder(mainEntry);
+    mainBuilder.CreateRet(llvm::ConstantInt::get(
+        llvm::Type::getInt32Ty(ctx), 1));
 
-    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
-    llvm::IRBuilder<> b(entry);
-    b.CreateRet(llvm::ConstantInt::get(i32, 0));
+    llvm::FunctionType* sizeType = llvm::FunctionType::get(
+        llvm::Type::getInt64Ty(ctx), {}, false);
+    llvm::Function* sizeFn = llvm::Function::Create(
+        sizeType,
+        llvm::GlobalValue::ExternalLinkage,
+        "__module_size_C__Users_TaiAx_Desktop_Lucid_tests_codegen_test_luc",
+        mod.get());
+    llvm::BasicBlock* sizeEntry = llvm::BasicBlock::Create(
+        ctx, "module_size_entry", sizeFn);
+    llvm::IRBuilder<> sizeBuilder(sizeEntry);
+    sizeBuilder.CreateRet(llvm::ConstantInt::get(
+        llvm::Type::getInt64Ty(ctx), 0));
 
-    llvm::errs() << "[smoke] ---- module IR ----\n";
+    llvm::errs() << "[smoke] TEST B about to print\n";
+    llvm::errs().flush();
     mod->print(llvm::errs(), nullptr);
+    llvm::errs() << "[smoke] TEST B printed OK\n";
+    llvm::errs().flush();
+}
 
-    llvm::errs() << "[smoke] OK\n";
+int main() {
+    llvm::LLVMContext ctx;
+    llvm::errs() << "[smoke] ctx = " << (void*)&ctx << "\n";
+    testWindowsPathModuleName(ctx);
+    testMixedReturnFunctions(ctx);
+    llvm::errs() << "[smoke] ALL TESTS OK\n";
+    llvm::errs().flush();
     return 0;
 }

@@ -45,6 +45,18 @@ add_executable(llvm_smoke main.cpp)
 target_compile_definitions(llvm_smoke PRIVATE ${LLVM_DEFINITIONS})
 target_include_directories(llvm_smoke PRIVATE ${LLVM_INCLUDE_DIRS})
 
-llvm_map_components_to_libnames(llvm_libs core support)
+llvm_map_components_to_libnames(llvm_libs 
+    core 
+    support 
+    native 
+    mc 
+    target 
+    orcjit 
+    executionengine 
+    mcjit
+    asmwriter
+    asmparser
+    ${LLVM_TARGETS_TO_BUILD}
+)
 
 target_link_libraries(llvm_smoke PRIVATE ${llvm_libs})
