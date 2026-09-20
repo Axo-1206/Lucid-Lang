@@ -1,184 +1,194 @@
-/// @file runtime/arena/ArenaRuntime.cpp
+/// @file runtime/ArenaRuntime.cpp
 /// @brief Implementation of arena runtime functions.
+///
+/// ─── Layout ───────────────────────────────────────────────────────────────────
+/// The arena structs are `lucid::abi::LucidArena` and
+/// `lucid::abi::LucidArenaDescriptor` from `runtime-abi/lucid_abi.h`. This
+/// file does not define its own copies; a private copy is exactly the drift
+/// the ABI header exists to prevent.
+///
+/// ─── Signature Contract ───────────────────────────────────────────────────────
+/// This file includes `runtime-abi/lucid_runtime.h`, so each definition below
+/// is checked against its row in `functions.def`. Sizes and alignments are
+/// `I64`, which is signed: a negative value is a caller error and is rejected
+/// like zero, rather than being read as an enormous unsigned size.
+///
+/// ─── Memory ───────────────────────────────────────────────────────────────────
+/// The backing region comes from `lucid::runtime::heapAlloc`, so it shows up
+/// in the leak report until `__lucid_arena_free` releases it.
 
-#include <cstdint>
+#include "RuntimeInternal.hpp"
+#include "runtime-abi/lucid_runtime.h"
+
 #include <cstddef>
-#include <cstdlib>
+#include <cstdint>
 #include <cstring>
 
-// ─── Arena struct (private to runtime) ────────────────────────────────────
-// This matches the LLVM type defined in CodeGenContext::getArenaType()
-struct Arena {
-    void* base;      // Pointer to allocated memory
-    uint64_t size;   // Total capacity in bytes
-    uint64_t cursor; // Current allocation position
-};
-
-// ─── ArenaDescriptor struct (FFI-visible) ─────────────────────────────────
-// This matches the LLVM type defined in CodeGenContext::getArenaDescriptorType()
-struct ArenaDescriptor {
-    void* base;      // Pointer to allocated memory
-    uint64_t size;   // Total capacity in bytes
-};
+using lucid::abi::LucidArena;
+using lucid::abi::LucidArenaDescriptor;
+using lucid::abi::LucidBool;
+using lucid::abi::LucidI64;
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────
 
-static inline uint64_t align_up(uint64_t value, uint64_t alignment) {
-    uint64_t mask = alignment - 1;
-    return (value + mask) & ~mask;
-}
+namespace {
 
-static constexpr uint64_t DEFAULT_ALIGNMENT = 16;
+constexpr LucidI64 kDefaultAlignment = 16;
 
-static inline bool is_power_of_two(uint64_t value) {
+bool isPowerOfTwo(LucidI64 value) {
     return value > 0 && (value & (value - 1)) == 0;
 }
 
-static inline bool is_valid_arena(const Arena* arena_ptr) {
-    if (!arena_ptr) return false;
-    // base can be null for empty arena (Arena::empty())
-    if (arena_ptr->base == nullptr && arena_ptr->size > 0) return false;
-    if (arena_ptr->cursor > arena_ptr->size) return false;
+/// An arena is valid if its fields are self-consistent. `base` may be null
+/// for an empty arena (`Arena::empty()`), but only if `size` is 0.
+bool isValidArena(const LucidArena* arena) {
+    if (!arena) return false;
+    if (arena->size < 0 || arena->cursor < 0) return false;
+    if (arena->base == nullptr && arena->size > 0) return false;
+    if (arena->cursor > arena->size) return false;
     return true;
 }
+
+} // anonymous namespace
 
 extern "C" {
 
 // ─── Arena Create ──────────────────────────────────────────────────────────
 
-void __lucid_arena_create(ArenaDescriptor* out, uint64_t size) {
+void __lucid_arena_create(LucidArenaDescriptor* out, LucidI64 size) {
     if (!out) {
         return;
     }
-    
+
     out->base = nullptr;
     out->size = 0;
-    
-    // ─── Reject size 0 ──────────────────────────────────────────────────────
-    if (size == 0) {
-        return;  // Arena::create(0) is not allowed
+
+    // Arena::create(0) is not allowed, and a negative size is nonsense.
+    if (size <= 0) {
+        return;
     }
-    
-    // ─── Allocate memory ──────────────────────────────────────────────────
-    void* memory = std::malloc(size);
+
+    // heapAlloc returns zeroed, registered memory, or null on failure.
+    void* memory = lucid::runtime::heapAlloc(static_cast<std::size_t>(size));
     if (!memory) {
-        return;  // Allocation failed
+        return;
     }
-    
-    std::memset(memory, 0, size);
-    
+
     out->base = memory;
     out->size = size;
 }
 
 // ─── Arena Free ───────────────────────────────────────────────────────────
 
-void __lucid_arena_free(Arena* arena_ptr) {
-    if (!arena_ptr) {
+void __lucid_arena_free(LucidArena* arena) {
+    if (!arena) {
         return;
     }
-    if (arena_ptr->base) {
-        std::free(arena_ptr->base);
-        arena_ptr->base = nullptr;
+    if (arena->base) {
+        lucid::runtime::heapFree(arena->base);
+        arena->base = nullptr;
     }
-    arena_ptr->size = 0;
-    arena_ptr->cursor = 0;
+    arena->size = 0;
+    arena->cursor = 0;
 }
 
 // ─── Arena Alloc ───────────────────────────────────────────────────────────
 
-void* __lucid_arena_alloc(Arena* arena_ptr, uint64_t size, uint64_t alignment) {
-    if (!is_valid_arena(arena_ptr)) {
+void* __lucid_arena_alloc(LucidArena* arena, LucidI64 size, LucidI64 alignment) {
+    if (!isValidArena(arena) || size <= 0) {
         return nullptr;
     }
-    
-    if (size == 0) {
-        return nullptr;
-    }
-    
+
     if (alignment == 0) {
-        alignment = DEFAULT_ALIGNMENT;
+        alignment = kDefaultAlignment;
     }
-    if (!is_power_of_two(alignment)) {
+    if (!isPowerOfTwo(alignment)) {
         return nullptr;
     }
-    
-    uint64_t current = arena_ptr->cursor;
-    uint64_t aligned = align_up(current, alignment);
-    uint64_t new_cursor = aligned + size;
-    
-    if (new_cursor > arena_ptr->size) {
+
+    // Align the ADDRESS, not just the offset: for an alignment larger than
+    // the base's own alignment the two differ. All arithmetic is unsigned
+    // and checked, so an enormous `size` cannot wrap around and pass the
+    // capacity test.
+    const std::uint64_t mask = static_cast<std::uint64_t>(alignment) - 1;
+    const std::uint64_t base = reinterpret_cast<std::uintptr_t>(arena->base);
+    const std::uint64_t address = base + static_cast<std::uint64_t>(arena->cursor);
+
+    if (address > UINT64_MAX - mask) {
         return nullptr;
     }
-    
-    uint8_t* base = static_cast<uint8_t*>(arena_ptr->base);
-    void* result = base + aligned;
-    arena_ptr->cursor = new_cursor;
-    
-    std::memset(result, 0, size);
-    
+    const std::uint64_t alignedAddress = (address + mask) & ~mask;
+    const std::uint64_t start = alignedAddress - base;   // offset of the block
+
+    const std::uint64_t capacity = static_cast<std::uint64_t>(arena->size);
+    if (start > capacity || static_cast<std::uint64_t>(size) > capacity - start) {
+        return nullptr;   // out of capacity
+    }
+
+    void* result = static_cast<std::uint8_t*>(arena->base) + start;
+    arena->cursor = static_cast<LucidI64>(start + static_cast<std::uint64_t>(size));
+
+    std::memset(result, 0, static_cast<std::size_t>(size));
     return result;
 }
 
 // ─── Arena Reset ──────────────────────────────────────────────────────────
 
-void __lucid_arena_reset(Arena* arena_ptr) {
-    if (arena_ptr) {
-        arena_ptr->cursor = 0;
+void __lucid_arena_reset(LucidArena* arena) {
+    if (arena) {
+        arena->cursor = 0;
     }
 }
 
 // ─── Arena Capacity ───────────────────────────────────────────────────────
 
-uint64_t __lucid_arena_capacity(const Arena* arena_ptr) {
-    if (!is_valid_arena(arena_ptr)) {
+LucidI64 __lucid_arena_capacity(LucidArena* arena) {
+    if (!isValidArena(arena)) {
         return 0;
     }
-    return arena_ptr->size;
+    return arena->size;
 }
 
 // ─── Arena Remaining ──────────────────────────────────────────────────────
 
-uint64_t __lucid_arena_remaining(const Arena* arena_ptr) {
-    if (!is_valid_arena(arena_ptr)) {
+LucidI64 __lucid_arena_remaining(LucidArena* arena) {
+    if (!isValidArena(arena)) {
         return 0;
     }
-    return arena_ptr->size - arena_ptr->cursor;
+    return arena->size - arena->cursor;
 }
 
 // ─── Arena Is Empty ───────────────────────────────────────────────────────
 
-bool __lucid_arena_is_empty(const Arena* arena_ptr) {
-    if (!is_valid_arena(arena_ptr)) {
-        return true;
+LucidBool __lucid_arena_is_empty(LucidArena* arena) {
+    if (!isValidArena(arena)) {
+        return 1;
     }
-    return arena_ptr->cursor == 0;
+    return arena->cursor == 0 ? 1 : 0;
 }
 
 // ─── Arena Space ──────────────────────────────────────────────────────────
 
-uint64_t __lucid_arena_space(const Arena* arena_ptr, uint64_t elem_size) {
-    if (!is_valid_arena(arena_ptr) || elem_size == 0) {
+LucidI64 __lucid_arena_space(LucidArena* arena, LucidI64 elemSize) {
+    if (!isValidArena(arena) || elemSize <= 0) {
         return 0;
     }
-    
-    uint64_t remaining = arena_ptr->size - arena_ptr->cursor;
-    return remaining / elem_size;
+    return (arena->size - arena->cursor) / elemSize;
 }
 
 // ─── Arena Can Fit ────────────────────────────────────────────────────────
 
-bool __lucid_arena_can_fit(const Arena* arena_ptr, uint64_t elem_size, uint64_t count) {
-    if (!is_valid_arena(arena_ptr) || elem_size == 0) {
-        return false;
+LucidBool __lucid_arena_can_fit(LucidArena* arena, LucidI64 elemSize, LucidI64 count) {
+    if (!isValidArena(arena) || elemSize <= 0 || count < 0) {
+        return 0;
     }
     if (count == 0) {
-        return true;
+        return 1;
     }
-    
-    uint64_t needed = elem_size * count;
-    uint64_t remaining = arena_ptr->size - arena_ptr->cursor;
-    return needed <= remaining;
+    // `count * elemSize <= remaining`, written as a division so the product
+    // cannot overflow.
+    const LucidI64 remaining = arena->size - arena->cursor;
+    return count <= remaining / elemSize ? 1 : 0;
 }
 
 } // extern "C"

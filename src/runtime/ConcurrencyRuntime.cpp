@@ -4,20 +4,21 @@
 /// ─── Concurrency ABI Note ──────────────────────────────────────────────────────
 /// The async and spawn functions have a 3rd parameter that is a pointer to
 /// storage (void**), NOT a pointer to the handle itself. This is because the
-/// runtime needs to write the handle back into the binding's alloca.
+/// runtime needs to write the handle back into the binding's alloca. Its
+/// row in functions.def tags it `Ptr`; the entry points (ConcurrencyEntry.cpp)
+/// receive it as `void*` and treat it as a `void**`.
 ///
-/// The registry entry for Async and Spawn reflects this:
-///   - 3rd parameter type: getPtrType(ctx.llvmCtx)  (i8*)
-///   - At runtime, this is treated as a void** (pointer to storage)
-///   - The runtime writes the handle into *((void**)arg3)
+/// This file is the C++ implementation behind those entry points; it is not
+/// part of the ABI and is not checked against functions.def.
 ///
-/// @see CodeGenStmt.cpp - lowerAsyncStmt(), lowerSpawnStmt()
-/// @see ConcurrencyRuntime.cpp - __lucid_async(), __lucid_spawn()
+/// @see ConcurrencyEntry.cpp - __lucid_async(), __lucid_spawn(), ...
 
 #include "ConcurrencyRuntime.hpp"
+#include "RuntimeInternal.hpp"
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <new>
 #include <thread>
 
 namespace lucid::runtime {
@@ -25,7 +26,10 @@ namespace lucid::runtime {
 // ─── FutureHandle Implementation ──────────────────────────────────────────
 
 FutureHandle* FutureHandle::allocate(void* (*callable)(void*), void* args) {
-    FutureHandle* handle = new FutureHandle();
+    FutureHandle* handle = new (std::nothrow) FutureHandle();
+    if (!handle) {
+        return nullptr;
+    }
     handle->refcount.store(1, std::memory_order_release);
     handle->state.store(FutureState::Pending, std::memory_order_release);
     handle->result = nullptr;
@@ -44,7 +48,12 @@ void FutureHandle::release(FutureHandle* handle) {
     if (!handle) return;
     uint64_t oldCount = handle->refcount.fetch_sub(1, std::memory_order_acq_rel);
     if (oldCount == 1) {
-        // Last reference - free the memory
+        // Last reference. If nobody consumed the result (fire-and-forget, or
+        // cancelled at shutdown), the box is ours to free.
+        if (handle->state.load(std::memory_order_acquire) != FutureState::Consumed &&
+            handle->result) {
+            lucid::runtime::heapFree(handle->result);
+        }
         delete handle;
     }
 }
@@ -69,7 +78,10 @@ bool FutureHandle::isReady() const {
 // ─── ThreadHandle Implementation ──────────────────────────────────────────
 
 ThreadHandle* ThreadHandle::allocate(void* (*callable)(void*), void* args) {
-    ThreadHandle* handle = new ThreadHandle();
+    ThreadHandle* handle = new (std::nothrow) ThreadHandle();
+    if (!handle) {
+        return nullptr;
+    }
     handle->refcount.store(1, std::memory_order_release);
     handle->state.store(ThreadState::Running, std::memory_order_release);
     handle->result = nullptr;
@@ -88,21 +100,35 @@ void ThreadHandle::release(ThreadHandle* handle) {
     if (!handle) return;
     uint64_t oldCount = handle->refcount.fetch_sub(1, std::memory_order_acq_rel);
     if (oldCount == 1) {
-        // Last reference - free the memory
+        // Last reference. If nobody consumed the result (fire-and-forget, or
+        // cancelled at shutdown), the box is ours to free.
+        if (handle->state.load(std::memory_order_acquire) != ThreadState::Consumed &&
+            handle->result) {
+            lucid::runtime::heapFree(handle->result);
+        }
         delete handle;
     }
 }
 
 void ThreadHandle::setDone(void* result) {
-    // Plain non-atomic write to `result` is safely published to the consumer
-    // because `state` is stored with memory_order_release and read with
-    // memory_order_acquire.
-    this->result = result;
-    this->state.store(ThreadState::Done, std::memory_order_release);
+    {
+        // The lock makes "store the new state" atomic with respect to a
+        // waiter's "check the state, then sleep" in join(), so the wakeup
+        // cannot be lost. The plain write to `result` is published to the
+        // consumer by the release store to `state`.
+        std::lock_guard<std::mutex> lock(this->mutex);
+        this->result = result;
+        this->state.store(ThreadState::Done, std::memory_order_release);
+    }
+    this->cv.notify_all();
 }
 
 void ThreadHandle::setError() {
-    this->state.store(ThreadState::Error, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        this->state.store(ThreadState::Error, std::memory_order_release);
+    }
+    this->cv.notify_all();
 }
 
 bool ThreadHandle::isDone() const {
@@ -111,9 +137,10 @@ bool ThreadHandle::isDone() const {
 }
 
 void ThreadHandle::join() {
-    if (this->thread.joinable()) {
-        this->thread.join();
-    }
+    std::unique_lock<std::mutex> lock(this->mutex);
+    this->cv.wait(lock, [this] {
+        return this->state.load(std::memory_order_acquire) != ThreadState::Running;
+    });
 }
 
 // ─── EventLoop Implementation ─────────────────────────────────────────────

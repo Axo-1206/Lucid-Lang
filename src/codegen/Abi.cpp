@@ -13,9 +13,19 @@
 /// `emitCall` checks each call against it.
 ///
 /// ─── Type-Tag Mapping ─────────────────────────────────────────────────────
-/// Inside each generated method, the row's tags (`I64`, `Str`, ...) are
-/// expanded into `llvm::Type*` values via `llvmTypeForTag`. That function
-/// is the single place where "what LLVM type does `Str` mean" is answered.
+/// The row's tags (`I64`, `StrPtr`, ...) are expanded into `llvm::Type*`
+/// values via `llvmTypeForTag`. That function is the single place where
+/// "what LLVM type does `StrPtr` mean" is answered. Every pointer tag is the
+/// opaque `ptr`; with opaque pointers LLVM cannot tell a `StrPtr` from a
+/// `Ptr`, so the distinct pointer tags exist for the runtime's benefit
+/// (runtime-abi/lucid_runtime.h gives each its own C++ pointee type).
+///
+/// ─── Attributes ───────────────────────────────────────────────────────────
+/// `I1` is `i1 zeroext` on parameters and returns: that is what clang emits
+/// for a C `bool`, and it is what makes an `i1` from generated code agree with
+/// the runtime's one-byte `LucidBool`. `Panic` is `noreturn`. Both are set at
+/// declaration time in `declareOrGet` and copied onto every call site by
+/// `emitCall`.
 ///
 /// ─── Usage Recording ──────────────────────────────────────────────────────
 /// Every call to `declareOrGet` records the runtime function in
@@ -46,27 +56,22 @@ namespace codegen {
 // Type Tag Mapping
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The tags used in `functions.def` (`I1`, `I8`, ..., `Str`, `Arena`, `Desc`,
-// `Void`) are a small vocabulary. This is the single place they're mapped
-// to LLVM types.
+// The tags used in `functions.def` are a small closed vocabulary. This is the
+// single place they're mapped to LLVM types. Everything can be built from the
+// `llvm::LLVMContext` alone; no struct type is ever needed, because structs
+// cross the ABI by pointer.
 //
-// `ProgramState&` is needed because `Str`, `Slice`, `Arena`, and `Desc`
-// name LLVM struct types that `Types` owns. Everything else can be
-// constructed directly from `llvm::LLVMContext&`.
-//
-// The mapping is:
-//
-//   Void     — no LLVM value (used only for the return type)
-//   I1       — i1
-//   I8       — i8
-//   I32      — i32
-//   I64      — i64
-//   F64      — double
-//   Ptr      — opaque `ptr`
-//   Str      — `lucid.String`
-//   Slice    — `lucid.Slice`
-//   Arena    — `lucid.Arena`
-//   Desc     — `lucid.ArenaDescriptor`
+//   Void      — no LLVM value (return position only)
+//   I1        — i1   (zeroext; see `declareOrGet`)
+//   I8        — i8
+//   I32       — i32
+//   I64       — i64
+//   F64       — double
+//   Ptr       — opaque `ptr`
+//   StrPtr    — opaque `ptr`  (a lucid.String*)
+//   SlicePtr  — opaque `ptr`  (a lucid.Slice*)
+//   ArenaPtr  — opaque `ptr`  (a lucid.Arena*)
+//   DescPtr   — opaque `ptr`  (a lucid.ArenaDescriptor*)
 
 namespace {
 
@@ -79,10 +84,10 @@ enum class AbiTag {
     I64,
     F64,
     Ptr,
-    Str,
-    Slice,
-    Arena,
-    Desc,
+    StrPtr,
+    SlicePtr,
+    ArenaPtr,
+    DescPtr,
 };
 
 /// @brief Map an `AbiTag` to an `llvm::Type*`.
@@ -90,21 +95,19 @@ enum class AbiTag {
 /// `Void` returns `nullptr` — the return-type path handles it specially
 /// because `llvm::Type::getVoidTy` is a distinct LLVM type, not a null
 /// pointer.
-llvm::Type* llvmTypeForTag(AbiTag tag,
-                           llvm::LLVMContext& llvmCtx,
-                           ProgramState& program) {
+llvm::Type* llvmTypeForTag(AbiTag tag, llvm::LLVMContext& llvmCtx) {
     switch (tag) {
-        case AbiTag::Void:  return nullptr;
-        case AbiTag::I1:    return llvm::Type::getInt1Ty(llvmCtx);
-        case AbiTag::I8:    return llvm::Type::getInt8Ty(llvmCtx);
-        case AbiTag::I32:   return llvm::Type::getInt32Ty(llvmCtx);
-        case AbiTag::I64:   return llvm::Type::getInt64Ty(llvmCtx);
-        case AbiTag::F64:   return llvm::Type::getDoubleTy(llvmCtx);
-        case AbiTag::Ptr:   return llvm::PointerType::get(llvmCtx, 0);
-        case AbiTag::Str:   return program.types().stringType();
-        case AbiTag::Slice: return program.types().sliceType();
-        case AbiTag::Arena: return program.types().arenaType();
-        case AbiTag::Desc:  return program.types().arenaDescriptorType();
+        case AbiTag::Void:     return nullptr;
+        case AbiTag::I1:       return llvm::Type::getInt1Ty(llvmCtx);
+        case AbiTag::I8:       return llvm::Type::getInt8Ty(llvmCtx);
+        case AbiTag::I32:      return llvm::Type::getInt32Ty(llvmCtx);
+        case AbiTag::I64:      return llvm::Type::getInt64Ty(llvmCtx);
+        case AbiTag::F64:      return llvm::Type::getDoubleTy(llvmCtx);
+        case AbiTag::Ptr:
+        case AbiTag::StrPtr:
+        case AbiTag::SlicePtr:
+        case AbiTag::ArenaPtr:
+        case AbiTag::DescPtr:  return llvm::PointerType::get(llvmCtx, 0);
     }
     return nullptr;
 }
@@ -112,12 +115,13 @@ llvm::Type* llvmTypeForTag(AbiTag tag,
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Tuple unpacking
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A row's params are a parenthesised tuple: `(Ptr, Str, I64)`. Writing the
+// A row's params are a parenthesised tuple: `(Ptr, StrPtr, I64)`. Writing the
 // macro name directly before the tuple — `LUCID_RT_UNPACK Params` — makes it
-// a normal invocation whose `__VA_ARGS__` is the bare list `Ptr, Str, I64`.
+// a normal invocation whose `__VA_ARGS__` is the bare list `Ptr, StrPtr, I64`.
 // The empty tuple `()` gives an empty list. No counting is involved, so
 // there is no arity cap and no empty-argument special case.
 
@@ -129,7 +133,9 @@ llvm::Type* llvmTypeForTag(AbiTag tag,
 //
 // This is the second reader of `functions.def`. It builds a static table
 // that maps each enumerator to its symbol name and the list of `AbiTag`s
-// for its parameters and return type.
+// for its parameters and return type. The table's column 2 is a bare
+// identifier, so `#Symbol` turns it into the string the LLVM declaration
+// needs.
 
 namespace {
 
@@ -145,22 +151,22 @@ struct RuntimeFnInfo {
 // Inside this file, we define each tag identifier as a macro that expands
 // to the corresponding `AbiTag::TAG` value.
 
-#define Void  AbiTag::Void
-#define I1    AbiTag::I1
-#define I8    AbiTag::I8
-#define I32   AbiTag::I32
-#define I64   AbiTag::I64
-#define F64   AbiTag::F64
-#define Ptr   AbiTag::Ptr
-#define Str   AbiTag::Str
-#define Slice AbiTag::Slice
-#define Arena AbiTag::Arena
-#define Desc  AbiTag::Desc
+#define Void     AbiTag::Void
+#define I1       AbiTag::I1
+#define I8       AbiTag::I8
+#define I32      AbiTag::I32
+#define I64      AbiTag::I64
+#define F64      AbiTag::F64
+#define Ptr      AbiTag::Ptr
+#define StrPtr   AbiTag::StrPtr
+#define SlicePtr AbiTag::SlicePtr
+#define ArenaPtr AbiTag::ArenaPtr
+#define DescPtr  AbiTag::DescPtr
 
 // Build the static table.
 #define LUCID_RT(EnumName, Symbol, Ret, Params)                               \
     { RuntimeFn::EnumName,                                                    \
-      RuntimeFnInfo{ Symbol, Ret,                                             \
+      RuntimeFnInfo{ #Symbol, Ret,                                            \
                      std::vector<AbiTag>{ LUCID_RT_UNPACK Params } } },
 
 const std::unordered_map<RuntimeFn, RuntimeFnInfo>& runtimeFnTable() {
@@ -179,10 +185,10 @@ const std::unordered_map<RuntimeFn, RuntimeFnInfo>& runtimeFnTable() {
 #undef I64
 #undef F64
 #undef Ptr
-#undef Str
-#undef Slice
-#undef Arena
-#undef Desc
+#undef StrPtr
+#undef SlicePtr
+#undef ArenaPtr
+#undef DescPtr
 
 } // anonymous namespace
 
@@ -224,40 +230,17 @@ llvm::FunctionType* Abi::buildFunctionType(RuntimeFn fn) {
     // ─── Return type ──────────────────────────────────────────────────────
     llvm::Type* returnType = (info.returnTag == AbiTag::Void)
         ? llvm::Type::getVoidTy(llvmCtx)
-        : llvmTypeForTag(info.returnTag, llvmCtx, program_);
-
-    // Same by-pointer rule as the parameter check above: a struct returned
-    // by value would be subject to the same mismatch. The formatters use
-    // an out-pointer (a `Ptr` in the first parameter position) rather than
-    // returning by value.
-    assert(info.returnTag != AbiTag::Str && info.returnTag != AbiTag::Slice &&
-           info.returnTag != AbiTag::Arena && info.returnTag != AbiTag::Desc &&
-           "runtime function returns a struct by value; use an out-pointer "
-           "instead — see the by-pointer convention in "
-           "runtime-abi/functions.def");
-
+        : llvmTypeForTag(info.returnTag, llvmCtx);
     assert(returnType && "runtime function return type is not Void but "
                          "no LLVM type was produced for it");
 
     // ─── Parameter types ──────────────────────────────────────────────────
+    // There is no by-value struct tag, so nothing here can pass a struct by
+    // value; the by-pointer convention is enforced by the tag vocabulary.
     std::vector<llvm::Type*> paramTypes;
     paramTypes.reserve(info.paramTags.size());
     for (AbiTag tag : info.paramTags) {
-        // ─── Enforce the by-pointer convention ────────────────────────────
-        // See the "By-Pointer Convention" section of functions.def.
-        // Passing a struct by value across the runtime boundary disagrees
-        // with the platform C ABI on any target Lucid supports, and the
-        // disagreement is silent until the call runs. The convention is
-        // that struct types are always passed by pointer (the `Ptr` tag),
-        // so a `Str`/`Slice`/`Arena`/`Desc` tag in a parameter position is
-        // a table error.
-        assert(tag != AbiTag::Str && tag != AbiTag::Slice &&
-               tag != AbiTag::Arena && tag != AbiTag::Desc &&
-               "runtime function parameter uses a by-value struct tag; "
-               "pass a Ptr to the struct instead — see the by-pointer "
-               "convention in runtime-abi/functions.def");
-
-        llvm::Type* paramType = llvmTypeForTag(tag, llvmCtx, program_);
+        llvm::Type* paramType = llvmTypeForTag(tag, llvmCtx);
         assert(paramType && "runtime function parameter has Void tag — "
                             "Void is only valid for the return position");
         paramTypes.push_back(paramType);
@@ -302,6 +285,19 @@ llvm::Function* Abi::declareOrGet(RuntimeFn fn) {
            "different signature — two call sites disagree about the ABI");
 
     // Attributes belong at declaration time so they hold on every path.
+    //
+    // `i1 zeroext`: the C side passes and returns a whole byte (`LucidBool`),
+    // and an unextended i1 leaves the rest of that byte undefined. This is
+    // what clang emits for a C `bool`.
+    const RuntimeFnInfo& info = runtimeFnTable().at(fn);
+    if (info.returnTag == AbiTag::I1) {
+        llvmFn->addRetAttr(llvm::Attribute::ZExt);
+    }
+    for (unsigned i = 0; i < info.paramTags.size(); ++i) {
+        if (info.paramTags[i] == AbiTag::I1) {
+            llvmFn->addParamAttr(i, llvm::Attribute::ZExt);
+        }
+    }
     if (fn == RuntimeFn::Panic) {
         llvmFn->addFnAttr(llvm::Attribute::NoReturn);
     }
@@ -331,6 +327,12 @@ llvm::Value* Abi::emitCall(RuntimeFn fn,
 #endif
 
     llvm::CallInst* call = builder.CreateCall(llvmFn, args);
+
+    // Copy the declaration's attributes onto the call site, as clang does.
+    // This is what makes a call to `__lucid_panic` itself `noreturn`, and it
+    // keeps `zeroext` explicit where the backend lowers the call.
+    call->setAttributes(llvmFn->getAttributes());
+
     return call->getType()->isVoidTy() ? nullptr : call;
 }
 

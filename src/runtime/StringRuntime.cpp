@@ -6,71 +6,95 @@
 /// that are called by JIT-compiled and AOT-compiled Lucid code.
 ///
 /// ─── String Layout ──────────────────────────────────────────────────────────
-/// A Lucid string is a 3-field struct: { ptr, len, cap } where:
-///   - ptr: pointer to UTF-8 encoded data on the heap
-///   - len: length in bytes (not characters)
-///   - cap: capacity in bytes; 0 means static (do not free)
+/// A Lucid string is `lucid::abi::LucidString` from `runtime-abi/lucid_abi.h`:
+/// `{ data, len, cap }`.
+///   - data: pointer to UTF-8 encoded bytes
+///   - len:  length in bytes (not characters)
+///   - cap:  capacity in bytes; 0 means static (do not free)
+///
+/// This file does not define its own copy of the struct. A private copy is
+/// how the runtime and the ABI header drifted apart (`ptr` vs `data`).
 ///
 /// ─── By-Pointer Convention ──────────────────────────────────────────────────
-/// Every function in this file takes its `LucidString` parameters by
-/// pointer. See the "By-Pointer Convention" section of
-/// runtime-abi/functions.def for why: LLVM and the platform C ABI disagree
-/// about passing a 24-byte struct by value, and the disagreement is silent.
+/// Every function takes its `LucidString` parameters by pointer (tag
+/// `StrPtr`); see functions.def, rule 1. The out-parameter is always the
+/// first argument. Functions that produce a string write it through that
+/// pointer; the caller owns the slot and, once a heap string is written into
+/// it, owns the buffer. On failure the slot is left as `{null, 0, 0}`.
 ///
-/// The out-parameter is always the first argument. Functions that produce
-/// a `LucidString` write the result through it; the caller allocates the
-/// slot and passes its address. Functions that only read take their inputs
-/// by pointer and never modify them, even though the C++ type system does
-/// not mark them `const` — the by-pointer tags in `functions.def` do not
-/// carry qualifiers, so the discipline is code review, not the compiler.
+/// Inputs are only read. The `StrPtr` tag carries no `const`, so the
+/// discipline is code review, not the compiler.
+///
+/// ─── Ownership ──────────────────────────────────────────────────────────────
+/// Buffers come from `lucid::runtime::heapAlloc`, so `Ownership::drop` can
+/// release them with `__lucid_free` and the leak report can see them.
+/// Every buffer is `len + 1` bytes with a trailing NUL, and `cap == len + 1`.
 ///
 /// ─── Signature Contract ─────────────────────────────────────────────────────
-/// The signatures in this file are checked against `functions.def` by
-/// `runtime/exports.cpp`. If a signature here does not match the
-/// corresponding row's tag expansion, the compiler reports a conflicting
-/// declaration at build time. Changing a signature here without changing
-/// the row (or vice versa) fails the build.
+/// This file includes `runtime-abi/lucid_runtime.h`, so each definition below
+/// is checked against its row in `functions.def` at compile time.
+
+#include "RuntimeInternal.hpp"
+#include "runtime-abi/lucid_runtime.h"
 
 #include <cstdint>
 #include <cstddef>
-#include <cstdlib>
+#include <cstdio>
 #include <cstring>
-#include <string>
 #include <sstream>
-#include <iomanip>
-#include <cmath>
+#include <string>
 
-// ─── String Layout ──────────────────────────────────────────────────────────
-// Matches the canonical string type in lucid_abi.h
-// (`lucid::abi::LucidString`) and in codegen/Types.cpp's `stringType()`.
-//
-// This definition is a duplicate of the one in lucid_abi.h. It is here so
-// that this file does not need to include lucid_abi.h, which would pull in
-// the C++ static_assert machinery and the ABI's constexpr helpers. In
-// practice the two definitions must have identical layout, and the
-// static_asserts in lucid_abi.h are what catch a divergence.
-struct LucidString {
-    void*    ptr;    // Pointer to UTF-8 data
-    uint64_t len;    // Length in bytes
-    uint64_t cap;    // Capacity in bytes; 0 == static (do not free)
-};
+using lucid::abi::LucidBool;
+using lucid::abi::LucidF64;
+using lucid::abi::LucidI32;
+using lucid::abi::LucidI64;
+using lucid::abi::LucidPtr;
+using lucid::abi::LucidString;
 
-// ─── Helper: Allocate a new string ──────────────────────────────────────────
-//
-// Returns a LucidString with a fresh heap buffer of `len` bytes (plus the
-// null terminator) and `cap == len + 1`. The caller owns the buffer; it
-// will be freed by the ownership layer when the string's binding dies.
-static LucidString allocString(const char* data, uint64_t len) {
-    LucidString result;
-    result.len = len;
-    result.cap = len + 1;  // +1 for null terminator
-    result.ptr = std::malloc(result.cap);
-    if (result.ptr) {
-        std::memcpy(result.ptr, data, len);
-        static_cast<char*>(result.ptr)[len] = '\0';
-    }
-    return result;
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+namespace {
+
+void clearSlot(LucidString* s) {
+    s->data = nullptr;
+    s->len  = 0;
+    s->cap  = 0;
 }
+
+/// Allocate a zeroed buffer for a `len`-byte string and publish it in `*out`.
+///
+/// Returns the writable buffer, or null (leaving `*out` empty) if `len` is
+/// negative or the allocation fails. `heapAlloc` zeroes the block, so the
+/// trailing NUL is already in place; callers only fill the first `len` bytes.
+char* makeBuffer(LucidString* out, LucidI64 len) {
+    clearSlot(out);
+    if (len < 0 || len == INT64_MAX) {
+        return nullptr;
+    }
+    char* buffer = static_cast<char*>(
+        lucid::runtime::heapAlloc(static_cast<std::size_t>(len) + 1));
+    if (!buffer) {
+        return nullptr;
+    }
+    out->data = buffer;
+    out->len  = len;
+    out->cap  = len + 1;
+    return buffer;
+}
+
+/// Publish a copy of `bytes[0..len)` in `*out`.
+void setFromBytes(LucidString* out, const char* bytes, std::size_t len) {
+    char* buffer = makeBuffer(out, static_cast<LucidI64>(len));
+    if (buffer && len > 0) {
+        std::memcpy(buffer, bytes, len);
+    }
+}
+
+void setFromString(LucidString* out, const std::string& str) {
+    setFromBytes(out, str.data(), str.size());
+}
+
+} // anonymous namespace
 
 extern "C" {
 
@@ -78,34 +102,39 @@ extern "C" {
 
 /// @brief Concatenate two strings.
 ///
-/// Writes the concatenation of `*a` and `*b` into `*out`. `*out` receives
-/// a fresh heap allocation that the caller owns. On allocation failure,
-/// `out->ptr` is null and `out->len` is 0; the caller's ownership layer
-/// treats a null-`ptr` string as an empty string.
-void __lucid_str_concat(LucidString* out,
-                        LucidString* a,
-                        LucidString* b) {
+/// Writes the concatenation of `*a` and `*b` into `*out`. `*out` receives a
+/// fresh heap allocation that the caller owns. On allocation failure, or a
+/// malformed input, `*out` is `{null, 0, 0}`; the caller's ownership layer
+/// treats that as an empty static string.
+///
+/// `out` may alias `a` or `b`: the inputs are read into locals before the
+/// slot is touched.
+void __lucid_str_concat(LucidString* out, LucidString* a, LucidString* b) {
     if (!out) return;
-
-    // Initialize the out-slot to a safe default.
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    if (!a || !b) return;
-
-    uint64_t totalLen = a->len + b->len;
-    LucidString result = allocString("", totalLen);
-    if (!result.ptr) {
+    if (!a || !b) {
+        clearSlot(out);
         return;
     }
-    if (a->ptr && a->len > 0) {
-        std::memcpy(result.ptr, a->ptr, a->len);
+
+    const LucidString lhs = *a;
+    const LucidString rhs = *b;
+
+    // The result needs `len + 1` bytes, so the sum must stay below INT64_MAX.
+    if (lhs.len < 0 || rhs.len < 0 || lhs.len > INT64_MAX - 1 - rhs.len) {
+        clearSlot(out);
+        return;
     }
-    if (b->ptr && b->len > 0) {
-        std::memcpy(static_cast<char*>(result.ptr) + a->len, b->ptr, b->len);
+
+    char* buffer = makeBuffer(out, lhs.len + rhs.len);
+    if (!buffer) {
+        return;
     }
-    *out = result;
+    if (lhs.data && lhs.len > 0) {
+        std::memcpy(buffer, lhs.data, static_cast<std::size_t>(lhs.len));
+    }
+    if (rhs.data && rhs.len > 0) {
+        std::memcpy(buffer + lhs.len, rhs.data, static_cast<std::size_t>(rhs.len));
+    }
 }
 
 /// @brief Extract a substring.
@@ -113,41 +142,39 @@ void __lucid_str_concat(LucidString* out,
 /// Writes `s[from..to)` into `*out`. The result is a fresh heap allocation
 /// that the caller owns.
 ///
-/// If `from > to`, `from > s->len`, or `to > s->len`, the out-slot is left
-/// as an empty string. The caller's emitter performs the bounds check
-/// before calling, so an out-of-range call here is a codegen bug; the safe
-/// default keeps the runtime robust in case it happens.
-void __lucid_str_slice(LucidString* out,
-                       LucidString* s,
-                       uint64_t from,
-                       uint64_t to) {
+/// If `from < 0`, `from > to`, or `to > s->len`, the out-slot is left as
+/// `{null, 0, 0}`. The caller's emitter performs the bounds check before
+/// calling, so an out-of-range call here is a codegen bug; the safe default
+/// keeps the runtime robust in case it happens.
+void __lucid_str_slice(LucidString* out, LucidString* s, LucidI64 from, LucidI64 to) {
     if (!out) return;
-
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    if (!s) return;
-
-    if (from > to || from > s->len || to > s->len) {
+    if (!s) {
+        clearSlot(out);
         return;
     }
-    uint64_t len = to - from;
-    LucidString result = allocString("", len);
-    if (!result.ptr) {
+
+    const LucidString src = *s;
+
+    if (from < 0 || from > to || to > src.len) {
+        clearSlot(out);
         return;
     }
-    if (s->ptr && len > 0) {
-        std::memcpy(result.ptr, static_cast<const char*>(s->ptr) + from, len);
+
+    const LucidI64 len = to - from;
+    char* buffer = makeBuffer(out, len);
+    if (!buffer) {
+        return;
     }
-    *out = result;
+    if (src.data && len > 0) {
+        std::memcpy(buffer, src.data + from, static_cast<std::size_t>(len));
+    }
 }
 
 /// @brief Compare two strings for equality.
 ///
 /// Returns 1 if equal, 0 otherwise. Length-then-bytes comparison; no
 /// allocation.
-int __lucid_str_eq(LucidString* a, LucidString* b) {
+LucidBool __lucid_str_eq(LucidString* a, LucidString* b) {
     if (!a || !b) {
         // Null pointers are equal only if both are null.
         return (a == b) ? 1 : 0;
@@ -155,67 +182,57 @@ int __lucid_str_eq(LucidString* a, LucidString* b) {
     if (a->len != b->len) {
         return 0;
     }
-    if (a->ptr == b->ptr) {
-        return 1;  // Same pointer
+    if (a->data == b->data) {
+        return 1;  // Same pointer (or both null with equal length)
     }
-    if (a->len == 0 && b->len == 0) {
+    if (a->len <= 0) {
         return 1;  // Both empty
     }
-    if (!a->ptr || !b->ptr) {
-        // One has data, the other doesn't. Lengths matched (both 0) or
-        // one is null-but-nonzero, which is a broken string. Not equal.
+    if (!a->data || !b->data) {
+        // Same non-zero length but one has no data: a broken string.
         return 0;
     }
-    return std::memcmp(a->ptr, b->ptr, a->len) == 0 ? 1 : 0;
+    return std::memcmp(a->data, b->data, static_cast<std::size_t>(a->len)) == 0 ? 1 : 0;
 }
 
 // ─── Formatters (#tostr / #ptrstr) ──────────────────────────────────────────
 
 /// @brief Format a pointer as a hex string.
 ///
-/// Writes "0x00000000..." into `*out`. The caller owns the buffer.
-void __lucid_ptr_to_hex_string(LucidString* out, void* ptr) {
+/// Writes "0x" and 16 lowercase hex digits into `*out`. The caller owns the buffer.
+void __lucid_ptr_to_hex_string(LucidString* out, LucidPtr ptr) {
     if (!out) return;
 
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    std::ostringstream oss;
-    oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
-        << reinterpret_cast<uintptr_t>(ptr);
-    std::string str = oss.str();
-    *out = allocString(str.c_str(), str.length());
+    char text[2 + 16 + 1];
+    std::snprintf(text, sizeof(text), "0x%016llx",
+                  static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(ptr)));
+    setFromBytes(out, text, std::strlen(text));
 }
 
 /// @brief Convert a boolean to a string.
 ///
-/// Writes "true" or "false" into `*out`.
-void __lucid_bool_to_str(LucidString* out, uint8_t b) {
+/// Writes "true" or "false" into `*out`. Any non-zero byte is true.
+void __lucid_bool_to_str(LucidString* out, LucidBool b) {
     if (!out) return;
 
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    const char* str = b ? "true" : "false";
-    *out = allocString(str, std::strlen(str));
+    const char* text = b ? "true" : "false";
+    setFromBytes(out, text, std::strlen(text));
 }
 
 /// @brief Convert a Unicode codepoint to a string.
 ///
-/// Writes the UTF-8 encoding of `codepoint` into `*out`.
-void __lucid_char_to_str(LucidString* out, uint32_t codepoint) {
+/// Writes the UTF-8 encoding of `codepoint` into `*out`. A negative or
+/// out-of-range codepoint yields the empty string (still a heap allocation,
+/// so the caller's drop logic is the same on every path).
+void __lucid_char_to_str(LucidString* out, LucidI32 codepoint) {
     if (!out) return;
 
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
     // Simple UTF-8 encoding.
-    char buffer[5] = {0};
-    int len = 0;
-    if (codepoint < 0x80) {
+    char buffer[4] = {0};
+    std::size_t len = 0;
+    if (codepoint < 0) {
+        len = 0;
+    } else if (codepoint < 0x80) {
         buffer[0] = static_cast<char>(codepoint);
         len = 1;
     } else if (codepoint < 0x800) {
@@ -234,45 +251,31 @@ void __lucid_char_to_str(LucidString* out, uint32_t codepoint) {
         buffer[3] = static_cast<char>(0x80 | (codepoint & 0x3F));
         len = 4;
     }
-    *out = allocString(buffer, len);
+    setFromBytes(out, buffer, len);
 }
 
 /// @brief Convert a signed 64-bit integer to a string.
-void __lucid_int_to_str(LucidString* out, int64_t v) {
+void __lucid_int_to_str(LucidString* out, LucidI64 v) {
     if (!out) return;
-
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    std::string str = std::to_string(v);
-    *out = allocString(str.c_str(), str.length());
+    setFromString(out, std::to_string(v));
 }
 
 /// @brief Convert an unsigned 64-bit integer to a string.
-void __lucid_uint_to_str(LucidString* out, uint64_t v) {
+///
+/// The row's tag is `I64` (LLVM integers have no signedness), so the value
+/// arrives as its 64 bits in a signed type and is reinterpreted here.
+void __lucid_uint_to_str(LucidString* out, LucidI64 v) {
     if (!out) return;
-
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
-
-    std::string str = std::to_string(v);
-    *out = allocString(str.c_str(), str.length());
+    setFromString(out, std::to_string(static_cast<std::uint64_t>(v)));
 }
 
 /// @brief Convert a floating-point value to a string.
-void __lucid_float_to_str(LucidString* out, double v) {
+void __lucid_float_to_str(LucidString* out, LucidF64 v) {
     if (!out) return;
-
-    out->ptr = nullptr;
-    out->len = 0;
-    out->cap = 0;
 
     std::ostringstream oss;
     oss << v;
-    std::string str = oss.str();
-    *out = allocString(str.c_str(), str.length());
+    setFromString(out, oss.str());
 }
 
 } // extern "C"

@@ -8,7 +8,8 @@
 ///
 ///   - src/codegen/      (to construct and consume the layouts, and to
 ///                        declare the runtime functions it calls)
-///   - src/runtime/      (to define those functions with matching signatures)
+///   - src/runtime/      (through runtime-abi/lucid_runtime.h, to define those
+///                        functions with matching signatures)
 ///   - src/interpreter/  (to look up dynamic symbols by name)
 ///
 /// Because it is a leaf and contains only facts, it is the one file every
@@ -37,14 +38,17 @@
 /// This file is the only place where the ABI's numeric widths and offsets
 /// are pinned. Every consumer derives its own view from these pins:
 ///
-///   - src/runtime/*.cpp uses the C++ types directly. If a runtime
-///     implementation uses `int` where the ABI says `LucidI64`, the
-///     mismatch shows up when exports.cpp compares the function pointer
-///     against the table's expected signature — a compile error, not a
-///     runtime miscompile.
+///   - src/runtime/*.cpp uses the C++ types directly, and includes
+///     runtime-abi/lucid_runtime.h, which declares every row's prototype
+///     from functions.def. If a runtime implementation uses `int` where the
+///     ABI says `LucidI64`, the definition conflicts with the prototype in
+///     the same file — a compile error, not a runtime miscompile. (The check
+///     only works because the prototype and the definition share a
+///     translation unit; C names are not mangled, so two files that
+///     disagree link without complaint.)
 ///
 ///   - src/codegen/Abi.cpp builds an llvm::FunctionType from each
-///     functions.def row. The row's type tag (I32, I64, Str, ...) maps to
+///     functions.def row. The row's type tag (I32, I64, StrPtr, ...) maps to
 ///     an LLVM type via a table in Abi.cpp. If CodeGen builds an i32 where
 ///     the ABI says i64, llvm::verifyModule rejects the module at the
 ///     call site, because the callee's declared parameter type and the
@@ -77,7 +81,6 @@ namespace lucid::abi {
 // Do not spell `int64_t` in a runtime signature. Spell `LucidI64`. The
 // two are the same type, but only the name is pinned by the asserts.
 
-using LucidI1  = bool;      // ABI bool; see LucidBool below for the nuance
 using LucidI8  = int8_t;    // Lucid char, Lucid int8, Lucid byte
 using LucidI32 = int32_t;   // Lucid int32, Unicode codepoint
 using LucidI64 = int64_t;   // Lucid int64, size, length, capacity, refcount
@@ -96,6 +99,11 @@ using LucidPtr = void*;     // opaque pointer, untyped at the ABI level
 /// true by the runtime. The runtime does not assume the caller has
 /// canonicalized.
 using LucidBool = uint8_t;
+
+/// The `I1` tag's C++ type. It is `LucidBool`, one byte, never the C++
+/// `bool`: the two are the same size on every supported target, but only a
+/// named fixed-width type is pinned by the asserts below.
+using LucidI1 = LucidBool;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // lucid.String — { ptr, i64 len, i64 cap }
@@ -199,9 +207,10 @@ struct LucidArenaDescriptor {
 // ClosureHeader, followed by the captured fields.
 //
 // The header holds the refcount and a drop callback. When the refcount
-// reaches zero, the runtime calls `drop(env)` to release whatever the
-// captured fields own (retained closure envs, owned buffers), then frees
-// the block. A non-capturing closure has `env == null` and a null-env
+// reaches zero, the runtime calls `drop(data)` — where `data` points at the
+// captured fields, i.e. `env + 16`, just past the header — to release
+// whatever they own (retained closure envs, owned buffers), then frees the
+// block. A non-capturing closure has `env == null` and a null-env
 // fat pointer is valid to retain/release as a no-op.
 //
 // `drop` may be null, meaning "the captured fields own nothing; just free
@@ -210,7 +219,12 @@ struct LucidArenaDescriptor {
 // The header is 16 bytes. The captured fields begin at offset 16. CodeGen
 // emits an llvm::StructType per closure whose first two fields are the
 // header's fields and whose remaining fields are the captures; the
-// environment pointer is always the address of that struct.
+// environment pointer is always the address of that struct, and the pointer
+// handed to `drop` is that address plus 16.
+//
+// The runtime's own header type (runtime/ClosureEnvironment.hpp) mirrors this
+// struct, with the refcount as a std::atomic; static_asserts there pin the
+// two together.
 
 struct LucidClosureHeader {
     LucidI64 refcount;
@@ -235,8 +249,14 @@ struct LucidClosure {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The out-pointer convention
+// The by-pointer and out-pointer conventions
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Structs are never passed or returned by value across the ABI. LLVM treats a
+// first-class aggregate argument as a bundle of scalars; the platform C ABI
+// passes a 24-byte struct by hidden pointer (Windows x64) or in memory
+// (System V). The two disagree silently, so every struct crosses as a
+// pointer: the caller owns the struct (a stack slot) and passes its address.
 //
 // Every runtime function that *produces* a heap-owning value takes an
 // out-pointer as its first parameter and returns void. This includes the
@@ -244,7 +264,7 @@ struct LucidClosure {
 // allocates the slot (an alloca or a stack temporary), passes its address,
 // and reads the result back from the slot.
 //
-//     void __lucid_str_concat(LucidString* out, LucidString a, LucidString b);
+//     void __lucid_str_concat(LucidString* out, LucidString* a, LucidString* b);
 //
 // This is not a stylistic choice. It is what makes two things possible:
 //
@@ -252,24 +272,23 @@ struct LucidClosure {
 //      allocation failed" without overloading a sentinel value (a null
 //      data pointer, a negative len, ...). An out-pointer leaves the
 //      return channel free; a future revision can change the return type
-//      to a status code without touching every call site's value type.
+//      to a status code without touching every call site's value type. For
+//      now, failure leaves the out-slot empty: {null, 0, 0}.
 //
 //   2. One allocator. The runtime's string constructors allocate through
-//      `__lucid_alloc`. With a by-value return, the callee allocates and
-//      the caller owns the result with no explicit transfer step; with an
-//      out-pointer, the transfer is the write through the pointer, and
-//      every allocated buffer is unambiguously owned by whoever's slot it
-//      was written into. The one-allocator invariant ("every heap object
-//      is allocated by __lucid_alloc and freed by __lucid_free, and
-//      Ownership::drop is the only caller of __lucid_free") is what makes
-//      the leak report meaningful, and the out-pointer convention is what
-//      makes that invariant checkable.
+//      `__lucid_alloc`'s registry. With an out-pointer, the transfer of
+//      ownership is the write through the pointer, and every allocated
+//      buffer is unambiguously owned by whoever's slot it was written into.
+//      The one-allocator invariant ("every heap object is allocated by the
+//      registry and freed by __lucid_free or its owner's release function,
+//      and Ownership::drop is the only caller of __lucid_free") is what
+//      makes the leak report meaningful, and the out-pointer convention is
+//      what makes that invariant checkable.
 //
-// The type tag `Ptr` in functions.def means "an out-pointer, or a
-// genuinely opaque pointer." The doc comment on each row says which. The
-// first parameter of every formatter and string constructor is an
-// out-pointer; the `env` parameter of the closure functions and the
-// `packet` parameter of the concurrency functions are opaque.
+// In functions.def, the by-pointer tags (StrPtr, SlicePtr, ArenaPtr,
+// DescPtr) name the struct being pointed at. The plain `Ptr` tag means a
+// genuinely opaque pointer: the `env` of the closure functions, the `packet`
+// and handle slot of the concurrency functions, the message of panic.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Static assertions
@@ -356,10 +375,11 @@ static_assert(alignof(LucidClosureHeader)   == alignof(void*), "LucidClosureHead
 static_assert(alignof(LucidClosure)         == alignof(void*), "LucidClosure alignment must be pointer alignment");
 
 // ─── Triviality ───────────────────────────────────────────────────────────
-// These structs are passed by value across the ABI. They must be trivially
-// copyable and trivially destructible; a non-trivial copy or destructor
-// would change the calling convention in ways LLVM's generated code does
-// not model.
+// These structs are never passed by value across the ABI (they cross by
+// pointer), but generated code copies them with memcpy semantics and the
+// runtime treats them as raw bytes. They must be trivially copyable and
+// trivially destructible; a non-trivial copy or destructor would make that
+// unsound.
 
 static_assert(std::is_trivially_copyable_v<LucidString>,          "LucidString must be trivially copyable");
 static_assert(std::is_trivially_copyable_v<LucidSlice>,           "LucidSlice must be trivially copyable");
@@ -379,30 +399,29 @@ static_assert(std::is_trivially_destructible_v<LucidClosure>,         "LucidClos
 // Type-tag mapping
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// functions.def's rows use short tags (I1, I8, I32, I64, F64, Ptr, Str,
-// Arena, Desc, Void) rather than the full C++ type names, because the rows
-// are read by three consumers and the tag is the vocabulary they share.
-// This mapping — tag to C++ type — is the agreement between the tag and
-// the named type above.
+// functions.def's rows use short tags rather than the full C++ type names,
+// because the rows are read by several consumers and the tag is the
+// vocabulary they share. This mapping — tag to C++ type — is the agreement
+// between the tag and the named types above. The authoritative copy of the
+// mapping is the header of functions.def; it is repeated here for reference.
 //
-// There is no static_assert for the mapping itself, because the mapping
-// is a convention enforced by the code generator that expands the table.
-// The asserts above pin the C++ types; the table's rows pin the tags; the
-// code generator that expands the table is what connects them, and a
-// mismatch there is a compile error in runtime/exports.cpp.
+// The mapping is a convention enforced by the code that expands the table,
+// not by a static_assert. runtime-abi/lucid_runtime.h expands each tag to the
+// C++ type below, and codegen/Abi.cpp expands it to an LLVM type; the asserts
+// above pin the C++ types.
 //
-// The tags, for reference:
+//   Void      void          (return position only)
+//   I1        LucidBool     one byte; `i1 zeroext` in LLVM
+//   I8        LucidI8
+//   I32       LucidI32
+//   I64       LucidI64      signed; unsigned values arrive as the same bits
+//   F64       LucidF64
+//   Ptr       LucidPtr      opaque pointer
+//   StrPtr    LucidString*
+//   SlicePtr  LucidSlice*
+//   ArenaPtr  LucidArena*
+//   DescPtr   LucidArenaDescriptor*
 //
-//   Void   — no value (return position only)
-//   I1     — LucidBool, the ABI's boolean; not C++ bool
-//   I8     — LucidI8
-//   I32    — LucidI32
-//   I64    — LucidI64
-//   F64    — LucidF64
-//   Ptr    — LucidPtr, an opaque or out-pointer
-//   Str    — LucidString, by value
-//   Slice  — LucidSlice, by value
-//   Arena  — LucidArena, by value
-//   Desc   — LucidArenaDescriptor, by value
+// There is no by-value struct tag, by design.
 
 } // namespace lucid::abi

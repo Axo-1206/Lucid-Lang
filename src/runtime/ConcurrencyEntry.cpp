@@ -3,227 +3,208 @@
 ///
 /// ─── Purpose ──────────────────────────────────────────────────────────────────
 /// This file provides the extern "C" functions that are called by
-/// JIT-compiled and AOT-compiled Lucid code. These functions are declared
-/// in RuntimeFunctionRegistry.hpp and called via LLVM IR calls.
+/// JIT-compiled and AOT-compiled Lucid code: the concurrency rows of
+/// `runtime-abi/functions.def`. The contract for each one — what the thunk
+/// and the packet are, what `out == null` means, who frees the result box —
+/// is written down in that table; this file implements it.
+///
+/// ─── Signature Contract ───────────────────────────────────────────────────────
+/// This file includes `runtime-abi/lucid_runtime.h`, so each definition below
+/// is checked against its row at compile time. The rows tag the thunk, the
+/// packet and the handle slot as `Ptr`, so they arrive as `void*`; the slot is
+/// a `FutureHandle**` / `ThreadHandle**` and is cast inside.
 ///
 /// ─── Important ──────────────────────────────────────────────────────────────
-/// These functions MUST be exported from the binary (lucid.exe or game.exe)
-/// so that JIT-compiled code can find them.
+/// These functions MUST be reachable by JIT-compiled code (inside lucid.exe
+/// for JIT mode, linked into game.exe for AOT mode).
 ///
 /// ─── ABI Stability ──────────────────────────────────────────────────────────
 /// These functions form a stable ABI between the compiler and the runtime.
-/// Changing their signatures requires updating both the compiler and the
-/// runtime implementation.
+/// Changing their signatures means changing their rows in functions.def.
 
 #include "ConcurrencyRuntime.hpp"
+#include "runtime-abi/lucid_runtime.h"
+
 #include <cstdint>
 #include <cstddef>
+
+namespace {
+
+using lucid::runtime::EventLoop;
+using lucid::runtime::FutureHandle;
+using lucid::runtime::FutureState;
+using lucid::runtime::ThreadHandle;
+using lucid::runtime::ThreadPool;
+using lucid::runtime::ThreadState;
+
+/// The compiler-emitted thunk: takes the argument packet, returns the boxed
+/// result (or null on failure).
+using Thunk = void* (*)(void*);
+
+} // anonymous namespace
 
 extern "C" {
 
 // ─── Async / Await ──────────────────────────────────────────────────────────
 
-/// @brief Schedule a function on the event loop.
-/// @param callable The function to execute (void* -> void*).
-/// @param args Arguments for the callable.
-/// @param future_handle_ptr Pointer to the FutureHandle* to store in.
-/// @return The FutureHandle* (same as future_handle_ptr after assignment).
+/// @brief Queue a thunk on the cooperative event loop.
+/// @param thunk   The compiler-emitted `void* (*)(void* packet)`.
+/// @param packet  The heap argument packet; the thunk unpacks and frees it.
+/// @param out     A `FutureHandle**` slot, or null.
+///                - non-null: the handle is written into `*out`. That is the
+///                  caller's reference; consume it with __lucid_await.
+///                - null: fire and forget. The runtime keeps only its own
+///                  reference and frees an unconsumed result box itself.
 ///
-/// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Called from CodeGenStmt.cpp in lowerAsyncStmt() when an async statement
-/// is encountered. The callable is not executed immediately - it is scheduled
-/// on the event loop and will be executed when the event loop runs.
+/// The task does not run here. It runs when something drives the event loop
+/// (an `await`, or `EventLoop::runUntilEmpty`).
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// async result int = fetchData(url)
-///   → __lucid_async(fetchData, url, &result_future)
-void* __lucid_async(void* callable, void* args, void* future_handle_ptr) {
-    if (!callable || !future_handle_ptr) {
-        return nullptr;
+///   → __lucid_async(fetchData_thunk, packet, &result_future)
+void __lucid_async(void* thunk, void* packet, void* out) {
+    auto** slot = static_cast<FutureHandle**>(out);
+    if (slot) {
+        *slot = nullptr;   // a failure below must not leave a stale handle
+    }
+    if (!thunk) {
+        return;
     }
 
-    // ─── 1. Allocate the future handle ──────────────────────────────────────
-    void* (*fn)(void*) = reinterpret_cast<void* (*)(void*)>(callable);
-    lucid::runtime::FutureHandle* handle =
-        lucid::runtime::FutureHandle::allocate(fn, args);
-
+    // The new handle carries one reference: the event loop's.
+    FutureHandle* handle =
+        FutureHandle::allocate(reinterpret_cast<Thunk>(thunk), packet);
     if (!handle) {
-        return nullptr;
+        return;
     }
 
-    // ─── 2. Schedule on the event loop ──────────────────────────────────────
-    lucid::runtime::EventLoop::getInstance().schedule(handle);
+    // Take the caller's reference BEFORE scheduling, so the handle cannot be
+    // consumed and freed by the loop before the caller has claimed it.
+    if (slot) {
+        FutureHandle::retain(handle);
+        *slot = handle;
+    }
 
-    // ─── 3. Store the handle in the caller's pointer ────────────────────────
-    // The caller passes a pointer to a FutureHandle* (the alloca).
-    // We store the handle there so the binding can access it.
-    lucid::runtime::FutureHandle** futurePtr =
-        static_cast<lucid::runtime::FutureHandle**>(future_handle_ptr);
-    *futurePtr = handle;
-
-    // Retain for the caller's reference
-    lucid::runtime::FutureHandle::retain(handle);
-
-    return handle;
+    EventLoop::getInstance().schedule(handle);
 }
 
-/// @brief Block until a future is ready.
-/// @param future_handle_ptr Pointer to the FutureHandle* to await.
-/// @return The result pointer stored in the future handle.
+/// @brief Wait for a future and take its result.
+/// @param handle_slot A `FutureHandle**` holding the handle from __lucid_async.
+/// @return The boxed result, or null if the task failed or the slot was
+///         already empty. The caller frees the box with __lucid_free.
 ///
-/// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Called from CodeGenStmt.cpp in lowerAwaitStmt() when an await statement
-/// is encountered. This function blocks the current thread until the future
-/// is ready, extracts the result, and cleans up the handle.
+/// Drives the event loop until the future is no longer pending, then
+/// consumes the handle: `*handle_slot` is set to null, so a second await on
+/// the same slot returns null (a linear-type violation Sema should already
+/// have rejected).
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// await result
 ///   → result = __lucid_await(&result_future)
-///
-/// After this call, the future is marked as consumed and cannot be awaited again.
-void* __lucid_await(void* future_handle_ptr) {
-    if (!future_handle_ptr) {
+void* __lucid_await(void* handle_slot) {
+    auto** slot = static_cast<FutureHandle**>(handle_slot);
+    if (!slot || !*slot) {
         return nullptr;
     }
+    FutureHandle* handle = *slot;
 
-    lucid::runtime::FutureHandle** futurePtr =
-        static_cast<lucid::runtime::FutureHandle**>(future_handle_ptr);
-    lucid::runtime::FutureHandle* handle = *futurePtr;
-
-    if (!handle) {
-        return nullptr;
+    // ─── 1. Wait until ready ─────────────────────────────────────────────────
+    // A cooperative system: "waiting" means running queued tasks. If the
+    // queue drains and the future is still pending, nothing can complete it.
+    EventLoop& loop = EventLoop::getInstance();
+    while (handle->state.load(std::memory_order_acquire) == FutureState::Pending) {
+        if (loop.pendingCount() == 0) {
+            break;
+        }
+        loop.runOnce();
     }
 
-    // ─── 1. Check if already consumed ────────────────────────────────────────
-    lucid::runtime::FutureState state = handle->state.load(std::memory_order_acquire);
-    if (state == lucid::runtime::FutureState::Consumed) {
-        // Double await - linear type violation
-        // In a real implementation, we would panic here
-        return nullptr;
+    // ─── 2. Take the result ──────────────────────────────────────────────────
+    // Marking the future Consumed tells the final release that the result is
+    // no longer the handle's to free.
+    void* result = nullptr;
+    if (handle->state.load(std::memory_order_acquire) == FutureState::Ready) {
+        result = handle->result;
+        handle->state.store(FutureState::Consumed, std::memory_order_release);
     }
 
-    // ─── 2. Wait until ready ──────────────────────────────────────────────────
-    // In a cooperative system, we would yield to the event loop here.
-    // For now, we spin with a small sleep (for demonstration).
-    while (state == lucid::runtime::FutureState::Pending) {
-        // Process the event loop to make progress
-        lucid::runtime::EventLoop::getInstance().runOnce();
-        state = handle->state.load(std::memory_order_acquire);
-    }
-
-    // ─── 3. Check for errors ──────────────────────────────────────────────────
-    if (state == lucid::runtime::FutureState::Error) {
-        // In a real implementation, we would panic here
-        return nullptr;
-    }
-
-    // ─── 4. Mark as consumed ──────────────────────────────────────────────────
-    handle->state.store(lucid::runtime::FutureState::Consumed, std::memory_order_release);
-
-    // ─── 5. Extract result and release our reference ─────────────────────────
-    void* result = handle->result;
-    lucid::runtime::FutureHandle::release(handle);
-    *futurePtr = nullptr;
+    // ─── 3. Drop the caller's reference and clear the slot ───────────────────
+    FutureHandle::release(handle);
+    *slot = nullptr;
     return result;
 }
 
 // ─── Spawn / Join ───────────────────────────────────────────────────────────
 
-/// @brief Spawn a function on the thread pool.
-/// @param callable The function to execute (void* -> void*).
-/// @param args Arguments for the callable.
-/// @param thread_handle_ptr Pointer to the ThreadHandle* to store in.
-/// @return The ThreadHandle* (same as thread_handle_ptr after assignment).
+/// @brief Submit a thunk to the thread pool.
+/// @param thunk   The compiler-emitted `void* (*)(void* packet)`.
+/// @param packet  The heap argument packet; the thunk unpacks and frees it.
+/// @param out     A `ThreadHandle**` slot, or null (fire and forget); same
+///                meaning as for __lucid_async.
 ///
-/// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Called from CodeGenStmt.cpp in lowerSpawnStmt() when a spawn statement
-/// is encountered. The callable is submitted to the thread pool and will
-/// execute on a separate OS thread.
+/// The thunk runs on a pool worker, possibly before this function returns.
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// spawn result int = computeHeavyData()
-///   → __lucid_spawn(computeHeavyData, &result_thread)
-void* __lucid_spawn(void* callable, void* args, void* thread_handle_ptr) {
-    if (!callable || !thread_handle_ptr) {
-        return nullptr;
+///   → __lucid_spawn(computeHeavyData_thunk, packet, &result_thread)
+void __lucid_spawn(void* thunk, void* packet, void* out) {
+    auto** slot = static_cast<ThreadHandle**>(out);
+    if (slot) {
+        *slot = nullptr;
+    }
+    if (!thunk) {
+        return;
     }
 
-    // ─── 1. Allocate the thread handle ──────────────────────────────────────
-    void* (*fn)(void*) = reinterpret_cast<void* (*)(void*)>(callable);
-    lucid::runtime::ThreadHandle* handle =
-        lucid::runtime::ThreadHandle::allocate(fn, args);
-
+    // The new handle carries one reference: the pool's.
+    ThreadHandle* handle =
+        ThreadHandle::allocate(reinterpret_cast<Thunk>(thunk), packet);
     if (!handle) {
-        return nullptr;
+        return;
     }
 
-    // ─── 2. Submit to thread pool ────────────────────────────────────────────
-    lucid::runtime::ThreadPool::getInstance().submit(handle);
+    // As in __lucid_async, but here it is not merely tidy: a worker can run
+    // the task and drop the pool's reference before submit() returns. The
+    // caller's reference must already exist by then.
+    if (slot) {
+        ThreadHandle::retain(handle);
+        *slot = handle;
+    }
 
-    // ─── 3. Store the handle in the caller's pointer ────────────────────────
-    lucid::runtime::ThreadHandle** threadPtr =
-        static_cast<lucid::runtime::ThreadHandle**>(thread_handle_ptr);
-    *threadPtr = handle;
-
-    // Retain for the caller's reference
-    lucid::runtime::ThreadHandle::retain(handle);
-
-    return handle;
+    ThreadPool::getInstance().submit(handle);
 }
 
-/// @brief Block until a thread is complete.
-/// @param thread_handle_ptr Pointer to the ThreadHandle* to join.
-/// @return The result pointer stored in the thread handle.
+/// @brief Wait for a spawned task and take its result.
+/// @param handle_slot A `ThreadHandle**` holding the handle from __lucid_spawn.
+/// @return The boxed result, or null if the task failed or the slot was
+///         already empty. The caller frees the box with __lucid_free.
 ///
-/// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Called from CodeGenStmt.cpp in lowerJoinStmt() when a join statement
-/// is encountered. This function blocks the current thread until the
-/// spawned thread completes, extracts the result, and cleans up the handle.
+/// Blocks until the worker has finished the task, then consumes the handle:
+/// `*handle_slot` is set to null.
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// join result
 ///   → result = __lucid_join(&result_thread)
-///
-/// After this call, the thread is marked as consumed and cannot be joined again.
-void* __lucid_join(void* thread_handle_ptr) {
-    if (!thread_handle_ptr) {
+void* __lucid_join(void* handle_slot) {
+    auto** slot = static_cast<ThreadHandle**>(handle_slot);
+    if (!slot || !*slot) {
         return nullptr;
     }
+    ThreadHandle* handle = *slot;
 
-    lucid::runtime::ThreadHandle** threadPtr =
-        static_cast<lucid::runtime::ThreadHandle**>(thread_handle_ptr);
-    lucid::runtime::ThreadHandle* handle = *threadPtr;
+    // ─── 1. Wait until the worker is done ────────────────────────────────────
+    handle->join();
 
-    if (!handle) {
-        return nullptr;
+    // ─── 2. Take the result ──────────────────────────────────────────────────
+    void* result = nullptr;
+    if (handle->state.load(std::memory_order_acquire) == ThreadState::Done) {
+        result = handle->result;
+        handle->state.store(ThreadState::Consumed, std::memory_order_release);
     }
 
-    // ─── 1. Check if already consumed ────────────────────────────────────────
-    lucid::runtime::ThreadState state = handle->state.load(std::memory_order_acquire);
-    if (state == lucid::runtime::ThreadState::Consumed) {
-        // Double join - linear type violation
-        return nullptr;
-    }
-
-    // ─── 2. Wait until done ──────────────────────────────────────────────────
-    if (state == lucid::runtime::ThreadState::Running) {
-        // Join the thread (blocks until complete)
-        handle->join();
-        state = handle->state.load(std::memory_order_acquire);
-    }
-
-    // ─── 3. Check for errors ──────────────────────────────────────────────────
-    if (state == lucid::runtime::ThreadState::Error) {
-        return nullptr;
-    }
-
-    // ─── 4. Mark as consumed ──────────────────────────────────────────────────
-    handle->state.store(lucid::runtime::ThreadState::Consumed, std::memory_order_release);
-
-    // ─── 5. Extract result and release our reference ─────────────────────────
-    void* result = handle->result;
-    lucid::runtime::ThreadHandle::release(handle);
-    *threadPtr = nullptr;
+    // ─── 3. Drop the caller's reference and clear the slot ───────────────────
+    ThreadHandle::release(handle);
+    *slot = nullptr;
     return result;
 }
 
@@ -232,8 +213,8 @@ void* __lucid_join(void* thread_handle_ptr) {
 /// @brief Shutdown the entire concurrency runtime.
 ///
 /// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Called from CodeGenStmt.cpp in lowerReturnStmt() when the main function
-/// returns. This ensures all threads are joined and all resources are cleaned up.
+/// Emitted by CodeGen at the end of `main` (see Abi::shutdownFn). This
+/// ensures all threads are joined and all resources are cleaned up.
 ///
 /// ─── Example ──────────────────────────────────────────────────────────────
 /// // At program exit:

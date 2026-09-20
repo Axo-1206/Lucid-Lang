@@ -3,160 +3,184 @@
 ///
 /// ─── How To Read This File ─────────────────────────────────────────────────
 /// This file is an X-macro table. It is not a header and is not #included
-/// directly; it is #included by four consumers, each of which #defines
-/// LUCID_RT to something different before including it:
+/// directly; each consumer #defines LUCID_RT before including it:
 ///
-///   1. src/codegen/Abi.hpp — defines the RuntimeFn enumerator rows and
-///      emits one variadic member template per row.
+///   1. src/codegen/Abi.hpp — the RuntimeFn enumerators, and one variadic
+///      member template per row.
 ///
-///   2. src/codegen/Abi.cpp — builds the RuntimeFn → (symbol, tags) table
-///      and the emitCall dispatch.
+///   2. src/codegen/Abi.cpp — the RuntimeFn → (symbol, tags) table, from
+///      which the llvm::FunctionType and its attributes are built.
 ///
-///   3. src/runtime/exports.cpp — emits the extern "C" prototypes that
-///      the runtime implementations must match, and takes each function's
-///      address into a table so its definition is forced to be linked.
+///   3. src/runtime-abi/lucid_runtime.h — the `extern "C"` prototype of
+///      every row. EVERY file in src/runtime/ that defines a runtime
+///      function includes it, so a definition that disagrees with its row
+///      is a "conflicting declaration of C function" error in that file.
 ///
-///   4. src/interpreter/JITSession.cpp — builds the symbol name list the
-///      JIT's DynamicLibrarySearchGenerator registers.
+///   4. src/runtime/exports.cpp — takes the address of every row's function,
+///      so a row with no definition is a link error naming the symbol.
+///
+///   5. src/interpreter/jit/JITSession.cpp — the symbol-name list (`#Symbol`).
 ///
 /// Because all of them read the same table, their views cannot drift.
-/// Before this file existed, the CodeGen-side declaration, the runtime-side
-/// definition, and the interpreter-side lookup each spelled the name and
-/// signature independently; that is how __lucid_alloc_env's drop-callback
-/// parameter drifted out of sync with its caller.
 ///
 /// ─── Row Format ────────────────────────────────────────────────────────────
-///   LUCID_RT(<EnumName>, "<symbol_name>", <ReturnType>, (<ParamTypes>))
+///   LUCID_RT(<EnumName>, <symbol>, <ReturnType>, (<ParamTypes>))
 ///
-/// ReturnType and ParamTypes use the following type tags. The full mapping
-/// from tag to C++ type is in runtime-abi/lucid_abi.h, in the
-/// "Type-tag mapping" section, and in runtime/exports.cpp for the pointer
-/// variants.
+/// `<symbol>` is a BARE IDENTIFIER, not a string literal. lucid_runtime.h and
+/// exports.cpp need it as a C++ name; Abi.cpp and JITSession.cpp turn it into
+/// a string with `#Symbol`. `<ParamTypes>` is a parenthesised tag list; the
+/// empty list `()` means no parameters.
 ///
-///   Void     — no return value / no parameter
-///   I1       — the ABI boolean (LucidBool, one byte at the C++ level)
-///   I8       — int8 / Lucid char
-///   I32      — int32 (used by char_to_str for the codepoint)
-///   I64      — int64 / size / length / capacity / refcount
-///   F64      — double
-///   Ptr      — an opaque pointer with no statically-known pointee type
-///   StrPtr   — a LucidString*
-///   SlicePtr — a LucidSlice*
-///   ArenaPtr — a LucidArena*
-///   DescPtr  — a LucidArenaDescriptor*
-///   Str      — LucidString BY VALUE (forbidden in parameter positions)
-///   Slice    — LucidSlice BY VALUE (forbidden in parameter positions)
-///   Arena    — LucidArena BY VALUE (forbidden in parameter positions)
-///   Desc     — LucidArenaDescriptor BY VALUE (forbidden in parameter positions)
+/// ─── Type Tags ─────────────────────────────────────────────────────────────
+///   Tag       C++ type (see lucid_abi.h)   LLVM type
+///   ────────  ───────────────────────────  ────────────────────────────────
+///   Void      void                         void      (return position only)
+///   I1        LucidBool  (uint8_t)         i1 zeroext
+///   I8        LucidI8                      i8
+///   I32       LucidI32                     i32
+///   I64       LucidI64                     i64
+///   F64       LucidF64                     double
+///   Ptr       void*                        ptr       (no known pointee)
+///   StrPtr    LucidString*                 ptr
+///   SlicePtr  LucidSlice*                  ptr
+///   ArenaPtr  LucidArena*                  ptr
+///   DescPtr   LucidArenaDescriptor*        ptr
 ///
-/// ─── The By-Pointer Convention ────────────────────────────────────────────
-/// Struct types (`LucidString`, `LucidSlice`, `LucidArena`,
-/// `LucidArenaDescriptor`) are never passed by value. LLVM and the platform
-/// C ABI disagree about how to pass a struct by value — LLVM treats a
-/// first-class aggregate parameter as a bundle of fields and passes them
-/// individually, the platform C ABI treats the struct as a single unit and
-/// passes it by hidden pointer (for structs larger than 16 bytes on the
-/// two platforms Lucid targets) or in registers (for smaller) — and the
-/// disagreement is silent until the call runs.
+/// The tag list is closed. A row that uses any other identifier fails to
+/// compile in every consumer.
 ///
-/// The rule: every struct-typed parameter uses the corresponding `*Ptr`
-/// tag and is passed by pointer. The caller allocates the struct somewhere
-/// (a stack slot for an argument, an out-slot for a result) and passes its
-/// address; the callee dereferences the pointer.
+/// ─── Rules ─────────────────────────────────────────────────────────────────
+/// 1. STRUCTS ARE PASSED BY POINTER. LLVM and the platform C ABI disagree
+///    about passing a struct by value (LLVM treats a first-class aggregate
+///    as a bundle of scalars; the C ABI passes a 24-byte struct by hidden
+///    pointer or in memory), and the disagreement is silent until the call
+///    runs. So no by-value struct tag exists. The caller owns the struct
+///    (a stack slot for an argument, an out-slot for a result) and passes
+///    its address.
 ///
-/// The `Str`/`Slice`/`Arena`/`Desc` tags still exist for type identity —
-/// `Abi.cpp`'s `llvmTypeForTag` maps them to the corresponding LLVM struct
-/// types, which is what makes a `*Ptr` tag distinguishable from a `Ptr`
-/// tag at the point where the pointer's pointee type matters — but they
-/// must never appear in a row's parameter or return position.
-/// `exports.cpp` expands the by-value tags to the struct type, so an
-/// accidental use produces a prototype whose signature does not match the
-/// runtime's pointer-based implementation, and the compiler rejects it.
-/// `Abi.cpp` also asserts the convention in debug builds with a clearer
-/// message.
+/// 2. THE RUNTIME SPELLS THE TAG'S TYPE EXACTLY. `Ptr` is `void*`, so a
+///    function pointer or a `const char*` arrives as `void*` and is cast
+///    inside the definition. `I64` is signed, so a value with unsigned
+///    meaning (UintToStr) arrives as the same 64 bits and is reinterpreted.
+///
+/// 3. I1 IS ONE BYTE ON THE C SIDE. It is `i1 zeroext` in LLVM — what clang
+///    emits for a C `bool` — and `LucidBool` (uint8_t) in the runtime. Any
+///    non-zero byte is true.
+///
+/// 4. OUT-POINTERS. A function that produces a heap-owning value returns
+///    void and writes it through its first parameter. On failure it leaves
+///    the out-slot empty (null data, len 0, cap 0).
+///
+/// 5. ONE ALLOCATOR. Every heap block the runtime hands out — env blocks,
+///    string buffers, arena bases, async/spawn result boxes — comes from
+///    __lucid_alloc's registry, so __lucid_leak_report can see it and
+///    __lucid_free can validate it. Nothing in src/runtime/ calls malloc
+///    directly except the registry itself.
+///
+/// 6. WHO FREES WHAT.
+///      string buffer (cap > 0)  Ownership::drop → __lucid_free
+///      arena base               Ownership::drop → __lucid_arena_free
+///      closure env              refcount → 0 inside __lucid_release_env
+///      async/spawn result box   CodeGen, after __lucid_await/__lucid_join;
+///                               or the runtime, if the handle dies
+///                               unconsumed (fire-and-forget, shutdown)
+///
+/// 7. EVERY __lucid_* SYMBOL IS A ROW. A runtime function that exists only
+///    as an `extern "C"` definition, with no row here, is invisible to the
+///    JIT and to codegen. Internal helpers live in namespace lucid::runtime
+///    (see runtime/RuntimeInternal.hpp), not under the __lucid_ prefix.
 ///
 /// ─── Adding A Row ──────────────────────────────────────────────────────────
-/// Adding a row here is the *only* correct way to add a runtime function.
-/// After adding a row:
-///   1. Implement the function in src/runtime/ with the signature the row
-///      implies. If the signature does not match the row,
-///      src/runtime/exports.cpp fails to compile.
-///   2. Call it from CodeGen via `abi.<EnumName>(builder, args...)`. Never
-///      spell the symbol name at the call site.
+///   1. Add the row here. Use only the tags above.
+///   2. Define the function in src/runtime/ with the exact types the row
+///      implies; the file must include runtime-abi/lucid_runtime.h.
+///   3. Call it from CodeGen as `abi.<EnumName>(builder, args...)`. Never
+///      spell the symbol at the call site.
 ///
 /// ─── Ordering ──────────────────────────────────────────────────────────────
-/// Grouped by subsystem, in the order the subsystems are presented in
-/// Architecture.md §7. Order within a group is not significant, but
+/// Grouped by subsystem. Order within a group is not significant, but
 /// keeping the groups contiguous makes the table reviewable.
 
 // ─── Closures ─────────────────────────────────────────────────────────────
-//   void* __lucid_alloc_env(uint64_t size, void (*drop)(void*))
-//     Allocates a closure environment. `drop` may be null.
+//   void* __lucid_alloc_env(int64_t size, void* drop)
+//     Allocates a closure environment: a 16-byte header followed by `size`
+//     zeroed bytes of captured data, refcount 1. `drop` is a
+//     `void (*)(void* data)` or null; it is called once, with a pointer to
+//     the DATA portion (env + 16), when the refcount reaches zero and
+//     before the block is freed. Returns null if size <= 0 or on failure.
+//     (A non-capturing closure has a null env and never calls this.)
 //   void  __lucid_retain_env(void* env)
 //     Increments the env's refcount. Null-safe.
 //   void  __lucid_release_env(void* env)
-//     Decrements the env's refcount; frees at zero. Null-safe.
-LUCID_RT(AllocEnv,   "__lucid_alloc_env",   Ptr,  (I64, Ptr))
-LUCID_RT(RetainEnv,  "__lucid_retain_env",  Void, (Ptr))
-LUCID_RT(ReleaseEnv, "__lucid_release_env", Void, (Ptr))
+//     Decrements the env's refcount; runs `drop` and frees at zero.
+//     Null-safe.
+LUCID_RT(AllocEnv,   __lucid_alloc_env,   Ptr,  (I64, Ptr))
+LUCID_RT(RetainEnv,  __lucid_retain_env,  Void, (Ptr))
+LUCID_RT(ReleaseEnv, __lucid_release_env, Void, (Ptr))
 
 // ─── Memory ───────────────────────────────────────────────────────────────
-//   void* __lucid_alloc(uint64_t size)
-//     The single heap allocation entry point. Everything heap-allocated in
-//     Lucid — env blocks, string buffers, arena bases — goes through this.
+//   void* __lucid_alloc(int64_t size)
+//     The single heap allocation entry point (rule 5). Returns zeroed
+//     memory, or null if size <= 0. Panics if the system is out of memory.
 //   void  __lucid_free(void* ptr)
-//     The single heap free entry point. Null-safe. Every heap object is
-//     released by exactly one call to this, from Ownership::drop.
+//     The single heap free entry point. Null-safe. Panics on a pointer that
+//     is not a live allocation (double free, or not from __lucid_alloc).
 //   void  __lucid_leak_report(void)
-//     Prints the live-allocation count. Tests assert it reports zero.
-LUCID_RT(Alloc,      "__lucid_alloc",       Ptr,  (I64))
-LUCID_RT(Free,       "__lucid_free",        Void, (Ptr))
-LUCID_RT(LeakReport, "__lucid_leak_report", Void, ())
+//     Prints "leak report: N live allocation(s), B byte(s)" to stderr.
+//     Tests assert it reports zero.
+LUCID_RT(Alloc,      __lucid_alloc,       Ptr,  (I64))
+LUCID_RT(Free,       __lucid_free,        Void, (Ptr))
+LUCID_RT(LeakReport, __lucid_leak_report, Void, ())
 
 // ─── Arena ────────────────────────────────────────────────────────────────
-//   void   __lucid_arena_create(ArenaDescriptor* out, uint64_t size)
-//     Writes a freshly allocated region's descriptor to *out. On failure,
-//     out->base is null.
-//   void*  __lucid_arena_alloc(Arena* arena, uint64_t size, uint64_t align)
-//     Bumps the cursor. Returns null on out-of-capacity.
-//   void   __lucid_arena_reset(Arena* arena)
+//   void    __lucid_arena_create(LucidArenaDescriptor* out, int64_t size)
+//     Writes a freshly allocated region's descriptor to *out. On failure
+//     (or size <= 0), out->base is null and out->size is 0.
+//   void*   __lucid_arena_alloc(LucidArena* arena, int64_t size, int64_t align)
+//     Bumps the cursor and returns zeroed memory aligned to `align` (a power
+//     of two; 0 means 16). Returns null on out-of-capacity or bad arguments.
+//   void    __lucid_arena_reset(LucidArena* arena)
 //     Resets the cursor to 0. Does not free.
-//   void   __lucid_arena_free(Arena* arena)
+//   void    __lucid_arena_free(LucidArena* arena)
 //     Frees the backing region. Called only from Ownership::drop.
-//   uint64_t __lucid_arena_capacity(const Arena*)
-//   uint64_t __lucid_arena_remaining(const Arena*)
-//   bool     __lucid_arena_is_empty(const Arena*)
-//   uint64_t __lucid_arena_space(const Arena*, uint64_t elem_size)
-//   bool     __lucid_arena_can_fit(const Arena*, uint64_t elem_size, uint64_t count)
-LUCID_RT(ArenaCreate,    "__lucid_arena_create",    Void, (DescPtr, I64))
-LUCID_RT(ArenaAlloc,     "__lucid_arena_alloc",     Ptr,  (ArenaPtr, I64, I64))
-LUCID_RT(ArenaReset,     "__lucid_arena_reset",     Void, (ArenaPtr))
-LUCID_RT(ArenaFree,      "__lucid_arena_free",      Void, (ArenaPtr))
-LUCID_RT(ArenaCapacity,  "__lucid_arena_capacity",  I64,  (ArenaPtr))
-LUCID_RT(ArenaRemaining, "__lucid_arena_remaining", I64,  (ArenaPtr))
-LUCID_RT(ArenaIsEmpty,   "__lucid_arena_is_empty",  I1,   (ArenaPtr))
-LUCID_RT(ArenaSpace,     "__lucid_arena_space",     I64,  (ArenaPtr, I64))
-LUCID_RT(ArenaCanFit,    "__lucid_arena_can_fit",   I1,   (ArenaPtr, I64, I64))
+//   int64_t __lucid_arena_capacity(LucidArena*)
+//   int64_t __lucid_arena_remaining(LucidArena*)
+//   I1      __lucid_arena_is_empty(LucidArena*)
+//   int64_t __lucid_arena_space(LucidArena*, int64_t elem_size)
+//   I1      __lucid_arena_can_fit(LucidArena*, int64_t elem_size, int64_t count)
+//     The query functions only read. They take a non-const pointer because
+//     the tag list has no const-qualified variants; discipline, not the
+//     compiler, keeps them read-only.
+LUCID_RT(ArenaCreate,    __lucid_arena_create,    Void, (DescPtr, I64))
+LUCID_RT(ArenaAlloc,     __lucid_arena_alloc,     Ptr,  (ArenaPtr, I64, I64))
+LUCID_RT(ArenaReset,     __lucid_arena_reset,     Void, (ArenaPtr))
+LUCID_RT(ArenaFree,      __lucid_arena_free,      Void, (ArenaPtr))
+LUCID_RT(ArenaCapacity,  __lucid_arena_capacity,  I64,  (ArenaPtr))
+LUCID_RT(ArenaRemaining, __lucid_arena_remaining, I64,  (ArenaPtr))
+LUCID_RT(ArenaIsEmpty,   __lucid_arena_is_empty,  I1,   (ArenaPtr))
+LUCID_RT(ArenaSpace,     __lucid_arena_space,     I64,  (ArenaPtr, I64))
+LUCID_RT(ArenaCanFit,    __lucid_arena_can_fit,   I1,   (ArenaPtr, I64, I64))
 
 // ─── Strings ──────────────────────────────────────────────────────────────
 //   void __lucid_str_concat(LucidString* out, LucidString* a, LucidString* b)
 //     Writes the concatenation of *a and *b into *out. *out is a fresh
-//     heap allocation; the caller owns it.
+//     heap allocation (cap = len + 1, NUL-terminated); the caller owns it.
 //
 //   void __lucid_str_slice(LucidString* out, LucidString* s,
-//                          int64 from, int64 to)
-//     Writes the substring s[from..to) into *out. *out is a fresh heap
-//     allocation.
+//                          int64_t from, int64_t to)
+//     Writes the substring s[from..to) into *out. An out-of-range or
+//     reversed range (from < 0, from > to, to > s->len) yields the empty
+//     out-slot, not an error: CodeGen bounds-checks before calling.
 //
-//   bool __lucid_str_eq(LucidString* a, LucidString* b)
+//   I1 __lucid_str_eq(LucidString* a, LucidString* b)
 //     Length-then-bytes comparison. No allocation.
 //
-// All three pass the strings by pointer, per the by-pointer convention.
-// The LucidString layout itself is unchanged; only the passing convention
-// is.
-LUCID_RT(StrConcat, "__lucid_str_concat", Void, (StrPtr, StrPtr, StrPtr))
-LUCID_RT(StrSlice,  "__lucid_str_slice",  Void, (StrPtr, StrPtr, I64, I64))
-LUCID_RT(StrEq,     "__lucid_str_eq",     I1,   (StrPtr, StrPtr))
+// The inputs are only read; *out may alias an input. Failure leaves the
+// out-slot as {null, 0, 0}, which the ownership layer treats as an empty
+// static string (cap == 0: never freed).
+LUCID_RT(StrConcat, __lucid_str_concat, Void, (StrPtr, StrPtr, StrPtr))
+LUCID_RT(StrSlice,  __lucid_str_slice,  Void, (StrPtr, StrPtr, I64, I64))
+LUCID_RT(StrEq,     __lucid_str_eq,     I1,   (StrPtr, StrPtr))
 
 // ─── Formatters (#tostr, #ptrstr) ─────────────────────────────────────────
 //   All formatters use the out-pointer convention: the caller allocates
@@ -166,36 +190,52 @@ LUCID_RT(StrEq,     "__lucid_str_eq",     I1,   (StrPtr, StrPtr))
 //   because the C ABI does not guarantee bool-sized parameters; passing a
 //   named one-byte type avoids the promotion mismatch that caused the
 //   original segfault.
-LUCID_RT(PtrToHexString, "__lucid_ptr_to_hex_string", Void, (StrPtr, Ptr))
-LUCID_RT(BoolToStr,      "__lucid_bool_to_str",       Void, (StrPtr, I1))
-LUCID_RT(CharToStr,      "__lucid_char_to_str",       Void, (StrPtr, I32))
-LUCID_RT(IntToStr,       "__lucid_int_to_str",        Void, (StrPtr, I64))
-LUCID_RT(UintToStr,      "__lucid_uint_to_str",       Void, (StrPtr, I64))
-LUCID_RT(FloatToStr,     "__lucid_float_to_str",      Void, (StrPtr, F64))
+//   uint_to_str takes I64, not an unsigned tag: LLVM integers have no
+//   signedness, so the 64 bits arrive as-is and are reinterpreted as
+//   uint64_t inside the runtime (rule 2).
+LUCID_RT(PtrToHexString, __lucid_ptr_to_hex_string, Void, (StrPtr, Ptr))
+LUCID_RT(BoolToStr,      __lucid_bool_to_str,       Void, (StrPtr, I1))
+LUCID_RT(CharToStr,      __lucid_char_to_str,       Void, (StrPtr, I32))
+LUCID_RT(IntToStr,       __lucid_int_to_str,        Void, (StrPtr, I64))
+LUCID_RT(UintToStr,      __lucid_uint_to_str,       Void, (StrPtr, I64))
+LUCID_RT(FloatToStr,     __lucid_float_to_str,      Void, (StrPtr, F64))
 
 // ─── Panic ────────────────────────────────────────────────────────────────
-//   void __lucid_panic(const char* message)
-//     Does not return. CodeGen marks the call site `noreturn`.
-LUCID_RT(Panic, "__lucid_panic", Void, (Ptr))
+//   void __lucid_panic(void* message)
+//     `message` is a NUL-terminated `const char*` (tag Ptr; cast inside).
+//     Does not return. Abi::declareOrGet marks the declaration `noreturn`
+//     and Abi::emitCall copies that onto every call site.
+LUCID_RT(Panic, __lucid_panic, Void, (Ptr))
 
 // ─── Concurrency ──────────────────────────────────────────────────────────
-//   The ABI is: the thunk owns a heap argument packet; it unpacks the
-//   packet, frees it, calls the real function, and boxes the result. The
-//   caller allocates the box's storage (out), or passes null for a discard.
+//   The ABI is: CodeGen emits a thunk `void* thunk(void* packet)` per
+//   async/spawn site. The packet is a __lucid_alloc block holding the call's
+//   arguments; the thunk unpacks it, frees it, calls the real function, and
+//   returns the result in a fresh __lucid_alloc box. A thunk MUST return a
+//   non-null box on success (a void function boxes a dummy byte); a null
+//   return is recorded as failure.
 //
 //   void __lucid_async(void* thunk, void* packet, void** out)
 //   void __lucid_spawn(void* thunk, void* packet, void** out)
-//     out == null means "fire and forget". Otherwise the runtime writes the
-//     handle into *out.
+//     async queues the thunk on the cooperative event loop (it runs when
+//     something awaits, or the loop is pumped); spawn submits it to the
+//     thread pool. `out` is where the caller wants the handle:
+//       out != null   the runtime writes the handle into *out (the caller's
+//                     reference; consume it with await/join);
+//       out == null   fire and forget: the runtime drops its own reference
+//                     when the task finishes and frees an unconsumed box.
+//     Neither function returns a value.
 //   void* __lucid_await(void** handle_slot)
 //   void* __lucid_join (void** handle_slot)
-//     Consumes the handle (writes null back into *handle_slot), waits, and
-//     returns a pointer to the boxed result. CodeGen loads the result out
-//     of the box and frees the box.
+//     Consumes the handle (writes null back into *handle_slot), waits until
+//     the task has finished (await runs the event loop; join blocks on the
+//     worker), and returns the boxed result, or null if the task failed or
+//     the slot was already empty. CodeGen loads the result out of the box
+//     and frees the box with __lucid_free.
 //   void __lucid_shutdown(void)
 //     Signals all threads to stop, waits, cleans up pending handles.
-LUCID_RT(Async,    "__lucid_async",    Void, (Ptr, Ptr, Ptr))
-LUCID_RT(Await,    "__lucid_await",    Ptr,  (Ptr))
-LUCID_RT(Spawn,    "__lucid_spawn",    Void, (Ptr, Ptr, Ptr))
-LUCID_RT(Join,     "__lucid_join",     Ptr,  (Ptr))
-LUCID_RT(Shutdown, "__lucid_shutdown", Void, ())
+LUCID_RT(Async,    __lucid_async,    Void, (Ptr, Ptr, Ptr))
+LUCID_RT(Await,    __lucid_await,    Ptr,  (Ptr))
+LUCID_RT(Spawn,    __lucid_spawn,    Void, (Ptr, Ptr, Ptr))
+LUCID_RT(Join,     __lucid_join,     Ptr,  (Ptr))
+LUCID_RT(Shutdown, __lucid_shutdown, Void, ())

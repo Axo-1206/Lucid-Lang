@@ -13,6 +13,18 @@
 /// They are created by __lucid_async/__lucid_spawn and destroyed by
 /// __lucid_await/__lucid_join or on shutdown.
 ///
+/// A handle is born with ONE reference, which belongs to the scheduler (the
+/// event loop or the thread pool) and is dropped when the task has run. If the
+/// caller asked for the handle (`out != null`), the entry point adds a second
+/// reference BEFORE handing the handle to the scheduler; otherwise the task
+/// could finish and free the handle before the caller had claimed it.
+///
+/// The handles themselves are runtime-internal objects (plain `new`), not
+/// Lucid heap blocks. The RESULT they carry is a Lucid heap block: the
+/// compiler-emitted thunk boxes it with `__lucid_alloc`. If the last
+/// reference goes away while the result is still unconsumed (fire-and-forget,
+/// or a queued task cancelled at shutdown), the handle frees the box itself.
+///
 /// ─── Thread Safety ──────────────────────────────────────────────────────────
 /// The thread pool uses mutexes and condition variables for safe concurrent
 /// access. The event loop is single-threaded and does not require synchronization
@@ -44,7 +56,7 @@ struct ThreadHandle;
 enum class FutureState : uint8_t {
     Pending = 0,    ///< Operation not yet started or still running
     Ready = 1,      ///< Operation completed, result available
-    Consumed = 2,   ///< Result has been consumed (linear type)
+    Consumed = 2,   ///< Result has been consumed (linear type); the handle no longer owns it
     Error = 3       ///< Operation failed with an error
 };
 
@@ -97,10 +109,16 @@ struct FutureHandle {
 struct ThreadHandle {
     std::atomic<uint64_t> refcount;   ///< Reference count
     std::atomic<ThreadState> state;   ///< Current state (atomic for safe checking)
-    void* result;                     ///< Result of the thread (owned)
+    void* result;                     ///< Result of the thread (owned until consumed)
     void* (*callable)(void*);         ///< The function to execute
     void* args;                       ///< Arguments for the callable
-    std::thread thread;               ///< The actual OS thread
+
+    /// Guards the wait in `join()`. `state` is atomic so it can be polled
+    /// without the mutex, but a waiter must observe the change to `state`
+    /// and go to sleep atomically with respect to `setDone`/`setError`, or
+    /// a completion between the check and the sleep would be missed.
+    std::mutex mutex;
+    std::condition_variable cv;
 
     /// @brief Allocate a new ThreadHandle.
     static ThreadHandle* allocate(void* (*callable)(void*), void* args);
@@ -120,7 +138,10 @@ struct ThreadHandle {
     /// @brief Check if the thread is done (non-blocking).
     bool isDone() const;
 
-    /// @brief Wait for the thread to complete (blocks).
+    /// @brief Block until the task has finished (state is no longer Running).
+    ///
+    /// The task runs on a thread-pool worker, not on a thread owned by the
+    /// handle, so this waits on the handle's own condition variable.
     void join();
 };
 

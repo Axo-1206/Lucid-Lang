@@ -19,8 +19,9 @@
 /// in generated IR.
 ///
 /// It is NOT the runtime-ABI contract. The layouts (`lucid.String`,
-/// `lucid.Arena`, ...) and the type-tag vocabulary come from
-/// `runtime-abi/lucid_abi.h`. `Abi` reads them; it does not define them.
+/// `lucid.Arena`, ...) come from `runtime-abi/lucid_abi.h`, and the
+/// type-tag vocabulary from `runtime-abi/functions.def`. `Abi` reads them;
+/// it does not define them.
 ///
 /// It is NOT the emitter. It does not know about Lucid AST nodes, ownership
 /// rules, or scopes. It only knows how to call one specific runtime
@@ -39,21 +40,20 @@
 /// problem that the old `CodeGenContext::runtimeFunctions` map had is
 /// structurally impossible.
 ///
-/// ─── Why `ProgramState&`, Not `Module&` + `Types&` ────────────────────────
+/// ─── Why `ProgramState&`, Not `Module&` ───────────────────────────────────
 /// `Abi` needs to record which runtime functions the program actually
 /// uses, so the manifest can list them and the interpreter/AOT linker can
 /// decide which runtime objects to link. The usage set lives on
-/// `ProgramState`. Rather than hold separate references to the module,
-/// the types, and the usage set, `Abi` holds one reference to the
-/// `ProgramState` and reads all three from it.
+/// `ProgramState`. Rather than hold separate references to the module and
+/// the usage set, `Abi` holds one reference to the `ProgramState` and reads
+/// both from it. It needs no `Types`: the runtime ABI passes structs by
+/// pointer, so every runtime signature is built from scalars and `ptr`.
 ///
 /// This also means `Abi` is a *component of* `ProgramState`, not an
 /// independent object. That's the intended relationship: there is one
 /// `Abi` per program, constructed by `ProgramState`, destroyed with it.
 
 #pragma once
-
-#include "Types.hpp"
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
@@ -179,7 +179,9 @@ private:
     /// @brief Build the `llvm::FunctionType` for a runtime function.
     ///
     /// Reads the row from `functions.def` and expands the tags into LLVM
-    /// types. Called once per runtime function, at declaration time.
+    /// types. Called once per runtime function, at declaration time. Any
+    /// attributes the tags imply (`zeroext` for `I1`) are applied by
+    /// `declareOrGet`, because they live on the function, not the type.
     llvm::FunctionType* buildFunctionType(RuntimeFn fn);
 
     /// @brief Look up the symbol name for a runtime function.

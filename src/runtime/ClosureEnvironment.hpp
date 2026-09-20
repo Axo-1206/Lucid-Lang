@@ -14,8 +14,7 @@
 ///   │  ┌──────────────────────────────────────────────────────────────┐   │
 ///   │  │  ClosureEnvHeader (16 bytes)                                 │   │
 ///   │  │  ┌─────────────────────────────────────────────────────────┐ │   │
-///   │  │  │  refcount: atomic<uint32_t>   (4 bytes)                 │ │   │
-///   │  │  │  size: uint32_t               (4 bytes)                 │ │   │
+///   │  │  │  refcount: atomic<int64_t>    (8 bytes)                 │ │   │
 ///   │  │  │  drop: void(*)(void*)         (8 bytes, may be null)    │ │   │
 ///   │  │  └─────────────────────────────────────────────────────────┘ │   │
 ///   │  └──────────────────────────────────────────────────────────────┘   │
@@ -29,7 +28,10 @@
 /// The environment is allocated as a single block of memory:
 ///   totalSize = sizeof(ClosureEnvHeader) + dataSize
 ///
-/// The header is placed at the start, followed immediately by the data.
+/// The header is placed at the start, followed immediately by the data. The
+/// block comes from `lucid::runtime::heapAlloc`, so it is zeroed and visible
+/// to the leak report, and it is released with `heapFree` (functions.def,
+/// rule 5).
 ///
 /// ─── Refcount Semantics ──────────────────────────────────────────────────────
 /// - Starts at 1 when allocated (the closure that created it holds the ref)
@@ -48,7 +50,9 @@
 ///
 /// ─── Alignment ───────────────────────────────────────────────────────────────
 /// The header is exactly 16 bytes and 16-byte aligned, so the data portion
-/// (which follows it directly) is 16-byte aligned too. Captured values are
+/// (which follows it directly) is 16-byte aligned too. Its layout is
+/// `lucid::abi::LucidClosureHeader` from `runtime-abi/lucid_abi.h`: the
+/// static_asserts at the bottom of this file pin the two together. Captured values are
 /// LLVM structs that assume their natural alignment (pointers, i64, double,
 /// { ptr, i64, i64 }); a 12-byte header would leave them misaligned by 4.
 ///
@@ -64,17 +68,19 @@
 
 #pragma once
 
+#include "RuntimeInternal.hpp"
+#include "runtime-abi/lucid_abi.h"
+
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <new>
 
 /// @brief Header for every closure environment.
 ///
 /// This header is placed at the beginning of every closure environment
-/// allocation. It contains the reference count and the size of the data
-/// portion, allowing safe allocation, deallocation, and refcounting.
+/// allocation. It contains the reference count and the drop function.
 ///
 /// @note The header is followed immediately by the captured data.
 /// @note The header is 16 bytes and 16-byte aligned, so the data portion is
@@ -89,10 +95,7 @@ struct alignas(16) ClosureEnvHeader {
 
     /// Reference count - number of references to this environment.
     /// Starts at 1. Protected by atomic operations for thread safety.
-    std::atomic<uint32_t> refcount;
-
-    /// Size of the data portion in bytes (does NOT include the header).
-    uint32_t size;
+    std::atomic<lucid::abi::LucidI64> refcount;
 
     // ─── Drop glue ───────────────────────────────────────────────────────────
     // Releases whatever the captured data owns (e.g. retained closure
@@ -121,12 +124,16 @@ struct alignas(16) ClosureEnvHeader {
     /// @param drop Optional drop function run when the refcount reaches zero.
     /// @return Pointer to the environment (header + data), or nullptr on failure.
     /// @note The data portion is zero-initialized.
-    static ClosureEnvHeader* allocate(uint32_t dataSize, DropFn drop = nullptr) {
+    static ClosureEnvHeader* allocate(std::size_t dataSize, DropFn drop = nullptr) {
         // Calculate total size: header + data
-        size_t totalSize = sizeof(ClosureEnvHeader) + dataSize;
+        if (dataSize > SIZE_MAX - sizeof(ClosureEnvHeader)) {
+            return nullptr;
+        }
+        std::size_t totalSize = sizeof(ClosureEnvHeader) + dataSize;
 
-        // Allocate memory
-        void* mem = std::malloc(totalSize);
+        // Allocate memory. heapAlloc returns zeroed memory, so the data
+        // portion is already zero-initialized.
+        void* mem = lucid::runtime::heapAlloc(totalSize);
         if (!mem) {
             return nullptr;
         }
@@ -134,11 +141,7 @@ struct alignas(16) ClosureEnvHeader {
         // Construct the header in place
         ClosureEnvHeader* env = new (mem) ClosureEnvHeader;
         env->refcount.store(1, std::memory_order_release);
-        env->size = dataSize;
         env->drop = drop;
-
-        // Zero-initialize the data portion
-        std::memset(env->data(), 0, dataSize);
 
         return env;
     }
@@ -148,7 +151,7 @@ struct alignas(16) ClosureEnvHeader {
     /// @param dataSize Size of the data portion in bytes.
     /// @param drop Optional drop function run when the refcount reaches zero.
     /// @return Pointer to the environment (header + data), or nullptr on failure.
-    static ClosureEnvHeader* allocateWithData(const void* dataPtr, uint32_t dataSize,
+    static ClosureEnvHeader* allocateWithData(const void* dataPtr, std::size_t dataSize,
                                               DropFn drop = nullptr) {
         ClosureEnvHeader* env = allocate(dataSize, drop);
         if (!env) {
@@ -181,7 +184,7 @@ struct alignas(16) ClosureEnvHeader {
         }
 
         // Decrement the reference count
-        uint32_t oldCount = env->refcount.fetch_sub(1, std::memory_order_acq_rel);
+        lucid::abi::LucidI64 oldCount = env->refcount.fetch_sub(1, std::memory_order_acq_rel);
 
         // If this was the last reference (oldCount == 1), drop and free
         if (oldCount == 1) {
@@ -193,7 +196,7 @@ struct alignas(16) ClosureEnvHeader {
             // Destroy the header (call destructor - trivial for this type)
             env->~ClosureEnvHeader();
             // Free the memory
-            std::free(env);
+            lucid::runtime::heapFree(env);
             return true;
         }
 
@@ -203,7 +206,7 @@ struct alignas(16) ClosureEnvHeader {
     /// @brief Get the current reference count.
     /// @param env Pointer to the environment.
     /// @return The current reference count, or 0 if env is null.
-    static uint32_t getRefcount(ClosureEnvHeader* env) {
+    static lucid::abi::LucidI64 getRefcount(ClosureEnvHeader* env) {
         if (!env) {
             return 0;
         }
@@ -215,3 +218,17 @@ struct alignas(16) ClosureEnvHeader {
 // The compiler-generated code relies on this exact layout (data at +16).
 static_assert(sizeof(ClosureEnvHeader) == 16, "ClosureEnvHeader must be 16 bytes");
 static_assert(alignof(ClosureEnvHeader) == 16, "ClosureEnvHeader must be 16-byte aligned");
+
+// The header must mirror the ABI's LucidClosureHeader field for field. The
+// only difference is that the refcount is an atomic; the assert below pins
+// that an atomic integer has the same size, so the layouts coincide.
+static_assert(sizeof(std::atomic<lucid::abi::LucidI64>) == sizeof(lucid::abi::LucidI64),
+              "atomic<LucidI64> must be the same size as LucidI64");
+static_assert(std::atomic<lucid::abi::LucidI64>::is_always_lock_free,
+              "the refcount must be lock-free");
+static_assert(sizeof(ClosureEnvHeader) == sizeof(lucid::abi::LucidClosureHeader),
+              "ClosureEnvHeader must be the size of LucidClosureHeader");
+static_assert(offsetof(ClosureEnvHeader, refcount) == offsetof(lucid::abi::LucidClosureHeader, refcount),
+              "ClosureEnvHeader.refcount must sit where LucidClosureHeader.refcount does");
+static_assert(offsetof(ClosureEnvHeader, drop) == offsetof(lucid::abi::LucidClosureHeader, drop),
+              "ClosureEnvHeader.drop must sit where LucidClosureHeader.drop does");
