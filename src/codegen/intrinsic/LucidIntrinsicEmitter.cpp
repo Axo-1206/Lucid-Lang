@@ -1,1009 +1,278 @@
-/// @file LucidIntrinsicEmitter.cpp
-/// @brief Implementation of Lucid-specific intrinsic emissions.
+/// @file codegen/intrinsic/LucidIntrinsicEmitter.cpp
+/// @brief Implementation of the Lucid-side intrinsic emitters.
 
 #include "LucidIntrinsicEmitter.hpp"
-#include "../types/CodeGenType.hpp"
-#include "codegen/runtime/closure/CodeGenClosure.hpp"
-#include "../memory/CodeGenAlloca.hpp"
-#include "../support/CodeGenPanic.hpp"
-#include "../types/LLVMTypeHelpers.hpp"
-#include "codegen/CodeGen.hpp"
-#include "core/ASTStrings.hpp"
 
-#include <llvm/IR/Intrinsics.h>
-#include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/Function.h>
+#include "codegen/Emitter.hpp"
+#include "codegen/Program.hpp"
+#include "codegen/Abi.hpp"
+#include "codegen/Types.hpp"
+#include "codegen/support/CodeGenPanic.hpp"
+
+#include "core/registry/IntrinsicRegistry.hpp"
+
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/DerivedTypes.h>
-
-#include <unordered_set>
-#include <cassert>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Intrinsics.h>
 
 namespace codegen {
 
-// ─── Helper: Get type name as string ────────────────────────────────────
+namespace {
 
-static std::string getLucidTypeName(CodeGenContext& ctx, TypeAST* type) {
-    if (!type) return "unknown";
-    return getTypeName(ctx, type);
-}
-
-// ─── Helper: Resolve a type from an intrinsic type argument ───────────────
-// Matches ConstEvaluator / IntrinsicValidator: args[0] may be an
-// IdentifierExprAST with isType=true and resolvedTypeNode set.
-
-static TypeAST* resolveIntrinsicTypeArg(ExprAST* arg) {
-    if (!arg) return nullptr;
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType && id->resolvedTypeNode) {
-            return id->resolvedTypeNode;
-        }
-    }
-    return arg->resolvedType;
-}
-
-// ─── Helper: concatenate two strings via the runtime ─────────────────────
-
-static llvm::Value* emitStrConcat(llvm::Value* a, llvm::Value* b, CodeGenContext& ctx) {
-    llvm::Function* concatFunc = ctx.getRuntimeFn(RuntimeFn::StrConcat);
-    return ctx.builder.CreateCall(concatFunc, {a, b});
-}
-
-// ─── Helper: Format an integer as a string ─────────────────────────────
-
-static llvm::Value* emitIntToStr(llvm::Value* val, PrimitiveKind kind, CodeGenContext& ctx) {
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    
-    // Extend or truncate to i64 for the runtime function
-    llvm::Value* intVal = val;
-    if (intVal->getType() != i64) {
-        if (isSignedIntegerKind(kind)) {
-            intVal = ctx.builder.CreateSExtOrTrunc(intVal, i64);
-        } else {
-            intVal = ctx.builder.CreateZExtOrTrunc(intVal, i64);
-        }
-    }
-    
-    // Use signed or unsigned formatter based on the kind
-    if (isSignedIntegerKind(kind)) {
-        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
-        return ctx.builder.CreateCall(fn, {intVal});
-    } else {
-        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::UintToStr);
-        return ctx.builder.CreateCall(fn, {intVal});
-    }
-}
-
-// ─── Helper: Get the full name of a field access chain ────────────────────
-static std::string getFieldAccessPath(FieldAccessExprAST* field, CodeGenContext& ctx) {
-    std::string path = ctx.pool.lookup(field->fieldName);
-    
-    // Walk up the object chain
-    ExprAST* obj = field->object;
-    while (obj) {
-        if (obj->isa<IdentifierExprAST>()) {
-            IdentifierExprAST* id = obj->as<IdentifierExprAST>();
-            path = ctx.pool.lookup(id->name) + "." + path;
-            break;
-        } else if (obj->isa<FieldAccessExprAST>()) {
-            FieldAccessExprAST* parentField = obj->as<FieldAccessExprAST>();
-            path = ctx.pool.lookup(parentField->fieldName) + "." + path;
-            obj = parentField->object;
-        } else if (obj->isa<ModuleAccessExprAST>()) {
-            ModuleAccessExprAST* mod = obj->as<ModuleAccessExprAST>();
-            path = ctx.pool.lookup(mod->moduleName) + ":" + path;
-            break;
-        } else {
-            break;
-        }
-    }
-    
-    return path;
-}
-
-// ─── #tostr core: recursive value formatter ───────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Emitter Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 //
-// Shared by the top-level #tostr(x) call and by struct-field formatting,
-// which needs to recurse into each field's own type. sourceExpr is the
-// syntactic expression this value came from - only meaningful for the
-// function/closure case (to look up a declared name), and only available
-// for the top-level call; recursive calls into struct fields pass nullptr
-// since a field's value has no source expression of its own once read out
-// of the struct.
-static llvm::Value* emitTostrValue(
-    llvm::Value* val,
-    TypeAST* type,
-    ExprAST* sourceExpr,
-    SourceLocation loc,
-    CodeGenContext& ctx
-) {
-    llvm::Type* strType = ctx.getStringType();
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+// Each intrinsic has its own `emitX` function. The dispatcher at the
+// bottom of this file routes by name. The helpers all take
+// `(IntrinsicCallExprAST*, Emitter&)` and return a `Val`.
 
-    // ─── In emitTostrValue for functions ─────────────────────────────────────
-    if (type && type->isa<FuncTypeAST>()) {
-        std::string nameStr;
-        IdentifierExprAST* ident = sourceExpr ? sourceExpr->as<IdentifierExprAST>() : nullptr;
-        FieldAccessExprAST* field = (!ident && sourceExpr) ? sourceExpr->as<FieldAccessExprAST>() : nullptr;
-        ModuleAccessExprAST* module = (!ident && !field && sourceExpr) ? sourceExpr->as<ModuleAccessExprAST>() : nullptr;
-        
-        if (ident) {
-            nameStr = ctx.pool.lookup(ident->name);
-        } else if (field) {
-            // ─── Build full path: var.struct.field ──────────────────────────
-            nameStr = getFieldAccessPath(field, ctx);
-        } else if (module) {
-            nameStr = ctx.pool.lookup(module->moduleName) + ":" + 
-                    ctx.pool.lookup(module->memberName);
-        } else {
-            nameStr = "<closure>";
-        }
-        return ctx.createStringLiteral(nameStr);
-    }
+/// `#sizeof(T) -> uint64`.
+/// Normally folded by Sema to a constant. If it reaches the emitter,
+/// evaluate the type's size via the DataLayout and emit the constant.
+Val emitSizeof(IntrinsicCallExprAST* expr, Emitter& emitter) {
+    if (expr->args.empty()) return {};
 
-    // ─── Primitives: format by value ──────────────────────────────────────
-    if (type && type->isa<PrimitiveTypeAST>()) {
-        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
+    // The argument is a type expression. Sema stores the resolved type
+    // on the arg's `resolvedType`. Actually, for `#sizeof`, Sema
+    // evaluates the type at compile time and stores the result in
+    // `expr->constValue`. Reaching here means the fold didn't happen;
+    // emit a fallback.
+    TypeAST* targetTy = expr->args[0]->resolvedType;
+    if (!targetTy) return {};
 
-        // ─── String: identity ──────────────────────────────────────────────
-        if (kind == PrimitiveKind::String) {
-            return val;
-        }
-
-        // ─── Bool ──────────────────────────────────────────────────────────
-        if (kind == PrimitiveKind::Bool) {
-            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::BoolToStr);
-            return ctx.builder.CreateCall(fn, {val});
-        }
-
-        // ─── Char ──────────────────────────────────────────────────────────
-        if (kind == PrimitiveKind::Char) {
-            llvm::Type* i32 = llvm::Type::getInt32Ty(ctx.llvmCtx);
-            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::CharToStr);
-            llvm::Value* charVal = val;
-            if (charVal->getType() != i32) {
-                charVal = ctx.builder.CreateZExtOrTrunc(charVal, i32);
-            }
-            return ctx.builder.CreateCall(fn, {charVal});
-        }
-
-        // ─── Integer (signed or unsigned) ──────────────────────────────────
-        if (isIntegerKind(kind)) {
-            return emitIntToStr(val, kind, ctx);
-        }
-
-        // ─── Floating point ─────────────────────────────────────────────────
-        if (isFloatKind(kind)) {
-            llvm::Type* f64 = llvm::Type::getDoubleTy(ctx.llvmCtx);
-            llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::FloatToStr);
-            llvm::Value* floatVal = val;
-            if (floatVal->getType() != f64) {
-                floatVal = ctx.builder.CreateFPExt(floatVal, f64);
-            }
-            return ctx.builder.CreateCall(fn, {floatVal});
-        }
-
-        return ctx.createStringLiteral("<unknown primitive>");
-    }
-
-    // ─── Named types: enum or struct (concrete only - Sema guarantees) ────
-    if (type && type->isa<NamedTypeAST>()) {
-        NamedTypeAST* named = type->as<NamedTypeAST>();
-        
-        // ─── Defensive: This should never happen (Sema rejects generic) ────
-        if (!named->resolvedDecl) {
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                                    "INTERNAL ERROR: unresolved type '", 
-                                    ctx.pool.lookup(named->name),
-                                    "' reached CodeGen - Sema should have caught this");
-            return ctx.createStringLiteral("<" + ctx.pool.lookup(named->name) + ">");
-        }
-
-        // ─── Trait handling ──────────────────────────────────────────────────────
-        // Traits should never reach CodeGen because Sema rejects them everywhere
-        // except generic constraints. This is a safety net.
-        if (named->resolvedDecl && named->resolvedDecl->isa<TraitDeclAST>()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TraitInvalidContext, loc,
-                                    "INTERNAL ERROR: trait '", ctx.pool.lookup(named->name),
-                                    "' reached CodeGen in #tostr - Sema should have rejected this");
-            return ctx.createStringLiteral("<trait " + ctx.pool.lookup(named->name) + ">");
-        }
-
-        // ─── Enum: "EnumType.VariantName" via switch ──────────────────────
-        if (named->resolvedDecl->isa<EnumDeclAST>()) {
-            EnumDeclAST* enumDecl = named->resolvedDecl->as<EnumDeclAST>();
-            std::string enumName = ctx.pool.lookup(enumDecl->name);
-
-            llvm::Function* func = ctx.getCurrentFunction();
-            llvm::BasicBlock* defaultBlock = llvm::BasicBlock::Create(
-                ctx.llvmCtx, "tostr_enum_unknown", func);
-            llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
-                ctx.llvmCtx, "tostr_enum_merge", func);
-
-            llvm::SwitchInst* sw = ctx.builder.CreateSwitch(
-                val, defaultBlock, static_cast<unsigned>(enumDecl->variants.size()));
-
-            std::vector<std::pair<llvm::BasicBlock*, llvm::Value*>> incoming;
-
-            for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
-                EnumVariantAST* variant = enumDecl->variants[i];
-                llvm::ConstantInt* constVal = enumDecl->constantForVariant(variant->name);
-                if (!constVal) continue;
-
-                llvm::BasicBlock* caseBlock = llvm::BasicBlock::Create(
-                    ctx.llvmCtx, "tostr_enum_" + ctx.pool.lookup(variant->name), func);
-                sw->addCase(constVal, caseBlock);
-
-                ctx.builder.SetInsertPoint(caseBlock);
-                std::string label = enumName + "." + ctx.pool.lookup(variant->name);
-                incoming.push_back({caseBlock, ctx.createStringLiteral(label)});
-                ctx.builder.CreateBr(mergeBlock);
-            }
-
-            // ─── Default: value matches no known variant ───────────────────
-            ctx.builder.SetInsertPoint(defaultBlock);
-            llvm::Value* asI64 = ctx.builder.CreateSExtOrTrunc(val, i64);
-            llvm::Function* intFn = ctx.getRuntimeFn(RuntimeFn::IntToStr);
-            llvm::Value* defaultStr = ctx.builder.CreateCall(intFn, {asI64});
-            incoming.push_back({defaultBlock, defaultStr});
-            ctx.builder.CreateBr(mergeBlock);
-
-            ctx.builder.SetInsertPoint(mergeBlock);
-            llvm::PHINode* phi = ctx.builder.CreatePHI(
-                strType, static_cast<unsigned>(incoming.size()), "tostr_enum_result");
-            for (auto& pair : incoming) {
-                phi->addIncoming(pair.second, pair.first);
-            }
-            return phi;
-        }
-
-        // ─── Struct: "Name{ field: value, ... }" or `str` override ──────
-        if (named->resolvedDecl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = named->resolvedDecl->as<StructDeclAST>();
-            std::string structName = ctx.pool.lookup(structDecl->name);
-
-            llvm::StructType* llvmStructType = ctx.lookupStruct(structDecl);
-            if (!llvmStructType) {
-                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                        "struct '", structName, "' has no LLVM type");
-                return llvm::Constant::getNullValue(strType);
-            }
-
-            auto readField = [&](size_t index) -> llvm::Value* {
-                if (val->getType()->isPointerTy()) {
-                    llvm::Type* fieldType = llvmStructType->getElementType(index);
-                    std::vector<llvm::Value*> indices = {
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx), 0),
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx.llvmCtx),
-                                                static_cast<uint32_t>(index))
-                    };
-                    llvm::Value* fieldPtr = ctx.builder.CreateInBoundsGEP(
-                        llvmStructType, val, indices, "tostr_field_ptr");
-                    return ctx.builder.CreateLoad(fieldType, fieldPtr, "tostr_field_load");
-                }
-                return ctx.builder.CreateExtractValue(
-                    val, static_cast<unsigned>(index), "tostr_field_val");
-            };
-
-            // ─── Custom `str` field override ──────────────────────────────
-            InternedString strFieldName = ctx.pool.intern("str");
-            size_t strIndex = structDecl->indexOfField(strFieldName);
-            if (strIndex != SIZE_MAX) {
-                FieldDeclAST* strField = structDecl->fields[strIndex];
-                bool isValidOverride = strField->type && strField->type->isa<FuncTypeAST>();
-                if (isValidOverride) {
-                    FuncTypeAST* fnType = strField->type->as<FuncTypeAST>();
-                    isValidOverride = fnType->params.size() == 0 &&
-                        fnType->returnType &&
-                        fnType->returnType->isa<PrimitiveTypeAST>() &&
-                        fnType->returnType->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
-                }
-                if (isValidOverride) {
-                    llvm::Value* closureVal = readField(strIndex);
-                    llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
-                        closureVal, 0, "str_override_func");
-                    llvm::Value* envPtr = ctx.builder.CreateExtractValue(
-                        closureVal, 1, "str_override_env");
-                    return emitClosureCall(funcPtr, envPtr, {}, strType, ctx);
-                }
-            }
-
-            // ─── No override: synthesize "Name{ f1: v1, f2: v2 }" ──────────
-            if (structDecl->fields.empty()) {
-                return ctx.createStringLiteral(structName + "{}");
-            }
-
-            llvm::Value* result = ctx.createStringLiteral(structName + "{ ");
-            for (size_t i = 0; i < structDecl->fields.size(); ++i) {
-                FieldDeclAST* field = structDecl->fields[i];
-                std::string fieldPrefix = ctx.pool.lookup(field->name) + ": ";
-
-                llvm::Value* fieldVal = readField(i);
-                llvm::Value* fieldStr = emitTostrValue(fieldVal, field->type, nullptr, loc, ctx);
-                if (!fieldStr) {
-                    fieldStr = llvm::Constant::getNullValue(strType);
-                }
-
-                result = emitStrConcat(result, ctx.createStringLiteral(fieldPrefix), ctx);
-                result = emitStrConcat(result, fieldStr, ctx);
-                if (i + 1 < structDecl->fields.size()) {
-                    result = emitStrConcat(result, ctx.createStringLiteral(", "), ctx);
-                }
-            }
-            result = emitStrConcat(result, ctx.createStringLiteral(" }"), ctx);
-            return result;
-        }
-    }
-
-    // ─── Fallback ──────────────────────────────────────────────────────────
-    std::string typeName = type ? typeToString(type, ctx.pool) : "unknown";
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, loc,
-                              "#tostr not fully implemented for type '", 
-                              typeName,
-                              "' - returning placeholder");
-    return ctx.createStringLiteral("<" + typeName + ">");
+    uint64_t size = emitter.program.types().sizeOf(targetTy);
+    llvm::Type* resultTy = llvm::Type::getInt64Ty(
+        emitter.program.llvmContext());
+    llvm::Value* result = llvm::ConstantInt::get(resultTy, size);
+    return Val{result, expr->resolvedType, Own::Owned};
 }
 
+/// `#alignof(T) -> uint64`.
+Val emitAlignof(IntrinsicCallExprAST* expr, Emitter& emitter) {
+    if (expr->args.empty()) return {};
+    TypeAST* targetTy = expr->args[0]->resolvedType;
+    if (!targetTy) return {};
 
-// ─── Type Inspection Intrinsics ──────────────────────────────────────────
-
-llvm::Value* emitLucidTypeIntrinsic(
-    IntrinsicKind kind,
-    const std::string& name,
-    const std::vector<llvm::Value*>& args,
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
-    SourceLocation loc = expr ? expr->loc : SourceLocation();
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-
-    // ─── #sizeof(T) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Sizeof) {
-        TypeAST* type = (expr && !expr->args.empty())
-            ? resolveIntrinsicTypeArg(expr->args[0])
-            : nullptr;
-        if (type) {
-            
-            // ─── Safety net: reject generic parameters ──────────────────────
-            if (type->isa<NamedTypeAST>()) {
-                NamedTypeAST* named = type->as<NamedTypeAST>();
-                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
-                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                        "INTERNAL ERROR: #sizeof(T) called on generic parameter '",
-                        ctx.pool.lookup(named->name),
-                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
-                    return llvm::ConstantInt::get(i64, 0);
-                }
-            }
-            
-            // ─── Concrete type: compile-time constant ──────────────────────
-            llvm::Type* llvmType = getType(ctx, type);
-            if (llvmType) {
-                const llvm::DataLayout& dl = ctx.module->getDataLayout();
-                uint64_t size = dl.getTypeAllocSize(llvmType).getFixedValue();
-                return llvm::ConstantInt::get(i64, size);
-            }
-            
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                "#sizeof: could not determine LLVM type for '", 
-                getLucidTypeName(ctx, type), "'");
-        }
-        return llvm::ConstantInt::get(i64, 0);
-    }
-
-    // ─── #alignof(T) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Alignof) {
-        TypeAST* type = (expr && !expr->args.empty())
-            ? resolveIntrinsicTypeArg(expr->args[0])
-            : nullptr;
-        if (type) {
-            
-            // ─── Safety net: reject generic parameters ──────────────────────
-            if (type->isa<NamedTypeAST>()) {
-                NamedTypeAST* named = type->as<NamedTypeAST>();
-                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
-                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                        "INTERNAL ERROR: #alignof(T) called on generic parameter '",
-                        ctx.pool.lookup(named->name),
-                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
-                    return llvm::ConstantInt::get(i64, 1);
-                }
-            }
-            
-            // ─── Concrete type: compile-time constant ──────────────────────
-            llvm::Type* llvmType = getType(ctx, type);
-            if (llvmType) {
-                const llvm::DataLayout& dl = ctx.module->getDataLayout();
-                uint64_t alignment = dl.getABITypeAlign(llvmType).value();
-                return llvm::ConstantInt::get(i64, alignment);
-            }
-            
-            ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                "#alignof: could not determine LLVM type for '", 
-                getLucidTypeName(ctx, type), "'");
-        }
-        return llvm::ConstantInt::get(i64, 1);
-    }
-
-    // ─── #bitcast(T, x) ──────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Bitcast) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                "intrinsic '#bitcast' requires an argument");
-            return nullptr;
-        }
-
-        // ─── Safety net: reject generic parameters ──────────────────────────
-        if (expr->resolvedType) {
-            if (expr->resolvedType->isa<NamedTypeAST>()) {
-                NamedTypeAST* named = expr->resolvedType->as<NamedTypeAST>();
-                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
-                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                        "INTERNAL ERROR: #bitcast(T, x) called with generic parameter '",
-                        ctx.pool.lookup(named->name),
-                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
-                    return nullptr;
-                }
-            }
-        }
-
-        llvm::Type* targetType = getType(ctx, expr->resolvedType);
-        if (!targetType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                "could not determine target type for '#bitcast'");
-            return nullptr;
-        }
-
-        llvm::Value* val = args[0];
-        llvm::Type* valueType = val->getType();
-        
-        // ─── Size check ────────────────────────────────────────────────────
-        const llvm::DataLayout& dl = ctx.module->getDataLayout();
-        uint64_t targetSize = dl.getTypeAllocSize(targetType).getFixedValue();
-        uint64_t valueSize = dl.getTypeAllocSize(valueType).getFixedValue();
-        
-        if (targetSize != valueSize) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                    "#bitcast: type sizes must match: ",
-                                    typeToString(expr->resolvedType, ctx.pool), " (",
-                                    targetSize, " bytes) vs ",
-                                    typeToString(expr->args[1]->resolvedType, ctx.pool), " (",
-                                    valueSize, " bytes)");
-            return nullptr;
-        }
-        
-        return ctx.builder.CreateBitCast(val, targetType);
-    }
-
-    // ─── #typeof(x) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Typeof) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#typeof' requires an argument");
-            return nullptr;
-        }
-
-        TypeAST* type = expr->args[0]->resolvedType;
-        if (!type) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                   "could not determine type for '#typeof'");
-            return nullptr;
-        }
-
-        std::string typeName = getLucidTypeName(ctx, type);
-        return ctx.createStringLiteral(typeName);
-    }
-
-    // ─── #nameof(x) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Nameof) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#nameof' requires an argument");
-            return nullptr;
-        }
-
-        std::string nameStr;
-        ExprAST* arg = expr->args[0];
-        if (arg->isa<IdentifierExprAST>()) {
-            nameStr = ctx.pool.lookup(arg->as<IdentifierExprAST>()->name);
-        } else if (arg->isa<FieldAccessExprAST>()) {
-            nameStr = ctx.pool.lookup(arg->as<FieldAccessExprAST>()->fieldName);
-        } else {
-            nameStr = "unknown";
-        }
-
-        return ctx.createStringLiteral(nameStr);
-    }
-
-    // ─── #tostr(x) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Tostr) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#tostr' requires an argument");
-            return nullptr;
-        }
-
-        // ─── Safety net: reject generic parameters ──────────────────────────
-        if (expr->args[0]->resolvedType) {
-            TypeAST* argType = expr->args[0]->resolvedType;
-            if (argType->isa<NamedTypeAST>()) {
-                NamedTypeAST* named = argType->as<NamedTypeAST>();
-                if (named->resolvedDecl && named->resolvedDecl->isa<GenericParamDeclAST>()) {
-                    ctx.diagnostics.errorAt(DiagCode::Backend_CodegenError, loc,
-                        "INTERNAL ERROR: #tostr called on generic parameter '",
-                        ctx.pool.lookup(named->name),
-                        "' - Sema should have rejected this. Add @[specialize] to the enclosing function.");
-                    return ctx.createStringLiteral("<generic>");
-                }
-            }
-        }
-
-        return emitTostrValue(args[0], expr->args[0]->resolvedType, expr->args[0], loc, ctx);
-    }
-
-    // ─── #ptrstr(x) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Ptrstr) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#ptrstr' requires an argument");
-            return nullptr;
-        }
-
-        llvm::Value* addr = args[0];
-        if (addr->getType() != llvm::PointerType::get(ctx.llvmCtx, 0)) {
-            addr = ctx.builder.CreateBitCast(addr, llvm::PointerType::get(ctx.llvmCtx, 0));
-        }
-
-        llvm::Function* fn = ctx.getRuntimeFn(RuntimeFn::PtrToHexString);
-        return ctx.builder.CreateCall(fn, {addr});
-    }
-
-    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
-                            "unknown type intrinsic '#", name, "'");
-    return nullptr;
+    uint64_t align = emitter.program.types().alignOf(targetTy);
+    llvm::Type* resultTy = llvm::Type::getInt64Ty(
+        emitter.program.llvmContext());
+    llvm::Value* result = llvm::ConstantInt::get(resultTy, align);
+    return Val{result, expr->resolvedType, Own::Owned};
 }
 
-// ─── Pointer Intrinsics ──────────────────────────────────────────────────
+/// `#memcpy(dst, src, len) -> void`.
+Val emitMemcpy(IntrinsicCallExprAST* expr, Emitter& emitter) {
+    if (expr->args.size() != 3) return {};
 
-llvm::Value* emitLucidPointerIntrinsic(
-    IntrinsicKind kind,
-    const std::string& name,
-    const std::vector<llvm::Value*>& args,
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
-    SourceLocation loc = expr ? expr->loc : SourceLocation();
+    llvm::IRBuilder<>& b = emitter.program.builder();
+    llvm::Value* dst = emitter.emit(expr->args[0]).v;
+    llvm::Value* src = emitter.emit(expr->args[1]).v;
+    llvm::Value* len = emitter.emit(expr->args[2]).v;
+    if (!dst || !src || !len) return {};
 
-    // ─── toPtr(ref) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::ToPtr) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#toPtr' requires an argument");
-            return nullptr;
-        }
-        return args[0];
-    }
+    llvm::Type* i64 = llvm::Type::getInt64Ty(emitter.program.llvmContext());
+    llvm::Type* i1 = llvm::Type::getInt1Ty(emitter.program.llvmContext());
 
-    // ─── ptrOffset(ptr, n) ──────────────────────────────────────────────
-    if (kind == IntrinsicKind::PtrOffset) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#ptrOffset' requires 2 arguments");
-            return nullptr;
-        }
+    // llvm.memcpy(dst, src, len, isvolatile)
+    llvm::Function* memcpyFn = llvm::Intrinsic::getDeclaration(
+        &emitter.program.module(), llvm::Intrinsic::memcpy,
+        {dst->getType(), src->getType(), len->getType()});
+    if (!memcpyFn) return {};
 
-        llvm::Value* ptr = args[0];
-        llvm::Value* offset = args[1];
+    b.CreateCall(memcpyFn, {
+        dst, src, len,
+        llvm::ConstantInt::get(i1, 0)   // isvolatile = false
+    });
+    return {};  // void
+}
 
-        // ctx.getPointeeType() is only a stub returning i8 (LLVM's opaque
-        // pointers carry no element type once lowered). The real pointee
-        // type still exists on the Lucid side as PtrTypeAST::inner - use
-        // that so offsets are in units of T, not raw bytes.
-        llvm::Type* elemType = llvm::Type::getInt8Ty(ctx.llvmCtx);
-        if (expr && !expr->args.empty() && expr->args[0]->resolvedType &&
-            expr->args[0]->resolvedType->isa<PtrTypeAST>()) {
-            TypeAST* pointee = expr->args[0]->resolvedType->as<PtrTypeAST>()->inner;
-            if (llvm::Type* resolvedElem = getType(ctx, pointee)) {
-                elemType = resolvedElem;
+// ... same shape for memmove, memset, toRef, toPtr, ptrOffset, ptrDiff,
+// alloc, free, arena_*, tostr, ptrstr, scope_exit ...
+
+/// `#tostr(x) -> string`.
+///
+/// Dispatches on the argument's type to the appropriate runtime
+/// formatter. Uses the out-pointer convention from `functions.def`:
+/// allocate a `lucid.String` slot, call the formatter with the slot's
+/// address, load the result.
+Val emitToStr(IntrinsicCallExprAST* expr, Emitter& emitter) {
+    if (expr->args.empty()) return {};
+
+    Val argVal = emitter.emit(expr->args[0]);
+    if (!argVal.isValid()) return {};
+
+    ProgramState& program = emitter.program;
+    llvm::IRBuilder<>& b = program.builder();
+    llvm::StructType* strTy = program.types().stringType();
+
+    // Allocate the out-slot.
+    llvm::AllocaInst* outSlot = b.CreateAlloca(strTy, nullptr, "tostr_slot");
+
+    // Choose the formatter based on the argument's type.
+    //
+    // For a primitive int, `__lucid_int_to_str(out, i64)`.
+    // For a float, `__lucid_float_to_str(out, double)`.
+    // For a bool, `__lucid_bool_to_str(out, i8)`.
+    // For a char, `__lucid_char_to_str(out, i32)`.
+    // For a string, the argument is already a string — return it as-is
+    // (no formatting needed).
+    //
+    // The dispatch mirrors the old `lowerIntrinsic` dispatch but routes
+    // through `Abi` and the out-pointer convention.
+    TypeAST* argTy = expr->args[0]->resolvedType;
+    llvm::Value* arg = argVal.v;
+
+    if (argTy && argTy->isa<PrimitiveTypeAST>()) {
+        PrimitiveKind kind =
+            argTy->as<PrimitiveTypeAST>()->primitiveKind;
+        switch (kind) {
+            case PrimitiveKind::Bool: {
+                llvm::Value* asI8 = b.CreateZExt(
+                    arg, llvm::Type::getInt8Ty(program.llvmContext()));
+                program.abi().BoolToStr(b, outSlot, asI8);
+                break;
+            }
+            case PrimitiveKind::Char: {
+                llvm::Value* asI32 = b.CreateZExt(
+                    arg, llvm::Type::getInt32Ty(program.llvmContext()));
+                program.abi().CharToStr(b, outSlot, asI32);
+                break;
+            }
+            case PrimitiveKind::Int:
+            case PrimitiveKind::Long:
+            case PrimitiveKind::Int32:
+            case PrimitiveKind::Int64:
+            case PrimitiveKind::Byte:
+            case PrimitiveKind::Short:
+            case PrimitiveKind::Int8:
+            case PrimitiveKind::Int16: {
+                llvm::Value* asI64 = b.CreateSExt(arg,
+                    llvm::Type::getInt64Ty(program.llvmContext()));
+                program.abi().IntToStr(b, outSlot, asI64);
+                break;
+            }
+            case PrimitiveKind::Uint:
+            case PrimitiveKind::Ulong:
+            case PrimitiveKind::Uint32:
+            case PrimitiveKind::Uint64:
+            case PrimitiveKind::Ubyte:
+            case PrimitiveKind::Ushort:
+            case PrimitiveKind::Uint8:
+            case PrimitiveKind::Uint16: {
+                llvm::Value* asI64 = b.CreateZExt(arg,
+                    llvm::Type::getInt64Ty(program.llvmContext()));
+                program.abi().UintToStr(b, outSlot, asI64);
+                break;
+            }
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal: {
+                llvm::Value* asF64 = b.CreateFPCast(arg,
+                    llvm::Type::getDoubleTy(program.llvmContext()));
+                program.abi().FloatToStr(b, outSlot, asF64);
+                break;
+            }
+            case PrimitiveKind::String: {
+                // Already a string; no formatting.
+                return argVal;
             }
         }
-
-        llvm::Value* gep = ctx.builder.CreateInBoundsGEP(
-            elemType,
-            ptr,
-            offset,
-            "ptr_offset"
-        );
-
-        return gep;
     }
 
-    // ─── ptrDiff(p1, p2) ──────────────────────────────────────────────
-    if (kind == IntrinsicKind::PtrDiff) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#ptrDiff' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Value* p1 = ctx.builder.CreatePtrToInt(
-            args[0],
-            llvm::Type::getInt64Ty(ctx.llvmCtx)
-        );
-        llvm::Value* p2 = ctx.builder.CreatePtrToInt(
-            args[1],
-            llvm::Type::getInt64Ty(ctx.llvmCtx)
-        );
-
-        llvm::Value* diffBytes = ctx.builder.CreateSub(p1, p2, "ptr_diff_bytes");
-
-        // Same underlying issue as ptrOffset: ctx.getPointeeType() is a
-        // stub that always reports i8/size-1, so recover the real element
-        // size from the Lucid-level pointee type (PtrTypeAST::inner).
-        uint64_t elemSize = 1;
-        if (expr && !expr->args.empty() && expr->args[0]->resolvedType &&
-            expr->args[0]->resolvedType->isa<PtrTypeAST>()) {
-            TypeAST* pointee = expr->args[0]->resolvedType->as<PtrTypeAST>()->inner;
-            uint64_t resolvedSize = getTypeSize(ctx, pointee);
-            if (resolvedSize > 0) elemSize = resolvedSize;
-        }
-
-        if (elemSize > 1) {
-            llvm::Value* elemSizeVal = llvm::ConstantInt::get(
-                llvm::Type::getInt64Ty(ctx.llvmCtx),
-                elemSize
-            );
-            return ctx.builder.CreateSDiv(diffBytes, elemSizeVal, "ptr_diff_elements");
-        }
-
-        return diffBytes;
-    }
-
-    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
-                            "unknown pointer intrinsic '#", name, "'");
-    return nullptr;
+    llvm::Value* result = b.CreateLoad(strTy, outSlot, "tostr_result");
+    return Val{result, expr->resolvedType, Own::Owned};
 }
 
-// ─── Memory Management Intrinsics ────────────────────────────────────────
+/// `#ptrstr(p) -> string`.
+Val emitPtrStr(IntrinsicCallExprAST* expr, Emitter& emitter) {
+    if (expr->args.empty()) return {};
 
-llvm::Value* emitLucidMemoryMgmtIntrinsic(
-    IntrinsicKind kind,
-    const std::string& name,
-    const std::vector<llvm::Value*>& args,
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
-    SourceLocation loc = expr ? expr->loc : SourceLocation();
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+    Val argVal = emitter.emit(expr->args[0]);
+    if (!argVal.isValid()) return {};
 
-    // ─── #alloc(T, count) -> *T ──────────────────────────────────────
-    // T is a type argument (compile-time), not a value argument.
-    // args[0] is the count (value argument).
-    if (kind == IntrinsicKind::Alloc) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                "intrinsic '#alloc' requires an argument (count)");
-            return nullptr;
-        }
+    ProgramState& program = emitter.program;
+    llvm::IRBuilder<>& b = program.builder();
+    llvm::StructType* strTy = program.types().stringType();
 
-        // ─── Get the target type from the resolved type ───────────────────────
-        // expr->resolvedType should be *T (PtrTypeAST)
-        llvm::Type* targetType = getType(ctx, expr->resolvedType);
-        if (!targetType) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
-                                "could not determine target type for '#alloc'");
-            return nullptr;
-        }
+    llvm::AllocaInst* outSlot = b.CreateAlloca(strTy, nullptr, "ptrstr_slot");
+    program.abi().PtrToHexString(b, outSlot, argVal.v);
 
-        // ─── Get the element size from the pointee type ──────────────────────
-        uint64_t elemSize = 1;
-        if (expr->resolvedType && expr->resolvedType->isa<PtrTypeAST>()) {
-            TypeAST* pointee = expr->resolvedType->as<PtrTypeAST>()->inner;
-            uint64_t resolvedSize = getTypeSize(ctx, pointee);
-            if (resolvedSize > 0) elemSize = resolvedSize;
-        }
-
-        // ─── Count is the first (and only) value argument ────────────────────
-        llvm::Value* count = args[0];
-        if (count->getType() != i64) {
-            count = ctx.builder.CreateIntCast(count, i64, false, "alloc_count");
-        }
-        llvm::Value* size = ctx.builder.CreateMul(
-            count,
-            llvm::ConstantInt::get(i64, elemSize),
-            "alloc_size"
-        );
-
-        llvm::Function* allocFunc = ctx.getRuntimeFn(RuntimeFn::Alloc);
-        llvm::Value* result = ctx.builder.CreateCall(allocFunc, {size});
-
-        // ─── Cast to the target pointer type ──────────────────────────────────
-        if (targetType->isPointerTy()) {
-            return ctx.builder.CreateBitCast(result, targetType, "alloc_result");
-        }
-        return result;
-    }
-
-    // ─── #free(ptr) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::Free) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#free' requires an argument");
-            return nullptr;
-        }
-
-        llvm::Function* freeFunc = ctx.getRuntimeFn(RuntimeFn::Free);
-
-        llvm::Value* ptr = args[0];
-        if (ptr->getType() != i8Ptr) {
-            ptr = ctx.builder.CreateBitCast(ptr, i8Ptr);
-        }
-        ctx.builder.CreateCall(freeFunc, {ptr});
-        return nullptr;
-    }
-
-    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
-                            "unknown memory management intrinsic '#", name, "'");
-    return nullptr;
+    llvm::Value* result = b.CreateLoad(strTy, outSlot, "ptrstr_result");
+    return Val{result, expr->resolvedType, Own::Owned};
 }
 
-// ─── String Intrinsics ────────────────────────────────────────────────────
-
-llvm::Value* emitLucidStringIntrinsic(
-    IntrinsicKind kind,
-    const std::string& name,
-    const std::vector<llvm::Value*>& args,
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
-    SourceLocation loc = expr ? expr->loc : SourceLocation();
-
-    llvm::Type* strType = ctx.getStringType();
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-
-    // ─── str_len(s) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::StrLen) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_len' requires a string argument");
-            return nullptr;
-        }
-
-        llvm::Value* str = args[0];
-        return ctx.builder.CreateExtractValue(str, 1, "str_len");
-    }
-
-    // ─── str_ptr(s) ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::StrPtr) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_ptr' requires a string argument");
-            return nullptr;
-        }
-
-        llvm::Value* str = args[0];
-        return ctx.builder.CreateExtractValue(str, 0, "str_ptr");
-    }
-
-    // ─── str_from_ptr(ptr, len) ──────────────────────────────────────────
-    if (kind == IntrinsicKind::StrFromPtr) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_from_ptr' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Value* ptr = args[0];
-        llvm::Value* len = args[1];
-
-        llvm::Value* str = llvm::UndefValue::get(strType);
-        str = ctx.builder.CreateInsertValue(str, ptr, 0);
-        str = ctx.builder.CreateInsertValue(str, len, 1);
-        str = ctx.builder.CreateInsertValue(str, len, 2);
-        return str;
-    }
-
-    // ─── str_concat(a, b) ─────────────────────────────────────────────────
-    if (kind == IntrinsicKind::StrConcat) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_concat' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Function* concatFunc = ctx.getRuntimeFn(RuntimeFn::StrConcat);
-
-        return ctx.builder.CreateCall(concatFunc, {args[0], args[1]});
-    }
-
-    // ─── str_slice(s, from, to) ──────────────────────────────────────────
-    if (kind == IntrinsicKind::StrSlice) {
-        if (args.size() < 3) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_slice' requires 3 arguments");
-            return nullptr;
-        }
-
-        llvm::Function* sliceFunc = ctx.getRuntimeFn(RuntimeFn::StrSlice);
-
-        return ctx.builder.CreateCall(sliceFunc, {args[0], args[1], args[2]});
-    }
-
-    // ─── str_eq(a, b) ─────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::StrEq) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_eq' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Function* eqFunc = ctx.getRuntimeFn(RuntimeFn::StrEq);
-
-        return ctx.builder.CreateCall(eqFunc, {args[0], args[1]});
-    }
-
-    // ─── str_byte_at(s, i) ──────────────────────────────────────────────
-    if (kind == IntrinsicKind::StrByteAt) {
-        if (args.size() < 2) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#str_byte_at' requires 2 arguments");
-            return nullptr;
-        }
-
-        llvm::Value* str = args[0];
-        llvm::Value* idx = args[1];
-        llvm::Value* ptr = ctx.builder.CreateExtractValue(str, 0);
-
-        llvm::Value* bytePtr = ctx.builder.CreateGEP(
-            llvm::Type::getInt8Ty(ctx.llvmCtx),
-            ptr,
-            idx,
-            "str_byte_ptr"
-        );
-
-        return ctx.builder.CreateLoad(llvm::Type::getInt8Ty(ctx.llvmCtx), bytePtr);
-    }
-
-    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
-                            "unknown string intrinsic '#", name, "'");
-    return nullptr;
+/// `#scope_exit(f) -> void`.
+///
+/// No emission. Sema registered the callback with the current block
+/// (`BlockStmtAST::scopeExits`); the emitter's scope-cleanup path emits
+/// the call at scope exit. The intrinsic call site is a no-op.
+Val emitScopeExit(IntrinsicCallExprAST* /*expr*/, Emitter& /*emitter*/) {
+    return {};
 }
 
-// ─── Control Flow Intrinsics ─────────────────────────────────────────────
+// ... etc. ...
 
-llvm::Value* emitLucidControlIntrinsic(
-    IntrinsicKind kind,
-    const std::string& name,
-    const std::vector<llvm::Value*>& args,
-    IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-) {
-    SourceLocation loc = expr ? expr->loc : SourceLocation();
+} // anonymous namespace
 
-    // ─── scope_exit ──────────────────────────────────────────────────────
-    if (kind == IntrinsicKind::ScopeExit) {
-        // scope_exit is handled in Sema and stored on BlockStmtAST.
-        // emitScopeExitCallback (below) emits these callbacks from
-        // lowerBlockStmt, in LIFO order, at each block's exit point.
-        // No runtime code is generated at the call site itself.
-        return nullptr;
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // ─── likely / unlikely ──────────────────────────────────────────────
-    if (kind == IntrinsicKind::Likely || kind == IntrinsicKind::Unlikely) {
-        if (args.empty()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#", name, "' requires an argument");
-            return nullptr;
-        }
+Val emitLucidIntrinsic(IntrinsicCallExprAST* expr,
+                       const IntrinsicInfo& info,
+                       Emitter& emitter) {
+    // Route by name. The names are interned strings; comparing them
+    // against the pool's string is O(1) via pointer comparison.
+    //
+    // The alternative would be an enum switch, but the intrinsics are
+    // identified by strings in the AST (they come from the parser as
+    // identifiers after '#'). The dispatcher compares against interned
+    // names.
 
-        // Return the condition value - branch weight metadata will be added later
-        return args[0];
-    }
+    InternedString name = expr->intrinsicName;
+    StringPool& pool = emitter.program.pool;
 
-    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownIntrinsic, loc,
-                            "unknown control intrinsic '#", name, "'");
-    return nullptr;
-}
+    // Compile-time intrinsics.
+    if (name == pool.intern("sizeof"))   return emitSizeof(expr, emitter);
+    if (name == pool.intern("alignof"))  return emitAlignof(expr, emitter);
+    // `#typeof` and `#nameof` produce types and names, not values; they
+    // are folded by Sema and shouldn't reach the emitter.
 
-// ─── Scope Exit Callback Emission ────────────────────────────────────────
-//
-// Relocated from CodeGenStmt.cpp: this is the codegen half of #scope_exit,
-// so it belongs alongside emitLucidControlIntrinsic rather than in the
-// generic statement-lowering file.
+    // Memory intrinsics.
+    if (name == pool.intern("memcpy"))   return emitMemcpy(expr, emitter);
+    if (name == pool.intern("memmove"))  return emitMemmove(expr, emitter);
+    if (name == pool.intern("memset"))   return emitMemset(expr, emitter);
 
-void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx) {
-    if (!reg) return;
+    // Allocation intrinsics.
+    if (name == pool.intern("alloc"))    return emitAlloc(expr, emitter);
+    if (name == pool.intern("free"))     return emitFree(expr, emitter);
 
-    // ─── Plain function-reference callback ────────────────────────────────
-    if (reg->callback) {
-        llvm::Value* callback = ctx.lookupFunction(reg->callback);
-        if (!callback) {
-            callback = reg->callback->llvmFunction;
-        }
-        // Sema (validateScopeExit) guarantees a plain function-reference
-        // callback resolves to a real declaration. If it didn't, that's a
-        // Sema bug, not something CodeGen should diagnose at runtime.
-        assert(callback && "scope_exit callback not found - Sema should have caught this");
-        if (!callback) {
-            return;
-        }
+    // Arena intrinsics.
+    if (name == pool.intern("arena_create")) return emitArenaCreate(expr, emitter);
+    if (name == pool.intern("arena_alloc"))  return emitArenaAlloc(expr, emitter);
+    if (name == pool.intern("arena_reset"))  return emitArenaReset(expr, emitter);
+    if (name == pool.intern("arena_free"))   return emitArenaFree(expr, emitter);
 
-        std::vector<llvm::Value*> args;
-        for (ExprAST* arg : reg->args) {
-            llvm::Value* argVal = lowerExpression(arg, ctx);
-            if (!argVal) {
-                return;
-            }
-            if (arg->isLValue) {
-                llvm::Type* elemType = getType(ctx, arg->resolvedType);
-                // Sema guarantees resolvedType is set
-                assert(elemType && "Argument has no type in CodeGen");
-                argVal = loadIfNeeded(argVal, elemType, ctx);
-            }
-            args.push_back(argVal);
-        }
+    // Pointer intrinsics.
+    if (name == pool.intern("toRef"))    return emitToRef(expr, emitter);
+    if (name == pool.intern("toPtr"))    return emitToPtr(expr, emitter);
+    if (name == pool.intern("ptrOffset")) return emitPtrOffset(expr, emitter);
+    if (name == pool.intern("ptrDiff"))  return emitPtrDiff(expr, emitter);
 
-        llvm::Function* callee = llvm::dyn_cast<llvm::Function>(callback);
-        assert(callee && "scope_exit callback value is not an llvm::Function");
-        if (!callee) {
-            return;
-        }
+    // Formatting intrinsics.
+    if (name == pool.intern("tostr"))    return emitToStr(expr, emitter);
+    if (name == pool.intern("ptrstr"))   return emitPtrStr(expr, emitter);
 
-        ctx.builder.CreateCall(callee, args);
-        return;
-    }
+    // Scope intrinsics.
+    if (name == pool.intern("scope_exit")) return emitScopeExit(expr, emitter);
 
-    // ─── Closure callback ──────────────────────────────────────────────────
-    // reg->callback is null, meaning the argument wasn't a plain function
-    // reference - it's a closure literal or a closure-typed expression.
-    // reg->callExpr is the original #scope_exit(...) call; its first
-    // argument is the callee slot, same convention used for its location
-    // in diagnostics elsewhere in this function.
-    assert(reg->callExpr && !reg->callExpr->args.empty() &&
-           "scope_exit closure registration missing callee expression");
-    if (!reg->callExpr || reg->callExpr->args.empty()) {
-        return;
-    }
-
-    ExprAST* closureExpr = reg->callExpr->args[0];
-    llvm::Value* closureVal = lowerExpression(closureExpr, ctx);
-    if (!closureVal) {
-        return;
-    }
-    if (closureExpr->isLValue) {
-        llvm::Type* elemType = getType(ctx, closureExpr->resolvedType);
-        assert(elemType && "Closure argument has no type in CodeGen");
-        closureVal = loadIfNeeded(closureVal, elemType, ctx);
-    }
-
-    // Closure value is the { i8* func, i8* env } fat pointer built in
-    // lowerClosure (CodeGenClosure.cpp) - unpack it for emitClosureCall.
-    llvm::Value* funcPtr = ctx.builder.CreateExtractValue(
-        closureVal, 0, "scope_exit_closure_func");
-    llvm::Value* envPtr = ctx.builder.CreateExtractValue(
-        closureVal, 1, "scope_exit_closure_env");
-
-    std::vector<llvm::Value*> closureArgs;
-    for (ExprAST* arg : reg->args) {
-        llvm::Value* argVal = lowerExpression(arg, ctx);
-        if (!argVal) {
-            return;
-        }
-        if (arg->isLValue) {
-            llvm::Type* elemType = getType(ctx, arg->resolvedType);
-            assert(elemType && "Argument has no type in CodeGen");
-            argVal = loadIfNeeded(argVal, elemType, ctx);
-        }
-        closureArgs.push_back(argVal);
-    }
-
-    // scope_exit callbacks are registered as a void intrinsic, so this
-    // return type is always void - never a placeholder.
-    emitClosureCall(funcPtr, envPtr, closureArgs, llvm::Type::getVoidTy(ctx.llvmCtx), ctx);
+    // Unrecognized. Sema's IntrinsicValidator should have rejected this.
+    emitter.program.diagnostics.errorAt(
+        DiagCode::Sem_UnknownIntrinsic, expr->loc,
+        "unsupported intrinsic '#", pool.lookup(name), "'");
+    return {};
 }
 
 } // namespace codegen
