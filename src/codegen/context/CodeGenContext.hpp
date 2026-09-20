@@ -1,17 +1,59 @@
-/// @file CodeGenContext.hpp
-/// @brief Code generation context - LLVM state only.
+/// @file codegen/context/CodeGenContext.hpp
+/// @brief Transitional aggregator over ProgramState and FunctionState.
+///
+/// ─── What This File Is NOW ────────────────────────────────────────────────
+/// Phase 3 is rewriting the codegen subsystem from the bottom up. Task 3
+/// split the old god-object `CodeGenContext` into two new objects:
+///
+///   - `ProgramState`   — per-program state (module, caches, function table)
+///   - `FunctionState`  — per-function state (current function, scopes, loops)
+///
+/// Each of those lives in its own file with its own responsibility.
+///
+/// `CodeGenContext` — this file — is a transitional shim that exposes the
+/// old flat API surface as forwarders to the two new objects. Its purpose
+/// is to keep every existing call site compiling while Task 4–10 migrate
+/// them to the new APIs one file at a time.
+///
+/// ─── What This File Will Be ──────────────────────────────────────────────
+/// At the end of Phase 3, this file is deleted. Every call site will use
+/// `ProgramState` and `FunctionState` directly, or — more likely — the
+/// `Emitter` object (Task 5), which composes the two.
+///
+/// ─── What This File Is NOT ANYMORE ───────────────────────────────────────
+/// It no longer owns:
+///   - the LLVM module (moved to ProgramState)
+///   - the LLVM context (moved to ProgramState)
+///   - the IRBuilder (moved to ProgramState)
+///   - the type cache (moved to Types, owned by ProgramState)
+///   - the struct cache (moved to Types)
+///   - the function table (moved to ProgramState)
+///   - the value-binding map (moved to FunctionState)
+///   - the scope stack (moved to FunctionState)
+///   - the loop stack (moved to FunctionState)
+///   - the runtime function cache (moved to Abi, owned by ProgramState)
+///   - the module-instance table and layouts (going away entirely in
+///     Task 7; dropped from the shim now)
+///   - the module ID assignment (going away entirely in Task 7)
+///
+/// Anything it appears to have, it forwards. If a field or method is not
+/// in the new design, it is not here — old call sites that use it fail to
+/// compile, which is the signal for their owning task to rewrite them.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/ExprAST.hpp"
+#include "core/ast/StmtAST.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "../runtime/RuntimeFunctionRegistry.hpp"
-#include "../memory/LiveVariableTracker.hpp"
-#include "../types/LLVMTypeHelpers.hpp"
-#include "../CodeGenDefaults.hpp"
+
+#include "codegen/Program.hpp"
+#include "codegen/FunctionState.hpp"
+#include "codegen/Abi.hpp"
+#include "codegen/Types.hpp"
+#include "codegen/LLVMTypeHelpers.hpp"
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
@@ -24,241 +66,233 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/Instructions.h>
 
+#include <memory>
 #include <unordered_map>
 #include <vector>
 #include <string>
 
 namespace codegen {
 
-// ─── Code Generation Options ───────────────────────────────────────────
-struct CodeGenOptions {
-    /// Number of slots in @__lucid_module_instances. Must be uniform
-    /// across every module in a program.
-    uint32_t moduleCapacity = defaults::kModuleCapacity;
-
-    /// Pre-assigned module IDs. If null, CodeGen assigns by position.
-    const std::unordered_map<ModuleAST*, uint32_t>* moduleIds = nullptr;
-};
-
-// ─── Module Instance Layout ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CodeGenOptions — vestigial, emptied in Task 3
+// ─────────────────────────────────────────────────────────────────────────────
 //
-// Describes the shape of a module's instance struct. The *index assignment*
-// is Sema's (`ValueDeclAST::moduleFieldIndex`); this struct caches the
-// LLVM type and the ordered field list that CodeGen builds from those
-// indices, so repeated lookups don't rebuild the type.
-struct ModuleInstanceLayout {
-    llvm::StructType* type = nullptr;
-    std::vector<ValueDeclAST*> fields;              // sorted by moduleFieldIndex
-    std::unordered_map<ValueDeclAST*, size_t> fieldOf;
+// The old options struct carried `moduleCapacity` (the size of the
+// `@__lucid_module_instances` table) and `moduleIds` (the pre-assigned ID
+// map). Both are artifacts of the module-instance table design, which is
+// going away in Task 7: the table is replaced by per-module state globals,
+// and module identity is the `ModuleAST*` pointer, not an integer.
+//
+// The struct is kept empty for now so `generate()`'s signature still
+// compiles. Task 8 deletes it, along with the `options` parameter on
+// `generate()`.
 
-    size_t indexOf(ValueDeclAST* decl) const {
-        auto it = fieldOf.find(decl);
-        return it != fieldOf.end() ? it->second : SIZE_MAX;
-    }
+struct CodeGenOptions {
 };
 
-/// @brief Code generation context - LLVM state only.
+/// @brief Transitional aggregator over `ProgramState` and `FunctionState`.
+///
+/// See the file header for the design. Every field and method either
+/// forwards to one of the two new objects or is a helper that belongs to
+/// the shim during the migration and moves elsewhere in a later task.
 struct CodeGenContext {
-    // ─── Resources ──────────────────────────────────────────────────────
-    
-    StringPool& pool;
-    DiagnosticEngine& diagnostics;
-    llvm::LLVMContext& llvmCtx;
+    // ─── Ownership ────────────────────────────────────────────────────────
+
+    /// The per-program state. Constructed by the caller and passed in by
+    /// reference; `CodeGenContext` does not own it.
+    ProgramState& prog;
+
+    /// The per-function state. Owned by the shim, created by
+    /// `setCurrentFunction` and destroyed by `clearCurrentFunction`.
+    /// Null when no function body is active.
+    std::unique_ptr<FunctionState> func;
+
+    // ─── Vestigial Options ────────────────────────────────────────────────
+    //
+    // Kept so `generate()`'s signature compiles. Never read.
     CodeGenOptions options;
 
-    // ─── Current Source File ───────────────────────────────────────────
-    InternedString currentFile;
-    
-    // ─── LLVM Module and Builder ────────────────────────────────────────
-    
-    llvm::Module* module = nullptr;
-    llvm::IRBuilder<> builder;
-    
-    // ─── Module Tracking ──────────────────────────────────────────────────
-    
-    /// @brief All modules being generated.
-    std::vector<ModuleAST*> modules;
-    
-    /// @brief AST → LLVM module mapping.
-    std::unordered_map<ModuleAST*, llvm::Module*> llvmModules;
-    
-    /// @brief Current module being generated.
-    ModuleAST* currentModule = nullptr;
+    // ─── Constructor ──────────────────────────────────────────────────────
 
-    // ─── Module Layout ──────────────────────────────────────────────────
+    CodeGenContext(ProgramState& program)
+        : prog(program) {}
 
-    std::unordered_map<ModuleAST*, ModuleInstanceLayout> moduleLayouts;
+    CodeGenContext(const CodeGenContext&) = delete;
+    CodeGenContext& operator=(const CodeGenContext&) = delete;
 
-    ModuleInstanceLayout& getOrCreateModuleLayout(ModuleAST* module);
-    
-    // ─── Module ID Assignment ───────────────────────────────────────────────
+    // ─── Forwarders: External References ──────────────────────────────────
+
+    StringPool& pool() { return prog.pool; }
+    DiagnosticEngine& diagnostics() { return prog.diagnostics; }
+
+    // The shim historically exposed these as fields, not methods. To keep
+    // every existing call site compiling without editing them, provide
+    // field-style access via reference members that alias the underlying
+    // ProgramState fields. This is legal because ProgramState outlives
+    // CodeGenContext (the caller guarantees the lifetime).
     //
-    // Each module gets a stable uint32_t ID. CodeGen emits this ID as a
-    // constant in every module-level access.
-    //
-    // Populated at the top of `generate()`, before any module is lowered.
-    std::unordered_map<ModuleAST*, uint32_t> moduleIds;
+    // NOTE: reference members disable the implicit assignment operators,
+    // but the copy/move operators are already deleted above, so this is
+    // fine.
+    StringPool& pool_ref = prog.pool;
+    DiagnosticEngine& diagnostics_ref = prog.diagnostics;
 
-    uint32_t moduleId(ModuleAST* m) const {
-        auto it = moduleIds.find(m);
-        return it != moduleIds.end() ? it->second : UINT32_MAX;
+    // ─── Forwarders: Core LLVM Objects ────────────────────────────────────
+
+    llvm::LLVMContext& llvmCtx() { return prog.llvmContext(); }
+    llvm::Module& module() { return prog.module(); }
+    llvm::IRBuilder<>& builder() { return prog.builder(); }
+
+    // ─── Forwarders: Components ───────────────────────────────────────────
+
+    Types& types() { return prog.types(); }
+    Abi& abi() { return prog.abi(); }
+
+    // ─── Forwarders: Function Table ───────────────────────────────────────
+
+    void storeFunction(FuncDeclAST* decl, llvm::Function* fn) {
+        prog.storeFunction(decl, fn);
     }
 
-    // ─── Module Instance Table ──────────────────────────────────────────────
+    llvm::Function* lookupFunction(FuncDeclAST* decl) const {
+        return prog.lookupFunction(decl);
+    }
+
+    // ─── Forwarders: Current Module ───────────────────────────────────────
+
+    ModuleAST* currentModule() const { return prog.currentModule; }
+    void setCurrentModule(ModuleAST* m) { prog.currentModule = m; }
+
+    InternedString currentFile() const { return prog.currentFile; }
+    void setCurrentFile(InternedString f) { prog.currentFile = f; }
+
+    // ─── Forwarders: Current Function ─────────────────────────────────────
+
+    /// @brief Enter a function body.
+    ///
+    /// Constructs a `FunctionState`, which:
+    ///   - saves the enclosing function state (if any)
+    ///   - installs the new function as `ProgramState::currentFunction`
+    ///   - clears the scope and loop stacks for the new function
+    ///   - saves the builder's insertion point for restoration on exit
+    ///
+    /// The caller is expected to subsequently create the entry block and
+    /// set the builder's insertion point to it.
+    void setCurrentFunction(llvm::Function* fn,
+                            TypeAST* declaredReturnType = nullptr);
+
+    /// @brief Leave the current function body.
+    ///
+    /// Destroys the `FunctionState`, which restores the enclosing function
+    /// state and the builder's insertion point.
+    void clearCurrentFunction();
+
+    llvm::Function* getCurrentFunction() const {
+        return func ? func->function() : nullptr;
+    }
+
+    TypeAST* currentDeclaredReturnType() const {
+        return func ? func->declaredReturnType() : nullptr;
+    }
+
+    llvm::Value* currentEnvPtr() const {
+        return func ? func->environmentPtr() : nullptr;
+    }
+
+    void setCurrentEnvPtr(llvm::Value* p) {
+        if (func) func->setEnvironmentPtr(p);
+    }
+
+    // ─── Forwarders: Value Bindings ───────────────────────────────────────
     //
-    // Emitted as a declaration in every module:
-    //     @__lucid_module_instances = external global [N x ptr]
-    // The JIT resolves it to the interpreter's registered absolute symbol.
+    // The value-binding map lives on FunctionState. When no function is
+    // active (e.g. during the declare pass, which doesn't have bodies),
+    // these are no-ops or return null. Callers that rely on the map being
+    // present without a function are bugs in the new design, and the
+    // null-return behavior surfaces them.
 
-    /// @brief Get or declare `@__lucid_module_instances` in the current module.
-    llvm::GlobalVariable* getOrDeclareModuleTable();
+    void storeValue(ValueDeclAST* decl, llvm::Value* value) {
+        if (func) func->storeValue(decl, value);
+    }
 
-    /// @brief Load the instance pointer for the given module, at the current
-    ///        insertion point. Emits:
-    ///            %slot = getelementptr [N x ptr], ptr @__lucid_module_instances, i64 0, i64 <id>
-    ///            %inst = load ptr, ptr %slot
-    /// and returns the loaded pointer. The caller is responsible for GEPing
-    /// into the instance struct.
-    llvm::Value* loadModuleInstance(ModuleAST* module);
+    llvm::Value* lookupValue(ValueDeclAST* decl) const {
+        return func ? func->lookupValue(decl) : nullptr;
+    }
 
-    // ─── Type Cache ─────────────────────────────────────────────────────
-    
-    std::unordered_map<TypeAST*, llvm::Type*> typeCache;
-    std::unordered_map<StructDeclAST*, llvm::StructType*> structCache;
-    
-    // ─── Current Environment Pointer (for closures) ────────────────────
-    llvm::Value* currentEnvPtr = nullptr;
-    
-    // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
-    std::unordered_map<ValueDeclAST*, llvm::Value*> values;
-    
-    // ─── Function Mapping: AST → LLVM Function ─────────────────────────
-    std::unordered_map<FuncDeclAST*, llvm::Function*> functions;
+    bool hasValue(ValueDeclAST* decl) const {
+        return func && func->hasValue(decl);
+    }
 
-    // ─── Live Variable Tracking ──────────────────────────────────────────
-    std::vector<LiveVariableTracker> liveTrackers;
-    
-    // ─── Runtime Function Mapping ──────────────────────────────────────
-    std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
-    
-    // ─── Loop Info (for break/continue) ─────────────────────────────────
-    struct LoopInfo {
-        llvm::BasicBlock* header         = nullptr;
-        llvm::BasicBlock* exit           = nullptr;
-        llvm::BasicBlock* continueTarget = nullptr;
-        size_t scopeDepth = 0;
-    };
-    std::vector<LoopInfo> loops;
-    
-    // ─── Current Function ───────────────────────────────────────────────
-    llvm::Function* currentFunction = nullptr;
-    // ─── Current Declared Return Type ───────────────────────────────────
-    // Tracks the AST-side return type of the function body currently being
-    // lowered. This is used by lowerReturnStmt for the implicit `fn -> cls`
-    // widening. It is set by lowerFunctionBody for named functions and by
-    // emitClosureBody for closure bodies, and then restored on exit.
-    TypeAST* currentDeclaredReturnType = nullptr;
+    void eraseValue(ValueDeclAST* decl) {
+        if (func) func->eraseValue(decl);
+    }
 
-    // ─── Null Coalesce Context Stack ──────────────────────────────────
+    // ─── Forwarders: Scope Stack ──────────────────────────────────────────
+
+    void pushLiveScope(BlockStmtAST* block = nullptr) {
+        if (func) func->pushScope(block);
+    }
+
+    void popLiveScope() {
+        if (func) func->popScope();
+    }
+
+    void markAlive(ValueDeclAST* decl) {
+        if (func) func->markAlive(decl);
+    }
+
+    void markConsumed(ValueDeclAST* decl) {
+        if (func) func->markConsumed(decl);
+    }
+
+    bool isAlive(ValueDeclAST* decl) const {
+        return func && func->isAlive(decl);
+    }
+
+    bool isConsumed(ValueDeclAST* decl) const {
+        return func && func->isConsumed(decl);
+    }
+
+    // ─── Forwarders: Loop Stack ───────────────────────────────────────────
+
+    using LoopInfo = codegen::LoopInfo;
+
+    void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit,
+                  llvm::BasicBlock* continueTarget = nullptr) {
+        if (!func) return;
+        LoopInfo info;
+        info.continueTarget = continueTarget ? continueTarget : header;
+        info.exit = exit;
+        info.scopeDepth = func->scopeDepth();
+        func->pushLoop(info);
+    }
+
+    void popLoop() {
+        if (func) func->popLoop();
+    }
+
+    LoopInfo* currentLoop() {
+        return func ? func->currentLoop() : nullptr;
+    }
+
+    bool insideLoop() const {
+        return func && func->currentLoop() != nullptr;
+    }
+
+    // ─── Null Coalesce Stack ──────────────────────────────────────────────
+    //
+    // This stack was on the old context but has no equivalent in the new
+    // design. It stays on the shim until the emitter is rewritten in
+    // Task 5, at which point the null-coalesce lowering is restructured
+    // to not need a stack (the null-coalesce expression is lowered within
+    // a single basic block structure, and the "current ?? context" can be
+    // a field on the emitter, not a stack).
+
     struct NullCoalesceContext {
         llvm::BasicBlock* fallbackBlock = nullptr;
         bool isActive = false;
     };
     std::vector<NullCoalesceContext> nullCoalesceStack;
-
-    // ─── Constructor ────────────────────────────────────────────────────
-    
-    CodeGenContext(StringPool& p, DiagnosticEngine& d, llvm::LLVMContext& ctx)
-        : pool(p)
-        , diagnostics(d)
-        , llvmCtx(ctx)
-        , builder(ctx) {}
-    
-    CodeGenContext(const CodeGenContext&) = delete;
-    CodeGenContext& operator=(const CodeGenContext&) = delete;
-    
-    // ─── Module Helpers ──────────────────────────────────────────────────
-    
-    llvm::Module* getLLVMModule(ModuleAST* module) const {
-        auto it = llvmModules.find(module);
-        return it != llvmModules.end() ? it->second : nullptr;
-    }
-    
-    // ─── Symbol Helpers ──────────────────────────────────────────────────
-    
-    void storeValue(ValueDeclAST* decl, llvm::Value* value) {
-        values[decl] = value;
-    }
-    
-    llvm::Value* lookupValue(ValueDeclAST* decl) const {
-        auto it = values.find(decl);
-        return it != values.end() ? it->second : nullptr;
-    }
-    
-    bool hasValue(ValueDeclAST* decl) const {
-        return values.find(decl) != values.end();
-    }
-
-    void storeFunction(FuncDeclAST* decl, llvm::Function* func) {
-        functions[decl] = func;
-    }
-    
-    llvm::Function* lookupFunction(FuncDeclAST* decl) const {
-        auto it = functions.find(decl);
-        return it != functions.end() ? it->second : nullptr;
-    }
-    
-    void setCurrentFunction(llvm::Function* func) {
-        currentFunction = func;
-    }
-    
-    llvm::Function* getCurrentFunction() const {
-        return currentFunction;
-    }
-
-    // ─── Runtime Function Helpers ──────────────────────────────────────
-    
-    llvm::Function* getRuntimeFunction(const std::string& name) const {
-        auto it = runtimeFunctions.find(name);
-        return it != runtimeFunctions.end() ? it->second : nullptr;
-    }
-    
-    void setRuntimeFunction(const std::string& name, llvm::Function* func) {
-        runtimeFunctions[name] = func;
-    }
-    
-    llvm::Function* getOrCreateRuntimeFunction(
-        const std::string& name,
-        llvm::FunctionType* type
-    );
-    
-    llvm::Function* getRuntimeFn(RuntimeFn fn);
-    
-    llvm::Function* getOrInsertFunction(
-        const std::string& name,
-        llvm::FunctionType* type
-    );
-    
-    // ─── Loop Helpers ──────────────────────────────────────────────────
-    
-    void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit,
-                  llvm::BasicBlock* continueTarget = nullptr) {
-        loops.push_back({header, exit, continueTarget, liveTrackers.size()});
-    }
-    
-    void popLoop() {
-        if (!loops.empty()) loops.pop_back();
-    }
-    
-    LoopInfo* currentLoop() {
-        return loops.empty() ? nullptr : &loops.back();
-    }
-    
-    bool insideLoop() const {
-        return !loops.empty();
-    }
-
-    // ─── Null Coalesce Helpers ──────────────────────────────────────────
 
     void pushNullCoalesce(llvm::BasicBlock* fallbackBlock) {
         nullCoalesceStack.push_back({fallbackBlock, true});
@@ -283,193 +317,85 @@ struct CodeGenContext {
         return nullCoalesceStack.back().fallbackBlock;
     }
 
-    // ─── Live Variable Helpers ──────────────────────────────────────────
-    
-    /// @brief Push a new live scope.
-    void pushLiveScope(BlockStmtAST* block = nullptr) {
-        liveTrackers.emplace_back();
-        liveTrackers.back().block = block;
-    }
+    // ─── Cleanup and Unwind ───────────────────────────────────────────────
+    //
+    // These have real logic and stay on the shim until Task 4's `Ownership`
+    // rewrite moves them there. They read from `FunctionState::scopeStack()`
+    // instead of the old `liveTrackers` vector.
 
-    /// @brief Emit cleanup for exactly one tracker, in two ordered phases:
-    ///   1. User #scope_exit callbacks (BEFORE implicit cleanup)
-    ///   2. Implicit cleanup (closure releases, array frees, string frees)
-    /// @note Read-only w.r.t. the tracker: does NOT mark anything consumed
-    ///       and does NOT remove the tracker from ctx.liveTrackers. Callers
-    ///       decide separately whether the tracker's scope is actually done
-    ///       (popLiveScope) or whether this is just one of possibly several
-    ///       divergent exit edges through it (emitUnwindTo) — see the note
-    ///       on emitUnwindTo below for why that distinction matters.
-    void emitCleanupForTracker(const LiveVariableTracker& tracker);
-
-    /// @brief Pop the current live scope and emit cleanup.
-    /// @note If the current block already ends in a terminator, this
-    ///       scope's cleanup was already emitted by whatever produced that
-    ///       terminator: return/break/continue all call emitUnwindTo
-    ///       (non-destructively) through this depth before creating their
-    ///       own terminator. Emitting again here would insert instructions
-    ///       after a terminator (invalid IR) and double-release resources.
-    ///       We still pop — this scope truly is done on this path — we
-    ///       just skip the redundant emission.
-    void popLiveScope() {
-        if (!liveTrackers.empty()) {
-            llvm::BasicBlock* block = builder.GetInsertBlock();
-            if (!block || !block->getTerminator()) {
-                emitCleanupForTracker(liveTrackers.back());
-            }
-            liveTrackers.pop_back();
-        }
-    }
-
-    /// @brief Mark a variable as alive in the current scope.
-    void markAlive(ValueDeclAST* decl) {
-        if (!liveTrackers.empty()) liveTrackers.back().markAlive(decl);
-    }
-
-    /// @brief Mark a variable as consumed (handle transferred to runtime).
-    /// @note This removes the variable from the alive list.
-    void markConsumed(ValueDeclAST* decl) {
-        if (!liveTrackers.empty()) liveTrackers.back().markConsumed(decl);
-    }
-
-    /// @brief Check if a variable is alive in any scope.
-    bool isAlive(ValueDeclAST* decl) const {
-        for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
-            if (it->isAlive(decl)) return true;
-        }
-        return false;
-    }
-
-    /// @brief Check if a variable is consumed in any scope.
-    bool isConsumed(ValueDeclAST* decl) const {
-        for (auto it = liveTrackers.rbegin(); it != liveTrackers.rend(); ++it) {
-            if (it->isConsumed(decl)) return true;
-        }
-        return false;
-    }
-
-    // ─── Scope Unwind Helper ──────────────────────────────────────────────
-
-    /// @brief Emit cleanup for scopes from current depth down to target depth.
-    /// @param targetDepth The scope depth to unwind to (0 = function scope).
-    /// 
-    /// This is used when:
-    ///   - `break` exits a loop (unwind to the loop's scope depth)
-    ///   - `continue` jumps to next iteration (unwind to loop body's scope depth)
-    ///   - `return` exits the function (unwind to scope 0)
-    ///
-    /// @note DELIBERATELY NON-DESTRUCTIVE. This does NOT pop from
-    ///       liveTrackers and does NOT mutate the trackers it cleans up
-    ///       (see emitCleanupForTracker). A return/break/continue is only
-    ///       ONE of possibly several divergent exit edges out of the scopes
-    ///       it's unwinding through — e.g. `if (cond) { return x; }` followed
-    ///       by more code in the same enclosing block. That later code is
-    ///       reached via a *different* basic block, but still needs those
-    ///       same enclosing scopes' trackers intact: to keep registering
-    ///       new declarations (markAlive) correctly, and so their OWN
-    ///       eventual natural close (popLiveScope, reached only via that
-    ///       other edge) still emits cleanup for whatever's alive on ITS
-    ///       path. Popping or mutating a tracker here previously caused
-    ///       cleanup to be silently dropped for sibling code (a leak), and
-    ///       for `break`/`continue` (which unwind to a non-zero depth,
-    ///       leaving the stack non-empty) could cause a LATER structurally
-    ///       -paired popLiveScope() to pop the wrong (ancestor) tracker
-    ///       instead — running that ancestor's cleanup early, inside a loop,
-    ///       on the taken-break path, which can free a resource the
-    ///       function is still using afterward (use-after-free). Only the
-    ///       tracker's own structurally-paired popLiveScope() may ever
-    ///       remove it from liveTrackers.
+    /// Emit cleanup for every scope from the current depth down to (but not
+    /// including) `targetDepth`. Non-destructive — does not pop scopes or
+    /// mutate their trackers.
     void emitUnwindTo(size_t targetDepth);
-    
-    // ─── Resource Reassignment Helper ─────────────────────────────────────
 
-    /// @brief Reassign a variable (clean up old resource, keep alive with new value).
-    /// 
-    /// ─── When to Use ──────────────────────────────────────────────────────────
-    /// Call this in `lowerAssignExpr` BEFORE storing the new value:
-    /// ```cpp
-    /// llvm::Value* oldValue = loadOldValue(lhs);
-    /// llvm::Value* newValue = lowerExpression(rhs);
-    /// ctx.reassign(decl, oldValue, newValue);  // Clean up old resource
-    /// ctx.builder.CreateStore(newValue, lhsPtr);
-    /// ```
-    /// 
-    /// ─── What It Does ──────────────────────────────────────────────────────────
-    /// 1. Checks if the variable is alive (owns a resource)
-    /// 2. If alive, determines the resource type (closure/array/string)
-    /// 3. Generates LLVM IR to release the old resource
-    /// 4. Keeps the variable alive (unlike markConsumed)
-    /// 
-    /// ─── Why Not markConsumed? ─────────────────────────────────────────────────
-    /// - `markConsumed` makes the variable DEAD (removes from alive list)
-    /// - Reassignment keeps the variable ALIVE (just with a new value)
-    /// - We need to clean up the old resource but keep the variable alive
-    /// 
-    /// ─── Resource Types Handled ─────────────────────────────────────────────────
-    /// - Closures (FuncTypeAST with environment) → __lucid_release_env
-    /// - Dynamic arrays ([*]T) → __lucid_free
-    /// - Strings (string) → __lucid_free
-    /// 
-    /// ─── Error Cases ──────────────────────────────────────────────────────────
-    /// - Future<T>: Cannot be reassigned while pending (linear type)
-    /// - Thread<T>: Cannot be reassigned while running (linear type)
-    void reassign(ValueDeclAST* decl, llvm::Value* oldValue, llvm::Value* newValue);
-    
-    // ─── Type Cache Helpers ──────────────────────────────────────────────
-    
-    void cacheType(TypeAST* lucidType, llvm::Type* llvmType) {
-        typeCache[lucidType] = llvmType;
-    }
-    
-    llvm::Type* lookupType(TypeAST* lucidType) const {
-        auto it = typeCache.find(lucidType);
-        return it != typeCache.end() ? it->second : nullptr;
-    }
-    
-    void cacheStruct(StructDeclAST* decl, llvm::StructType* structType) {
-        structCache[decl] = structType;
-    }
-    
-    llvm::StructType* lookupStruct(StructDeclAST* decl) const {
-        auto it = structCache.find(decl);
-        return it != structCache.end() ? it->second : nullptr;
+    // ─── Type Helpers ─────────────────────────────────────────────────────
+    //
+    // All forward to `Types`. The old field-style accessors
+    // (`getStringType()` etc.) become methods on the shim that call the
+    // same-named methods on `Types`.
+
+    llvm::StructType* getStringType()  { return prog.types().stringType(); }
+    llvm::StructType* getSliceType()   { return prog.types().sliceType(); }
+    llvm::StructType* getClosureType() { return prog.types().closureType(); }
+    llvm::StructType* getArenaType()   { return prog.types().arenaType(); }
+    llvm::StructType* getArenaDescriptorType() {
+        return prog.types().arenaDescriptorType();
     }
 
-    // ─── Fat Pointer Type Helpers ──────────────────────────────────────
-    
-    llvm::StructType* getSliceType() const {
-        return codegen::getSliceType(module);
-    }
-    
-    llvm::StructType* getClosureType() const {
-        return codegen::getClosureType(module);
-    }
-    
-    llvm::StructType* getStringType() const {
-        return codegen::getStringType(module);
-    }
-    
-    llvm::StructType* getArenaType() const {
-        return codegen::getArenaType(module);
-    }
-    
-    llvm::StructType* getArenaDescriptorType() const {
-        return codegen::getArenaDescriptorType(module);
-    }
-    
     llvm::Value* createStringLiteral(const std::string& str);
-    
-    // ─── Intrinsic Helpers ─────────────────────────────────────────────
-    
+
+    // ─── Intrinsic Helpers ────────────────────────────────────────────────
+
     llvm::Function* getLLVMIntrinsicDecl(
         llvm::Intrinsic::ID id,
-        llvm::ArrayRef<llvm::Type*> argTypes
-    );
-    
-    // ─── Pointee Type Helpers ──────────────────────────────────────────
-    
-    llvm::Type* getPointeeType(llvm::Value* ptr) const;
-    llvm::Type* getPointeeType(llvm::Type* type) const;
+        llvm::ArrayRef<llvm::Type*> argTypes);
+
+    // ─── Scope Unwind Helper ──────────────────────────────────────────────
+    //
+    // Deprecated. Call sites in Task 5+ will use the Emitter's exit path
+    // instead. Kept for the migration.
+
+    // (emitUnwindTo is declared above.)
+
+    // ─── Resource Reassignment Helper ─────────────────────────────────────
+    //
+    // Old signature kept for compatibility. Its logic moves to
+    // `Ownership::intoOwned` + `Ownership::drop` in Task 4, and call sites
+    // in `lowerAssignExpr` (Task 5) will be rewritten to use the new API.
+
+    void reassign(ValueDeclAST* decl, llvm::Value* oldValue,
+                  llvm::Value* newValue);
+
+    // ─── Type Cache Helpers ───────────────────────────────────────────────
+    //
+    // The caches live on `Types` now. These forwarders keep old call sites
+    // compiling; Task 5+ migrate them to `ctx.types().get(...)` directly.
+    //
+    // NOTE: `Types` caches are keyed on the AST type pointer and populated
+    // by `Types::get`. There is no way to inject a value into the cache
+    // from outside — if a caller needs to add an entry, it should call
+    // `Types::get` and let the caching happen naturally. So `cacheType`
+    // is a no-op that returns the argument, and `lookupType` forwards to
+    // `Types::get`. This is a semantic change from the old behavior: old
+    // code that pre-populated the cache is now doing redundant work that
+    // `Types` would have done on the first `get` anyway.
+
+    void cacheType(TypeAST* lucidType, llvm::Type* /*llvmType*/) {
+        (void)lucidType;
+        // No-op: `Types::get` is the only populator.
+    }
+
+    llvm::Type* lookupType(TypeAST* lucidType) {
+        return prog.types().get(lucidType);
+    }
+
+    void cacheStruct(StructDeclAST* decl, llvm::StructType* /*structType*/) {
+        (void)decl;
+    }
+
+    llvm::StructType* lookupStruct(StructDeclAST* decl) {
+        return prog.types().structType(decl);
+    }
 };
 
 } // namespace codegen

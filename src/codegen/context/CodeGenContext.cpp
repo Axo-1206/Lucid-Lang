@@ -1,254 +1,218 @@
-/// @file CodeGenContext.cpp
-/// @brief Implementation of CodeGenContext methods
+/// @file codegen/context/CodeGenContext.cpp
+/// @brief Implementation of the transitional aggregator.
+///
+/// Most of `CodeGenContext` is inline forwarders in the header. This file
+/// contains the four methods with real logic:
+///
+///   - `setCurrentFunction` / `clearCurrentFunction` — construct and destroy
+///     the `FunctionState`
+///   - `emitUnwindTo` — walk the scope stack and emit cleanup
+///   - `createStringLiteral` — lower a string literal to an `llvm::Value*`
+///   - `reassign` — transitional; delegates to the eventual ownership API
+///
+/// `getLLVMIntrinsicDecl` is also here because it calls into LLVM's
+/// intrinsic machinery, which shouldn't be in the header.
 
 #include "CodeGenContext.hpp"
-#include "../intrinsic/LucidIntrinsicEmitter.hpp"
-#include "../types/CodeGenType.hpp"
-#include "codegen/memory/CodeGenOwnership.hpp"
 
-#include <llvm/IR/Function.h>
+#include "codegen/ownership/CodeGenOwnership.hpp"
+#include "codegen/support/CodeGenPanic.hpp"
+
 #include <llvm/IR/BasicBlock.h>
-#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/Intrinsics.h>
 
 namespace codegen {
 
-// ─── Runtime Function Helpers ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Function Body Entry / Exit
+// ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* CodeGenContext::getOrCreateRuntimeFunction(const std::string& name, llvm::FunctionType* type) {
-    llvm::Function* func = getRuntimeFunction(name);
-    if (func) return func;
-
-    func = llvm::Function::Create(
-        type,
-        llvm::Function::ExternalLinkage,
-        name,
-        module
-    );
-    setRuntimeFunction(name, func);
-    return func;
+void CodeGenContext::setCurrentFunction(llvm::Function* fn,
+                                         TypeAST* declaredReturnType) {
+    // Constructing a `FunctionState`:
+    //   - captures the enclosing function state
+    //   - installs `fn` as the current function
+    //   - clears the scope and loop stacks for the new function
+    //   - saves the builder's insertion point
+    //
+    // The caller is expected to subsequently create the entry block and
+    // call `builder().SetInsertPoint(entry)`.
+    //
+    // Nested calls (a closure body inside a function body) construct a
+    // nested `FunctionState`. The enclosing state is restored when the
+    // nested `FunctionState` is destroyed.
+    func = std::make_unique<FunctionState>(prog, fn, declaredReturnType);
 }
 
-llvm::Function* CodeGenContext::getRuntimeFn(RuntimeFn fn) {
-    const RuntimeFunctionInfo& info = getRuntimeFunctionInfo(fn);
-    std::string name(info.name);
-    
-    llvm::Function* func = getRuntimeFunction(name);
-    if (func) return func;
-    
-    llvm::FunctionType* type = info.buildType(*this);
-    
-    func = llvm::Function::Create(
-        type,
-        llvm::Function::ExternalLinkage,
-        name,
-        module
-    );
-    
-    setRuntimeFunction(name, func);
-    return func;
+void CodeGenContext::clearCurrentFunction() {
+    func.reset();
 }
 
-llvm::Function* CodeGenContext::getOrInsertFunction(const std::string& name, llvm::FunctionType* type) {
-    llvm::FunctionCallee callee = module->getOrInsertFunction(name, type);
-    return llvm::dyn_cast<llvm::Function>(callee.getCallee());
-}
-
-// ─── Module Layout ─────────────────────────────────────────────
-
-ModuleInstanceLayout& CodeGenContext::getOrCreateModuleLayout(ModuleAST* module) {
-    auto it = moduleLayouts.find(module);
-    if (it != moduleLayouts.end()) {
-        return it->second;
-    }
-    // getModuleInstanceType populates the layout as a side effect.
-    getModuleInstanceType(*this, module);
-    return moduleLayouts[module];
-}
-
-// ─── Module Instance Table ──────────────────────────────────────────────
-
-llvm::GlobalVariable* CodeGenContext::getOrDeclareModuleTable() {
-    const size_t N = options.moduleCapacity > 0 ? options.moduleCapacity : 256;
-    llvm::ArrayType* tableType =
-        llvm::ArrayType::get(getPtrType(llvmCtx), N);
-
-    if (llvm::GlobalVariable* existing = module->getGlobalVariable("__lucid_module_instances", /*AllowInternal=*/true)) {
-        return existing;
-    }
-
-    // Declare it. Resolved by JIT to interpreter's absolute symbol.
-    return new llvm::GlobalVariable(
-        *module,
-        tableType,
-        /*isConstant=*/false,
-        llvm::GlobalValue::ExternalLinkage,
-        /*Initializer=*/nullptr,   // declaration only
-        "__lucid_module_instances");
-}
-
-llvm::Value* CodeGenContext::loadModuleInstance(ModuleAST* target) {
-    uint32_t id = moduleId(target);
-    assert(id != UINT32_MAX && "loadModuleInstance: unknown module");
-
-    llvm::GlobalVariable* table = getOrDeclareModuleTable();
-    llvm::Value* slot = builder.CreateConstInBoundsGEP2_64(
-        table->getValueType(),   // [N x ptr]
-        table,
-        0,
-        static_cast<uint64_t>(id),
-        "module_slot");
-    return builder.CreateLoad(getPtrType(llvmCtx), slot, "module_inst");
-}
-
-// ─── Live Variable Helpers ────────────────────────────────────────────────
-
-void CodeGenContext::emitCleanupForTracker(const LiveVariableTracker& tracker) {
-    if (!getCurrentFunction()) return;
-
-    // ─── Phase 1: user #scope_exit callbacks ──────────────────────────
-    if (tracker.block) {
-        for (size_t i = tracker.block->scopeExits.size(); i > 0; --i) {
-            const ScopeExitRegistration* reg = tracker.block->scopeExits[i - 1];
-            emitScopeExitCallback(reg, *this);
-        }
-    }
-
-    // ─── Phase 2: implicit cleanup ──────────────────────────────────────
-    // Read-only w.r.t. `tracker` — see the note in the header. All
-    // resource-kind dispatch lives in emitRelease now; this function just
-    // walks the alive set and hands each binding's current value over.
-    std::vector<ValueDeclAST*> declarations = tracker.getAliveVariables();
-
-    auto loadValue = [&](llvm::Value* val) -> llvm::Value* {
-        if (auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(val)) {
-            return builder.CreateLoad(alloca->getAllocatedType(), alloca,
-                                      "cleanup_load");
-        }
-        return val;
-    };
-
-    for (ValueDeclAST* decl : declarations) {
-        llvm::Value* binding = lookupValue(decl);
-        if (!binding || !decl->type) continue;
-
-        llvm::Value* value = loadValue(binding);
-        emitRelease(decl, value, *this);
-    }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Cleanup and Unwind
+// ─────────────────────────────────────────────────────────────────────────────
 
 void CodeGenContext::emitUnwindTo(size_t targetDepth) {
-    if (!getCurrentFunction()) {
-        return;
-    }
+    if (!func) return;
 
-    // ─── Guard against invalid target depth ──────────────────────────────
-    if (targetDepth >= liveTrackers.size()) {
-        return;
-    }
+    // Walk the scope stack from the innermost scope to (but not including)
+    // `targetDepth`, emitting cleanup for each scope. Non-destructive: the
+    // scope stack is not popped, and the trackers are not mutated. Only
+    // the structurally-paired `popLiveScope` call may remove a scope from
+    // the stack.
+    //
+    // The cleanup logic itself (walking the alive set, dispatching to
+    // `emitRelease`) lives in `emitCleanupForScope`, defined below as a
+    // free function so `emitUnwindTo` can call it without going through
+    // the shim's method surface. Task 4 will move this logic to
+    // `Ownership`.
 
-    // ─── Unwind scopes ────────────────────────────────────────────────────
-    // Non-destructive: emit cleanup for each scope from innermost down to
-    // (but not including) targetDepth, using a snapshot of whatever is
-    // currently alive in it — but do NOT pop or mutate liveTrackers. This
-    // is one divergent exit edge (the return/break/continue statement that
-    // called us); it does not own these scopes' lifetimes. Only each
-    // tracker's own structurally-paired popLiveScope() call — reached when
-    // its owning lowerBlockStmt/lowerFunctionBody/loop frame actually
-    // finishes — may remove it from the stack. See the doc comment on this
-    // function's declaration in CodeGenContext.hpp for the full rationale.
-    for (size_t i = liveTrackers.size(); i > targetDepth; --i) {
-        emitCleanupForTracker(liveTrackers[i - 1]);
+    auto& scopes = func->scopeStack();
+    if (targetDepth >= scopes.size()) return;
+
+    for (size_t i = scopes.size(); i > targetDepth; --i) {
+        Scope& scope = scopes[i - 1];
+        emitCleanupForScope(scope, prog, *this);
     }
 }
 
-// ─── String Literal Helper ───────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// String Literal Lowering
+// ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Value* CodeGenContext::createStringLiteral(const std::string& str) {
-    llvm::Constant* strConst = llvm::ConstantDataArray::getString(llvmCtx, str);
-    llvm::GlobalVariable* global = new llvm::GlobalVariable(
-        *module,
-        strConst->getType(),
-        true,
-        llvm::GlobalValue::PrivateLinkage,
-        strConst
-    );
+    llvm::LLVMContext& llvmCtx = prog.llvmContext();
+    llvm::IRBuilder<>& builder = prog.builder();
 
-    llvm::Type* strType = getStringType();
+    // ─── Global constant for the bytes ────────────────────────────────────
+    llvm::Constant* strConst =
+        llvm::ConstantDataArray::getString(llvmCtx, str);
+    llvm::GlobalVariable* global = new llvm::GlobalVariable(
+        prog.module(),
+        strConst->getType(),
+        /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage,
+        strConst);
+
+    // ─── Build the `lucid.String` value ───────────────────────────────────
+    // `{ ptr data, i64 len, i64 cap }`. A literal's `cap` is set to 0 to
+    // signal "static data — do not free". This is the sentinel the
+    // ownership layer checks before freeing a string's data pointer.
+    llvm::StructType* strType = prog.types().stringType();
     llvm::Type* i64 = llvm::Type::getInt64Ty(llvmCtx);
     llvm::Type* i8Ptr = llvm::PointerType::get(llvmCtx, 0);
 
     llvm::Value* ptr = builder.CreateBitCast(global, i8Ptr);
     llvm::Value* len = llvm::ConstantInt::get(i64, str.length());
+    llvm::Value* cap = llvm::ConstantInt::get(i64, 0);  // static
 
     llvm::Value* result = llvm::UndefValue::get(strType);
     result = builder.CreateInsertValue(result, ptr, 0);
     result = builder.CreateInsertValue(result, len, 1);
-    result = builder.CreateInsertValue(result, len, 2);
+    result = builder.CreateInsertValue(result, cap, 2);
     return result;
 }
 
-// ─── Intrinsic Helpers ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Intrinsics
+// ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Function* CodeGenContext::getLLVMIntrinsicDecl(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> argTypes) {
-    return llvm::Intrinsic::getDeclaration(module, id, argTypes);
+llvm::Function* CodeGenContext::getLLVMIntrinsicDecl(
+    llvm::Intrinsic::ID id,
+    llvm::ArrayRef<llvm::Type*> argTypes) {
+    return llvm::Intrinsic::getDeclaration(&prog.module(), id, argTypes);
 }
 
-// ─── Pointee Type Helpers ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Reassignment
+// ─────────────────────────────────────────────────────────────────────────────
 
-llvm::Type* CodeGenContext::getPointeeType(llvm::Value* ptr) const {
-    (void)ptr;
-    return llvm::Type::getInt8Ty(llvmCtx);
-}
-
-llvm::Type* CodeGenContext::getPointeeType(llvm::Type* type) const {
-    (void)type;
-    return llvm::Type::getInt8Ty(llvmCtx);
-}
-
-// ─── reassign ───────────────────────────────────────────────────────────────
-
-void CodeGenContext::reassign(ValueDeclAST* decl, llvm::Value* oldValue,
-                              llvm::Value* newValue) {
+void CodeGenContext::reassign(ValueDeclAST* decl,
+                               llvm::Value* oldValue,
+                               llvm::Value* newValue) {
     if (!decl || !oldValue || !newValue) return;
-    if (liveTrackers.empty()) return;
+    if (!func) return;
 
     if (!isAlive(decl)) return;  // Nothing to clean up
 
-    // ─── Reject linear types before doing anything ─────────────────────
-    // Future<T> and Thread<T> cannot be reassigned while pending/running.
-    // This is a semantic check, not a resource-kind check, so it lives
-    // here rather than in classifyResource.
     TypeAST* type = decl->type;
     if (!type) return;
 
-    if (type->isa<FutureTypeAST>()) {
-        diagnostics.errorAt(DiagCode::Sem_InvalidUnary, decl->loc,
-                            "internal error: Future<T> cannot be reassigned "
-                            "while pending");
-        return;
-    }
-    if (type->isa<ThreadTypeAST>()) {
-        diagnostics.errorAt(DiagCode::Sem_InvalidUnary, decl->loc,
-                            "internal error: Thread<T> cannot be reassigned "
-                            "while running");
+    // ─── Reject linear types ──────────────────────────────────────────────
+    // Future<T> and Thread<T> cannot be reassigned while pending/running.
+    // This is a semantic check, not a resource-kind check, so it lives
+    // here rather than in `classifyResourceKind`. Sema should have already
+    // rejected this, but the assertion is a cheap backstop.
+    if (type->isa<FutureTypeAST>() || type->isa<ThreadTypeAST>()) {
+        prog.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, decl->loc,
+                                  "internal error: linear type cannot be "
+                                  "reassigned while pending/running");
         return;
     }
 
-    // ─── Release the old resource ──────────────────────────────────────
+    // ─── Release the old resource ─────────────────────────────────────────
     // The binding stays alive; only the old value's claim is dropped.
-    // emitRelease normalizes alloca→value itself, but oldValue here is
-    // already a loaded value (lowerAssignExpr loads it before calling).
+    // `emitRelease` is the transitional name for `Ownership::drop` — Task 4
+    // renames and re-signatures it.
+    //
+    // The decision to retain the *new* value (Rule 1 vs Rule 2 in the
+    // ownership model) is the caller's responsibility, because only the
+    // caller knows whether the RHS was a fresh literal or an existing
+    // binding.
     emitRelease(decl, oldValue, *this);
-
-    // newValue is intentionally unused by this function — the caller
-    // (lowerAssignExpr) is responsible for the retain-on-copy decision,
-    // because it's the one that knows whether the RHS was a fresh literal
-    // or an existing binding (Rule 1 vs Rule 2). See the ownership model
-    // header.
     (void)newValue;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cleanup Helper — transitional
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// This is the same logic that used to be `CodeGenContext::emitCleanupForTracker`
+// in the old code, adapted to the new `Scope` type and the new `ProgramState`.
+// Task 4 moves it to `Ownership` as `Ownership::dropScope`.
+
+void emitCleanupForScope(Scope& scope,
+                         ProgramState& prog,
+                         CodeGenContext& ctx) {
+    if (!ctx.getCurrentFunction()) return;
+
+    llvm::IRBuilder<>& builder = prog.builder();
+
+    // ─── Phase 1: user #scope_exit callbacks (LIFO) ───────────────────────
+    if (scope.block) {
+        for (size_t i = scope.block->scopeExits.size(); i > 0; --i) {
+            const ScopeExitRegistration* reg =
+                scope.block->scopeExits[i - 1];
+            emitScopeExitCallback(reg, ctx);
+        }
+    }
+
+    // ─── Phase 2: implicit cleanup ────────────────────────────────────────
+    // For each still-alive binding, load its current value and hand it to
+    // `emitRelease`. The alive set is the source of truth for "this frame
+    // owns a claim"; consumed bindings are not in it.
+    std::vector<ValueDeclAST*> declarations(
+        scope.alive.begin(), scope.alive.end());
+
+    auto loadIfAlloca = [&](llvm::Value* val) -> llvm::Value* {
+        if (auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+            return builder.CreateLoad(alloca->getAllocatedType(), alloca,
+                                       "cleanup_load");
+        }
+        return val;
+    };
+
+    for (ValueDeclAST* decl : declarations) {
+        llvm::Value* binding = ctx.lookupValue(decl);
+        if (!binding || !decl->type) continue;
+
+        llvm::Value* value = loadIfAlloca(binding);
+        emitRelease(decl, value, ctx);
+    }
 }
 
 } // namespace codegen
