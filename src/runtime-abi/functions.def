@@ -194,10 +194,3 @@ LUCID_RT(Await,    "__lucid_await",    Ptr,  (Ptr))
 LUCID_RT(Spawn,    "__lucid_spawn",    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Join,     "__lucid_join",     Ptr,  (Ptr))
 LUCID_RT(Shutdown, "__lucid_shutdown", Void, ())
-
-// ─── Tag lookup (runtime type ids) ────────────────────────────────────────
-//   uint64_t __lucid_tag_lookup(uint64_t type_id)
-//     Reserved. The tag registry is populated by Sema's TypeIdRegistry; this
-//     is the runtime read side. Included here so the ABI surface is complete
-//     before M4, when it is first called.
-LUCID_RT(TagLookup, "__lucid_tag_lookup", I64, (I64))
