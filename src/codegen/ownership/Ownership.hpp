@@ -25,6 +25,10 @@
 /// emitter walks it at scope exit and calls `drop` for each live binding.
 /// `Ownership` doesn't know about scopes; it drops values.
 ///
+/// It is NOT the resource classifier. `classifyResourceKind(TypeAST*)` lives
+/// in `core/ast/ResourceKind.hpp`, shared by Sema and codegen. `Ownership`
+/// includes that header and calls the classifier at its dispatch points.
+///
 /// ─── The Ownership Model ──────────────────────────────────────────────────
 /// Three patterns, dispatched on `ResourceKind`:
 ///
@@ -69,12 +73,20 @@
 /// The drop-glue cache and the copy-glue cache live here. They're populated
 /// lazily and read on every aggregate drop or copy. State belongs to an
 /// object; that object is one per program, held by `ProgramState`.
+///
+/// ─── Relationship to the Pre-Redesign API ─────────────────────────────────
+/// Before the redesign, this functionality was exposed as free functions
+/// (`emitRelease`, `emitRetain`, `maybeCoerceFnToCls`) taking a
+/// `CodeGenContext&`. Those were transitional: they let old call sites
+/// compile while the emitters were being rewritten. They're gone now, and
+/// the class is the only entry point.
 
 #pragma once
 
 #include "codegen/Types.hpp"
 
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/ResourceKind.hpp"
 #include "core/ast/TypeAST.hpp"
 
 #include <llvm/IR/Function.h>
@@ -149,7 +161,7 @@ public:
     //   Arena        — reject (Sema guarantees no copies).
     //   Handle       — reject (Sema guarantees only await/join consumes).
     //
-    // This is called by `Emitter::store` before every store, and by every
+    // Called by `Emitter::store` before every store, and by every
     // argument-passing site for a `cls`-shaped parameter.
     Val intoOwned(Val val, llvm::IRBuilder<>& builder);
 
@@ -166,8 +178,8 @@ public:
     //   Handle       — no-op (linear, consumed by await/join).
     //   Aggregate    — call `__drop_<type>`.
     //
-    // This is called at scope exit for every live binding, on the old value
-    // in an assignment, on a discarded temporary, and at program free.
+    // Called at scope exit for every live binding, on the old value in an
+    // assignment, on a discarded temporary, and at program free.
     void drop(TypeAST* type, llvm::Value* value, llvm::IRBuilder<>& builder);
 
     // ─── Retain ───────────────────────────────────────────────────────────
@@ -188,7 +200,6 @@ public:
     //
     // Both are idempotent: the second call for the same type returns the
     // cached function.
-
     llvm::Function* dropGlueFor(TypeAST* type);
     llvm::Function* copyGlueFor(TypeAST* type);
 
@@ -214,8 +225,8 @@ private:
     void dropRefcounted(llvm::Value* fatPtr, llvm::IRBuilder<>& builder);
 
     /// Emit the extract-and-drop sequence for an OwnedBuffer: pull the
-    /// data pointer and cap out of the string/dynamic-array struct,
-    /// null-check the data pointer, and free it if the cap is nonzero.
+    /// data pointer and cap out of the string struct, null-check the
+    /// data pointer, and free it if the cap is nonzero.
     void dropOwnedBuffer(llvm::Value* buffer, llvm::IRBuilder<>& builder);
 
     /// Emit the extract-and-drop sequence for an Arena: pull the base
@@ -226,49 +237,5 @@ private:
 
     ProgramState& program;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Transitional free functions
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The old `emitRelease`/`emitRetain` free functions are called from many
-// places in codegen that Task 5–10 will rewrite. To keep those call sites
-// compiling during the migration, this header provides thin wrappers with
-// the same signatures. They forward to the `Ownership` object on the
-// caller's `ProgramState`.
-//
-// These are deleted at the end of Phase 3, along with the `CodeGenContext`
-// shim. Until then, they exist only to keep the migration incremental.
-
-struct CodeGenContext;
-
-void emitRelease(ValueDeclAST* decl,
-                 llvm::Value* value,
-                 CodeGenContext& ctx);
-
-void emitRetain(ValueDeclAST* decl,
-                llvm::Value* value,
-                CodeGenContext& ctx);
-
-/// @brief The transitional type-classifier, kept for old call sites.
-///
-/// Classifies a declaration's resource kind by looking at `decl->resourceKind`,
-/// which Sema set in Phase 1. This is the old API shape; new code calls
-/// `classifyResourceKind(decl->type)` directly or reads `decl->resourceKind`.
-ResourceKind classifyResource(ValueDeclAST* decl);
-
-/// @brief Transitional predicate: does this declaration own a resource?
-///
-/// Equivalent to `classifyResource(decl) != ResourceKind::None`.
-bool ownsResource(ValueDeclAST* decl);
-
-/// @brief Transitional: the `fn` → `cls` widening.
-///
-/// Kept with the same signature so old call sites compile. Task 5+
-/// migrates them to a method on `Emitter`.
-llvm::Value* maybeCoerceFnToCls(llvm::Value* sourceValue,
-                                TypeAST* sourceType,
-                                TypeAST* targetType,
-                                CodeGenContext& ctx);
 
 } // namespace codegen

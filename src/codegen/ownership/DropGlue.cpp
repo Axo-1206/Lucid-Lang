@@ -17,6 +17,19 @@
 /// cannot contain themselves by value (self-reference is only allowed
 /// through pointers, and pointers own nothing).
 ///
+/// ─── Function-Typed Fields ────────────────────────────────────────────────
+/// A field whose AST type is a `FuncTypeAST` is lowered by `Types::structType`
+/// to the runtime shape of a function value, not to the function's signature
+/// type. For an `fn`-shaped field that's `ptr`; for a `cls`-shaped field
+/// that's `lucid.Closure`. Both shapes are 1-word or 2-word values and, if
+/// the field is `cls`, owning a claim on its env.
+///
+/// `Ownership::drop` and `Ownership::intoOwned` classify the field by its
+/// *AST* type (which is the `FuncTypeAST`), so a `cls` field correctly
+/// retains and releases its env, and an `fn` field is correctly a no-op.
+/// The glue code itself doesn't need to distinguish the two — it hands the
+/// field's AST type to `Ownership` and lets the classifier decide.
+///
 /// ─── Naming ───────────────────────────────────────────────────────────────
 /// The generated functions are named `__drop_<TypeName>` and
 /// `__copy_<TypeName>` where `<TypeName>` is derived from the type's
@@ -35,6 +48,7 @@
 #include "codegen/Program.hpp"
 #include "codegen/Types.hpp"
 
+#include "core/ast/ResourceKind.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <llvm/IR/BasicBlock.h>
@@ -53,7 +67,8 @@ namespace codegen {
 namespace {
 
 /// The LLVM struct type and the AST declaration for an aggregate type.
-/// Returns `nullptr` if the type is not an aggregate that needs glue.
+/// Returns an empty `AggregateInfo` if the type is not an aggregate that
+/// needs glue.
 ///
 /// An aggregate for glue purposes is:
 ///   - a `NamedTypeAST` whose `resolvedDecl` is a `StructDeclAST`
@@ -61,11 +76,10 @@ namespace {
 ///     type owns a resource (the tagged slot needs glue to drop the inner
 ///     value when the tag indicates "present")
 ///   - a `Fixed` `ArrayTypeAST` whose element type owns a resource
-///   - a `SimdTypeAST`? No — SIMD is a bundle of primitives, no resources.
 ///
 /// Today, only `NamedTypeAST → StructDeclAST` is handled. The tagged-slot
 /// cases are structurally possible but not yet supported because the
-/// emitter doesn't lower them to storage-shaped values yet. The array
+/// emitter doesn't lower them to storage-shaped values yet. The fixed-array
 /// case is also not yet supported.
 struct AggregateInfo {
     llvm::StructType* llvmType = nullptr;
@@ -162,7 +176,8 @@ llvm::Function* generateDropGlue(Ownership& ownership,
         llvm::Value* fieldVal = builder.CreateLoad(
             fieldTy, fieldPtr, "field_val_" + program.pool.lookup(field->name));
 
-        // Drop it. `Ownership::drop` dispatches on the field's type.
+        // Drop it. `Ownership::drop` dispatches on the field's AST type,
+        // which is the source of truth for the field's resource kind.
         ownership.drop(field->type, fieldVal, builder);
     }
 
@@ -229,8 +244,19 @@ llvm::Function* generateCopyGlue(Ownership& ownership,
     llvm::Function* allocFn =
         program.abi().declareOrGet(RuntimeFn::Alloc);
     llvm::Value* dstRaw = builder.CreateCall(allocFn, {sizeConst}, "copy_alloc");
+
+    // Cast the raw allocation to a pointer to the aggregate's struct type.
+    // With opaque pointers, the cast is a no-op at the LLVM level, but
+    // naming the type here keeps the generated IR self-documenting and
+    // lets the GEPs below use the struct type directly.
+    //
+    // `llvm::PointerType::get(llvmCtx, 0)` is the opaque-pointer form.
+    // `PointerType::getUnqual(...)` is the pre-opaque-pointer API; it
+    // exists as a deprecated shim in LLVM 17+ and emits warnings under
+    // `-Wdeprecated-declarations`.
+    llvm::Type* structPtrTy = llvm::PointerType::get(llvmCtx, 0);
     llvm::Value* dst = builder.CreatePointerCast(
-        dstRaw, llvm::PointerType::getUnqual(info.llvmType), "copy_dst");
+        dstRaw, structPtrTy, "copy_dst");
 
     // Copy each field.
     for (size_t i = 0; i < info.fields.size(); ++i) {

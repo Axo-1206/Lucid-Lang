@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "codegen/Program.hpp"
 #include "codegen/Types.hpp"
 
 #include "core/ast/TypeAST.hpp"
