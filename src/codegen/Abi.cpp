@@ -17,28 +17,28 @@
 /// expanded into `llvm::Type*` values via `llvmTypeForTag`. That function
 /// is the single place where "what LLVM type does `Str` mean" is answered.
 ///
-/// ─── Why The Cache Is Per-Abi, Not Global ─────────────────────────────────
-/// The old `RuntimeFunctionRegistry` was a global table of `std::function`s
-/// that built `llvm::FunctionType*`s. The declared `llvm::Function*`s lived
-/// in `CodeGenContext::runtimeFunctions`, a map shared across every module
-/// in the compilation. That map was one of the multi-module bugs the redesign
-/// exists to fix: the second module's declaration of `__lucid_alloc` looked
-/// up the first module's `llvm::Function*`, and the verifier rejected the
-/// cross-module reference.
+/// ─── Usage Recording ──────────────────────────────────────────────────────
+/// Every call to `declareOrGet` records the runtime function in
+/// `program_.usedRuntimeFns()`. The set is read by the module pass to
+/// populate the manifest's runtime-symbol list, which the interpreter and
+/// AOT linker use to decide which runtime objects to link.
 ///
-/// The new design has one `Abi` per `ProgramState`, and one `ProgramState`
-/// per `generate()` call. Because Phase 3 produces one `llvm::Module` per
-/// program, one `Abi`'s cache holds exactly one module's declarations. The
-/// bug is structurally impossible.
+/// Recording happens in `declareOrGet`, not in the generated methods,
+/// because every path into a runtime function goes through
+/// `declareOrGet` — the generated methods call it, and `panicFn` and
+/// `shutdownFn` call it. One hook covers every case.
 
 #include "Abi.hpp"
+#include "Program.hpp"
 #include "runtime-abi/lucid_abi.h"
 
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/DerivedTypes.h>
 
 #include <cassert>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace codegen {
 
@@ -50,9 +50,9 @@ namespace codegen {
 // `Void`) are a small vocabulary. This is the single place they're mapped
 // to LLVM types.
 //
-// `Types&` is needed because `Str` and `Slice` name LLVM struct types that
-// `Types` owns (via `stringType()` and `sliceType()`). Everything else can
-// be constructed directly from `llvm::LLVMContext&`.
+// `ProgramState&` is needed because `Str`, `Slice`, `Arena`, and `Desc`
+// name LLVM struct types that `Types` owns. Everything else can be
+// constructed directly from `llvm::LLVMContext&`.
 //
 // The mapping is:
 //
@@ -67,17 +67,10 @@ namespace codegen {
 //   Slice    — `lucid.Slice`
 //   Arena    — `lucid.Arena`
 //   Desc     — `lucid.ArenaDescriptor`
-//
-// The tags are expanded by the preprocessor into C++ tokens before this
-// function sees them. So `Str` becomes the enumerator `AbiTag::Str`, and
-// `Void` becomes `AbiTag::Void`, and so on.
 
 namespace {
 
 /// @brief The tag vocabulary used by `functions.def`.
-///
-/// Enumerators mirror the tags one-to-one. The preprocessor turns each tag
-/// in a row into the corresponding `AbiTag::TAG` token.
 enum class AbiTag {
     Void,
     I1,
@@ -99,7 +92,7 @@ enum class AbiTag {
 /// pointer.
 llvm::Type* llvmTypeForTag(AbiTag tag,
                            llvm::LLVMContext& llvmCtx,
-                           Types& types) {
+                           ProgramState& program) {
     switch (tag) {
         case AbiTag::Void:  return nullptr;
         case AbiTag::I1:    return llvm::Type::getInt1Ty(llvmCtx);
@@ -108,10 +101,10 @@ llvm::Type* llvmTypeForTag(AbiTag tag,
         case AbiTag::I64:   return llvm::Type::getInt64Ty(llvmCtx);
         case AbiTag::F64:   return llvm::Type::getDoubleTy(llvmCtx);
         case AbiTag::Ptr:   return llvm::PointerType::get(llvmCtx, 0);
-        case AbiTag::Str:   return types.stringType();
-        case AbiTag::Slice: return types.sliceType();
-        case AbiTag::Arena: return types.arenaType();
-        case AbiTag::Desc:  return types.arenaDescriptorType();
+        case AbiTag::Str:   return program.types().stringType();
+        case AbiTag::Slice: return program.types().sliceType();
+        case AbiTag::Arena: return program.types().arenaType();
+        case AbiTag::Desc:  return program.types().arenaDescriptorType();
     }
     return nullptr;
 }
@@ -124,12 +117,7 @@ llvm::Type* llvmTypeForTag(AbiTag tag,
 //
 // This is the second reader of `functions.def`. It builds a static table
 // that maps each enumerator to its symbol name and the list of `AbiTag`s
-// for its parameters and return type. `declareOrGet` and `buildFunctionType`
-// consult this table.
-//
-// The table is built once, at static-init time, from the X-macro expansion.
-// It uses `std::vector<AbiTag>` for the parameters and a single `AbiTag` for
-// the return, so the arity is not fixed.
+// for its parameters and return type.
 
 namespace {
 
@@ -143,8 +131,7 @@ struct RuntimeFnInfo {
 //
 // The `functions.def` rows contain bare tag identifiers (`I64`, `Ptr`, ...).
 // Inside this file, we define each tag identifier as a macro that expands
-// to the corresponding `AbiTag::TAG` value. That lets the preprocessor
-// turn a row like `(I64, Ptr)` into `{ AbiTag::I64, AbiTag::Ptr }` directly.
+// to the corresponding `AbiTag::TAG` value.
 
 #define Void  AbiTag::Void
 #define I1    AbiTag::I1
@@ -159,17 +146,11 @@ struct RuntimeFnInfo {
 #define Desc  AbiTag::Desc
 
 // Turn a parenthesized tag tuple into a `std::vector<AbiTag>{...}`.
-//
-// `LUCID_RT_TAGS_0()`         → `std::vector<AbiTag>{}`
-// `LUCID_RT_TAGS_1(A)`        → `std::vector<AbiTag>{ A }`
-// `LUCID_RT_TAGS_2(A, B)`     → `std::vector<AbiTag>{ A, B }`
-// `LUCID_RT_TAGS_3(A, B, C)`  → `std::vector<AbiTag>{ A, B, C }`
 #define LUCID_RT_TAGS_0()             std::vector<AbiTag>{}
 #define LUCID_RT_TAGS_1(A)            std::vector<AbiTag>{ A }
 #define LUCID_RT_TAGS_2(A, B)         std::vector<AbiTag>{ A, B }
 #define LUCID_RT_TAGS_3(A, B, C)      std::vector<AbiTag>{ A, B, C }
 
-// Same dispatch-on-arity trick as in Abi.hpp.
 #define LUCID_RT_GET_MACRO(_1, _2, _3, NAME, ...) NAME
 #define LUCID_RT_TAGS(Params) \
     LUCID_RT_GET_MACRO Params (LUCID_RT_TAGS_3, LUCID_RT_TAGS_2, \
@@ -212,9 +193,8 @@ const std::unordered_map<RuntimeFn, RuntimeFnInfo>& runtimeFnTable() {
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 
-Abi::Abi(llvm::Module& module_, Types& types_)
-    : module(module_)
-    , types(types_)
+Abi::Abi(ProgramState& program)
+    : program_(program)
 {
 }
 
@@ -226,10 +206,6 @@ std::string_view Abi::symbolName(RuntimeFn fn) const {
     const auto& table = runtimeFnTable();
     auto it = table.find(fn);
     if (it == table.end()) {
-        // Every enumerator has a table row — `Abi.hpp`'s enum is generated
-        // from the same table. Reaching this means a malformed table or a
-        // hash-map bug; assert in debug builds and return a sentinel in
-        // release.
         assert(false && "RuntimeFn has no table row — this is a build error");
         return "<unknown runtime fn>";
     }
@@ -241,7 +217,6 @@ std::string_view Abi::symbolName(RuntimeFn fn) const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::FunctionType* Abi::buildFunctionType(RuntimeFn fn) {
-    // ─── Cache hit ────────────────────────────────────────────────────────
     auto it = typeCache.find(fn);
     if (it != typeCache.end()) {
         return it->second;
@@ -252,14 +227,12 @@ llvm::FunctionType* Abi::buildFunctionType(RuntimeFn fn) {
     assert(row != table.end() && "RuntimeFn has no table row");
 
     const RuntimeFnInfo& info = row->second;
-    llvm::LLVMContext& llvmCtx = module.getContext();
+    llvm::LLVMContext& llvmCtx = program_.module().getContext();
 
     // ─── Return type ──────────────────────────────────────────────────────
-    // The `Void` tag returns `nullptr` from `llvmTypeForTag`; the return-
-    // type path is where that maps to `llvm::Type::getVoidTy`.
     llvm::Type* returnType = (info.returnTag == AbiTag::Void)
         ? llvm::Type::getVoidTy(llvmCtx)
-        : llvmTypeForTag(info.returnTag, llvmCtx, types);
+        : llvmTypeForTag(info.returnTag, llvmCtx, program_);
 
     assert(returnType && "runtime function return type is not Void but "
                          "no LLVM type was produced for it");
@@ -268,7 +241,7 @@ llvm::FunctionType* Abi::buildFunctionType(RuntimeFn fn) {
     std::vector<llvm::Type*> paramTypes;
     paramTypes.reserve(info.paramTags.size());
     for (AbiTag tag : info.paramTags) {
-        llvm::Type* paramType = llvmTypeForTag(tag, llvmCtx, types);
+        llvm::Type* paramType = llvmTypeForTag(tag, llvmCtx, program_);
         assert(paramType && "runtime function parameter has Void tag — "
                             "Void is only valid for the return position");
         paramTypes.push_back(paramType);
@@ -286,6 +259,11 @@ llvm::FunctionType* Abi::buildFunctionType(RuntimeFn fn) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* Abi::declareOrGet(RuntimeFn fn) {
+    // Record the usage before the cache check, so a caller that
+    // declares-but-doesn't-immediately-call still shows up in the
+    // manifest's runtime symbol list.
+    program_.usedRuntimeFns().insert(fn);
+
     // ─── Cache hit ────────────────────────────────────────────────────────
     auto cached = functionCache.find(fn);
     if (cached != functionCache.end()) {
@@ -299,10 +277,9 @@ llvm::Function* Abi::declareOrGet(RuntimeFn fn) {
     // `getOrInsertFunction` returns a `FunctionCallee`. If a function with
     // this name already exists in the module with a *different* type,
     // LLVM throws. That's a real bug — it means two call sites disagree
-    // about the runtime ABI — and the throw is the right behavior: fail
-    // loudly rather than silently use the wrong declaration.
+    // about the runtime ABI — and the throw is the right behavior.
     llvm::FunctionCallee callee =
-        module.getOrInsertFunction(std::string(name), fnType);
+        program_.module().getOrInsertFunction(std::string(name), fnType);
 
     llvm::Function* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee());
     assert(fn && "getOrInsertFunction returned a non-Function callee — "
@@ -315,19 +292,13 @@ llvm::Function* Abi::declareOrGet(RuntimeFn fn) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Special Cases
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// `panicFn` and `shutdownFn` are convenience accessors for the two runtime
-// functions whose semantics require attributes beyond the base signature.
-// Everything else is reachable through the generated methods and through
-// `declareOrGet`.
 
 llvm::Function* Abi::panicFn() {
     llvm::Function* fn = declareOrGet(RuntimeFn::Panic);
 
     // `__lucid_panic` never returns. The `noreturn` attribute is what tells
     // LLVM's optimiser (and, more importantly, the emitter) that no code
-    // executes after the call. Codegen uses this when it emits a panic
-    // site and needs to know whether to insert a fall-through block.
+    // executes after the call.
     if (!fn->hasFnAttribute(llvm::Attribute::NoReturn)) {
         fn->addFnAttr(llvm::Attribute::NoReturn);
     }
@@ -343,31 +314,15 @@ llvm::Function* Abi::shutdownFn() {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Each row in `functions.def` becomes one method body here. The method:
-//   1. Declares the runtime function in the module (or finds it cached).
+//   1. Declares the runtime function (or finds it cached). `declareOrGet`
+//      also records the usage.
 //   2. Collects the arguments into a `std::vector<llvm::Value*>`.
 //   3. Emits the call through the caller-supplied `IRBuilder`.
 //   4. Returns the call's result value, or `nullptr` for `void` returns.
-//
-// The method name comes from the row's first column. The parameter list
-// comes from the arity-expansion macros in `Abi.hpp`, and the arguments
-// are the named parameters `_a0`, `_a1`, ... in order.
-
-#define LUCID_RT(EnumName, Symbol, Ret, Params)                              \
-    llvm::Value* Abi::EnumName(llvm::IRBuilder<>& builder,                   \
-                                LUCID_RT_ARGS(Params)) {                      \
-        llvm::Function* fn = declareOrGet(RuntimeFn::EnumName);              \
-        std::vector<llvm::Value*> args = LUCID_RT_ARG_LIST(Params);          \
-        llvm::CallInst* call = builder.CreateCall(fn, args);                 \
-        return Ret##_RETURNS_VALUE(call);                                    \
-    }
 
 // Helper: `Void_RETURNS_VALUE(call)` returns nullptr, everything else
 // returns the call. This is how the X-macro table's return tag controls
 // whether the method returns a value.
-//
-// The trick: define `Void_RETURNS_VALUE` to discard its argument and
-// return nullptr, and every other `TAG_RETURNS_VALUE` to return the call.
-// Then the macro pastes the row's return tag onto `_RETURNS_VALUE`.
 
 #define Void_RETURNS_VALUE(call)  (nullptr)
 #define I1_RETURNS_VALUE(call)    (call)
@@ -387,27 +342,43 @@ llvm::Function* Abi::shutdownFn() {
 // `LUCID_RT_ARG_LIST_1(A)`        → `{ _a0 }`
 // `LUCID_RT_ARG_LIST_2(A, B)`     → `{ _a0, _a1 }`
 // `LUCID_RT_ARG_LIST_3(A, B, C)`  → `{ _a0, _a1, _a2 }`
-//
-// The tags `A`, `B`, `C` in the tuple are discarded — only the arity
-// matters here. The tags have already done their work in `buildFunctionType`.
 #define LUCID_RT_ARG_LIST_0()          std::vector<llvm::Value*>{}
 #define LUCID_RT_ARG_LIST_1(A)         std::vector<llvm::Value*>{ _a0 }
 #define LUCID_RT_ARG_LIST_2(A, B)      std::vector<llvm::Value*>{ _a0, _a1 }
 #define LUCID_RT_ARG_LIST_3(A, B, C)   std::vector<llvm::Value*>{ _a0, _a1, _a2 }
 
-#define LUCID_RT_GET_MACRO(_1, _2, _3, NAME, ...) NAME
 #define LUCID_RT_ARG_LIST(Params) \
     LUCID_RT_GET_MACRO Params (LUCID_RT_ARG_LIST_3, LUCID_RT_ARG_LIST_2, \
                                 LUCID_RT_ARG_LIST_1, LUCID_RT_ARG_LIST_0) Params
+
+#define LUCID_RT(EnumName, Symbol, Ret, Params)                              \
+    llvm::Value* Abi::EnumName(llvm::IRBuilder<>& builder,                   \
+                                LUCID_RT_ARGS(Params)) {                      \
+        llvm::Function* fn = declareOrGet(RuntimeFn::EnumName);              \
+        std::vector<llvm::Value*> args = LUCID_RT_ARG_LIST(Params);          \
+        llvm::CallInst* call = builder.CreateCall(fn, args);                 \
+        return Ret##_RETURNS_VALUE(call);                                    \
+    }
 
 #include "runtime-abi/functions.def"
 
 #undef LUCID_RT
 #undef LUCID_RT_ARG_LIST
-#undef LUCID_RT_GET_MACRO
 #undef LUCID_RT_ARG_LIST_0
 #undef LUCID_RT_ARG_LIST_1
 #undef LUCID_RT_ARG_LIST_2
 #undef LUCID_RT_ARG_LIST_3
+
+#undef Void_RETURNS_VALUE
+#undef I1_RETURNS_VALUE
+#undef I8_RETURNS_VALUE
+#undef I32_RETURNS_VALUE
+#undef I64_RETURNS_VALUE
+#undef F64_RETURNS_VALUE
+#undef Ptr_RETURNS_VALUE
+#undef Str_RETURNS_VALUE
+#undef Slice_RETURNS_VALUE
+#undef Arena_RETURNS_VALUE
+#undef Desc_RETURNS_VALUE
 
 } // namespace codegen

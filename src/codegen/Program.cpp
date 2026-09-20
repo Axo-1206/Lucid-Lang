@@ -2,14 +2,17 @@
 /// @brief Implementation of per-program state.
 
 #include "Program.hpp"
+#include "Emitter.hpp"
 #include "ownership/Ownership.hpp"
+
+#include "core/ast/DeclAST.hpp"
 
 #include <cassert>
 
 namespace codegen {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Construction
+// Construction / Destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
 ProgramState::ProgramState(StringPool& pool_,
@@ -22,15 +25,46 @@ ProgramState::ProgramState(StringPool& pool_,
     , module_(std::make_unique<llvm::Module>(moduleName, *llvmCtx_))
     , builder_(*llvmCtx_)
     , types_(*llvmCtx_, *module_, pool_)
-    , abi_(*module_, types_)
+    , abi_(*this)
 {
     assert(llvmCtx_ && "ProgramState constructed with null LLVMContext");
     assert(module_ && "ProgramState constructed with null module");
 
-    // Ownership is constructed in the body, not the initializer list,
-    // because it needs a reference to *this and must be constructed after
-    // the other members are initialized.
+    // Components that need a fully-constructed ProgramState are built in
+    // the constructor body, after all members are initialized. They take
+    // `*this` by reference and store it; the reference is valid from this
+    // point on because the object is fully constructed.
     ownership_ = std::make_unique<Ownership>(*this);
+    emitter_ = std::make_unique<Emitter>(*this);
+}
+
+ProgramState::~ProgramState() = default;
+
+Emitter& ProgramState::emitter() {
+    return *emitter_;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Current Function State
+// ─────────────────────────────────────────────────────────────────────────────
+
+void ProgramState::setCurrentFunctionState(llvm::Function* fn,
+                                            TypeAST* returnType) {
+    assert(!currentFunctionState
+           && "setCurrentFunctionState() called with a function already "
+              "active — clearCurrentFunctionState() first");
+
+    currentFunctionStateOwned_ =
+        std::make_unique<FunctionState>(*this, fn, returnType);
+    currentFunctionState = currentFunctionStateOwned_.get();
+}
+
+void ProgramState::clearCurrentFunctionState() {
+    // Reset the pointer BEFORE destroying the FunctionState, so
+    // FunctionState's destructor doesn't see a stale `currentFunctionState`
+    // pointing at itself.
+    currentFunctionState = nullptr;
+    currentFunctionStateOwned_.reset();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

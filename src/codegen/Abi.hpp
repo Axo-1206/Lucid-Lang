@@ -23,8 +23,8 @@
 /// `runtime-abi/lucid_abi.h`. `Abi` reads them; it does not define them.
 ///
 /// It is NOT the emitter. It does not know about Lucid AST nodes, ownership
-/// rules, or scopes. It only knows how to call one specific runtime function
-/// with a set of already-lowered `llvm::Value*` arguments.
+/// rules, or scopes. It only knows how to call one specific runtime
+/// function with a set of already-lowered `llvm::Value*` arguments.
 ///
 /// ─── Why a Class, Not Free Functions ──────────────────────────────────────
 /// Each declared `llvm::Function*` must be cached per module: the first
@@ -38,6 +38,18 @@
 /// serves one module, and the "which module did this symbol come from"
 /// problem that the old `CodeGenContext::runtimeFunctions` map had is
 /// structurally impossible.
+///
+/// ─── Why `ProgramState&`, Not `Module&` + `Types&` ────────────────────────
+/// `Abi` needs to record which runtime functions the program actually
+/// uses, so the manifest can list them and the interpreter/AOT linker can
+/// decide which runtime objects to link. The usage set lives on
+/// `ProgramState`. Rather than hold separate references to the module,
+/// the types, and the usage set, `Abi` holds one reference to the
+/// `ProgramState` and reads all three from it.
+///
+/// This also means `Abi` is a *component of* `ProgramState`, not an
+/// independent object. That's the intended relationship: there is one
+/// `Abi` per program, constructed by `ProgramState`, destroyed with it.
 
 #pragma once
 
@@ -54,6 +66,10 @@
 #include <unordered_map>
 
 namespace codegen {
+
+// Forward declaration. `Abi.cpp` includes `Program.hpp` for the full
+// definition; `Abi.hpp` only needs the name to hold a reference.
+class ProgramState;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RuntimeFn — one enumerator per runtime ABI symbol
@@ -139,11 +155,11 @@ class Abi {
 public:
     /// @brief Construct an `Abi` for one program.
     ///
-    /// The `Types&` is used to name `lucid.String`, `lucid.Arena`, etc. when
-    /// building function types. The `llvm::Module&` is where runtime
-    /// declarations are created and where the cached `llvm::Function*`
-    /// values live.
-    Abi(llvm::Module& module, Types& types);
+    /// The reference must outlive the `Abi`. In practice `Abi` is a member
+    /// of `ProgramState`, so this is guaranteed by construction: the
+    /// `ProgramState` is fully constructed before any of its members are
+    /// used.
+    explicit Abi(ProgramState& program);
 
     Abi(const Abi&) = delete;
     Abi& operator=(const Abi&) = delete;
@@ -154,18 +170,17 @@ public:
     //
     // Generated from `functions.def`. Each row produces one method whose
     // name is the row's enumerator and whose C++ signature is
-    // `llvm::Value* method(llvm::Value*, ...)` — one argument per tuple
-    // element, all typed as `llvm::Value*`.
+    // `llvm::Value* method(llvm::IRBuilder<>&, llvm::Value*, ...)` — one
+    // argument per tuple element, all typed as `llvm::Value*`.
     //
     // Inside the generated method (see Abi.cpp):
-    //   1. The `llvm::FunctionType` is built from the row's tags and return.
-    //   2. The `llvm::Function*` is fetched from the cache or declared.
-    //   3. The call is emitted through the caller-supplied `IRBuilder`.
+    //   1. The runtime function is declared if not already declared, and
+    //      the enumerator is recorded in `program_.usedRuntimeFns()`.
+    //   2. The call is emitted through the caller-supplied `IRBuilder`.
     //
     // The methods are not `const` because they mutate the cache on first
     // call. Callers should treat the returned `llvm::Value*` as the call's
-    // result value, and should not depend on the method being reentrant
-    // for the same runtime function before the first declaration exists.
+    // result value.
 
 #define LUCID_RT(EnumName, Symbol, Ret, Params) \
     llvm::Value* EnumName(llvm::IRBuilder<>& builder, \
@@ -176,10 +191,11 @@ public:
 
     // ─── Raw Access ───────────────────────────────────────────────────────
     //
-    // The `llvm::Function*` for a runtime function, declaring it if needed.
-    // Most codegen call sites go through the typed methods above, but a
-    // few places (like `emitCallableCall` when the callee is a runtime
-    // function passed as a value) need the raw pointer.
+    // The `llvm::Function*` for a runtime function, declaring it if needed
+    // and recording the usage. Most codegen call sites go through the
+    // typed methods above, but a few places (like `emitCallableCall` when
+    // the callee is a runtime function passed as a value) need the raw
+    // pointer.
     //
     // `fn` must be a valid enumerator. The symbol name and signature are
     // looked up from `functions.def` and the layout headers.
@@ -190,14 +206,10 @@ public:
     /// @brief `__lucid_panic` is marked `noreturn` in the generated IR.
     ///
     /// The panic runtime function never returns. Codegen needs to know this
-    /// so it can omit the fall-through block after a panic call. This
-    /// accessor declares it with the `noreturn` attribute set.
+    /// so it can omit the fall-through block after a panic call.
     llvm::Function* panicFn();
 
     /// @brief `__lucid_shutdown` is emitted at the end of `main`.
-    ///
-    /// Same shape as the other methods, but exposed as a plain accessor
-    /// because it's called by the module-init pass, not by the emitter.
     llvm::Function* shutdownFn();
 
 private:
@@ -214,8 +226,7 @@ private:
 
     // ─── State ────────────────────────────────────────────────────────────
 
-    llvm::Module& module;
-    Types& types;
+    ProgramState& program_;
 
     /// Cache of declared runtime functions. Keyed on the enumerator, one
     /// entry per `__lucid_*` symbol that has been used.
@@ -224,8 +235,7 @@ private:
     /// Cache of built `llvm::FunctionType`s. Separate from the function
     /// cache because a function can be looked up without being called
     /// (via `declareOrGet`), and because building a `FunctionType` and
-    /// creating a `Function` are logically distinct operations that a
-    /// future refactor might separate further.
+    /// creating a `Function` are logically distinct operations.
     std::unordered_map<RuntimeFn, llvm::FunctionType*> typeCache;
 };
 
