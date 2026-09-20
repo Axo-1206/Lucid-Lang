@@ -229,6 +229,102 @@ private:
     /// @brief Get the place for an index expression.
     Place emitIndexPlace(IndexExprAST* expr);
 
+    // ─── Call Lowering (EmitCall.cpp) ─────────────────────────────────────
+    //
+    // The public `emitCall` is declared above. The private helpers below
+    // support it.
+
+    /// @brief Dispatch a call on the callee's `FuncShape`.
+    ///
+    /// `fn`-shaped callees are bare function pointers: cast and call.
+    /// `cls`-shaped callees are fat pointers: extract `{fn, env}`, prepend
+    /// `env` to the argument list, and call `fn` indirectly.
+    llvm::Value* emitCallableCall(llvm::Value* callee,
+                                llvm::ArrayRef<llvm::Value*> args,
+                                llvm::FunctionType* fnType,
+                                FuncShape shape,
+                                const llvm::Twine& name);
+
+    /// @brief Coerce an argument value to a parameter's declared type.
+    ///
+    /// Handles `fn → cls` widening, integer widening/narrowing, pointer
+    /// casts, and aggregate-by-value conversions. Returns an invalid `Val`
+    /// if the coercion is not supported (which is a Sema bug — Sema should
+    /// have rejected the assignment).
+    Val coerceArgument(Val arg, TypeAST* paramTy);
+
+    // ─── Closure Lowering (EmitClosure.cpp) ───────────────────────────────
+
+    /// @brief Build the environment struct type for a closure.
+    llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr);
+
+    /// @brief Create the LLVM function that implements the closure body.
+    llvm::Function* createClosureFunction(AnonFuncExprAST* expr);
+
+    /// @brief Emit the body of a closure function.
+    ///
+    /// Uses a nested `FunctionState` for the closure's scope, and binds
+    /// each captured declaration to its environment-loaded value (or its
+    /// spilled alloca for by-value captures).
+    void emitClosureBody(AnonFuncExprAST* expr,
+                        llvm::Function* closureFn,
+                        llvm::Value* envPtr);
+
+    /// @brief Generate the environment-drop function for a closure.
+    ///
+    /// Returns null if the closure's environment owns nothing that needs
+    /// releasing (e.g. all captures are `fn`-shaped or non-resources).
+    llvm::Function* buildEnvDropFunction(AnonFuncExprAST* expr,
+                                        llvm::StructType* envType);
+
+    /// @brief Emit a call through a fat pointer.
+    llvm::Value* emitClosureCall(llvm::Value* funcPtr,
+                                llvm::Value* envPtr,
+                                llvm::ArrayRef<llvm::Value*> args,
+                                llvm::Type* returnType);
+
+    /// @brief Emit the fat-pointer construction for a `cls`-shaped
+    ///        named function declaration.
+    void emitClosureFuncDecl(FuncDeclAST* decl);
+
+    // ─── Concurrency Lowering (EmitConcurrency.cpp) ───────────────────────
+
+    /// @brief Build a thunk function for an async/spawn call.
+    ///
+    /// The thunk has signature `void* (void* packet)`. It unpacks the
+    /// packet (loads each argument from its field), frees the packet,
+    /// calls the real function, boxes the result, and returns the box
+    /// pointer.
+    ///
+    /// Generated once per async/spawn expression. The name is unique per
+    /// call site.
+    llvm::Function* buildConcurrencyThunk(CallExprAST* call,
+                                        TypeAST* returnType);
+
+    /// @brief Build a heap packet holding the arguments for an async/spawn.
+    ///
+    /// The packet is an LLVM struct with one field per argument. The
+    /// emitter allocates it via `__lucid_alloc`, stores each argument
+    /// into its field, and returns a pointer to the packet.
+    llvm::Value* buildConcurrencyPacket(CallExprAST* call);
+
+    // ─── Coercion Helpers ─────────────────────────────────────────────────
+
+    /// @brief Coerce a value to a target AST type.
+    ///
+    /// Unlike `coerceArgument`, this handles return-value coercion, which
+    /// has a slightly different surface (it may insert the `fn → cls`
+    /// widening before the type-based coercions).
+    Val coerceTo(Val val, TypeAST* targetTy);
+
+    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
+    ///
+    /// Low-level: integer widening/narrowing, pointer cast, aggregate
+    /// bitcast. Used by the higher-level coercion helpers.
+    llvm::Value* coerceValueToType(llvm::Value* val,
+                                    llvm::Type* targetTy,
+                                    llvm::IRBuilder<>& builder);
+
     // ─── Assignment Path ──────────────────────────────────────────────────
     //
     // `emitAssign` handles both plain and compound assignment. The core is:
