@@ -759,6 +759,7 @@ lucid/
 │   ├── BUILD.md                            # how to build Lucid
 │   └── examples/                           # example .luc files
 │
+├── temp/   # temporary files
 └── src/
     ├── main.cpp                            # CLI entry point (lucid run / build / repl)
     │
@@ -854,62 +855,52 @@ lucid/
     │   ├── functions.def    # The single source of truth for the runtime ABI surface.
     │   └── lucid_abi.h      # The ABI contract between CodeGen, the runtime, and the interpreter.
     │
+    ├── runtime/
+    │   ├── ArenaRuntime.cpp           # Implementation of arena runtime functions
+    │   ├── ClosureEnvironment.hpp     # Closure environment memory layout & management
+    │   ├── ClosureRuntime.cpp         # Extern "C" entry points for closure runtime
+    │   ├── ConcurrencyEntry.cpp       # Extern "C" entry points for concurrency runtime
+    │   ├── ConcurrencyRuntime.hpp/cpp # Thread pool, event loop, registry
+    │   ├── MemoryRuntime.cpp          # Memory management runtime functions
+    │   ├── PanicRuntime.cpp           # Panic implementation
+    │   ├── RuntimeError.hpp           # Define all runtime errors
+    │   └── StringRuntime.cpp          # String operations runtime
+    │
     ├── codegen/
     │   ├── CodeGen.hpp/cpp      # Orchestrator
-    │   ├── CodeGenDecl.cpp      # Declaration lowering
-    │   ├── CodeGenStmt.cpp      # Statement lowering
-    │   ├── CodeGenExpr.cpp      # Expression lowering
     │   ├── CodeGenDefaults.hpp  # Program-wide constants that every codegen caller must agree on.
     │   ├── Manifest.hpp         # The plain-data contract between CodeGen and its consumers.
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
     │   │
+    │   ├── emit/
+    │   │   ├── CodeGenDecl.cpp             # Declaration lowering
+    │   │   ├── CodeGenStmt.cpp             # Statement lowering
+    │   │   ├── CodeGenExpr.cpp             # Expression lowering
+    │   │   └── CodeGenClosure.hpp/cpp      # Closure code generation & emission
+    │   │
     │   ├── types/
     │   │   ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
-    │   │   └── LLVMTypesHelpers.hpp        # Work with llvm types
+    │   │   └── LLVMTypeHelpers.hpp         # Helper functions for LLVM types
     │   │
-    │   ├── memory/
-    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
-    │   │   ├── CodeGenOwnership.hpp/cpp    # Source of truth for memory management
-    │   │   └── LiveVariableTracker.hpp     # live variable tracking
+    │   ├── ownership/
+    │   │   └── CodeGenOwnership.hpp/cpp    # Source of truth for memory management & ownership rules
+    │   │
+    │   ├── passes/                         # Codegen passes (e.g. optimizations / transformations)
     │   │
     │   ├── support/
-    │   │   ├── ArenaHelpers.hpp            # Arena-specific code generation helpers.
+    │   │   ├── ArenaHelpers.hpp            # Arena-specific code generation helpers
+    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, and stack allocation helpers
     │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
-    │   │   ├── Truthiness.hpp              # Collection of rules for conditions
-    │   │   └── CodeGenPanic.hpp/cpp        # Panic, null checks
-    │   │
-    │   ├── runtime/
-    │   │   ├── RuntimeFunctionRegistry.hpp/cpp # Single source of truth for every `__lucid_*` runtime library
-    │   │   │                                   function CodeGen declares and calls
-    │   │   ├── PanicRuntime.cpp                # Panic implementation
-    │   │   ├── RuntimeError.hpp                # Define all runtime errors
-    │   │   │
-    │   │   ├── arena/
-    │   │   │   └── ArenaRuntime.cpp           # Implementation of arena runtime functions.
-    │   │   │
-    │   │   ├── memory/
-    │   │   │   └── MemoryRuntime.cpp           # Memory management
-    │   │   │
-    │   │   ├── string/
-    │   │   │   └── StringRuntime.cpp           # String operations
-    │   │   │
-    │   │   ├── closure/
-    │   │   │   ├── CodeGenClosure.hpp/cpp  # Closure declarations
-    │   │   │   ├── ClosureRuntime.cpp      # Extern "C" entry points for the Lucid closure runtime.
-    │   │   │   └── ClosureEnvironment.hpp  # Closure environment memory management
-    │   │   │
-    │   │   └── concurrency/
-    │   │       ├── ConcurrencyRuntime.hpp   # Public API, struct definitions
-    │   │       ├── ConcurrencyRuntime.cpp   # Thread pool, event loop, registry
-    │   │       └── ConcurrencyEntry.cpp     # extern "C" entry points
-    │   │
+    │   │   ├── CodeGenPanic.hpp/cpp        # Panic and runtime error assertion emission
+    │   │   ├── LiveVariableTracker.hpp     # Live variable tracking
+    │   │   └── Truthiness.hpp              # Collection of rules for boolean dynamic condition evaluations
     │   │
     │   └── intrinsic/
-    │       ├── IntrinsicEmitter.hpp/cpp            # Intrinsic emission API
-    │       ├── LucidIntrinsicEmitter.hpp/cpp
-    │       └── LLVMIntrinsicEmitter.hpp/cpp
+    │       ├── IntrinsicEmitter.hpp/cpp        # Intrinsic emission API base
+    │       ├── LucidIntrinsicEmitter.hpp/cpp   # Lucid-specific intrinsic emission logic
+    │       └── LLVMIntrinsicEmitter.hpp/cpp    # Low-level LLVM intrinsic emission
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp             # Public API - single entry point
