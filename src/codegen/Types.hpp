@@ -22,6 +22,11 @@
 /// It does not know about any AST node except the type nodes and the
 /// declaration nodes that define user types.
 ///
+/// It is NOT the resource classifier. `classifyResourceKind(TypeAST*)` lives
+/// in `core/ast/ResourceKind.hpp`, shared by Sema and codegen. `Types.hpp`
+/// includes that header so anything that needs the classifier and already
+/// has `Types.hpp` in scope finds it transitively.
+///
 /// ─── Dependencies ─────────────────────────────────────────────────────────
 /// `Types` depends on:
 ///   - `llvm::LLVMContext&` — for constructing LLVM types
@@ -38,6 +43,7 @@
 
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/ResourceKind.hpp"
 #include "core/memory/StringPool.hpp"
 
 #include <llvm/IR/DerivedTypes.h>
@@ -105,7 +111,7 @@ public:
     /// type and caches it; subsequent calls return the cached value. The
     /// returned pointer is stable for the lifetime of the `Types` object.
     ///
-    /// Returns null on error (diagnostic emitted).
+    /// Returns null on error (diagnostic emitted by the caller).
     llvm::Type* get(TypeAST* type);
 
     // ─── Built-in Type Accessors ──────────────────────────────────────────
@@ -203,7 +209,7 @@ public:
     ///
     /// The `layouts` argument is the caller's map. It is not a member of
     /// `Types` because it belongs to the program state, not the type layer.
-    /// Callers in the target design pass `programState.moduleLayouts`.
+    /// Callers pass `program.moduleLayouts()`.
     llvm::StructType* moduleInstanceType(
         ModuleAST* module,
         std::unordered_map<ModuleAST*, ModuleInstanceLayout>& layouts);
@@ -238,6 +244,11 @@ public:
     /// the ownership layer to classify a value, and by the closure-capture
     /// path to reject by-value captures that would require a deep copy the
     /// capture path doesn't currently implement.
+    ///
+    /// This is a narrower predicate than `classifyResourceKind`. Use it only
+    /// where "is this an owned buffer?" is specifically the question. For
+    /// "does this type own a resource?" use
+    /// `classifyResourceKind(type) != ResourceKind::None`.
     static bool isOwnedBuffer(TypeAST* type);
 
 private:

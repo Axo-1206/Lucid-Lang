@@ -3,10 +3,12 @@
 ///
 /// ─── What This File Is ────────────────────────────────────────────────────
 /// The state that exists while lowering one function body and is restored
-/// when the body finishes. Three things live here:
+/// when the body finishes. Three groups of things live here:
 ///
-///   1. The current `llvm::Function*` being lowered. Lookups of parameters
-///      and returns go through it.
+///   1. The current `llvm::Function*` being lowered, its declared return
+///      type, and its environment pointer. These are the values that
+///      `return` lowering, parameter registration, and closure-body setup
+///      read.
 ///
 ///   2. The scope stack. Each `{ ... }` block pushes a `Scope`; the block's
 ///      exit pops it. The scope holds which bindings are alive and which
@@ -16,38 +18,56 @@
 ///      with the continue and exit blocks; `break`/`continue` read the
 ///      back.
 ///
-/// Plus a few scalar fields (`currentDeclaredReturnType`, `currentEnvPtr`)
-/// that describe what the current function is doing.
+/// Plus the `ValueDeclAST* → llvm::Value*` binding map that the emitter
+/// uses to resolve identifiers to their LLVM storage.
 ///
 /// ─── RAII Semantics ───────────────────────────────────────────────────────
-/// Constructing a `FunctionState` captures the previous state and installs
-/// the new one. Destroying it restores the previous state. A nested closure
-/// body constructs a nested `FunctionState`, and the enclosing function's
-/// state is restored when the closure body finishes. This replaces the
-/// `ClosureBodyScope` hack in the current codebase: nested function bodies
-/// are not a special case, they're just RAII.
+/// Constructing a `FunctionState` captures the enclosing function's scalar
+/// state from `ProgramState`, saves the builder's insertion point, and
+/// installs the new function. Destroying it restores the saved scalars and
+/// insertion point.
 ///
-/// What's captured and restored:
-///   - the current `llvm::Function*`
-///   - the builder's insertion point (via `InsertPointGuard`)
-///   - the declared return type
-///   - the environment pointer
-///   - the scope stack (moved into the new state, restored on destruction)
-///   - the loop stack (ditto)
+/// A nested closure body constructs a nested `FunctionState`. The
+/// enclosing function's scalars and insertion point are restored when the
+/// nested state is destroyed. This replaces the `ClosureBodyScope` RAII
+/// class from the pre-redesign codebase: nested function bodies are not a
+/// special case, they're just RAII.
 ///
-/// What's NOT captured:
-///   - the value lookup map (`ValueDeclAST* → llvm::Value*`). This is per-
-///     function but starts empty for each function. A nested closure body
-///     rebinds the captured declarations to its own env-loaded values as
-///     part of its own setup; the rebinding is captured and restored by
-///     an explicit save/restore (see `savedBindings` below), not by the
-///     scope-stack move.
+/// ─── What's Captured and Restored ─────────────────────────────────────────
+/// Captured from `ProgramState` on construction, restored on destruction:
+///
+///   - `currentFunction` — the `llvm::Function*` being lowered
+///   - `currentDeclaredReturnType` — the AST return type, used by `return`
+///   - `currentEnvPtr` — the environment pointer for a closure body
+///   - `currentFunctionState` — the pointer back to the enclosing
+///     `FunctionState` (or null for a top-level function)
+///
+/// Captured from the builder on construction, restored on destruction:
+///
+///   - the builder's insertion point, held by the `insertGuard` member
+///
+/// NOT captured, because they live entirely on `FunctionState` and are
+/// destroyed with it:
+///
+///   - `scopes`, `loops`, `values` — these start empty for each function
+///     body. A nested closure body has its own empty stacks and its own
+///     empty value map; the enclosing function's state is untouched.
+///     The `savedBindings` mechanism (see below) handles the specific
+///     case where the closure body rebinds a declaration that the
+///     enclosing function also has a binding for.
 ///
 /// ─── Why Not on ProgramState? ─────────────────────────────────────────────
-/// Function state is per-function, and a program has many functions. Putting
-/// it on `ProgramState` would mean manually saving and restoring it around
-/// every function body. RAII makes the discipline automatic and impossible
-/// to forget.
+/// Function state is per-function, and a program has many functions.
+/// Putting the scope stack, loop stack, and value map on `ProgramState`
+/// would mean saving and restoring them around every function body. RAII
+/// on `FunctionState` makes the discipline automatic and impossible to
+/// forget, and it means a nested function body's state can't leak into its
+/// enclosing function's state.
+///
+/// The scalar fields (`currentFunction` and friends) *are* on
+/// `ProgramState`, because the emitter and several other codegen files
+/// read them without holding a `FunctionState&`. `FunctionState` is what
+/// keeps them in sync with the active body.
 
 #pragma once
 
@@ -147,9 +167,9 @@ public:
     /// @brief Construct a `FunctionState` and install it.
     ///
     /// `program` is the owning `ProgramState`. The constructor captures the
-    /// current per-function state from `program`, installs `fn` as the
-    /// current function, saves the builder's insertion point, and clears
-    /// the scope/loop stacks so the new function starts fresh.
+    /// current per-function scalar state from `program`, installs `fn` as
+    /// the current function, and saves the builder's insertion point. The
+    /// scope stack, loop stack, and value map start empty for the new body.
     ///
     /// `declaredReturnType` is the function's AST return type, used by
     /// `return` lowering to coerce the value. May be null for void.
@@ -169,6 +189,14 @@ public:
 
     llvm::Value* environmentPtr() const { return envPtr; }
     void setEnvironmentPtr(llvm::Value* p) { envPtr = p; }
+
+    /// @brief The enclosing `FunctionState`, or null if this is a
+    ///        top-level function body.
+    ///
+    /// Read by `saveBinding` to reach the enclosing function's value map,
+    /// and by `restore` to reinstall the previous `currentFunctionState`
+    /// pointer on `ProgramState`.
+    FunctionState* enclosingState() const { return enclosing; }
 
     // ─── Scope Stack ──────────────────────────────────────────────────────
 
@@ -206,6 +234,10 @@ public:
     // declaration is clobbered. The closure body saves the previous
     // binding before clobbering and restores it on exit. This API
     // exposes that save/restore pair.
+    //
+    // A `saveBinding` call for a declaration in a top-level function
+    // (no enclosing `FunctionState`) is a no-op — there's nothing to
+    // save from.
 
     void saveBinding(ValueDeclAST* decl);
     void restoreSavedBindings();
@@ -213,7 +245,7 @@ public:
     // ─── Alive/Consumed Convenience ───────────────────────────────────────
     //
     // These forward to the current scope. Callers that need to look at all
-    // scopes (like `emitUnwindTo`) walk `scopes` directly.
+    // scopes (like `emitUnwindTo`) walk `scopeStack()` directly.
 
     void markAlive(ValueDeclAST* decl);
     void markConsumed(ValueDeclAST* decl);
@@ -233,23 +265,66 @@ private:
     ///
     /// Runs on every exit path (normal, early return, exception, ...),
     /// because C++ destructors run for RAII objects on all of them.
+    ///
+    /// Restores: the three scalar fields on `ProgramState`, the
+    /// `currentFunctionState` pointer on `ProgramState`, and any saved
+    /// bindings the closure-body setup clobbered. Does not touch the
+    /// builder's insertion point — that's the `insertGuard` destructor's
+    /// job, and it runs after this function returns.
     void restore();
 
     // ─── State ────────────────────────────────────────────────────────────
 
+    /// The owning program state. Held by reference; outlives every
+    /// `FunctionState`.
     ProgramState& program;
+
+    /// RAII guard for the builder's insertion point.
+    ///
+    /// Declared **after** `program` and **before** every other member, so
+    /// it's constructed after `program` (which it needs for
+    /// `program.builder()`) and destroyed last (member destruction is
+    /// reverse of declaration order). Its destructor restores the exact
+    /// insertion point that was current at construction time.
+    ///
+    /// The `InsertPointGuard` has no default constructor. It must be
+    /// initialized in the constructor's initializer list, and the list
+    /// must run after `program` is initialized.
+    llvm::IRBuilderBase::InsertPointGuard insertGuard;
+
+    /// The enclosing function's `FunctionState`, or null for a top-level
+    /// function body. Set by the constructor from
+    /// `program.currentFunctionState` (which the constructor then
+    /// overwrites with `this`). Restored by `restore()`.
     FunctionState* enclosing = nullptr;
 
+    /// The function being lowered. Captured from the constructor's `fn`
+    /// parameter; the constructor also stores it on `program` as
+    /// `program.currentFunction`.
     llvm::Function* fn = nullptr;
+
+    /// The declared AST return type, used by `return` lowering. Captured
+    /// from the constructor's `declaredReturnType` parameter; the
+    /// constructor also stores it on `program` as
+    /// `program.currentDeclaredReturnType`.
     TypeAST* returnType = nullptr;
+
+    /// The environment pointer for a closure body, or null. Set explicitly
+    /// by closure lowering; also mirrored on `program.currentEnvPtr` while
+    /// this state is active.
     llvm::Value* envPtr = nullptr;
 
+    /// The function's scope stack. Starts empty; the caller pushes the
+    /// function-level scope and each nested block's scope. Destroyed with
+    /// the `FunctionState`.
     std::vector<Scope> scopes;
+
+    /// The function's loop stack. Starts empty; each loop pushes and pops.
     std::vector<LoopInfo> loops;
 
-    /// The `ValueDeclAST* → llvm::Value*` map for this function. Moved out
-    /// of `program` on construction (the enclosing function's map, if any)
-    /// and moved back on destruction.
+    /// The function's `ValueDeclAST* → llvm::Value*` map. Starts empty;
+    /// parameter registration and local declaration push entries. Destroyed
+    /// with the `FunctionState`.
     std::unordered_map<ValueDeclAST*, llvm::Value*> values;
 
     /// Bindings that were clobbered by an inner function body and must be
@@ -258,33 +333,16 @@ private:
     /// value.
     std::vector<std::pair<ValueDeclAST*, llvm::Value*>> savedBindings;
 
-    // ─── Captured Enclosing State ─────────────────────────────────────────
-    //
-    // Everything below is captured on construction and restored on
-    // destruction. `prev*` names mean "the enclosing function state's
-    // value at the time this `FunctionState` was constructed."
-    //
-    // The builder insertion point is captured as an `InsertPointGuard`.
-    // Its destructor (called after `restore()`, because members destruct
-    // in reverse declaration order and it's declared first among the
-    // guards) restores the builder's insertion point.
-    //
-    // IMPORTANT: `InsertPointGuard` must be constructed before any code
-    // runs that could modify the builder, and its destructor restores the
-    // exact insertion point that was current at construction time. So it's
-    // the very first member (declaration order in the class), and its
-    // constructor runs before any of the other fields are set.
-
-    struct CapturedState {
+    /// Captured scalar state of the enclosing function. These are the
+    /// fields the constructor reads from `program` and the destructor
+    /// writes back to `program`.
+    struct CapturedScalars {
         llvm::Function* prevFunction = nullptr;
         TypeAST* prevReturnType = nullptr;
         llvm::Value* prevEnvPtr = nullptr;
-        std::vector<Scope> prevScopes;
-        std::vector<LoopInfo> prevLoops;
-        std::unordered_map<ValueDeclAST*, llvm::Value*> prevValues;
     };
 
-    CapturedState captured;
+    CapturedScalars captured;
 };
 
 } // namespace codegen

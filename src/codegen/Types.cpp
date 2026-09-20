@@ -14,6 +14,7 @@
 #include <llvm/IR/Type.h>
 
 #include <algorithm>
+#include <cctype>
 
 namespace codegen {
 
@@ -107,11 +108,11 @@ llvm::Type* Types::get(TypeAST* type) {
             break;
 
         default:
-            // No `ctx.diagnostics.errorAt` here — `Types` does not have a
-            // diagnostics sink. Callers that hit this path have a bug in
-            // their own dispatch; they should have validated the type
-            // before calling `get`. Returning null is the correct answer:
-            // the caller checks and emits a diagnostic if it can.
+            // No diagnostic here — `Types` doesn't have a diagnostics sink.
+            // Callers that hit this path have a bug in their own dispatch;
+            // they should have validated the type before calling `get`.
+            // Returning null is the correct answer: the caller checks and
+            // emits a diagnostic if it can.
             return nullptr;
     }
 
@@ -266,6 +267,12 @@ llvm::Type* Types::namedType(NamedTypeAST* named) {
     // normalization — Sema turns primitive names into `PrimitiveTypeAST`
     // — but the fallback is cheap and it keeps `Types` from crashing on
     // a not-yet-normalized input.
+    //
+    // The dispatch goes through `primitiveType` rather than `integerType`
+    // so that `string` and the float kinds produce the right LLVM type.
+    // `integerType` returns `i32` as a fallback for non-integer kinds,
+    // which would be wrong for `float` and would crash downstream code
+    // expecting a `lucid.String`.
     std::string typeNameStr = pool.lookup(named->name);
     static const std::unordered_map<std::string, PrimitiveKind> primMap = {
         {"bool", PrimitiveKind::Bool},
@@ -284,12 +291,11 @@ llvm::Type* Types::namedType(NamedTypeAST* named) {
 
     auto it = primMap.find(typeNameStr);
     if (it != primMap.end()) {
-        llvm::Type* prim = integerType(it->second);
-        if (it->second == PrimitiveKind::Bool
-            || it->second == PrimitiveKind::Char) {
-            // `integerType` handles all integer kinds. For `string` and
-            // the float kinds we fall through to a real lookup below.
-        }
+        // Build a temporary `PrimitiveTypeAST` and dispatch through the
+        // same path `get` uses for a real primitive. The temporary lives
+        // on the stack; `primitiveType` doesn't keep a reference to it.
+        PrimitiveTypeAST tmp(it->second);
+        llvm::Type* prim = primitiveType(&tmp);
         if (prim) return prim;
     }
 
@@ -343,8 +349,12 @@ llvm::StructType* Types::structType(StructDeclAST* decl) {
     // `structType(Node)` via `nullableType`. The cache hit returns the
     // opaque type, which is fine — a nullable struct is `{ i8, ptr }`, not
     // `{ i8, Node }`, so the recursion terminates.
+    //
+    // The cache is the ONLY place the LLVM struct type is stored. There is
+    // no `StructDeclAST::llvmType` field mirroring it — that field was
+    // removed in Phase 1 so the AST stays LLVM-free. Two copies of the
+    // same fact is the drift hazard the redesign removes.
     structCache[decl] = structType;
-    decl->llvmType = structType;   // still cached on the AST for now
 
     // ─── Build field types ────────────────────────────────────────────────
     std::vector<llvm::Type*> fieldTypes;
@@ -563,11 +573,19 @@ llvm::Type* Types::arrayType(ArrayTypeAST* type) {
         case ArrayKind::Dynamic:
             // `[*]T` is a heap-owned buffer. Today it lowers to a bare
             // `ptr`; the length is not tracked in the type. This is a
-            // known limitation — the ownership layer needs the length
-            // to free correctly, and today it doesn't have it. A future
-            // refactor may change this to `{ ptr data, i64 len, i64 cap }`
-            // to match `OwnedBuffer`'s actual shape. For now, preserving
-            // the current shape keeps this task a rename.
+            // known inconsistency with `Ownership::dropOwnedBuffer`,
+            // which expects a `{ ptr, i64, i64 }` shape.
+            //
+            // The fix is to lower dynamic arrays to the same three-field
+            // shape as strings:
+            //     { ptr data, i64 len, i64 cap }
+            // That change ripples through the array-literal emitter, the
+            // index emitter, the slice emitter, and `Ownership`, all of
+            // which currently treat a dynamic array as a bare pointer.
+            // It's scheduled for a Phase 4 pass; until then, dynamic
+            // arrays that reach `Ownership::dropOwnedBuffer` will fail
+            // the `CreateExtractValue` because they're pointers, not
+            // structs.
             return llvm::PointerType::get(llvmCtx, 0);
 
         case ArrayKind::Slice: {
@@ -892,10 +910,10 @@ uint64_t Types::alignOf(TypeAST* type) {
 bool Types::isOwnedBuffer(TypeAST* type) {
     if (!type) return false;
 
-    // A string or a dynamic array is an owned buffer. Both lower to
-    // the same `{ ptr, i64, i64 }` shape (or, for the dynamic array
-    // today, to a bare `ptr` that will be a `{ ptr, i64, i64 }` after
-    // the ownership refactor) and both share the same semantics: a
+    // A string or a dynamic array is an owned buffer. Both lower to the
+    // same `{ ptr, i64, i64 }` shape (or, for the dynamic array today, to
+    // a bare `ptr` that will become a `{ ptr, i64, i64 }` when the
+    // Phase 4 array lowering lands) and both share the same semantics: a
     // copy is a deep copy, a drop frees the buffer.
     if (type->isa<PrimitiveTypeAST>()) {
         return type->as<PrimitiveTypeAST>()->primitiveKind

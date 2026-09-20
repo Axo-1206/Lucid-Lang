@@ -3,20 +3,23 @@
 ///
 /// ─── How To Read This File ─────────────────────────────────────────────────
 /// This file is an X-macro table. It is not a header and is not #included
-/// directly; it is #included by three consumers, each of which #defines
+/// directly; it is #included by four consumers, each of which #defines
 /// LUCID_RT to something different before including it:
 ///
-///   1. src/codegen/Abi.cpp — declares the LLVM prototypes and builds the
-///      typed call wrappers. Each row becomes one method on codegen::Abi.
+///   1. src/codegen/Abi.hpp — defines the RuntimeFn enumerator rows and
+///      emits one variadic member template per row.
 ///
-///   2. src/runtime/exports.cpp — emits the extern "C" prototypes that
-///      the runtime implementations must match. A mismatch between a row
-///      here and a definition in src/runtime/*.cpp is a compile error.
+///   2. src/codegen/Abi.cpp — builds the RuntimeFn → (symbol, tags) table
+///      and the emitCall dispatch.
 ///
-///   3. src/interpreter/JITSession.cpp — builds the symbol name list the
+///   3. src/runtime/exports.cpp — emits the extern "C" prototypes that
+///      the runtime implementations must match, and takes each function's
+///      address into a table so its definition is forced to be linked.
+///
+///   4. src/interpreter/JITSession.cpp — builds the symbol name list the
 ///      JIT's DynamicLibrarySearchGenerator registers.
 ///
-/// Because all three read the same table, the three views cannot drift.
+/// Because all of them read the same table, their views cannot drift.
 /// Before this file existed, the CodeGen-side declaration, the runtime-side
 /// definition, and the interpreter-side lookup each spelled the name and
 /// signature independently; that is how __lucid_alloc_env's drop-callback
@@ -27,56 +30,50 @@
 ///
 /// ReturnType and ParamTypes use the following type tags. The full mapping
 /// from tag to C++ type is in runtime-abi/lucid_abi.h, in the
-/// "Type-tag mapping" section at the bottom.
+/// "Type-tag mapping" section, and in runtime/exports.cpp for the pointer
+/// variants.
 ///
-///   Void    — no return value / no parameter
-///   I1      — the ABI boolean (LucidBool, one byte at the C++ level)
-///   I8      — int8 / Lucid char
-///   I32     — int32 (used by char_to_str for the codepoint)
-///   I64     — int64 / size / length / capacity / refcount
-///   F64     — double
-///   Ptr     — opaque pointer or out-pointer (see the row's doc comment)
-///   Str     — LucidString by value
-///   Slice   — LucidSlice by value
-///   Arena   — LucidArena by value
-///   Desc    — LucidArenaDescriptor by value
+///   Void     — no return value / no parameter
+///   I1       — the ABI boolean (LucidBool, one byte at the C++ level)
+///   I8       — int8 / Lucid char
+///   I32      — int32 (used by char_to_str for the codepoint)
+///   I64      — int64 / size / length / capacity / refcount
+///   F64      — double
+///   Ptr      — an opaque pointer with no statically-known pointee type
+///   StrPtr   — a LucidString*
+///   SlicePtr — a LucidSlice*
+///   ArenaPtr — a LucidArena*
+///   DescPtr  — a LucidArenaDescriptor*
+///   Str      — LucidString BY VALUE (forbidden in parameter positions)
+///   Slice    — LucidSlice BY VALUE (forbidden in parameter positions)
+///   Arena    — LucidArena BY VALUE (forbidden in parameter positions)
+///   Desc     — LucidArenaDescriptor BY VALUE (forbidden in parameter positions)
 ///
-/// ─── Why Str/Arena/Desc, not Ptr ──────────────────────────────────────────
-/// Every row's parameter and return types use the *Lucid-level* type, not
-/// the C-level type. A LucidString by value is spelled `Str`, not `Ptr`,
-/// even though at the machine level it is passed as three registers or a
-/// byval pointer. An Arena by value is spelled `Arena`, not `Ptr`. An
-/// ArenaDescriptor by value is spelled `Desc`, not `Ptr`.
+/// ─── The By-Pointer Convention ────────────────────────────────────────────
+/// Struct types (`LucidString`, `LucidSlice`, `LucidArena`,
+/// `LucidArenaDescriptor`) are never passed by value. LLVM and the platform
+/// C ABI disagree about how to pass a struct by value — LLVM treats a
+/// first-class aggregate parameter as a bundle of fields and passes them
+/// individually, the platform C ABI treats the struct as a single unit and
+/// passes it by hidden pointer (for structs larger than 16 bytes on the
+/// two platforms Lucid targets) or in registers (for smaller) — and the
+/// disagreement is silent until the call runs.
 ///
-/// The reason is that this table is read by three consumers, and two of
-/// them need the Lucid-level type to do their job:
+/// The rule: every struct-typed parameter uses the corresponding `*Ptr`
+/// tag and is passed by pointer. The caller allocates the struct somewhere
+/// (a stack slot for an argument, an out-slot for a result) and passes its
+/// address; the callee dereferences the pointer.
 ///
-///   1. src/codegen/Abi.cpp builds an llvm::FunctionType from each row.
-///      With `Str`, it calls ctx.getStringType() and gets a struct type.
-///      With `Ptr`, it would call getPtrType() and get an opaque pointer,
-///      which is wrong for a by-value argument.
-///
-///   2. src/runtime/exports.cpp emits the extern "C" prototype from each
-///      row. With `Str`, the prototype is `LucidString` by value, and the
-///      compiler checks the definition against it. With `Ptr`, the
-///      prototype is `void*`, and the definition has to cast.
-///
-///   3. src/interpreter/JITSession.cpp only reads the symbol names, so it
-///      is indifferent. But it benefits from the same source of truth.
-///
-/// The cost is that runtime/exports.cpp and codegen/Abi.cpp have to agree
-/// on what `Str` means in terms of C++ and LLVM types. That agreement is
-/// written down once, in lucid_abi.h, as the LucidString struct and its
-/// static_asserts. Changing the layout of LucidString without updating
-/// lucid_abi.h is the only way to break the agreement, and the
-/// static_asserts catch that case at compile time.
-///
-/// `Ptr` is still used for genuinely opaque pointers: the `out` parameter
-/// of every formatter and string constructor, the `env` parameter of the
-/// closure functions, the `thunk` and `packet` parameters of the
-/// concurrency functions. `Ptr` in this table means "an untyped pointer,
-/// and the ABI does not constrain what it points at." `Str` means "a
-/// LucidString by value, laid out per lucid_abi.h."
+/// The `Str`/`Slice`/`Arena`/`Desc` tags still exist for type identity —
+/// `Abi.cpp`'s `llvmTypeForTag` maps them to the corresponding LLVM struct
+/// types, which is what makes a `*Ptr` tag distinguishable from a `Ptr`
+/// tag at the point where the pointer's pointee type matters — but they
+/// must never appear in a row's parameter or return position.
+/// `exports.cpp` expands the by-value tags to the struct type, so an
+/// accidental use produces a prototype whose signature does not match the
+/// runtime's pointer-based implementation, and the compiler rejects it.
+/// `Abi.cpp` also asserts the convention in debug builds with a clearer
+/// message.
 ///
 /// ─── Adding A Row ──────────────────────────────────────────────────────────
 /// Adding a row here is the *only* correct way to add a runtime function.
@@ -84,8 +81,8 @@
 ///   1. Implement the function in src/runtime/ with the signature the row
 ///      implies. If the signature does not match the row,
 ///      src/runtime/exports.cpp fails to compile.
-///   2. Call it from CodeGen via ctx.abi().<EnumName>(...). Never spell
-///      the symbol name at the call site.
+///   2. Call it from CodeGen via `abi.<EnumName>(builder, args...)`. Never
+///      spell the symbol name at the call site.
 ///
 /// ─── Ordering ──────────────────────────────────────────────────────────────
 /// Grouped by subsystem, in the order the subsystems are presented in
@@ -117,7 +114,7 @@ LUCID_RT(Free,       "__lucid_free",        Void, (Ptr))
 LUCID_RT(LeakReport, "__lucid_leak_report", Void, ())
 
 // ─── Arena ────────────────────────────────────────────────────────────────
-//   void   __lucid_arena_create(LucidArenaDescriptor* out, uint64_t size)
+//   void   __lucid_arena_create(ArenaDescriptor* out, uint64_t size)
 //     Writes a freshly allocated region's descriptor to *out. On failure,
 //     out->base is null.
 //   void*  __lucid_arena_alloc(Arena* arena, uint64_t size, uint64_t align)
@@ -131,42 +128,50 @@ LUCID_RT(LeakReport, "__lucid_leak_report", Void, ())
 //   bool     __lucid_arena_is_empty(const Arena*)
 //   uint64_t __lucid_arena_space(const Arena*, uint64_t elem_size)
 //   bool     __lucid_arena_can_fit(const Arena*, uint64_t elem_size, uint64_t count)
-LUCID_RT(ArenaCreate,    "__lucid_arena_create",    Void, (Ptr, I64))
-LUCID_RT(ArenaAlloc,     "__lucid_arena_alloc",     Ptr,  (Ptr, I64, I64))
-LUCID_RT(ArenaReset,     "__lucid_arena_reset",     Void, (Ptr))
-LUCID_RT(ArenaFree,      "__lucid_arena_free",      Void, (Ptr))
-LUCID_RT(ArenaCapacity,  "__lucid_arena_capacity",  I64,  (Ptr))
-LUCID_RT(ArenaRemaining, "__lucid_arena_remaining", I64,  (Ptr))
-LUCID_RT(ArenaIsEmpty,   "__lucid_arena_is_empty",  I1,   (Ptr))
-LUCID_RT(ArenaSpace,     "__lucid_arena_space",     I64,  (Ptr, I64))
-LUCID_RT(ArenaCanFit,    "__lucid_arena_can_fit",   I1,   (Ptr, I64, I64))
+LUCID_RT(ArenaCreate,    "__lucid_arena_create",    Void, (DescPtr, I64))
+LUCID_RT(ArenaAlloc,     "__lucid_arena_alloc",     Ptr,  (ArenaPtr, I64, I64))
+LUCID_RT(ArenaReset,     "__lucid_arena_reset",     Void, (ArenaPtr))
+LUCID_RT(ArenaFree,      "__lucid_arena_free",      Void, (ArenaPtr))
+LUCID_RT(ArenaCapacity,  "__lucid_arena_capacity",  I64,  (ArenaPtr))
+LUCID_RT(ArenaRemaining, "__lucid_arena_remaining", I64,  (ArenaPtr))
+LUCID_RT(ArenaIsEmpty,   "__lucid_arena_is_empty",  I1,   (ArenaPtr))
+LUCID_RT(ArenaSpace,     "__lucid_arena_space",     I64,  (ArenaPtr, I64))
+LUCID_RT(ArenaCanFit,    "__lucid_arena_can_fit",   I1,   (ArenaPtr, I64, I64))
 
 // ─── Strings ──────────────────────────────────────────────────────────────
-//   void __lucid_str_concat(LucidString* out, LucidString a, LucidString b)
-//   void __lucid_str_slice (LucidString* out, LucidString s, int64 from, int64 to)
-//     Out-pointer convention. The caller owns an uninitialized LucidString
-//     and passes its address; the runtime writes a freshly allocated result
-//     into it. This replaces the by-value return convention, which could not
-//     represent allocation failure and could not share the single allocator.
-//   bool __lucid_str_eq(LucidString a, LucidString b)
+//   void __lucid_str_concat(LucidString* out, LucidString* a, LucidString* b)
+//     Writes the concatenation of *a and *b into *out. *out is a fresh
+//     heap allocation; the caller owns it.
+//
+//   void __lucid_str_slice(LucidString* out, LucidString* s,
+//                          int64 from, int64 to)
+//     Writes the substring s[from..to) into *out. *out is a fresh heap
+//     allocation.
+//
+//   bool __lucid_str_eq(LucidString* a, LucidString* b)
 //     Length-then-bytes comparison. No allocation.
-LUCID_RT(StrConcat, "__lucid_str_concat", Void, (Ptr, Str, Str))
-LUCID_RT(StrSlice,  "__lucid_str_slice",  Void, (Ptr, Str, I64, I64))
-LUCID_RT(StrEq,     "__lucid_str_eq",     I1,   (Str, Str))
+//
+// All three pass the strings by pointer, per the by-pointer convention.
+// The LucidString layout itself is unchanged; only the passing convention
+// is.
+LUCID_RT(StrConcat, "__lucid_str_concat", Void, (StrPtr, StrPtr, StrPtr))
+LUCID_RT(StrSlice,  "__lucid_str_slice",  Void, (StrPtr, StrPtr, I64, I64))
+LUCID_RT(StrEq,     "__lucid_str_eq",     I1,   (StrPtr, StrPtr))
 
 // ─── Formatters (#tostr, #ptrstr) ─────────────────────────────────────────
-//   All formatters use the out-pointer convention: the caller allocates the
-//   result slot, the runtime writes the string into it.
+//   All formatters use the out-pointer convention: the caller allocates
+//   the result slot and passes its address, the runtime writes the string
+//   into it.
 //   bool_to_str takes I1 (LucidBool, one byte) rather than the C++ bool
 //   because the C ABI does not guarantee bool-sized parameters; passing a
 //   named one-byte type avoids the promotion mismatch that caused the
 //   original segfault.
-LUCID_RT(PtrToHexString, "__lucid_ptr_to_hex_string", Void, (Ptr, Ptr))
-LUCID_RT(BoolToStr,      "__lucid_bool_to_str",       Void, (Ptr, I1))
-LUCID_RT(CharToStr,      "__lucid_char_to_str",       Void, (Ptr, I32))
-LUCID_RT(IntToStr,       "__lucid_int_to_str",        Void, (Ptr, I64))
-LUCID_RT(UintToStr,      "__lucid_uint_to_str",       Void, (Ptr, I64))
-LUCID_RT(FloatToStr,     "__lucid_float_to_str",      Void, (Ptr, F64))
+LUCID_RT(PtrToHexString, "__lucid_ptr_to_hex_string", Void, (StrPtr, Ptr))
+LUCID_RT(BoolToStr,      "__lucid_bool_to_str",       Void, (StrPtr, I1))
+LUCID_RT(CharToStr,      "__lucid_char_to_str",       Void, (StrPtr, I32))
+LUCID_RT(IntToStr,       "__lucid_int_to_str",        Void, (StrPtr, I64))
+LUCID_RT(UintToStr,      "__lucid_uint_to_str",       Void, (StrPtr, I64))
+LUCID_RT(FloatToStr,     "__lucid_float_to_str",      Void, (StrPtr, F64))
 
 // ─── Panic ────────────────────────────────────────────────────────────────
 //   void __lucid_panic(const char* message)

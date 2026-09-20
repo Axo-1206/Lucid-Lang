@@ -9,7 +9,27 @@
 /// A Lucid string is a 3-field struct: { ptr, len, cap } where:
 ///   - ptr: pointer to UTF-8 encoded data on the heap
 ///   - len: length in bytes (not characters)
-///   - cap: capacity in bytes
+///   - cap: capacity in bytes; 0 means static (do not free)
+///
+/// ─── By-Pointer Convention ──────────────────────────────────────────────────
+/// Every function in this file takes its `LucidString` parameters by
+/// pointer. See the "By-Pointer Convention" section of
+/// runtime-abi/functions.def for why: LLVM and the platform C ABI disagree
+/// about passing a 24-byte struct by value, and the disagreement is silent.
+///
+/// The out-parameter is always the first argument. Functions that produce
+/// a `LucidString` write the result through it; the caller allocates the
+/// slot and passes its address. Functions that only read take their inputs
+/// by pointer and never modify them, even though the C++ type system does
+/// not mark them `const` — the by-pointer tags in `functions.def` do not
+/// carry qualifiers, so the discipline is code review, not the compiler.
+///
+/// ─── Signature Contract ─────────────────────────────────────────────────────
+/// The signatures in this file are checked against `functions.def` by
+/// `runtime/exports.cpp`. If a signature here does not match the
+/// corresponding row's tag expansion, the compiler reports a conflicting
+/// declaration at build time. Changing a signature here without changing
+/// the row (or vice versa) fails the build.
 
 #include <cstdint>
 #include <cstddef>
@@ -21,14 +41,25 @@
 #include <cmath>
 
 // ─── String Layout ──────────────────────────────────────────────────────────
-// Matches the canonical string type in CodeGenContext::getStringType()
+// Matches the canonical string type in lucid_abi.h
+// (`lucid::abi::LucidString`) and in codegen/Types.cpp's `stringType()`.
+//
+// This definition is a duplicate of the one in lucid_abi.h. It is here so
+// that this file does not need to include lucid_abi.h, which would pull in
+// the C++ static_assert machinery and the ABI's constexpr helpers. In
+// practice the two definitions must have identical layout, and the
+// static_asserts in lucid_abi.h are what catch a divergence.
 struct LucidString {
-    void* ptr;      // Pointer to UTF-8 data
-    uint64_t len;   // Length in bytes
-    uint64_t cap;   // Capacity in bytes
+    void*    ptr;    // Pointer to UTF-8 data
+    uint64_t len;    // Length in bytes
+    uint64_t cap;    // Capacity in bytes; 0 == static (do not free)
 };
 
 // ─── Helper: Allocate a new string ──────────────────────────────────────────
+//
+// Returns a LucidString with a fresh heap buffer of `len` bytes (plus the
+// null terminator) and `cap == len + 1`. The caller owns the buffer; it
+// will be freed by the ownership layer when the string's binding dies.
 static LucidString allocString(const char* data, uint64_t len) {
     LucidString result;
     result.len = len;
@@ -41,116 +72,147 @@ static LucidString allocString(const char* data, uint64_t len) {
     return result;
 }
 
-// ─── Helper: Free a string ──────────────────────────────────────────────────
-static void freeString(LucidString* str) {
-    if (str && str->ptr) {
-        std::free(str->ptr);
-        str->ptr = nullptr;
-        str->len = 0;
-        str->cap = 0;
-    }
-}
-
-// ─── Helper: Ensure string capacity ─────────────────────────────────────────
-static bool ensureCapacity(LucidString* str, uint64_t needed) {
-    if (str->cap >= needed) {
-        return true;
-    }
-    uint64_t newCap = str->cap * 2;
-    if (newCap < needed) newCap = needed;
-    void* newPtr = std::realloc(str->ptr, newCap);
-    if (!newPtr) {
-        return false;
-    }
-    str->ptr = newPtr;
-    str->cap = newCap;
-    return true;
-}
-
 extern "C" {
 
 // ─── String Operations ──────────────────────────────────────────────────────
 
 /// @brief Concatenate two strings.
-/// @param a First string.
-/// @param b Second string.
-/// @return New string containing a + b.
-LucidString __lucid_str_concat(LucidString a, LucidString b) {
-    uint64_t totalLen = a.len + b.len;
+///
+/// Writes the concatenation of `*a` and `*b` into `*out`. `*out` receives
+/// a fresh heap allocation that the caller owns. On allocation failure,
+/// `out->ptr` is null and `out->len` is 0; the caller's ownership layer
+/// treats a null-`ptr` string as an empty string.
+void __lucid_str_concat(LucidString* out,
+                        LucidString* a,
+                        LucidString* b) {
+    if (!out) return;
+
+    // Initialize the out-slot to a safe default.
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
+    if (!a || !b) return;
+
+    uint64_t totalLen = a->len + b->len;
     LucidString result = allocString("", totalLen);
     if (!result.ptr) {
-        return LucidString{nullptr, 0, 0};
+        return;
     }
-    if (a.ptr && a.len > 0) {
-        std::memcpy(result.ptr, a.ptr, a.len);
+    if (a->ptr && a->len > 0) {
+        std::memcpy(result.ptr, a->ptr, a->len);
     }
-    if (b.ptr && b.len > 0) {
-        std::memcpy(static_cast<char*>(result.ptr) + a.len, b.ptr, b.len);
+    if (b->ptr && b->len > 0) {
+        std::memcpy(static_cast<char*>(result.ptr) + a->len, b->ptr, b->len);
     }
-    return result;
+    *out = result;
 }
 
 /// @brief Extract a substring.
-/// @param s Input string.
-/// @param from Start index (inclusive).
-/// @param to End index (exclusive).
-/// @return New string containing s[from:to].
-LucidString __lucid_str_slice(LucidString s, uint64_t from, uint64_t to) {
-    if (from > to || from > s.len || to > s.len) {
-        return LucidString{nullptr, 0, 0};
+///
+/// Writes `s[from..to)` into `*out`. The result is a fresh heap allocation
+/// that the caller owns.
+///
+/// If `from > to`, `from > s->len`, or `to > s->len`, the out-slot is left
+/// as an empty string. The caller's emitter performs the bounds check
+/// before calling, so an out-of-range call here is a codegen bug; the safe
+/// default keeps the runtime robust in case it happens.
+void __lucid_str_slice(LucidString* out,
+                       LucidString* s,
+                       uint64_t from,
+                       uint64_t to) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
+    if (!s) return;
+
+    if (from > to || from > s->len || to > s->len) {
+        return;
     }
     uint64_t len = to - from;
     LucidString result = allocString("", len);
     if (!result.ptr) {
-        return LucidString{nullptr, 0, 0};
+        return;
     }
-    if (s.ptr && len > 0) {
-        std::memcpy(result.ptr, static_cast<char*>(s.ptr) + from, len);
+    if (s->ptr && len > 0) {
+        std::memcpy(result.ptr, static_cast<const char*>(s->ptr) + from, len);
     }
-    return result;
+    *out = result;
 }
 
 /// @brief Compare two strings for equality.
-/// @param a First string.
-/// @param b Second string.
-/// @return 1 if equal, 0 otherwise.
-int __lucid_str_eq(LucidString a, LucidString b) {
-    if (a.len != b.len) {
+///
+/// Returns 1 if equal, 0 otherwise. Length-then-bytes comparison; no
+/// allocation.
+int __lucid_str_eq(LucidString* a, LucidString* b) {
+    if (!a || !b) {
+        // Null pointers are equal only if both are null.
+        return (a == b) ? 1 : 0;
+    }
+    if (a->len != b->len) {
         return 0;
     }
-    if (a.ptr == b.ptr) {
+    if (a->ptr == b->ptr) {
         return 1;  // Same pointer
     }
-    if (a.len == 0 && b.len == 0) {
+    if (a->len == 0 && b->len == 0) {
         return 1;  // Both empty
     }
-    return std::memcmp(a.ptr, b.ptr, a.len) == 0 ? 1 : 0;
+    if (!a->ptr || !b->ptr) {
+        // One has data, the other doesn't. Lengths matched (both 0) or
+        // one is null-but-nonzero, which is a broken string. Not equal.
+        return 0;
+    }
+    return std::memcmp(a->ptr, b->ptr, a->len) == 0 ? 1 : 0;
 }
 
+// ─── Formatters (#tostr / #ptrstr) ──────────────────────────────────────────
+
 /// @brief Format a pointer as a hex string.
-/// @param ptr Pointer to format.
-/// @return String containing "0x00000000..." representation.
-LucidString __lucid_ptr_to_hex_string(void* ptr) {
+///
+/// Writes "0x00000000..." into `*out`. The caller owns the buffer.
+void __lucid_ptr_to_hex_string(LucidString* out, void* ptr) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
     std::ostringstream oss;
     oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
         << reinterpret_cast<uintptr_t>(ptr);
     std::string str = oss.str();
-    return allocString(str.c_str(), str.length());
+    *out = allocString(str.c_str(), str.length());
 }
 
 /// @brief Convert a boolean to a string.
-/// @param b Boolean value.
-/// @return "true" or "false".
-LucidString __lucid_bool_to_str(int b) {
+///
+/// Writes "true" or "false" into `*out`.
+void __lucid_bool_to_str(LucidString* out, uint8_t b) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
     const char* str = b ? "true" : "false";
-    return allocString(str, std::strlen(str));
+    *out = allocString(str, std::strlen(str));
 }
 
 /// @brief Convert a Unicode codepoint to a string.
-/// @param codepoint Unicode codepoint (UTF-32).
-/// @return String containing the UTF-8 encoded character.
-LucidString __lucid_char_to_str(uint32_t codepoint) {
-    // Simple UTF-8 encoding
+///
+/// Writes the UTF-8 encoding of `codepoint` into `*out`.
+void __lucid_char_to_str(LucidString* out, uint32_t codepoint) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
+    // Simple UTF-8 encoding.
     char buffer[5] = {0};
     int len = 0;
     if (codepoint < 0x80) {
@@ -172,34 +234,45 @@ LucidString __lucid_char_to_str(uint32_t codepoint) {
         buffer[3] = static_cast<char>(0x80 | (codepoint & 0x3F));
         len = 4;
     }
-    return allocString(buffer, len);
+    *out = allocString(buffer, len);
 }
 
 /// @brief Convert a signed 64-bit integer to a string.
-/// @param v Integer value.
-/// @return String representation.
-LucidString __lucid_int_to_str(int64_t v) {
+void __lucid_int_to_str(LucidString* out, int64_t v) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
     std::string str = std::to_string(v);
-    return allocString(str.c_str(), str.length());
+    *out = allocString(str.c_str(), str.length());
 }
 
 /// @brief Convert an unsigned 64-bit integer to a string.
-/// @param v Unsigned integer value.
-/// @return String representation.
-LucidString __lucid_uint_to_str(uint64_t v) {
+void __lucid_uint_to_str(LucidString* out, uint64_t v) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
     std::string str = std::to_string(v);
-    return allocString(str.c_str(), str.length());
+    *out = allocString(str.c_str(), str.length());
 }
 
 /// @brief Convert a floating-point value to a string.
-/// @param v Double value.
-/// @return String representation.
-LucidString __lucid_float_to_str(double v) {
+void __lucid_float_to_str(LucidString* out, double v) {
+    if (!out) return;
+
+    out->ptr = nullptr;
+    out->len = 0;
+    out->cap = 0;
+
     std::ostringstream oss;
-    // Use default formatting for now
     oss << v;
     std::string str = oss.str();
-    return allocString(str.c_str(), str.length());
+    *out = allocString(str.c_str(), str.length());
 }
 
 } // extern "C"

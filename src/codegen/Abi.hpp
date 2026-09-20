@@ -28,7 +28,7 @@
 ///
 /// ─── Why a Class, Not Free Functions ──────────────────────────────────────
 /// Each declared `llvm::Function*` must be cached per module: the first
-/// `abi.alloc(...)` in a module declares `__lucid_alloc`, and every later
+/// `abi.Alloc(...)` in a module declares `__lucid_alloc`, and every later
 /// call reuses the same `llvm::Function*`. That cache is state, and the
 /// state belongs to a program. `Abi` is constructed once per
 /// `ProgramState`, holds the cache, and is reached as `ctx.abi()`.
@@ -55,6 +55,7 @@
 
 #include "Types.hpp"
 
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
@@ -63,6 +64,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 
 namespace codegen {
@@ -91,63 +93,6 @@ enum class RuntimeFn {
 #undef LUCID_RT
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Arity helpers for the X-macro method-signature expansion
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Every runtime function takes zero or more `llvm::Value*` arguments. The
-// types differ only in the `llvm::FunctionType`, which is built inside the
-// method body. So the C++ method signature is uniform in shape: all
-// parameters are `llvm::Value*`, and the arity is all that varies.
-//
-// These macros expand a parenthesized tuple of tags — `(I64, Ptr)` — into
-// a comma-separated list of `llvm::Value*` parameters with named
-// parameters `_a0`, `_a1`, ... The tag values themselves (`I64`, `Ptr`,
-// etc.) are not used in the signature — they're used inside the body to
-// build the `llvm::FunctionType`. The method treats them as opaque.
-//
-// Arity is capped at 3 because no row in `functions.def` has more than
-// 3 parameters. Adding a row with 4 would require adding
-// `LUCID_RT_PARAMS_4` below and extending the dispatch macro.
-
-#define LUCID_RT_PARAMS_0()
-#define LUCID_RT_PARAMS_1(A)          llvm::Value* _a0
-#define LUCID_RT_PARAMS_2(A, B)       llvm::Value* _a0, llvm::Value* _a1
-#define LUCID_RT_PARAMS_3(A, B, C)    llvm::Value* _a0, llvm::Value* _a1, \
-                                      llvm::Value* _a2
-
-// Dispatch on the number of arguments in the tuple.
-//
-// `LUCID_RT_GET_MACRO` picks the Nth-name macro from a list based on how
-// many args follow it. With 3 named prefixes, the last argument is always
-// the one that wins. So `LUCID_RT_GET_MACRO(a, b, c, _3, _2, _1, _0)`
-// expands to `_3`. The trick is that the tuple's commas are what make
-// the counting work.
-#define LUCID_RT_GET_MACRO(_1, _2, _3, NAME, ...) NAME
-
-// The empty tuple `()` matches `LUCID_RT_GET_MACRO(_1, _2, _3, ...)`
-// with `_1 = `, `_2 = `, `_3 = ` — the trailing arguments vanish. That
-// is, `LUCID_RT_GET_MACRO()` expands to `_3` (the last of the fixed
-// names). This is a known quirk of the pattern; the arity-0 dispatch
-// works because all three slots are empty.
-#define LUCID_RT_APPLY_PARAMS_0() LUCID_RT_PARAMS_0()
-#define LUCID_RT_APPLY_PARAMS_1(A) LUCID_RT_PARAMS_1(A)
-#define LUCID_RT_APPLY_PARAMS_2(A, B) LUCID_RT_PARAMS_2(A, B)
-#define LUCID_RT_APPLY_PARAMS_3(A, B, C) LUCID_RT_PARAMS_3(A, B, C)
-
-// `LUCID_RT_ARGS` takes the parenthesized params tuple and produces the
-// C++ parameter list.
-//
-// Usage: `LUCID_RT_ARGS((I64, Ptr))` → `llvm::Value* _a0, llvm::Value* _a1`
-//
-// This is the mechanism that keeps the method signature in sync with the
-// row's arity without hand-writing it.
-#define LUCID_RT_ARGS(Params) \
-    LUCID_RT_GET_MACRO Params (LUCID_RT_APPLY_PARAMS_3, \
-                                LUCID_RT_APPLY_PARAMS_2, \
-                                LUCID_RT_APPLY_PARAMS_1, \
-                                LUCID_RT_APPLY_PARAMS_0) Params
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Abi — typed, cached runtime call surface
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -166,25 +111,31 @@ public:
     Abi(Abi&&) = delete;
     Abi& operator=(Abi&&) = delete;
 
-    // ─── Method Declarations ──────────────────────────────────────────────
+    // ─── Method Definitions ───────────────────────────────────────────────
     //
-    // Generated from `functions.def`. Each row produces one method whose
-    // name is the row's enumerator and whose C++ signature is
-    // `llvm::Value* method(llvm::IRBuilder<>&, llvm::Value*, ...)` — one
-    // argument per tuple element, all typed as `llvm::Value*`.
+    // Generated from `functions.def`. Each row produces one member function
+    // template named after the row's enumerator:
     //
-    // Inside the generated method (see Abi.cpp):
-    //   1. The runtime function is declared if not already declared, and
-    //      the enumerator is recorded in `program_.usedRuntimeFns()`.
-    //   2. The call is emitted through the caller-supplied `IRBuilder`.
+    //     abi.StrSlice(builder, out, s, from, to);
+    //     abi.LeakReport(builder);
     //
-    // The methods are not `const` because they mutate the cache on first
-    // call. Callers should treat the returned `llvm::Value*` as the call's
-    // result value.
+    // The template is variadic on purpose. The table is the only place the
+    // parameter list is written down; C++ does not re-count it. That removes
+    // the preprocessor arity dispatch (and its cap and its empty-tuple
+    // trap). Instead `emitCall` checks, in debug builds, that the argument
+    // count and every argument's LLVM type match the row.
+    //
+    // Returns the call's result, or `nullptr` for `Void` functions. Not
+    // `const`: the first call for a given function mutates the cache.
 
-#define LUCID_RT(EnumName, Symbol, Ret, Params) \
-    llvm::Value* EnumName(llvm::IRBuilder<>& builder, \
-                          LUCID_RT_ARGS(Params));
+#define LUCID_RT(EnumName, Symbol, Ret, Params)                               \
+    template <typename... Vs>                                                 \
+    llvm::Value* EnumName(llvm::IRBuilder<>& builder, Vs... args) {           \
+        static_assert((std::is_convertible_v<Vs, llvm::Value*> && ...),       \
+                      #EnumName ": every argument must be an llvm::Value*");  \
+        return emitCall(RuntimeFn::EnumName, builder,                         \
+                        {static_cast<llvm::Value*>(args)...});                \
+    }
 
 #include "runtime-abi/functions.def"
 #undef LUCID_RT
@@ -205,8 +156,9 @@ public:
 
     /// @brief `__lucid_panic` is marked `noreturn` in the generated IR.
     ///
-    /// The panic runtime function never returns. Codegen needs to know this
-    /// so it can omit the fall-through block after a panic call.
+    /// The attribute is applied when the function is declared, so it holds
+    /// no matter which path first reaches it (`abi.Panic(...)` or this).
+    /// Codegen needs it so it can omit the fall-through block after a panic.
     llvm::Function* panicFn();
 
     /// @brief `__lucid_shutdown` is emitted at the end of `main`.
@@ -214,6 +166,15 @@ public:
 
 private:
     // ─── Internals ────────────────────────────────────────────────────────
+
+    /// @brief Shared body of every generated method: declare, check, call.
+    ///
+    /// Asserts (debug builds) that `args` matches the row's parameter count
+    /// and LLVM types, so passing an `i64` where the table says `Str` fails
+    /// at the call site instead of producing bad IR.
+    llvm::Value* emitCall(RuntimeFn fn,
+                          llvm::IRBuilder<>& builder,
+                          llvm::ArrayRef<llvm::Value*> args);
 
     /// @brief Build the `llvm::FunctionType` for a runtime function.
     ///
@@ -229,14 +190,9 @@ private:
     ProgramState& program_;
 
     /// Cache of declared runtime functions. Keyed on the enumerator, one
-    /// entry per `__lucid_*` symbol that has been used.
+    /// entry per `__lucid_*` symbol that has been used. `buildFunctionType`
+    /// only runs on a miss here, so it needs no cache of its own.
     std::unordered_map<RuntimeFn, llvm::Function*> functionCache;
-
-    /// Cache of built `llvm::FunctionType`s. Separate from the function
-    /// cache because a function can be looked up without being called
-    /// (via `declareOrGet`), and because building a `FunctionType` and
-    /// creating a `Function` are logically distinct operations.
-    std::unordered_map<RuntimeFn, llvm::FunctionType*> typeCache;
 };
 
 } // namespace codegen

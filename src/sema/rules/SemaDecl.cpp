@@ -120,7 +120,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     // binding's lifetime begins at declaration, and the ownership classification
     // is therefore fixed from the type alone before any value-specific
     // semantics are considered.
-    decl->resourceKind = ctx.classifyResourceKind(declaredType);
+    decl->resourceKind = classifyResourceKind(declaredType);
 
     // ─── 2. Validate const type ────────────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
@@ -473,7 +473,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // The function binding owns its closure environment only when the type is a
     // `cls`; otherwise it is just a bare function pointer with no owned heap
     // resource.
-    decl->resourceKind = ctx.classifyResourceKind(funcType);
+    decl->resourceKind = classifyResourceKind(funcType);
 
     // ─── 5. Foreign functions: no body, no init ───────────────────────────
     if (decl->isForeignFunction) {
@@ -620,7 +620,7 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
     //
     // Non-function param types classify normally: string and dynamic array
     // yield OwnedBuffer, everything else yields None.
-    param->resourceKind = ctx.classifyResourceKind(paramType);
+    param->resourceKind = classifyResourceKind(paramType);
     
     // ─── 2. Validate const parameter ────────────────────────────────────────
     if (param->isConstParam) {
@@ -917,7 +917,7 @@ bool resolveStructFieldDeclarations(
         // aggregate classification and the per-field drop glue; until
         // then, the field-level classification returns None for
         // FuncTypeAST, matching CodeGen today.
-        field->resourceKind = ctx.classifyResourceKind(fieldType);
+        field->resourceKind = classifyResourceKind(fieldType);
 
         // ─── 2. Reject Arena by value ──────────────────────────────────
         if (isArenaType(fieldType)) {
