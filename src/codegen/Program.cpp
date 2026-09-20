@@ -2,6 +2,7 @@
 /// @brief Implementation of per-program state.
 
 #include "Program.hpp"
+#include "ownership/Ownership.hpp"
 
 #include <cassert>
 
@@ -25,6 +26,11 @@ ProgramState::ProgramState(StringPool& pool_,
 {
     assert(llvmCtx_ && "ProgramState constructed with null LLVMContext");
     assert(module_ && "ProgramState constructed with null module");
+
+    // Ownership is constructed in the body, not the initializer list,
+    // because it needs a reference to *this and must be constructed after
+    // the other members are initialized.
+    ownership_ = std::make_unique<Ownership>(*this);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -49,6 +49,9 @@
 
 namespace codegen {
 
+class Ownership;
+
+
 class ProgramState {
 public:
     /// @brief Construct a `ProgramState` for one program.
@@ -82,6 +85,7 @@ public:
 
     Types& types() { return types_; }
     Abi& abi() { return abi_; }
+    Ownership& ownership() { return *ownership_; }
 
     // ─── External References ──────────────────────────────────────────────
 
@@ -156,6 +160,7 @@ private:
 
     Types types_;
     Abi abi_;
+    std::unique_ptr<Ownership> ownership_;
 
     // ─── Caches ───────────────────────────────────────────────────────────
 
