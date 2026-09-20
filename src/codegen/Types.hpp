@@ -47,6 +47,7 @@
 #include "core/memory/StringPool.hpp"
 
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
@@ -234,6 +235,8 @@ public:
 
     /// @brief ABI alignment of a Lucid type in bytes, per the module's DataLayout.
     uint64_t alignOf(TypeAST* type);
+
+    llvm::Value* stringLiteral(const std::string& str, llvm::IRBuilder<>& b);
 
     // ─── Static Predicates ────────────────────────────────────────────────
 

@@ -903,6 +903,45 @@ uint64_t Types::alignOf(TypeAST* type) {
                  .value();
 }
 
+llvm::Value* Types::stringLiteral(const std::string& str,
+                                   llvm::IRBuilder<>& b) {
+    // ─── Bytes global ─────────────────────────────────────────────────────
+    // A private, constant global holding the UTF-8 bytes plus a trailing
+    // NUL (for C interop). The `data` pointer in the value refers here.
+    llvm::Constant* strConst =
+        llvm::ConstantDataArray::getString(llvmCtx, str, /*AddNull=*/true);
+    llvm::GlobalVariable* global = new llvm::GlobalVariable(
+        module,
+        strConst->getType(),
+        /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage,
+        strConst,
+        ".str");
+
+    // ─── The lucid.String value ───────────────────────────────────────────
+    llvm::StructType* strTy = stringType();
+    if (!strTy) return nullptr;
+
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+
+    // Build the value as a real `llvm::Constant`, not a chain of
+    // `insertvalue` on `undef`. This lets constant-folders see through it:
+    // an array literal whose elements are all string literals becomes a
+    // constant array, not a stack-spill.
+    //
+    // The fields:
+    //   data: the global's address (a Constant).
+    //   len:  the byte length, not including the NUL.
+    //   cap:  0 — the static-literal sentinel. Every consumer checks this
+    //         before freeing; a static string's data is never freed.
+    llvm::Constant* dataConst = global;  // GlobalVariable is a Constant
+    llvm::Constant* lenConst = llvm::ConstantInt::get(
+        i64Ty, static_cast<uint64_t>(str.size()));
+    llvm::Constant* capConst = llvm::ConstantInt::get(i64Ty, 0);
+
+    return llvm::ConstantStruct::get(strTy, {dataConst, lenConst, capConst});
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Static Predicates
 // ─────────────────────────────────────────────────────────────────────────────

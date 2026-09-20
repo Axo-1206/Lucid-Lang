@@ -1,5 +1,5 @@
 /// @file codegen/emit/Emitter.hpp
-/// @brief The codegen emitter — one class, four entry points.
+/// @brief The codegen emitter — one class, four public entry points.
 ///
 /// ─── What This File Is ────────────────────────────────────────────────────
 /// The emitter lowers Lucid AST nodes to LLVM IR. It has four public
@@ -46,6 +46,89 @@
 /// Before the redesign, each write site reimplemented those two calls
 /// separately, and several of them were subtly wrong. `store` makes them
 /// impossible to get wrong — there is one implementation.
+///
+/// ─── How The `.cpp` Files Split ───────────────────────────────────────────
+/// Every method is a member of one class; the definition files group the
+/// members by subsystem. The file layout is the same as the directory
+/// layout under `codegen/emit/`:
+///
+///   - `Emitter.cpp`
+///       Constructor and `func()`. Nothing else.
+///
+///   - `EmitDecl.cpp`
+///       `emit(DeclAST*)` and its per-kind dispatch:
+///       `emitFuncDecl`, `emitFuncBody`, `emitForeignFuncDecl`,
+///       `emitVarDecl`, `emitStructDecl`, `emitEnumDecl`.
+///
+///   - `EmitStmt.cpp`
+///       `emit(StmtAST*)` and its per-kind dispatch, plus the scope
+///       management primitives:
+///       `createEntryAlloca`, `emitScopeFallthrough`, `emitUnwindTo`,
+///       `dropScopeAlive`.
+///
+///   - `EmitPlace.cpp`
+///       Place construction and the single write path:
+///       `store`, `loadPlace`, `emitPlace`, `emitIdentifierPlace`,
+///       `emitFieldPlace`, `emitIndexPlace`.
+///
+///   - `EmitClosure.cpp`
+///       The closure subsystem:
+///       `emitAnonFunc`, `emitClosureFuncDecl`,
+///       `buildClosureEnvironment`, `createClosureFunction`,
+///       `emitClosureBody`, `buildEnvDropFunction`,
+///       `emitClosureCall`.
+///
+///   - `EmitConcurrency.cpp`
+///       The concurrency subsystem:
+///       `emitAsyncStmt`, `emitAwaitStmt`, `emitSpawnStmt`,
+///       `emitJoinStmt`, `buildConcurrencyThunk`,
+///       `buildConcurrencyPacket`.
+///
+///   - `expr/EmitExpr.cpp`
+///       The expression subsystem's entry point:
+///       `emit(ExprAST*)` and `emitFoldedConstant`. The file also
+///       carries the ownership-tag table that every expression
+///       emitter obeys.
+///
+///   - `expr/EmitScalar.cpp`
+///       Scalar and control-flow-producing expressions:
+///       `emitLiteral`, `emitIdentifier`, `emitBinary`, `emitUnary`,
+///       `emitIf`, `emitRange`.
+///
+///   - `expr/EmitTruthiness.cpp`
+///       The truthiness rules:
+///       `emitTruthiness`.
+///
+///   - `expr/EmitAccess.cpp`
+///       Reads from storage:
+///       `emitIndex`, `emitSlice`, `emitFieldAccess`,
+///       `emitModuleAccess`, `emitArenaAccess`.
+///
+///   - `expr/EmitAggregate.cpp`
+///       Aggregate construction:
+///       `emitStructLiteral`, `emitArrayLiteral`.
+///
+///   - `expr/EmitWrite.cpp`
+///       Expressions that read-then-write or thread a value through
+///       multiple evaluation points:
+///       `emitAssign`, `emitNullCoalesce`, `emitPipeline`,
+///       `applyCompoundOp`.
+///
+///   - `expr/EmitCall.cpp`
+///       Calls and coercion:
+///       `emitCall`, `emitIntrinsic`, `emitCallableCall`,
+///       `coerceArgument`, `coerceTo`, `coerceValueToType`,
+///       `materializeArgument`.
+///
+/// The `expr/` subdirectory groups the expression sub-emitters under the
+/// single dispatcher in `EmitExpr.cpp`. Everything else is flat because
+/// its role in the emitter is unique.
+///
+/// ─── The `emit` Dispatcher ────────────────────────────────────────────────
+/// `emit(ExprAST*)` in `EmitExpr.cpp` is the only entry point into the
+/// expression subsystem. Its switch statement names every expression
+/// kind and routes it to the file that implements that kind. When you
+/// want to know "where is `emitBinary`?", read the dispatcher's switch.
 
 #pragma once
 
@@ -60,6 +143,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/ResourceKind.hpp"
+#include "runtime/RuntimeError.hpp"
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/Twine.h>
@@ -75,20 +159,21 @@ class ProgramState;
 // Place — a storage location where a value of a given type can be written
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A `Place` is the l-value form of an expression: a pointer to storage plus
-// the AST type of what that storage holds. `Emitter::store` takes a `Place`
-// and a `Val` and writes the value into the place, applying ownership rules.
+// A `Place` is the l-value form of an expression: a pointer to storage
+// plus the AST type of what that storage holds. `Emitter::store` takes a
+// `Place` and a `Val` and writes the value into the place, applying
+// ownership rules.
 //
 // Places are built by the emitter's l-value paths:
 //
-//   - Identifier l-value    — the binding's alloca.
+//   - Identifier l-value    — the binding's storage.
 //   - Field access l-value  — a GEP into a struct.
 //   - Index l-value         — a GEP into an array buffer.
 //   - Deref l-value         — a load-then-store through a pointer (rare).
 //
-// Not every expression has a place. A literal doesn't. A binary expression
-// doesn't. Only "assignable" expressions do, and only when the emitter is
-// asked for the l-value form.
+// Not every expression has a place. A literal doesn't. A binary
+// expression doesn't. Only "assignable" expressions do, and only when
+// the emitter is asked for the l-value form.
 
 struct Place {
     llvm::Value* ptr = nullptr;  // pointer to the storage
@@ -112,17 +197,17 @@ public:
 
     /// @brief Lower an expression, return its value and ownership tag.
     ///
-    /// The returned `Val` is `Owned` if the value carries a fresh claim the
-    /// caller is responsible for, or `Borrowed` if it aliases a claim held
-    /// elsewhere. `store` uses the tag to decide whether to acquire a new
-    /// claim (via `intoOwned`) before writing.
+    /// The returned `Val` is `Owned` if the value carries a fresh claim
+    /// the caller is responsible for, or `Borrowed` if it aliases a claim
+    /// held elsewhere. `store` uses the tag to decide whether to acquire
+    /// a new claim (via `intoOwned`) before writing.
     Val emit(ExprAST* expr);
 
     /// @brief Lower a statement.
     ///
-    /// Statements don't produce values. Expression statements that produce
-    /// an `Owned` value drop it (the value was produced for a side effect
-    /// and no one consumes the claim).
+    /// Statements don't produce values. Expression statements that
+    /// produce an `Owned` value drop it (the value was produced for a
+    /// side effect and no one consumes the claim).
     void emit(StmtAST* stmt);
 
     /// @brief Lower a declaration.
@@ -137,7 +222,8 @@ public:
     /// @brief Write a value into a place, applying ownership rules.
     ///
     /// Steps:
-    ///   1. `intoOwned(val)` — acquire a fresh claim for the incoming value.
+    ///   1. `intoOwned(val)` — acquire a fresh claim for the incoming
+    ///      value.
     ///   2. If the place already holds a value and `decl` is alive, drop
     ///      the old value.
     ///   3. Store the new value.
@@ -151,8 +237,9 @@ public:
     // ─── Current Function Access ──────────────────────────────────────────
 
     /// @brief The currently active `FunctionState`. Never null while a
-    ///        function body is being emitted; asserting this invariant is
-    ///        the emitter's first line of defense against ordering bugs.
+    ///        function body is being emitted; asserting this invariant
+    ///        is the emitter's first line of defense against ordering
+    ///        bugs.
     FunctionState& func();
 
     // ─── Program Access ───────────────────────────────────────────────────
@@ -160,44 +247,106 @@ public:
     ProgramState& program;
 
 private:
-    // ─── Expression Emitters ──────────────────────────────────────────────
+    // ─── Expression Emitters (expr/*.cpp) ─────────────────────────────────
     //
     // One method per expression node kind. Dispatched from the public
-    // `emit(ExprAST*)`.
+    // `emit(ExprAST*)` in `expr/EmitExpr.cpp`.
     //
     // The methods take the specific AST node type, not the base, because
-    // the dispatch in `emit` has already narrowed.
+    // the dispatch has already narrowed.
+
+    // ─── Scalar (expr/EmitScalar.cpp) ─────────────────────────────────────
 
     Val emitLiteral(LiteralExprAST* expr);
     Val emitIdentifier(IdentifierExprAST* expr);
-    Val emitArrayLiteral(ArrayLiteralExprAST* expr);
-    Val emitStructLiteral(StructLiteralExprAST* expr);
     Val emitBinary(BinaryExprAST* expr);
     Val emitUnary(UnaryExprAST* expr);
-    Val emitCall(CallExprAST* expr);
-    Val emitIntrinsic(IntrinsicCallExprAST* expr);
+    Val emitIf(IfExprAST* expr);
+    Val emitRange(RangeExprAST* expr);
+
+    // ─── Truthiness (expr/EmitTruthiness.cpp) ─────────────────────────────
+
+    /// @brief Coerce a Lucid value to an LLVM `i1`.
+    ///
+    /// Lucid's condition positions accept any type. The truthiness rules
+    /// (nonzero for numbers, non-empty for strings, present for tagged
+    /// types, always-true for structs and functions) are in the
+    /// implementation file. Returns null if the input is invalid.
+    llvm::Value* emitTruthiness(Val val);
+
+    // ─── Storage Access (expr/EmitAccess.cpp) ─────────────────────────────
+
     Val emitIndex(IndexExprAST* expr);
     Val emitSlice(SliceExprAST* expr);
     Val emitFieldAccess(FieldAccessExprAST* expr);
     Val emitModuleAccess(ModuleAccessExprAST* expr);
     Val emitArenaAccess(ArenaAccessExprAST* expr);
-    Val emitNullCoalesce(NullCoalesceExprAST* expr);
+
+    // ─── Aggregates (expr/EmitAggregate.cpp) ──────────────────────────────
+
+    Val emitArrayLiteral(ArrayLiteralExprAST* expr);
+    Val emitStructLiteral(StructLiteralExprAST* expr);
+
+    // ─── Read-then-Write (expr/EmitWrite.cpp) ─────────────────────────────
+
     Val emitAssign(AssignExprAST* expr);
+    Val emitNullCoalesce(NullCoalesceExprAST* expr);
     Val emitPipeline(PipelineExprAST* expr);
-    Val emitAnonFunc(AnonFuncExprAST* expr);
-    Val emitIf(IfExprAST* expr);
-    Val emitRange(RangeExprAST* expr);
 
-    /// @brief Emit an expression that Sema folded to a `ConstantValue`.
+    /// @brief Apply a compound-assignment operator to two values.
     ///
-    /// Called from `emit(ExprAST*)` when `expr->isConst` is true. Handles
-    /// the constant kinds whose LLVM representation can be built directly
-    /// (integers, floats, bools, strings, nil/err sentinels). Returns an
-    /// invalid `Val` for constants it can't emit directly, letting the
-    /// caller fall through to the normal per-kind emitter.
-    Val emitFoldedConstant(ExprAST* expr);
+    /// Used by `emitAssign` for `x += y`, `x -= y`, etc. The operator
+    /// dispatch mirrors `emitBinary`'s but operates on already-emitted
+    /// values rather than AST expressions.
+    Val applyCompoundOp(AssignOp op, Val oldValue, Val rhs, SourceLocation loc);
 
-    // ─── Statement Emitters ───────────────────────────────────────────────
+    // ─── Calls and Coercion (expr/EmitCall.cpp) ───────────────────────────
+
+    Val emitCall(CallExprAST* expr);
+    Val emitIntrinsic(IntrinsicCallExprAST* expr);
+
+    /// @brief Dispatch a call on the callee's `FuncShape`.
+    ///
+    /// `fn`-shaped callees are bare function pointers: cast and call.
+    /// `cls`-shaped callees are fat pointers: extract `{fn, env}`,
+    /// prepend `env` to the argument list, and call `fn` indirectly.
+    llvm::Value* emitCallableCall(llvm::Value* callee,
+                                  llvm::ArrayRef<llvm::Value*> args,
+                                  llvm::FunctionType* fnType,
+                                  FuncShape shape,
+                                  const llvm::Twine& name);
+
+    /// @brief Coerce an argument value to a parameter's declared type.
+    ///
+    /// Handles `fn → cls` widening, integer widening/narrowing, pointer
+    /// casts, and aggregate-by-value conversions. Returns an invalid
+    /// `Val` if the coercion is not supported (which is a Sema bug —
+    /// Sema should have rejected the assignment).
+    Val coerceArgument(Val arg, TypeAST* paramTy);
+
+    /// @brief Coerce a value to a target AST type.
+    ///
+    /// Unlike `coerceArgument`, this handles return-value coercion, which
+    /// has a slightly different surface (it may insert the `fn → cls`
+    /// widening before the type-based coercions).
+    Val coerceTo(Val val, TypeAST* targetTy);
+
+    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
+    ///
+    /// Low-level: integer widening/narrowing, pointer cast, aggregate
+    /// bitcast. Used by the higher-level coercion helpers.
+    llvm::Value* coerceValueToType(llvm::Value* val,
+                                   llvm::Type* targetTy,
+                                   llvm::IRBuilder<>& builder);
+
+    /// @brief Spill an aggregate argument to a stack slot and return the
+    ///        slot's pointer; pass scalars through unchanged.
+    ///
+    /// The runtime ABI passes aggregates by pointer, not by value. This
+    /// helper implements the caller side of that convention.
+    llvm::Value* materializeArgument(Val val);
+
+    // ─── Statement Emitters (EmitStmt.cpp) ────────────────────────────────
 
     void emitBlock(BlockStmtAST* stmt);
     void emitIfStmt(IfStmtAST* stmt);
@@ -210,12 +359,8 @@ private:
     void emitContinueStmt(ContinueStmtAST* stmt);
     void emitExprStmt(ExprStmtAST* stmt);
     void emitDeclStmt(DeclStmtAST* stmt);
-    void emitAsyncStmt(AsyncStmtAST* stmt);
-    void emitAwaitStmt(AwaitStmtAST* stmt);
-    void emitSpawnStmt(SpawnStmtAST* stmt);
-    void emitJoinStmt(JoinStmtAST* stmt);
 
-    // ─── Declaration Emitters ─────────────────────────────────────────────
+    // ─── Declaration Emitters (EmitDecl.cpp) ──────────────────────────────
 
     void emitFuncDecl(FuncDeclAST* decl);
     void emitFuncBody(FuncDeclAST* decl);
@@ -242,44 +387,54 @@ private:
     /// @brief Get the place for an index expression.
     Place emitIndexPlace(IndexExprAST* expr);
 
-    // ─── Call Lowering (EmitCall.cpp) ─────────────────────────────────────
-    //
-    // The public `emitCall` is declared above. The private helpers below
-    // support it.
-
-    /// @brief Dispatch a call on the callee's `FuncShape`.
+    /// @brief Load the value currently in a place.
     ///
-    /// `fn`-shaped callees are bare function pointers: cast and call.
-    /// `cls`-shaped callees are fat pointers: extract `{fn, env}`, prepend
-    /// `env` to the argument list, and call `fn` indirectly.
-    llvm::Value* emitCallableCall(llvm::Value* callee,
-                                  llvm::ArrayRef<llvm::Value*> args,
-                                  llvm::FunctionType* fnType,
-                                  FuncShape shape,
-                                  const llvm::Twine& name);
+    /// Returns a `Borrowed` `Val`: the place still holds the claim, and
+    /// the loaded value is an alias. Anyone who wants to store the loaded
+    /// value must call `intoOwned` first (which `store` does).
+    Val loadPlace(Place place, llvm::IRBuilder<>& builder);
 
-    /// @brief Coerce an argument value to a parameter's declared type.
-    ///
-    /// Handles `fn → cls` widening, integer widening/narrowing, pointer
-    /// casts, and aggregate-by-value conversions. Returns an invalid `Val`
-    /// if the coercion is not supported (which is a Sema bug — Sema should
-    /// have rejected the assignment).
-    Val coerceArgument(Val arg, TypeAST* paramTy);
+    // ─── Scope Management (EmitStmt.cpp) ──────────────────────────────────
 
-    /// @brief Coerce a value to a target AST type.
+    /// @brief Allocate in the current function's entry block.
     ///
-    /// Unlike `coerceArgument`, this handles return-value coercion, which
-    /// has a slightly different surface (it may insert the `fn → cls`
-    /// widening before the type-based coercions).
-    Val coerceTo(Val val, TypeAST* targetTy);
+    /// Every emitter-side alloca goes in the entry block. Creating
+    /// allocas in the current block would make a loop body allocate a
+    /// new slot per iteration and accumulate them until the function
+    /// returns. This helper enforces the discipline.
+    ///
+    /// Returns null if there's no current function to attach to.
+    llvm::AllocaInst* createEntryAlloca(llvm::Type* ty,
+                                        const llvm::Twine& name);
 
-    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
+    /// @brief Emit drops for the current scope, then clear its alive set.
     ///
-    /// Low-level: integer widening/narrowing, pointer cast, aggregate
-    /// bitcast. Used by the higher-level coercion helpers.
-    llvm::Value* coerceValueToType(llvm::Value* val,
-                                   llvm::Type* targetTy,
-                                   llvm::IRBuilder<>& builder);
+    /// Called at the natural end of a block (by `emitBlock`) and at the
+    /// natural end of a function body (by `emitFuncBody` and
+    /// `emitClosureBody`). Does not pop the scope — the caller does that.
+    ///
+    /// A no-op if the current insertion block is already terminated, or
+    /// if the scope has no alive bindings.
+    void emitScopeFallthrough();
+
+    /// @brief Emit drops for every scope from the innermost down to
+    ///        (but not including) `targetDepth`.
+    ///
+    /// Called by `return` (target 0), `break` and `continue` (target =
+    /// the loop's entry scope depth). Does not pop the scopes — the
+    /// structurally-paired `popScope` at each block's natural end pops
+    /// them.
+    void emitUnwindTo(size_t targetDepth);
+
+    /// @brief Emit drops for every still-alive binding in one scope, in
+    ///        reverse declaration order, and clear the scope's alive
+    ///        set.
+    ///
+    /// The shared body of `emitScopeFallthrough` (called on the current
+    /// scope) and `emitUnwindTo` (called on each scope in the unwind
+    /// range). The caller is responsible for checking that the current
+    /// insertion block isn't already terminated.
+    void dropScopeAlive(Scope& scope);
 
     // ─── Closure Lowering (EmitClosure.cpp) ───────────────────────────────
 
@@ -295,27 +450,42 @@ private:
     /// each captured declaration to its environment-loaded value (or its
     /// spilled alloca for by-value captures).
     void emitClosureBody(AnonFuncExprAST* expr,
-                        llvm::Function* closureFn,
-                        llvm::Value* envPtr);
+                         llvm::Function* closureFn,
+                         llvm::Value* envPtr);
 
     /// @brief Generate the environment-drop function for a closure.
     ///
     /// Returns null if the closure's environment owns nothing that needs
     /// releasing (e.g. all captures are `fn`-shaped or non-resources).
     llvm::Function* buildEnvDropFunction(AnonFuncExprAST* expr,
-                                        llvm::StructType* envType);
-
-    /// @brief Emit a call through a fat pointer.
-    llvm::Value* emitClosureCall(llvm::Value* funcPtr,
-                                llvm::Value* envPtr,
-                                llvm::ArrayRef<llvm::Value*> args,
-                                llvm::Type* returnType);
+                                         llvm::StructType* envType);
 
     /// @brief Emit the fat-pointer construction for a `cls`-shaped
     ///        named function declaration.
     void emitClosureFuncDecl(FuncDeclAST* decl);
 
+    /// @brief The public closure-literal entry point.
+    ///
+    /// Produces a `{ ptr fn, ptr env }` fat pointer. Allocates the
+    /// environment, stores the captures, retains captured `cls` envs,
+    /// and constructs the fat pointer.
+    Val emitAnonFunc(AnonFuncExprAST* expr);
+
+    /// @brief The low-level call through a closure fat pointer.
+    ///
+    /// Extracts `{func, env}`, prepends `env` to the argument list, and
+    /// calls `func` indirectly.
+    llvm::Value* emitClosureCall(llvm::Value* funcPtr,
+                                 llvm::Value* envPtr,
+                                 llvm::ArrayRef<llvm::Value*> args,
+                                 llvm::Type* returnType);
+
     // ─── Concurrency Lowering (EmitConcurrency.cpp) ───────────────────────
+
+    void emitAsyncStmt(AsyncStmtAST* stmt);
+    void emitAwaitStmt(AwaitStmtAST* stmt);
+    void emitSpawnStmt(SpawnStmtAST* stmt);
+    void emitJoinStmt(JoinStmtAST* stmt);
 
     /// @brief Build a thunk function for an async/spawn call.
     ///
@@ -323,67 +493,52 @@ private:
     /// packet (loads each argument from its field), frees the packet,
     /// calls the real function, boxes the result, and returns the box
     /// pointer.
-    ///
-    /// Generated once per async/spawn expression. The name is unique per
-    /// call site.
     llvm::Function* buildConcurrencyThunk(CallExprAST* call,
-                                        TypeAST* returnType);
+                                          TypeAST* returnType);
 
-    /// @brief Build a heap packet holding the arguments for an async/spawn.
+    /// @brief Build a heap packet holding the arguments for an
+    ///        async/spawn call.
     ///
     /// The packet is an LLVM struct with one field per argument. The
     /// emitter allocates it via `__lucid_alloc`, stores each argument
     /// into its field, and returns a pointer to the packet.
     llvm::Value* buildConcurrencyPacket(CallExprAST* call);
 
+    // ─── Runtime Diagnostics (EmitScalar.cpp) ─────────────────────────────
 
+    /// @brief Emit a runtime panic with a formatted message.
+    ///
+    /// Format: `"file:line:col: description"`. Emits a call to
+    /// `__lucid_panic` followed by `unreachable`. Used by every
+    /// runtime-check emitter (division-by-zero, index bounds, arena
+    /// capacity).
+    void emitPanic(RuntimeErrorKind kind, SourceLocation loc);
 
-    // ─── Assignment Path ──────────────────────────────────────────────────
-    //
-    // `emitAssign` handles both plain and compound assignment. The core is:
-    //   1. Get the l-value place.
-    //   2. Load the old value (for compound ops, or for self-assign guard).
-    //   3. Emit the RHS.
-    //   4. `store(place, rhs, decl)` — this drops the old, retains the new.
-    //
-    // The self-assignment guard (comparing env pointers) is still needed
-    // for `f = f` where `f` is a closure. It's emitted before `store`.
+    // ─── Bounds Checks (EmitAccess.cpp) ───────────────────────────────────
 
-    // ─── Helper: Load a Value from a Place ────────────────────────────────
+    /// @brief Bounds-check `0 <= index < size` on a fixed-size array.
+    ///
+    /// On failure, emits a panic and `unreachable`. On success, leaves
+    /// the builder in the success block. Returns the `i1` in-bounds
+    /// predicate.
+    llvm::Value* emitFixedArrayBoundsCheck(llvm::Value* index,
+                                            uint64_t size,
+                                            SourceLocation loc);
 
-    /// Load the value currently in a place. Returns a `Borrowed` `Val`
-    /// because the place still holds the claim (a load doesn't move).
-    Val loadPlace(Place place, llvm::IRBuilder<>& builder);
+    /// @brief Bounds-check `0 <= index < len` for a slice or dynamic
+    ///        array.
+    ///
+    /// Same shape as `emitFixedArrayBoundsCheck`, but `len` is a runtime
+    /// value.
+    llvm::Value* emitSliceBoundsCheck(llvm::Value* index,
+                                       llvm::Value* len,
+                                       SourceLocation loc);
 
-    // ─── Helper: Entry-Block Alloca ───────────────────────────────────────
-    //
-    // Every emitter-side alloca goes in the current function's entry block.
-    // Creating allocas in the current block would make a loop body allocate
-    // a new slot per iteration and accumulate them until the function
-    // returns. This helper enforces the discipline.
-    //
-    // Returns null if there's no current function to attach to.
-
-    llvm::AllocaInst* createEntryAlloca(llvm::Type* ty,
-                                        const llvm::Twine& name);
-
-    // ─── Helper: Scope Unwinding ──────────────────────────────────────────
-    //
-    // `emitUnwindTo(depth)` walks the `FunctionState`'s scope stack from
-    // the innermost scope down to (but not including) `depth`, emitting
-    // drops for every alive binding in each. Used by `return` (unwind to
-    // 0), `break` (unwind to the loop's scope depth), and `continue`.
-    //
-    // Non-destructive: does not pop scopes. The structurally-paired
-    // `popScope` in `emitBlock` is what pops.
-
-    void emitUnwindTo(size_t targetDepth);
-
-    // ─── Helpers: Resource Classification ─────────────────────────────────
+    // ─── Resource Classification ──────────────────────────────────────────
 
     /// @brief The declaration's cached resource kind.
     ///
-    /// Reads `decl->resourceKind`, populated by Sema in Phase 1. Null-safe.
+    /// Reads `decl->resourceKind`, populated by Sema. Null-safe.
     ResourceKind classifyResource(ValueDeclAST* decl) const {
         return decl ? decl->resourceKind : ResourceKind::None;
     }

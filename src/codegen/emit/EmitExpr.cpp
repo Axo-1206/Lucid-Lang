@@ -1,9 +1,28 @@
 /// @file codegen/emit/EmitExpr.cpp
-/// @brief Expression lowering — the `Emitter::emit(ExprAST*)` entry point
-///        and its per-kind dispatch.
+/// @brief The entry point of the expression-lowering subsystem: the
+///        `Emitter::emit(ExprAST*)` dispatch and the const-fold
+///        short-circuit.
+///
+/// ─── This File Is The Map ─────────────────────────────────────────────────
+/// Expression lowering is spread across five files. This one is the index:
+///
+///   - `EmitExpr.cpp`         (this file) — `emit(ExprAST*)` and
+///                            `emitFoldedConstant`.
+///   - `expr/EmitScalar.cpp`  — `emitLiteral`, `emitIdentifier`,
+///                            `emitBinary`, `emitUnary`, `emitIf`,
+///                            `emitRange`.
+///   - `expr/EmitAccess.cpp`  — `emitIndex`, `emitSlice`,
+///                            `emitFieldAccess`, `emitModuleAccess`,
+///                            `emitArenaAccess`.
+///   - `expr/EmitAggregate.cpp` — `emitStructLiteral`, `emitArrayLiteral`.
+///   - `expr/EmitWrite.cpp`   — `emitAssign`, `emitNullCoalesce`,
+///                            `emitPipeline`.
+///
+/// `emitCall` and `emitIntrinsic` live in `EmitCall.cpp`. `emitAnonFunc`
+/// lives in `EmitClosure.cpp`. This file references them by name only.
 ///
 /// ─── The Ownership Tag ────────────────────────────────────────────────────
-/// Every emitter returns a `Val` with an `Own` tag:
+/// Every expression emitter returns a `Val` with an `Own` tag:
 ///
 ///   - `Owned` — a fresh value carrying a claim the receiver takes over.
 ///               Literals, calls, struct literals, closures, binary ops.
@@ -11,21 +30,86 @@
 ///   - `Borrowed` — an alias to a claim held elsewhere. Identifier loads,
 ///                  field loads, index loads.
 ///
-/// The tag replaces `isFreshExpression`. Where the old code inspected the
-/// AST to guess the tag, the new emitters know it because they produced
-/// the value.
+/// The tag replaces the old `isFreshExpression` heuristic. Where the old
+/// code inspected the AST to guess the tag, the new emitters know it
+/// because they produced the value.
+///
+/// ─── The Tag Table ────────────────────────────────────────────────────────
+/// Every expression kind and its tag, so a new emitter author can check
+/// their work at a glance:
+///
+///   Expression kind              | Own tag  | Why
+///   -----------------------------|----------|-----------------------------
+///   Literal (int, float, bool)   | Owned    | No claim to transfer.
+///   Literal (char)               | Owned    | Scalar.
+///   Literal (string)             | Owned    | Fresh; cap==0 marks static,
+///                                |          | intoOwned skips the copy.
+///   Literal (nil, err)           | Owned    | Sentinel; zero-valued slot.
+///   Identifier (local load)      | Borrowed | The alloca holds the claim.
+///   Identifier (param load)      | Borrowed | The param alloca holds it.
+///   Identifier (fn-shaped Fn)    | Borrowed | A global symbol.
+///   Identifier (cls-shaped Fn)   | Borrowed | Value map holds the fat ptr.
+///   Identifier (enum variant)    | Owned    | A constant; no claim.
+///   Binary (arith, cmp, bitwise) | Owned    | Fresh scalar.
+///   Binary (string concat)       | Owned    | Fresh buffer from __lucid_str_concat.
+///   Unary                        | Owned    | Fresh scalar.
+///   If (both arms agree)         | either   | Phi merges the arms.
+///   If (arms disagree)           | BUG      | Assertion fires.
+///   NullCoalesce (both agree)    | either   | Phi merges the arms.
+///   NullCoalesce (disagree)      | BUG      | Assertion fires.
+///   Call                         | Owned    | Rule 3: callee transfers.
+///   Intrinsic                    | Owned    | Same as a call.
+///   Array literal (fixed)        | Owned    | Fresh constant / aggregate.
+///   Array literal (dynamic)      | Owned    | Fresh heap buffer.
+///   Struct literal               | Owned    | Freshly built.
+///   Index                        | Borrowed | Container holds the claim.
+///   Slice                        | Owned    | Fresh view; owns no buffer.
+///   Field access                 | Borrowed | Struct holds the field's claim.
+///   Module access (var)          | Borrowed | Module instance holds the claim.
+///   Module access (fn)           | Borrowed | A symbol reference.
+///   Arena access                 | Owned    | Freshly allocated.
+///   Assign                       | Owned    | The new value of the place.
+///   Pipeline                     | Owned    | The last step's result.
+///   AnonFunc                     | Owned    | Fresh fat pointer.
+///   Range                        | invalid  | Never a value.
+///
+/// ─── The Rules ────────────────────────────────────────────────────────────
+/// Two rules govern every emitter in the subsystem:
+///
+///   Rule 1 — An expression emitter never writes to storage. It produces a
+///   value. The only write path is `Emitter::store`, which is called from
+///   `emitAssign`, `emitVarDecl`, `store`'s callers, and `store` itself.
+///
+///   Rule 2 — An expression emitter never calls `Ownership::intoOwned` on
+///   its own result. It returns a `Val` with a tag; the consumer (a store,
+///   a return, an argument pass) decides whether to acquire a fresh claim.
+///   The two exceptions are `emitReturnStmt` (which isn't in this
+///   subsystem) and `store` (which isn't either).
+///
+/// ─── Folded Constants ─────────────────────────────────────────────────────
+/// Sema folds some expressions to compile-time `ConstantValue`s. When it
+/// does, `emit(ExprAST*)` short-circuits to `emitFoldedConstant` before
+/// dispatching on the expression kind. The folded value bypasses the
+/// per-kind emitter entirely.
+///
+/// This is a single point of behavior for the whole subsystem. The
+/// alternative — a check inside every emitter — would be the same check
+/// repeated thirteen times, with thirteen chances to forget it.
+///
+/// ─── The File-Level Headers ───────────────────────────────────────────────
+/// Each sub-file's header comment explains what that subsystem's emitters
+/// share and what's specific to each. Read them in the order listed above
+/// for the full picture; this file's header gives the shape of the whole.
 
 #include "Emitter.hpp"
 
 #include "codegen/Program.hpp"
 #include "codegen/FunctionState.hpp"
-#include "codegen/support/Truthiness.hpp"
 
+#include "core/ASTStrings.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/DerivedTypes.h>
-#include <llvm/IR/Instructions.h>
 
 namespace codegen {
 
@@ -38,311 +122,183 @@ Val Emitter::emit(ExprAST* expr) {
 
     // ─── Folded constant short-circuit ────────────────────────────────────
     // Sema folds some expressions to `ConstantValue`s. If this one was
-    // folded, emit the constant directly.
+    // folded, emit the constant directly. `emitFoldedConstant` returns an
+    // invalid `Val` for constants it can't lower (structs, arrays,
+    // function pointers), which fall through to the per-kind emitter.
     if (expr->isConst && expr->constValue.isEvaluated()) {
         if (Val folded = emitFoldedConstant(expr)) {
             return folded;
         }
-        // Fall through for constants `emitFoldedConstant` doesn't handle.
     }
 
+    // ─── Per-kind dispatch ────────────────────────────────────────────────
+    // The `subsystem` comment on each row names the file that implements
+    // the emitter, so a reader can jump directly to it.
     switch (expr->kind) {
-        case ASTKind::LiteralExpr:       return emitLiteral(expr->as<LiteralExprAST>());
-        case ASTKind::IdentifierExpr:    return emitIdentifier(expr->as<IdentifierExprAST>());
-        case ASTKind::ArrayLiteralExpr:  return emitArrayLiteral(expr->as<ArrayLiteralExprAST>());
-        case ASTKind::StructLiteralExpr: return emitStructLiteral(expr->as<StructLiteralExprAST>());
-        case ASTKind::BinaryExpr:        return emitBinary(expr->as<BinaryExprAST>());
-        case ASTKind::UnaryExpr:         return emitUnary(expr->as<UnaryExprAST>());
-        case ASTKind::CallExpr:          return emitCall(expr->as<CallExprAST>());
-        case ASTKind::IntrinsicCallExpr: return emitIntrinsic(expr->as<IntrinsicCallExprAST>());
-        case ASTKind::IndexExpr:         return emitIndex(expr->as<IndexExprAST>());
-        case ASTKind::SliceExpr:         return emitSlice(expr->as<SliceExprAST>());
-        case ASTKind::FieldAccessExpr:   return emitFieldAccess(expr->as<FieldAccessExprAST>());
-        case ASTKind::ModuleAccessExpr:  return emitModuleAccess(expr->as<ModuleAccessExprAST>());
-        case ASTKind::ArenaAccessExpr:   return emitArenaAccess(expr->as<ArenaAccessExprAST>());
-        case ASTKind::NullCoalesceExpr:  return emitNullCoalesce(expr->as<NullCoalesceExprAST>());
-        case ASTKind::AssignExpr:        return emitAssign(expr->as<AssignExprAST>());
-        case ASTKind::PipelineExpr:      return emitPipeline(expr->as<PipelineExprAST>());
-        case ASTKind::AnonFuncExpr:      return emitAnonFunc(expr->as<AnonFuncExprAST>());
-        case ASTKind::IfExpr:            return emitIf(expr->as<IfExprAST>());
-        case ASTKind::RangeExpr:         return emitRange(expr->as<RangeExprAST>());
+        // ─── EmitScalar.cpp ───────────────────────────────────────────────
+        case ASTKind::LiteralExpr:
+            return emitLiteral(expr->as<LiteralExprAST>());
+        case ASTKind::IdentifierExpr:
+            return emitIdentifier(expr->as<IdentifierExprAST>());
+        case ASTKind::BinaryExpr:
+            return emitBinary(expr->as<BinaryExprAST>());
+        case ASTKind::UnaryExpr:
+            return emitUnary(expr->as<UnaryExprAST>());
+        case ASTKind::IfExpr:
+            return emitIf(expr->as<IfExprAST>());
+        case ASTKind::RangeExpr:
+            return emitRange(expr->as<RangeExprAST>());
+
+        // ─── EmitAccess.cpp ───────────────────────────────────────────────
+        case ASTKind::IndexExpr:
+            return emitIndex(expr->as<IndexExprAST>());
+        case ASTKind::SliceExpr:
+            return emitSlice(expr->as<SliceExprAST>());
+        case ASTKind::FieldAccessExpr:
+            return emitFieldAccess(expr->as<FieldAccessExprAST>());
+        case ASTKind::ModuleAccessExpr:
+            return emitModuleAccess(expr->as<ModuleAccessExprAST>());
+        case ASTKind::ArenaAccessExpr:
+            return emitArenaAccess(expr->as<ArenaAccessExprAST>());
+
+        // ─── EmitAggregate.cpp ────────────────────────────────────────────
+        case ASTKind::ArrayLiteralExpr:
+            return emitArrayLiteral(expr->as<ArrayLiteralExprAST>());
+        case ASTKind::StructLiteralExpr:
+            return emitStructLiteral(expr->as<StructLiteralExprAST>());
+
+        // ─── EmitWrite.cpp ────────────────────────────────────────────────
+        case ASTKind::AssignExpr:
+            return emitAssign(expr->as<AssignExprAST>());
+        case ASTKind::NullCoalesceExpr:
+            return emitNullCoalesce(expr->as<NullCoalesceExprAST>());
+        case ASTKind::PipelineExpr:
+            return emitPipeline(expr->as<PipelineExprAST>());
+
+        // ─── EmitCall.cpp ─────────────────────────────────────────────────
+        case ASTKind::CallExpr:
+            return emitCall(expr->as<CallExprAST>());
+        case ASTKind::IntrinsicCallExpr:
+            return emitIntrinsic(expr->as<IntrinsicCallExprAST>());
+
+        // ─── EmitClosure.cpp ──────────────────────────────────────────────
+        case ASTKind::AnonFuncExpr:
+            return emitAnonFunc(expr->as<AnonFuncExprAST>());
 
         default:
-            // Sema should have rejected unknown kinds. Reaching here is
-            // a compiler bug.
+            // Sema should have rejected unknown kinds. Reaching here is a
+            // compiler bug; emit a diagnostic so the failure is visible
+            // rather than silently producing a null value.
+            program.diagnostics.errorAt(
+                DiagCode::Backend_CodegenError, expr->loc,
+                "unsupported expression kind: ",
+                astKindToString(expr->kind));
             return {};
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// emitLiteral — a scalar constant
+// emitFoldedConstant — the const-eval short-circuit
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A literal has no resource content (except a string, which produces a
-// fresh `Owned` string value). Scalars are `Owned` in the sense that the
-// receiver takes over the value's claim — for scalars, `intoOwned` is a
-// no-op, so the tag doesn't matter in practice.
+// Sema's ConstEvaluator fills `expr->constValue` for expressions it can
+// evaluate at compile time. When it does, the emitter's job is to emit the
+// constant directly rather than re-lowering the expression tree.
+//
+// ─── What This Handles ────────────────────────────────────────────────────
+// Scalars (int, float, bool, char), strings, and nil/err sentinels. All of
+// these lower to constants with no side effects.
+//
+// If `emitFoldedConstant` returns an invalid `Val`, the caller
+// (`emit(ExprAST*)`) falls through to the normal per-kind emitter, which
+// handles the kinds this function doesn't:
+//   - Structs and arrays: they have aggregate construction paths that
+//     the constant path doesn't want to re-derive.
+//   - Function pointers: they resolve to an `llvm::Function*` or a
+//     closure fat pointer, which the per-kind emitter handles uniformly.
+//   - The `Void`, `Error`, and `Unknown` constant kinds: they have no
+//     LLVM value.
+//
+// ─── Why It Returns `Val` and Not `llvm::Value*` ──────────────────────────
+// The caller needs the AST type to tag the result. Deriving the type from
+// the folded value alone would be lossy: an `i32` folded from a `uint`
+// looks the same as one folded from an `int`. The AST carries
+// `expr->resolvedType`, which is authoritative.
 
-Val Emitter::emitLiteral(LiteralExprAST* expr) {
-    llvm::IRBuilder<>& b = program.builder();
-    llvm::LLVMContext& ctx = program.llvmContext();
+Val Emitter::emitFoldedConstant(ExprAST* expr) {
+    assert(expr && "emitFoldedConstant() with null expression");
+    assert(expr->isConst && expr->constValue.isEvaluated()
+           && "emitFoldedConstant() called on a non-folded expression");
 
-    llvm::Type* ty = program.types().get(expr->resolvedType);
+    const ConstantValue& cv = expr->constValue;
+    TypeAST* ty = expr->resolvedType;
     if (!ty) return {};
 
-    llvm::Value* result = nullptr;
+    llvm::IRBuilder<>& b = program.builder();
 
-    switch (expr->kind) {
-        case LiteralKind::True:
-            result = llvm::ConstantInt::get(ty, 1);
-            break;
-        case LiteralKind::False:
-            result = llvm::ConstantInt::get(ty, 0);
-            break;
-
-        case LiteralKind::Int:
-        case LiteralKind::Hex:
-        case LiteralKind::Binary: {
-            std::string valStr = program.pool.lookup(expr->value);
-            int64_t val = 0;
-            try {
-                if (expr->kind == LiteralKind::Hex) {
-                    val = std::stoll(valStr, nullptr, 16);
-                } else if (expr->kind == LiteralKind::Binary) {
-                    val = std::stoll(valStr, nullptr, 2);
-                } else {
-                    val = std::stoll(valStr, nullptr, 10);
-                }
-            } catch (const std::exception&) {
-                program.diagnostics.errorAt(DiagCode::Lex_InvalidNumberLiteral,
-                                             expr->loc,
-                                             "invalid integer literal: ", valStr);
-                return {};
-            }
-            result = llvm::ConstantInt::get(ty, val);
-            break;
+    switch (cv.kind) {
+        case ConstantValue::Kind::Bool: {
+            llvm::Type* llvmTy = program.types().get(ty);
+            if (!llvmTy) return {};
+            llvm::Value* v = llvm::ConstantInt::get(
+                llvmTy, cv.asBool() ? 1 : 0);
+            return Val{v, ty, Own::Owned};
         }
 
-        case LiteralKind::Float: {
-            std::string valStr = program.pool.lookup(expr->value);
-            double val = 0.0;
-            try {
-                val = std::stod(valStr);
-            } catch (const std::exception&) {
-                program.diagnostics.errorAt(DiagCode::Lex_InvalidNumberLiteral,
-                                             expr->loc,
-                                             "invalid float literal: ", valStr);
-                return {};
-            }
-            result = llvm::ConstantFP::get(ty, val);
-            break;
+        case ConstantValue::Kind::Int: {
+            llvm::Type* llvmTy = program.types().get(ty);
+            if (!llvmTy) return {};
+            llvm::Value* v = llvm::ConstantInt::get(
+                llvmTy, static_cast<uint64_t>(cv.asInt()),
+                /*isSigned=*/true);
+            return Val{v, ty, Own::Owned};
         }
 
-        case LiteralKind::String:
-        case LiteralKind::RawString: {
-            // A string literal lowers to a `lucid.String` value with a
-            // private global for the bytes and `cap == 0` to mark it
-            // static. The `Owned` tag means the receiver takes over the
-            // claim — for a static string, "the claim" is meaningless
-            // (the data isn't heap-allocated), so `intoOwned`'s
-            // `OwnedBuffer` path checks `cap == 0` and skips the deep
-            // copy. The result is `Owned` with a shared static buffer.
-            std::string valStr = program.pool.lookup(expr->value);
-            result = program.types().stringLiteral(valStr, b);
-            break;
+        case ConstantValue::Kind::Float: {
+            llvm::Type* llvmTy = program.types().get(ty);
+            if (!llvmTy) return {};
+            llvm::Value* v = llvm::ConstantFP::get(llvmTy, cv.asFloat());
+            return Val{v, ty, Own::Owned};
         }
 
-        case LiteralKind::Char: {
-            std::string valStr = program.pool.lookup(expr->value);
-            if (valStr.empty()) {
-                result = llvm::ConstantInt::get(ty, 0);
-            } else {
-                result = llvm::ConstantInt::get(ty, valStr[0]);
-            }
-            break;
+        case ConstantValue::Kind::String: {
+            std::string str = program.pool.lookup(cv.asString());
+            llvm::Value* v = program.types().stringLiteral(str, b);
+            if (!v) return {};
+            return Val{v, ty, Own::Owned};
         }
 
-        case LiteralKind::Nil:
-        case LiteralKind::Err:
-            // A nil/err literal in a tagged-slot context is a tagged
-            // slot with the sentinel tag. The emitter's caller
-            // (target-typed emit) builds the tagged slot; here, we emit
-            // the sentinel as a zero-valued slot.
-            result = llvm::Constant::getNullValue(ty);
-            break;
+        case ConstantValue::Kind::Char: {
+            // A char is stored as an `InternedString` in the ConstantValue.
+            // Take its first byte.
+            std::string str = program.pool.lookup(cv.asString());
+            llvm::Type* llvmTy = program.types().get(ty);
+            if (!llvmTy) return {};
+            uint8_t byte = str.empty() ? 0 : static_cast<uint8_t>(str[0]);
+            llvm::Value* v = llvm::ConstantInt::get(llvmTy, byte);
+            return Val{v, ty, Own::Owned};
+        }
+
+        case ConstantValue::Kind::Nil:
+        case ConstantValue::Kind::Err: {
+            // A sentinel in a tagged-slot context. Emit a zero-initialized
+            // slot; the tag is set by the enclosing tagged-slot
+            // construction site.
+            llvm::Type* llvmTy = program.types().get(ty);
+            if (!llvmTy) return {};
+            llvm::Value* v = llvm::Constant::getNullValue(llvmTy);
+            return Val{v, ty, Own::Owned};
+        }
+
+        case ConstantValue::Kind::Void:
+            // A void folded value has no LLVM value.
+            return {};
 
         default:
+            // Structs, arrays, function pointers, and the Error/Unknown
+            // kinds fall through to the per-kind emitter.
             return {};
     }
-
-    return Val{result, expr->resolvedType, Own::Owned};
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// emitIdentifier — a load from a binding
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The result is `Borrowed`: the binding still holds the claim, and the
-// loaded value is an alias. When the caller wants to store the value,
-// `store` calls `intoOwned` to acquire a fresh claim.
-//
-// Exception: a `cls`-shaped `FuncDeclAST` binding holds the fat pointer
-// by value, not by pointer. The emitter returns that value directly,
-// still `Borrowed` (the binding's value map holds the fat pointer, and
-// the value returned is a copy of the fat pointer — copying the fat
-// pointer doesn't retain the env, so the claim is still the binding's).
-
-Val Emitter::emitIdentifier(IdentifierExprAST* expr) {
-    assert(expr && "emitIdentifier() with null expression");
-
-    // ─── Special case: `_` discard placeholder ────────────────────────────
-    if (program.pool.lookupView(expr->name) == "_") {
-        // Using `_` as a value is a Sema error. Reaching here is a bug.
-        return {};
-    }
-
-    ValueDeclAST* decl = expr->resolvedDecl;
-    if (!decl) return {};
-
-    llvm::IRBuilder<>& b = program.builder();
-
-    // ─── Function reference ───────────────────────────────────────────────
-    if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* fn = decl->as<FuncDeclAST>();
-
-        // `fn`-shaped: bare function pointer.
-        FuncShape shape = fn->funcType ? fn->funcType->shape : FuncShape::Fn;
-        if (shape == FuncShape::Fn) {
-            llvm::Function* llvmFn = program.lookupFunction(fn);
-            if (!llvmFn) return {};
-            return Val{llvmFn, expr->resolvedType, Own::Borrowed};
-        }
-
-        // `cls`-shaped: fat pointer stored by value.
-        llvm::Value* closureVal = func().lookupValue(fn);
-        if (!closureVal) return {};
-        return Val{closureVal, expr->resolvedType, Own::Borrowed};
-    }
-
-    // ─── Enum variant ─────────────────────────────────────────────────────
-    if (decl->isa<EnumVariantAST>()) {
-        EnumVariantAST* variant = decl->as<EnumVariantAST>();
-        llvm::Type* enumTy = program.types().get(expr->resolvedType);
-        if (!enumTy || !enumTy->isIntegerTy()) return {};
-
-        llvm::Value* c = llvm::ConstantInt::get(
-            enumTy, static_cast<uint64_t>(variant->value), /*isSigned=*/true);
-        return Val{c, expr->resolvedType, Own::Owned};
-    }
-
-    // ─── Local binding: load from the place ───────────────────────────────
-    // The binding's storage lives in the value map. It's a pointer to
-    // the storage (alloca or spill slot); the emitter loads the value.
-    llvm::Value* binding = func().lookupValue(decl);
-    if (!binding) return {};
-
-    // A non-pointer binding is an SSA value (e.g. a closure's fat pointer
-    // held by value). Return it directly.
-    if (!binding->getType()->isPointerTy()) {
-        return Val{binding, decl->type, Own::Borrowed};
-    }
-
-    llvm::Type* valueTy = program.types().get(decl->type);
-    if (!valueTy) return {};
-
-    llvm::Value* loaded = b.CreateLoad(
-        valueTy, binding, "load_" + program.pool.lookup(expr->name));
-
-    return Val{loaded, decl->type, Own::Borrowed};
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// emitCall — a function call
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The result is `Owned`: the callee's return-value rules determine the
-// claim, and per Rule 3 the callee transfers the claim to the caller. For
-// a `void` return, the result is an invalid `Val` (no value, no claim).
-//
-// The ownership work in `emitCall`:
-//   1. For each argument, `intoOwned` before passing — a `Borrowed`
-//      argument becomes a fresh `Owned` value that the callee's
-//      parameter binding takes over.
-//   2. This is the retain-on-argument-pass rule (Rule 3).
-
-Val Emitter::emitCall(CallExprAST* expr) {
-    assert(expr && "emitCall() with null expression");
-
-    llvm::IRBuilder<>& b = program.builder();
-
-    // ─── Emit the callee ──────────────────────────────────────────────────
-    Val calleeVal = emit(expr->callee);
-    if (!calleeVal.isValid()) return {};
-
-    // ─── Function type ────────────────────────────────────────────────────
-    FuncTypeAST* calleeFuncTy = expr->callee->resolvedType
-        ? (expr->callee->resolvedType->isa<FuncTypeAST>()
-              ? expr->callee->resolvedType->as<FuncTypeAST>()
-              : nullptr)
-        : nullptr;
-    if (!calleeFuncTy) return {};
-
-    llvm::FunctionType* fnTy = program.types().functionType(
-        calleeFuncTy, /*isClosure=*/false);
-    if (!fnTy) return {};
-
-    // ─── Emit arguments ───────────────────────────────────────────────────
-    // Argument passing is where ownership gets interesting. Each argument
-    // is:
-    //   1. Emitted (may be Owned or Borrowed).
-    //   2. Coerced (fn → cls, if the parameter is cls).
-    //   3. Acquired as Owned via intoOwned — this is the retain-on-copy
-    //      rule for closure arguments.
-    //
-    // For non-resource arguments, intoOwned is a no-op; the extra call
-    // is unmeasurable.
-    std::vector<llvm::Value*> args;
-    args.reserve(expr->args.size());
-
-    for (size_t i = 0; i < expr->args.size(); ++i) {
-        ExprAST* argExpr = expr->args[i];
-        Val argVal = emit(argExpr);
-        if (!argVal.isValid()) return {};
-
-        // Parameter type for this argument.
-        TypeAST* paramTy = (i < calleeFuncTy->params.size())
-            ? calleeFuncTy->params[i]->type
-            : nullptr;
-
-        // fn → cls coercion.
-        if (paramTy) {
-            argVal.v = maybeCoerceFnToCls(argVal.v, argVal.ty, paramTy,
-                                           *this);
-            // The maybeCoerceFnToCls transition is handled by the ownership
-            // module; it may return a wrapped value.
-        }
-
-        // Acquire a fresh claim.
-        Val owned = program.ownership().intoOwned(argVal, b);
-        args.push_back(owned.v);
-    }
-
-    // ─── Emit the call ────────────────────────────────────────────────────
-    llvm::Value* result = emitCallableCall(
-        calleeVal.v, args, fnTy, calleeFuncTy->shape, b, "call");
-
-    if (!result) return {};
-
-    // ─── Return type ──────────────────────────────────────────────────────
-    TypeAST* returnTy = calleeFuncTy->returnType;
-    if (!returnTy) {
-        // Void return. No value, no claim.
-        return {};
-    }
-
-    return Val{result, returnTy, Own::Owned};
-}
-
-// ... other emitters follow the same shape ...
 
 } // namespace codegen

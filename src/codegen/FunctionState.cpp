@@ -179,6 +179,24 @@ void FunctionState::eraseValue(ValueDeclAST* decl) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Concurrency Handle Bindings
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The handle map parallels the value map. See `FunctionState.hpp`'s
+// `storeHandle`/`lookupHandle` documentation for the two-slot design.
+
+void FunctionState::storeHandle(ValueDeclAST* decl, llvm::Value* slot) {
+    if (!decl || !slot) return;
+    concurrencyHandles[decl] = slot;
+}
+
+llvm::Value* FunctionState::lookupHandle(ValueDeclAST* decl) const {
+    if (!decl) return nullptr;
+    auto it = concurrencyHandles.find(decl);
+    return it != concurrencyHandles.end() ? it->second : nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Binding Save/Restore
 // ─────────────────────────────────────────────────────────────────────────────
 

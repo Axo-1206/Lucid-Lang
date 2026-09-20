@@ -81,6 +81,7 @@
 
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace codegen {
@@ -92,46 +93,40 @@ namespace codegen {
 // A scope corresponds to one `{ ... }` block, or the parameter list of a
 // function body. It tracks:
 //
-//   - `alive`: every `ValueDeclAST*` declared in this scope whose value is
-//     currently owned by this frame and must be released at scope exit.
+//   - `alive`: the set of declarations whose value is currently owned by
+//     this frame and must be released at scope exit.
 //
-//   - `consumed`: every `ValueDeclAST*` that was moved out of this scope
-//     (by a return, a closure capture, or an explicit move) and whose
-//     release has been claimed elsewhere.
+//   - `consumed`: the set of declarations that were moved out of this
+//     scope (by a return, a closure capture, an `await`/`join`, or an
+//     explicit move) and whose release has been claimed elsewhere.
 //
-//   - `block`: the `BlockStmtAST*` this scope corresponds to, if any. Null
-//     for synthetic scopes (the function-parameters scope pushed before the
-//     body's block). Read at cleanup time to find `#scope_exit`
-//     registrations, which Sema attached to the block.
+//   - `declarationOrder`: the same bindings as `alive`, in the order they
+//     were declared. Cleanup iterates this in reverse.
 //
-// ─── Why `consumed` Is Separate From `alive` ──────────────────────────────
-// A binding can be moved out of a scope on one control-flow path and still
-// be live on another. `alive` is the source of truth for "does cleanup
-// release this at scope exit"; `consumed` records that some path took
-// ownership. Cleanup iterates `alive` and skips anything in `consumed`,
-// which is why the two sets are disjoint by construction: every
-// `markConsumed` removes from `alive` and adds to `consumed`.
+//   - `block`: the `BlockStmtAST*` this scope corresponds to, if any.
 
 struct Scope {
     std::unordered_set<ValueDeclAST*> alive;
     std::unordered_set<ValueDeclAST*> consumed;
+    std::vector<ValueDeclAST*> declarationOrder;
     BlockStmtAST* block = nullptr;
 
     void markAlive(ValueDeclAST* decl) {
         if (!decl) return;
-        // Defensive: if a binding was already consumed, adding it to `alive`
-        // would produce a scope that releases it *and* records it as moved.
-        // That's an emitter bug, and this assertion catches it.
         assert(consumed.find(decl) == consumed.end()
                && "markAlive() called for a binding already consumed in "
                   "this scope");
-        alive.insert(decl);
+        if (alive.insert(decl).second) {
+            declarationOrder.push_back(decl);
+        }
     }
 
     void markConsumed(ValueDeclAST* decl) {
         if (!decl) return;
         alive.erase(decl);
         consumed.insert(decl);
+        // `declarationOrder` is intentionally not touched. Cleanup
+        // iterates it and checks `isAlive` to skip consumed entries.
     }
 
     bool isAlive(ValueDeclAST* decl) const {
@@ -146,11 +141,6 @@ struct Scope {
 // ─────────────────────────────────────────────────────────────────────────────
 // LoopInfo — one loop's break/continue targets
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Pushed when lowering `for`/`while`/`do-while`. The `continueTarget` is the
-// block that `continue` jumps to; the `exit` block is where `break` jumps
-// to. `scopeDepth` is the scope-stack depth at the loop's entry, which is
-// what `break`/`continue` unwind to before branching out.
 
 struct LoopInfo {
     llvm::BasicBlock* continueTarget = nullptr;
@@ -164,15 +154,6 @@ struct LoopInfo {
 
 class FunctionState {
 public:
-    /// @brief Construct a `FunctionState` and install it.
-    ///
-    /// `program` is the owning `ProgramState`. The constructor captures the
-    /// current per-function scalar state from `program`, installs `fn` as
-    /// the current function, and saves the builder's insertion point. The
-    /// scope stack, loop stack, and value map start empty for the new body.
-    ///
-    /// `declaredReturnType` is the function's AST return type, used by
-    /// `return` lowering to coerce the value. May be null for void.
     FunctionState(class ProgramState& program,
                   llvm::Function* fn,
                   TypeAST* declaredReturnType);
@@ -192,10 +173,6 @@ public:
 
     /// @brief The enclosing `FunctionState`, or null if this is a
     ///        top-level function body.
-    ///
-    /// Read by `saveBinding` to reach the enclosing function's value map,
-    /// and by `restore` to reinstall the previous `currentFunctionState`
-    /// pointer on `ProgramState`.
     FunctionState* enclosingState() const { return enclosing; }
 
     // ─── Scope Stack ──────────────────────────────────────────────────────
@@ -221,31 +198,51 @@ public:
     // for captured variables inside a closure body, to the env-loaded
     // value or spill slot. For a `cls`-shaped FuncDeclAST binding, to the
     // closure fat pointer value (not an alloca).
+    //
+    // For a `Future<T>` or `Thread<T>` binding, this maps the declaration
+    // to the **value slot** (`alloca T`), not the handle slot. See the
+    // `concurrencyHandles` map below.
 
     void storeValue(ValueDeclAST* decl, llvm::Value* value);
     llvm::Value* lookupValue(ValueDeclAST* decl) const;
     bool hasValue(ValueDeclAST* decl) const;
     void eraseValue(ValueDeclAST* decl);
 
+    // ─── Concurrency Handle Bindings (NEW) ────────────────────────────────
+    //
+    // A `Future<T>` or `Thread<T>` binding has two pieces of storage:
+    //
+    //   - The **value slot**: an `alloca T` holding the eventual result.
+    //     Registered in the `values` map via `storeValue`, so
+    //     `emitIdentifier` loads `T` from it after the binding is
+    //     narrowed by `await`/`join`.
+    //
+    //   - The **handle slot**: an `alloca ptr` holding the runtime handle
+    //     (a `FutureHandle*` or `ThreadHandle*`). Written by
+    //     `__lucid_async`/`__lucid_spawn`; consumed (set to null) by
+    //     `__lucid_await`/`__lucid_join`.
+    //
+    // The handle slot isn't a "value" in the emitter's sense — no AST
+    // expression loads it, and `emitIdentifier` never resolves to it.
+    // It's a private runtime channel between the async/spawn emitter and
+    // the await/join emitter. It lives in a separate map so the value map
+    // stays clean.
+    //
+    // The methods are keyed on the same `ValueDeclAST*` that the value map
+    // uses. `emitAsyncStmt`/`emitSpawnStmt` store the handle slot when
+    // they lower the statement; `emitAwaitStmt`/`emitJoinStmt` look it up.
+
+    void storeHandle(ValueDeclAST* decl, llvm::Value* slot);
+    llvm::Value* lookupHandle(ValueDeclAST* decl) const;
+
     // ─── Binding Save/Restore for Nested Function Bodies ──────────────────
     //
-    // When a closure body rebinds a captured declaration to its own
-    // env-loaded value, the enclosing function's binding for the same
-    // declaration is clobbered. The closure body saves the previous
-    // binding before clobbering and restores it on exit. This API
-    // exposes that save/restore pair.
-    //
-    // A `saveBinding` call for a declaration in a top-level function
-    // (no enclosing `FunctionState`) is a no-op — there's nothing to
-    // save from.
+    // (Unchanged.)
 
     void saveBinding(ValueDeclAST* decl);
     void restoreSavedBindings();
 
     // ─── Alive/Consumed Convenience ───────────────────────────────────────
-    //
-    // These forward to the current scope. Callers that need to look at all
-    // scopes (like `emitUnwindTo`) walk `scopeStack()` directly.
 
     void markAlive(ValueDeclAST* decl);
     void markConsumed(ValueDeclAST* decl);
@@ -253,89 +250,38 @@ public:
     bool isConsumed(ValueDeclAST* decl) const;
 
     // ─── Full Stack Access ────────────────────────────────────────────────
-    //
-    // Used by `emitUnwindTo` and by closure capture setup. Exposed as a
-    // range-for-able vector. Not `const` because callers mutate through
-    // it (e.g. marking bindings consumed during unwind).
 
     std::vector<Scope>& scopeStack() { return scopes; }
 
 private:
-    /// @brief Restore the captured state on destruction.
-    ///
-    /// Runs on every exit path (normal, early return, exception, ...),
-    /// because C++ destructors run for RAII objects on all of them.
-    ///
-    /// Restores: the three scalar fields on `ProgramState`, the
-    /// `currentFunctionState` pointer on `ProgramState`, and any saved
-    /// bindings the closure-body setup clobbered. Does not touch the
-    /// builder's insertion point — that's the `insertGuard` destructor's
-    /// job, and it runs after this function returns.
     void restore();
 
     // ─── State ────────────────────────────────────────────────────────────
 
-    /// The owning program state. Held by reference; outlives every
-    /// `FunctionState`.
     ProgramState& program;
 
-    /// RAII guard for the builder's insertion point.
-    ///
-    /// Declared **after** `program` and **before** every other member, so
-    /// it's constructed after `program` (which it needs for
-    /// `program.builder()`) and destroyed last (member destruction is
-    /// reverse of declaration order). Its destructor restores the exact
-    /// insertion point that was current at construction time.
-    ///
-    /// The `InsertPointGuard` has no default constructor. It must be
-    /// initialized in the constructor's initializer list, and the list
-    /// must run after `program` is initialized.
     llvm::IRBuilderBase::InsertPointGuard insertGuard;
 
-    /// The enclosing function's `FunctionState`, or null for a top-level
-    /// function body. Set by the constructor from
-    /// `program.currentFunctionState` (which the constructor then
-    /// overwrites with `this`). Restored by `restore()`.
     FunctionState* enclosing = nullptr;
 
-    /// The function being lowered. Captured from the constructor's `fn`
-    /// parameter; the constructor also stores it on `program` as
-    /// `program.currentFunction`.
     llvm::Function* fn = nullptr;
-
-    /// The declared AST return type, used by `return` lowering. Captured
-    /// from the constructor's `declaredReturnType` parameter; the
-    /// constructor also stores it on `program` as
-    /// `program.currentDeclaredReturnType`.
     TypeAST* returnType = nullptr;
-
-    /// The environment pointer for a closure body, or null. Set explicitly
-    /// by closure lowering; also mirrored on `program.currentEnvPtr` while
-    /// this state is active.
     llvm::Value* envPtr = nullptr;
 
-    /// The function's scope stack. Starts empty; the caller pushes the
-    /// function-level scope and each nested block's scope. Destroyed with
-    /// the `FunctionState`.
     std::vector<Scope> scopes;
-
-    /// The function's loop stack. Starts empty; each loop pushes and pops.
     std::vector<LoopInfo> loops;
 
-    /// The function's `ValueDeclAST* → llvm::Value*` map. Starts empty;
-    /// parameter registration and local declaration push entries. Destroyed
-    /// with the `FunctionState`.
     std::unordered_map<ValueDeclAST*, llvm::Value*> values;
 
-    /// Bindings that were clobbered by an inner function body and must be
-    /// restored on exit. Each pair is `(decl, previousValue)`. Restored in
-    /// reverse order, so a decl saved twice ends up with its outermost
-    /// value.
+    /// Handles for async/spawn bindings. See `storeHandle`/`lookupHandle`.
+    ///
+    /// Keyed on the same declaration pointer as `values`; the value map's
+    /// entry for the same declaration holds the value slot, and this map's
+    /// entry holds the handle slot.
+    std::unordered_map<ValueDeclAST*, llvm::Value*> concurrencyHandles;
+
     std::vector<std::pair<ValueDeclAST*, llvm::Value*>> savedBindings;
 
-    /// Captured scalar state of the enclosing function. These are the
-    /// fields the constructor reads from `program` and the destructor
-    /// writes back to `program`.
     struct CapturedScalars {
         llvm::Function* prevFunction = nullptr;
         TypeAST* prevReturnType = nullptr;
