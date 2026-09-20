@@ -41,9 +41,6 @@
 
 namespace codegen {
 
-struct ModuleAST;
-struct CodeGenOptions;  // empty stub; will be removed in a later phase
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CodegenResult — the plain-data output of one codegen run
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +83,6 @@ struct CodegenResult {
 /// The string pool and diagnostic engine must outlive the call.
 CodegenResult generate(const std::vector<ModuleAST*>& modules,
                        StringPool& pool,
-                       DiagnosticEngine& diagnostics,
-                       const CodeGenOptions& options = {});
+                       DiagnosticEngine& diagnostics);
 
 } // namespace codegen

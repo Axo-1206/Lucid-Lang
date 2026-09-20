@@ -73,23 +73,6 @@
 
 namespace codegen {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CodeGenOptions — vestigial, emptied in Task 3
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The old options struct carried `moduleCapacity` (the size of the
-// `@__lucid_module_instances` table) and `moduleIds` (the pre-assigned ID
-// map). Both are artifacts of the module-instance table design, which is
-// going away in Task 7: the table is replaced by per-module state globals,
-// and module identity is the `ModuleAST*` pointer, not an integer.
-//
-// The struct is kept empty for now so `generate()`'s signature still
-// compiles. Task 8 deletes it, along with the `options` parameter on
-// `generate()`.
-
-struct CodeGenOptions {
-};
-
 /// @brief Transitional aggregator over `ProgramState` and `FunctionState`.
 ///
 /// See the file header for the design. Every field and method either
@@ -106,11 +89,6 @@ struct CodeGenContext {
     /// `setCurrentFunction` and destroyed by `clearCurrentFunction`.
     /// Null when no function body is active.
     std::unique_ptr<FunctionState> func;
-
-    // ─── Vestigial Options ────────────────────────────────────────────────
-    //
-    // Kept so `generate()`'s signature compiles. Never read.
-    CodeGenOptions options;
 
     // ─── Constructor ──────────────────────────────────────────────────────
 

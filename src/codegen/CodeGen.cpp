@@ -16,8 +16,7 @@ namespace codegen {
 
 CodegenResult generate(const std::vector<ModuleAST*>& modules,
                        StringPool& pool,
-                       DiagnosticEngine& diagnostics,
-                       const CodeGenOptions& /*options*/) {
+                       DiagnosticEngine& diagnostics) {
     CodegenResult result;
 
     // ─── 1. Create the program state ──────────────────────────────────────
