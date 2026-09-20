@@ -764,213 +764,198 @@ lucid/
     ├── main.cpp                            # CLI entry point (lucid run / build / repl)
     │
     ├── core/                               # shared data structures (no LLVM dependency)
+    │   ├── ASTStrings.hpp                  # Convert LLVM values and AST nodes into strings
+    │   ├── JSONFormatter.hpp/cpp           # Format parse and sema output as JSON for tooling/LSP
+    │   ├── SourceLocation.hpp              # Definition of AST node source location
     │   ├── Tokens.hpp                      # Token and TokenKind definitions
-    │   ├── diagnostics/                    # user-facing error and warning reporting
-    │   ├── JSONFormatter.hpp/cpp           # format the final result from parse and semantic phase for lsp as .json file
-    │   ├── SourceLocation.hpp              # definition of AST node source location
-    │   ├── ASTString.hpp                   # convert llvm value and AST node into strings
+    │   │
     │   ├── ast/                            # AST node types
-    │   │   ├── BaseAST.hpp                 # base node, SourceLocation, visitor interface
-    │   │   ├── DeclAST.hpp                 # declaration nodes
-    │   │   ├── StmtAST.hpp                 # statement nodes
-    │   │   ├── ExprAST.hpp                 # expression nodes
-    │   │   └── TypeAST.hpp                 # type annotation nodes
+    │   │   ├── BaseAST.hpp                 # Base AST node, SourceLocation, visitor interface
+    │   │   ├── DeclAST.hpp                 # Declaration nodes
+    │   │   ├── ExprAST.hpp                 # Expression nodes
+    │   │   ├── StmtAST.hpp                 # Statement nodes
+    │   │   └── TypeAST.hpp                 # Type annotation nodes
+    │   │
     │   ├── builtins/
-    │   │   └── ArenaMethod.hpp             # only method enum + parsing
-    │   ├── trace/
-    │   │   └── Trace.hpp/cpp
+    │   │   └── ArenaMethod.hpp             # Built-in arena method enum and parsing
+    │   │
+    │   ├── diagnostics/                    # User-facing error and warning reporting
+    │   │   ├── Diagcode.hpp                # Diagnostic error codes
+    │   │   ├── Diagnostic.hpp/cpp          # Diagnostic engine & reporting
+    │   │   └── StackTrace.hpp/cpp          # Stack trace capture & formatting
+    │   │
+    │   ├── memory/                         # AST memory management
+    │   │   ├── ArenaSpan.hpp               # Custom arena-allocated span helper
+    │   │   ├── ASTArena.hpp                # Arena instance holding AST nodes
+    │   │   ├── InternedString.hpp          # Interned string reference
+    │   │   └── StringPool.hpp/cpp          # String interning pool
+    │   │
     │   ├── registry/
-    │   │   ├── AttributeRegistry.hpp/cpp
-    │   │   └── IntrinsicRegistry.hpp/cpp
-    │   └── memory/                         # AST memory management
-    │       ├── ArenaSpawn.hpp              # arena allocator for AST nodes
-    │       ├── ASTArena.hpp                # arena instance holding one module's nodes
-    │       ├── InternedString.hpp
-    │       └── StringPool.hpp/cpp
+    │   │   ├── AttributeRegistry.hpp/cpp   # Compiler attribute registration
+    │   │   └── IntrinsicRegistry.hpp/cpp   # Compiler intrinsic registration
+    │   │
+    │   └── trace/
+    │       └── Trace.hpp/cpp               # Execution tracing utility
     │
     ├── parser/                             # frontend stage 1: source → AST
-    │   ├── Parser.hpp                      # public interface: parse()
-    │   ├── Parser.cpp
-    │   ├── ModuleResolver.hpp/cpp          # multi-file resolution, cyclic import detection
+    │   ├── Parser.hpp/cpp                  # Public parser entry points
+    │   ├── ModuleResolver.hpp/cpp          # Multi-file module resolution & cyclic import detection
+    │   │
+    │   ├── context/
+    │   │   ├── ParserContext.hpp           # Sync points for error recovery and parser state
+    │   │   └── TokenStream.hpp/cpp         # Token stream management and traversal
+    │   │
     │   ├── lexer/
-    │   │   └── Lexer.hpp/cpp               # character stream → token stream
-    │   ├── rules/                          # grammar rule implementations
-    │   │   ├── ParserDecl.cpp              # const, let, struct, enum, trait, fn
-    │   │   ├── ParserStmt.cpp              # if, for, while, return, block
-    │   │   ├── ParserExpr.cpp              # Pratt parser: all expressions
-    │   │   └── ParserType.cpp              # type annotations: *T, T?, generics
-    │   ├── support/                        # parser infrastructure
-    │   │   ├── ErrorRecovery.cpp           # shared parse state
-    │   │   ├── Lookahead.cpp               # disambiguation helpers
-    │   │   └── Helpers.cpp                 # attribute parsing, doc-comment handling
-    │   └── context/                        # parser infrastructure
-    │       ├── TokenStream.hpp/cpp         # Track stream of tokens when parsing a file
-    │       └── ParserContext.hpp           # sync points for error recovery
+    │   │   └── Lexer.hpp/cpp               # Character stream → token stream
+    │   │
+    │   ├── rules/                          # Grammar rule implementations
+    │   │   ├── ParseDecl.cpp               # Declarations (const, let, struct, enum, trait, fn)
+    │   │   ├── ParseExpr.cpp               # Pratt parser: all expression rules
+    │   │   ├── ParseStmt.cpp               # Statements (if, for, while, return, block)
+    │   │   └── ParseType.cpp               # Type annotations (*T, T?, generics)
+    │   │
+    │   └── support/                        # Parser infrastructure helpers
+    │       ├── ErrorRecovery.hpp/cpp       # Parser error recovery state & routines
+    │       ├── Helpers.cpp                 # Attribute parsing, doc-comments, general helpers
+    │       └── LookAhead.cpp               # Disambiguation and lookahead helpers
     │
-    ├── sema/
-    │   ├── Sema.hpp                        # Public API (namespace sema)
-    │   ├── Sema.cpp                        # Public API implementation
+    ├── sema/                               # frontend stage 2: semantic analysis
+    │   ├── Sema.hpp/cpp                    # Public API (namespace sema)
     │   │
-    │   ├── context/                        # Context components
-    │   │   ├── ContextStack.hpp/cpp        
-    │   │   ├── Generic.hpp/cpp             # Generic substitution and instantiation utilities.
-    │   │   ├── Instantiation.cpp           # Generic instantiation — orchestration, caching, validation.
-    │   │   └── SemaContext.hpp/cpp         # Unified context (composition)
+    │   ├── const_eval/                     # Compile-time evaluation
+    │   │   ├── ConstEvaluator.hpp/cpp      # Main evaluator interface & orchestration
+    │   │   ├── ConstEvalBinary.cpp         # Binary operations evaluation
+    │   │   ├── ConstEvalHelpers.hpp/cpp    # Helper declarations & utilities
+    │   │   ├── ConstEvalStatement.cpp      # Statement execution evaluation
+    │   │   └── ConstEvalUnary.cpp          # Unary operations evaluation
     │   │
-    │   ├── rules/                          # Analysis rules
-    │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
-    │   │   ├── SemaStmt.cpp                # if, for, while, switch, return, block
-    │   │   ├── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
-    │   │   └── LibValidator.hpp/cpp        # validates `import lib;` against lib.luci (see Architecture §9.2) (NOTE: not implemented)
+    │   ├── context/                        # Context & generic instantiation
+    │   │   ├── ContextStack.hpp/cpp        # Scope/context stack management
+    │   │   ├── Generic.hpp/cpp             # Generic substitution and instantiation utilities
+    │   │   ├── Instantiation.cpp           # Generic instantiation orchestration & caching
+    │   │   └── SemaContext.hpp/cpp         # Unified semantic context composition
     │   │
-    │   ├── types/
-    │   │   ├── SemaResolve.cpp             # Resolves type annotations to their semantic representations.
-    │   │   ├── SemaSelfReference.cpp       # Self reference check
-    │   │   ├── SemaTypeEquality.cpp        # Type Equality Helpers
-    │   │   ├── SemaTypePredicates.cpp
-    │   │   ├── SemaValidate.cpp            # Type Validation Helpers
-    │   │   └── SemaType.hpp                # Main header for document
-    │   │
-    │   ├── const_eval/
-    │   │   ├── ConstEvaluator.hpp          # Public interface
-    │   │   ├── ConstEvaluator.cpp          # Main logic: evaluateDecl, evaluate, buildDependencyGraph
-    │   │   ├── ConstEvalHelpers.hpp/cpp    # Internal helper declarations
-    │   │   ├── ConstEvalBinary.cpp         # Binary operations: add, sub, mul, div, mod, pow, comparisons
-    │   │   ├── ConstEvalUnary.cpp          # Unary operations: neg, not, bitnot
-    │   │   └── ConstEvalStatement.cpp      # Statement execution: block, return, if, while, expr, decl
-    │   │ 
     │   ├── registry/
-    │   │   ├── ArgTypeValidators.hpp/cpp   # Validate argument type for attribute and intrinsics
-    │   │   ├── AttributeValidator.hpp/cpp  # validate if the attribute exist and the argument is correct
-    │   │   └── IntrinsicValidator.hpp/cpp  # validate if the intrinsic exist and the argument is correct
+    │   │   ├── ArgTypeValidators.hpp/cpp   # Argument type validators for attributes/intrinsics
+    │   │   ├── AttributeValidator.hpp/cpp  # Attribute existence & argument validator
+    │   │   └── IntrinsicValidator.hpp/cpp  # Intrinsic existence & argument validator
     │   │
-    │   └── support/
-    │       ├── SwitchHelpers.hpp/cpp
-    │       ├── CaptureAnalysis.hpp/cpp     # Analyze capture for closure
-    │       ├── MangledName.hpp/cpp         # Mangled name generation
-    │       ├── Truthiness.hpp              # Collection of rules for conditions
-    │       └── TypeNarrowHelpers.hpp/cpp
+    │   ├── rules/                          # Semantic analysis rules
+    │   │   ├── SemaDecl.cpp                # Declaration semantic checks
+    │   │   ├── SemaExpr.cpp                # Expression semantic checks
+    │   │   └── SemaStmt.cpp                # Statement semantic checks
+    │   │
+    │   ├── support/
+    │   │   ├── CaptureAnalysis.hpp/cpp     # Closure capture analysis
+    │   │   ├── MangledName.hpp/cpp         # Symbol name mangling helpers
+    │   │   ├── SwitchHelpers.hpp/cpp       # Switch statement semantic validation helpers
+    │   │   ├── Truthiness.hpp              # Truthiness evaluation rules
+    │   │   └── TypeNarrowHelpers.hpp/cpp   # Control-flow type narrowing helpers
+    │   │
+    │   └── types/                          # Type system checking & resolution
+    │       ├── SemaResolve.cpp             # Type annotation resolution to semantic types
+    │       ├── SemaType.hpp                # Main header for semantic types
+    │       ├── SemaTypeEquality.cpp        # Type equality checking
+    │       ├── SemaTypePredicates.cpp      # Type classification predicates
+    │       └── SemaValidate.cpp            # Type validation helpers
     │
     ├── runtime-abi/
-    │   ├── functions.def    # The single source of truth for the runtime ABI surface.
-    │   └── lucid_abi.h      # The ABI contract between CodeGen, the runtime, and the interpreter.
+    │   ├── functions.def                   # The single source of truth for runtime ABI functions
+    │   └── lucid_abi.h                     # ABI contract between CodeGen, runtime, and interpreter
     │
-    ├── runtime/
-    │   ├── ArenaRuntime.cpp           # Implementation of arena runtime functions
-    │   ├── ClosureEnvironment.hpp     # Closure environment memory layout & management
-    │   ├── ClosureRuntime.cpp         # Extern "C" entry points for closure runtime
-    │   ├── ConcurrencyEntry.cpp       # Extern "C" entry points for concurrency runtime
-    │   ├── ConcurrencyRuntime.hpp/cpp # Thread pool, event loop, registry
-    │   ├── MemoryRuntime.cpp          # Memory management runtime functions
-    │   ├── PanicRuntime.cpp           # Panic implementation
-    │   ├── RuntimeError.hpp           # Define all runtime errors
-    │   └── StringRuntime.cpp          # String operations runtime
+    ├── runtime/                            # Lucid native runtime support library
+    │   ├── ArenaRuntime.cpp                # Implementation of arena runtime functions
+    │   ├── ClosureEnvironment.hpp          # Closure environment memory layout & management
+    │   ├── ClosureRuntime.cpp              # Extern "C" entry points for closure runtime
+    │   ├── ConcurrencyEntry.cpp            # Extern "C" entry points for concurrency runtime
+    │   ├── ConcurrencyRuntime.hpp/cpp      # Thread pool, event loop, registry
+    │   ├── MemoryRuntime.cpp               # Memory management runtime functions
+    │   ├── PanicRuntime.cpp                # Panic implementation
+    │   ├── RuntimeError.hpp                # Runtime error definitions
+    │   └── StringRuntime.cpp               # String operations runtime
     │
-    ├── codegen/
-    │   ├── CodeGen.hpp/cpp      # Orchestrator
-    │   ├── CodeGenDefaults.hpp  # Program-wide constants that every codegen caller must agree on.
-    │   ├── Manifest.hpp         # The plain-data contract between CodeGen and its consumers.
+    ├── codegen/                            # LLVM IR code generator
+    │   ├── CodeGen.hpp/cpp                 # Orchestrator
+    │   ├── CodeGenDefaults.hpp             # Program-wide constants for codegen callers
+    │   ├── Manifest.hpp                    # Plain-data contract between CodeGen and consumers
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── emit/
+    │   │   ├── CodeGenClosure.hpp/cpp      # Closure code generation & emission
     │   │   ├── CodeGenDecl.cpp             # Declaration lowering
-    │   │   ├── CodeGenStmt.cpp             # Statement lowering
     │   │   ├── CodeGenExpr.cpp             # Expression lowering
-    │   │   └── CodeGenClosure.hpp/cpp      # Closure code generation & emission
+    │   │   └── CodeGenStmt.cpp             # Statement lowering
     │   │
-    │   ├── types/
-    │   │   ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
-    │   │   └── LLVMTypeHelpers.hpp         # Helper functions for LLVM types
+    │   ├── intrinsic/
+    │   │   ├── IntrinsicEmitter.hpp/cpp    # Intrinsic emission API base
+    │   │   ├── LLVMIntrinsicEmitter.hpp/cpp# Low-level LLVM intrinsic emission
+    │   │   └── LucidIntrinsicEmitter.hpp/cpp# Lucid-specific intrinsic emission logic
     │   │
     │   ├── ownership/
-    │   │   └── CodeGenOwnership.hpp/cpp    # Source of truth for memory management & ownership rules
+    │   │   └── CodeGenOwnership.hpp/cpp    # Memory management & ownership rules lowering
     │   │
-    │   ├── passes/                         # Codegen passes (e.g. optimizations / transformations)
+    │   ├── passes/                         # Codegen optimization/transformation passes
     │   │
     │   ├── support/
-    │   │   ├── ArenaHelpers.hpp            # Arena-specific code generation helpers
+    │   │   ├── ArenaHelpers.hpp            # Arena code generation helpers
     │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, and stack allocation helpers
-    │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
-    │   │   ├── CodeGenPanic.hpp/cpp        # Panic and runtime error assertion emission
+    │   │   ├── CodeGenHelpers.hpp/cpp      # General codegen helpers
+    │   │   ├── CodeGenPanic.hpp/cpp        # Panic and error assertion emission
     │   │   ├── LiveVariableTracker.hpp     # Live variable tracking
-    │   │   └── Truthiness.hpp              # Collection of rules for boolean dynamic condition evaluations
+    │   │   └── Truthiness.hpp              # Boolean dynamic condition rules
     │   │
-    │   └── intrinsic/
-    │       ├── IntrinsicEmitter.hpp/cpp        # Intrinsic emission API base
-    │       ├── LucidIntrinsicEmitter.hpp/cpp   # Lucid-specific intrinsic emission logic
-    │       └── LLVMIntrinsicEmitter.hpp/cpp    # Low-level LLVM intrinsic emission
+    │   └── types/
+    │       ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
+    │       └── LLVMTypeHelpers.hpp         # LLVM type helper utilities
     │
-    ├── interpreter/                    # ORC JIT backend (lucid run)
-    │   ├── Interpreter.hpp             # Public API - single entry point
-    │   ├── Interpreter.cpp             # Orchestration logic
+    ├── interpreter/                        # ORC JIT backend (lucid run)
+    │   ├── Interpreter.hpp/cpp             # Public API & orchestration logic
     │   │
     │   ├── core/
-    │   │   ├── InterpreterContext.hpp          # Context holding all state
-    │   │   ├── InterpreterProgram.hpp/cpp      # Program-level state: loaded modules, IDs, instances, load/reload/run/teardown.
-    │   │   ├── InterpreterSession.hppp/cpp     # Session-level state: JIT, DynamicLinker, instance table buffer.
-    │   │   └── ModuleRegistry.hpp/cpp          # Track loaded modules and their dependencies - NO VERSIONS.
+    │   │   ├── InterpreterContext.hpp      # Context holding interpreter state
+    │   │   ├── InterpreterProgram.hpp/cpp  # Program-level state (modules, IDs, load/run)
+    │   │   ├── InterpreterSession.hpp/cpp  # Session state (JIT, linker, instance buffer)
+    │   │   └── ModuleRegistry.hpp/cpp      # Module dependency & load tracking
     │   │
-    │   ├── execution/
+    │   ├── dynlink/                        # Platform library dynamic linker
+    │   │   ├── DynamicLinker.hpp/cpp       # Platform-agnostic library loader
+    │   │   └── LibraryHandle.hpp/cpp       # RAII wrapper for dlopen/LoadLibrary
     │   │
     │   ├── jit/
-    │   │   ├── JITSession.hpp           # ORC JIT session management.
-    │   │   └── JITSession.cpp
-    │   │
-    │   ├── dynlink/ (currently outdated, work on this one latter)
-    │   │   ├── DynamicLinker.hpp        # Platform-agnostic library loader
-    │   │   ├── DynamicLinker.cpp
-    │   │   ├── LibraryHandle.hpp        # RAII wrapper for dlopen/LoadLibrary
-    │   │   └── LibraryHandle.cpp
+    │   │   └── JITSession.hpp/cpp          # ORC JIT session management
     │   │
     │   └── support/
-    │       ├── InterpreterOptions.hpp   # Configuration options
-    │       ├── InterpreterError.hpp     # Error types
-    │       └── ExecutionResult.hpp      # Result of execution
+    │       ├── ExecutionResult.hpp         # Result structure of execution
+    │       ├── InterpreterError.hpp        # Interpreter error types
+    │       └── InterpreterOptions.hpp      # Execution options configuration
     │
-    ├── compiler/ (not implemented this is for reference) # AOT backend (lucid build)
-    │   └── aot/                        # AOT-only backend
-    │       ├── ModuleMerge.hpp/cpp     # llvm::Linker::linkModules — per-file
-    │       │                           # Modules → one whole-program Module
-    │       │                           # (Architecture §9.5; run path skips this)
-    │       ├── AOT.hpp/cpp             # TargetMachine + Reloc model, optimisation
-    │       │                           # pipeline, object file emission
-    │       ├── Linker.hpp/cpp          # system linker invocation; branches on
-    │       │                           # ModuleEmitOptions.kind: archive (.a),
-    │       │                           # `-shared` link (.so/.dll + .lib stub),
-    │       │                           # or normal executable link
-    │       ├── BitcodeIO.hpp/cpp       # BitcodeWriter/BitcodeReader — .bc
-    │       │                           # emit (--emit-bc) and load (`lucid run *.bc`)
-    │       └── LuciWriter.hpp/cpp      # serializes exported subset of the typed
-    │                                   # AST to .luci (Architecture §9.2);
-    │                                   # driven by --lib, independent of
-    │                                   # --static/--shared
+    ├── compiler/                           # AOT backend (future implementation)
     │
-    ├── stdlib/                         # standard library (written in Lucid)
-    │   ├── io.luc
-    │   ├── math.luc
-    │   ├── array.luc
-    │   ├── string.luc
-    │   ├── http.luc
-    │   └── game.luc
+    ├── stdlib/                             # Standard library (written in Lucid)
+    │   └── simd.luc
     │
-    ├── cli/                            # command-line interface
+    ├── cli/                                # Command-line interface
+    │   ├── CLIContext.hpp                  # Shared CLI context for a session
+    │   ├── CLIOptions.hpp                  # Unified CLI options for all commands
+    │   ├── DependencyGraph.hpp             # Bi-directional dependency graph for hot-reload
+    │   ├── FileWatcher.hpp                 # File watcher for hot-reload
+    │   ├── RunOptions.hpp                  # Options for run command
+    │   │
     │   ├── commands/
-    │   │   ├── sema.hpp/cpp            # 'sema' command - parse + semantic analysis.
-    │   │   ├── parse.hpp/cpp           # 'parse' command - parse-only mode for debugging.
-    │   │   ├── emit-ir.hpp/cpp         # 'lucid emit-ir' command - emit LLVM IR as text.
-    │   │   └── run.hpp/cpp             # lucid run (.luc source or .bc bitcode)
-    │   ├── pipeline/
-    │   │   ├── JSONDumper.hpp/cpp      # Serialization for all AST nodes and diagnostics.
-    │   │   └── Pipeline.hpp/cpp        # Compiler pipeline with configurable stop points and output.
-    │   ├── CLIContext.hpp              # Shared CLI context for a single run session.
-    │   ├── CLIOptions.hpp              # Unified CLI options for all commands.
-    │   ├── DependencyGraph.hpp         # Bi‑directional dependency graph for hot‑reload.
-    │   ├── FileWatcher.hpp             # File watcher for hot‑reload.
-    │   └── RunOptions.hpp/cpp
+    │   │   ├── emit-ir.hpp/cpp             # 'emit-ir' command - emit LLVM IR
+    │   │   ├── parse.hpp/cpp               # 'parse' command - parse-only mode
+    │   │   ├── run.hpp/cpp                 # 'run' command - JIT run (.luc source or .bc)
+    │   │   └── sema.hpp/cpp                # 'sema' command - parse + semantic analysis
+    │   │
+    │   └── pipeline/
+    │       ├── JSONDumper.hpp/cpp          # Serialization for AST nodes and diagnostics
+    │       └── Pipeline.hpp/cpp            # Compiler pipeline with configurable stop points
     │
-    └── debug/                          # developer tools (not user-facing)
+    └── debug/                              # Developer tools (not user-facing)
+        ├── DebugMacros.hpp                 # Debug assertion macros
+        └── DebugUtils.hpp                  # Debug printing & inspection utilities
 
 tests/
 ├── parser/
