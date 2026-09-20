@@ -152,6 +152,11 @@ public:
     // looked up from `functions.def` and the layout headers.
     llvm::Function* declareOrGet(RuntimeFn fn);
 
+    // This is the single place the `RuntimeFn` enumerator is mapped back to
+    // its `__lucid_*` symbol string, so the manifest cannot disagree with
+    // the actual declaration.
+    std::string_view symbolName(RuntimeFn fn) const;
+
     // ─── Convenience ──────────────────────────────────────────────────────
 
     /// @brief `__lucid_panic` is marked `noreturn` in the generated IR.
@@ -183,9 +188,6 @@ private:
     /// attributes the tags imply (`zeroext` for `I1`) are applied by
     /// `declareOrGet`, because they live on the function, not the type.
     llvm::FunctionType* buildFunctionType(RuntimeFn fn);
-
-    /// @brief Look up the symbol name for a runtime function.
-    std::string_view symbolName(RuntimeFn fn) const;
 
     // ─── State ────────────────────────────────────────────────────────────
 

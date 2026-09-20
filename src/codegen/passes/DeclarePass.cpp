@@ -3,13 +3,13 @@
 
 #include "Passes.hpp"
 
-#include "codegen/Emitter.hpp"
+#include "codegen/LLVMTypeHelpers.hpp"
+#include "codegen/emit/Emitter.hpp"
 #include "codegen/Types.hpp"
 #include "codegen/Abi.hpp"
 #include "codegen/Program.hpp"
 
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/ModuleAST.hpp"
 #include "core/trace/Trace.hpp"
 
 namespace codegen {
@@ -143,7 +143,13 @@ void runDeclarePass(const std::vector<ModuleAST*>& modules,
                                             program.moduleLayouts());
 
         // ─── 4. Manifest: record the module's symbol names ────────────────
-        std::string sanitized = sanitizeForSymbol(
+        //
+        // These symbol strings MUST match the ones ModulePass emits. Both
+        // passes derive them the same way (`sanitizeForSymbol(filePath)` plus a
+        // fixed prefix), so they stay in sync as long as that derivation is
+        // the same in both places. If you change the sanitization or the
+        // prefix in one pass, change it in the other.
+        std::string sanitized = sanitizeForLLVMSymbol(
             program.pool.lookup(module->filePath));
 
         ManifestModule entry;

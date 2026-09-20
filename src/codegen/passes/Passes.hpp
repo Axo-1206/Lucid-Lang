@@ -39,8 +39,6 @@
 
 namespace codegen {
 
-struct ModuleAST;
-
 /// @brief Emit LLVM types and function prototypes for every module.
 ///
 /// For each module in the list, in order:

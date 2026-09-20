@@ -59,7 +59,10 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/ast/ResourceKind.hpp"
 
+#include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/Twine.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
@@ -185,6 +188,15 @@ private:
     Val emitIf(IfExprAST* expr);
     Val emitRange(RangeExprAST* expr);
 
+    /// @brief Emit an expression that Sema folded to a `ConstantValue`.
+    ///
+    /// Called from `emit(ExprAST*)` when `expr->isConst` is true. Handles
+    /// the constant kinds whose LLVM representation can be built directly
+    /// (integers, floats, bools, strings, nil/err sentinels). Returns an
+    /// invalid `Val` for constants it can't emit directly, letting the
+    /// caller fall through to the normal per-kind emitter.
+    Val emitFoldedConstant(ExprAST* expr);
+
     // ─── Statement Emitters ───────────────────────────────────────────────
 
     void emitBlock(BlockStmtAST* stmt);
@@ -207,6 +219,7 @@ private:
 
     void emitFuncDecl(FuncDeclAST* decl);
     void emitFuncBody(FuncDeclAST* decl);
+    void emitForeignFuncDecl(FuncDeclAST* decl);
     void emitVarDecl(VarDeclAST* decl);
     void emitStructDecl(StructDeclAST* decl);
     void emitEnumDecl(EnumDeclAST* decl);
@@ -240,10 +253,10 @@ private:
     /// `cls`-shaped callees are fat pointers: extract `{fn, env}`, prepend
     /// `env` to the argument list, and call `fn` indirectly.
     llvm::Value* emitCallableCall(llvm::Value* callee,
-                                llvm::ArrayRef<llvm::Value*> args,
-                                llvm::FunctionType* fnType,
-                                FuncShape shape,
-                                const llvm::Twine& name);
+                                  llvm::ArrayRef<llvm::Value*> args,
+                                  llvm::FunctionType* fnType,
+                                  FuncShape shape,
+                                  const llvm::Twine& name);
 
     /// @brief Coerce an argument value to a parameter's declared type.
     ///
@@ -252,6 +265,21 @@ private:
     /// if the coercion is not supported (which is a Sema bug — Sema should
     /// have rejected the assignment).
     Val coerceArgument(Val arg, TypeAST* paramTy);
+
+    /// @brief Coerce a value to a target AST type.
+    ///
+    /// Unlike `coerceArgument`, this handles return-value coercion, which
+    /// has a slightly different surface (it may insert the `fn → cls`
+    /// widening before the type-based coercions).
+    Val coerceTo(Val val, TypeAST* targetTy);
+
+    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
+    ///
+    /// Low-level: integer widening/narrowing, pointer cast, aggregate
+    /// bitcast. Used by the higher-level coercion helpers.
+    llvm::Value* coerceValueToType(llvm::Value* val,
+                                   llvm::Type* targetTy,
+                                   llvm::IRBuilder<>& builder);
 
     // ─── Closure Lowering (EmitClosure.cpp) ───────────────────────────────
 
@@ -308,22 +336,7 @@ private:
     /// into its field, and returns a pointer to the packet.
     llvm::Value* buildConcurrencyPacket(CallExprAST* call);
 
-    // ─── Coercion Helpers ─────────────────────────────────────────────────
 
-    /// @brief Coerce a value to a target AST type.
-    ///
-    /// Unlike `coerceArgument`, this handles return-value coercion, which
-    /// has a slightly different surface (it may insert the `fn → cls`
-    /// widening before the type-based coercions).
-    Val coerceTo(Val val, TypeAST* targetTy);
-
-    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
-    ///
-    /// Low-level: integer widening/narrowing, pointer cast, aggregate
-    /// bitcast. Used by the higher-level coercion helpers.
-    llvm::Value* coerceValueToType(llvm::Value* val,
-                                    llvm::Type* targetTy,
-                                    llvm::IRBuilder<>& builder);
 
     // ─── Assignment Path ──────────────────────────────────────────────────
     //
@@ -342,37 +355,43 @@ private:
     /// because the place still holds the claim (a load doesn't move).
     Val loadPlace(Place place, llvm::IRBuilder<>& builder);
 
-    // ─── Helper: Get-or-Insert Function ───────────────────────────────────
+    // ─── Helper: Entry-Block Alloca ───────────────────────────────────────
     //
-    // Function lookup goes through `ProgramState::lookupFunction`, which
-    // was populated by the declare pass. A body emitter for a function
-    // looks up its own prototype; a call emitter looks up the callee's.
-    // If the lookup fails, it's a bug — the declare pass should have
-    // populated the table.
-
-    // ─── Helper: Value State (Null/Err) ───────────────────────────────────
+    // Every emitter-side alloca goes in the current function's entry block.
+    // Creating allocas in the current block would make a loop body allocate
+    // a new slot per iteration and accumulate them until the function
+    // returns. This helper enforces the discipline.
     //
-    // Emitters that produce tagged values (nullable, fallible) need to
-    // know the tag. This is emitted inline as a load of field 0 of the
-    // tagged slot. The helper centralizes the tag-load pattern.
+    // Returns null if there's no current function to attach to.
 
-    // ─── Helper: Truthiness ───────────────────────────────────────────────
+    llvm::AllocaInst* createEntryAlloca(llvm::Type* ty,
+                                        const llvm::Twine& name);
+
+    // ─── Helper: Scope Unwinding ──────────────────────────────────────────
     //
-    // Condition evaluation needs to coerce any value to `i1`. The rules
-    // are in `Truthiness.hpp`; the emitter calls into them.
+    // `emitUnwindTo(depth)` walks the `FunctionState`'s scope stack from
+    // the innermost scope down to (but not including) `depth`, emitting
+    // drops for every alive binding in each. Used by `return` (unwind to
+    // 0), `break` (unwind to the loop's scope depth), and `continue`.
+    //
+    // Non-destructive: does not pop scopes. The structurally-paired
+    // `popScope` in `emitBlock` is what pops.
 
-    // ─── Helper: Tagged Slot Construction ─────────────────────────────────
+    void emitUnwindTo(size_t targetDepth);
 
-    /// Construct a tagged slot `{ i8 tag, T value }` from a raw value
-    /// and a tag. Used by nullable/fallible/combined emitters.
-    llvm::Value* makeTaggedSlot(llvm::Value* raw, uint8_t tag, TypeAST* ty);
+    // ─── Helpers: Resource Classification ─────────────────────────────────
 
-    // ─── Helper: Tagged Slot Unwrapping ───────────────────────────────────
+    /// @brief The declaration's cached resource kind.
+    ///
+    /// Reads `decl->resourceKind`, populated by Sema in Phase 1. Null-safe.
+    ResourceKind classifyResource(ValueDeclAST* decl) const {
+        return decl ? decl->resourceKind : ResourceKind::None;
+    }
 
-    /// Extract the value from a tagged slot, asserting (via a runtime
-    /// branch or a compile-time proof) that the tag indicates "present".
-    /// Used when Sema has proven the slot is narrowed.
-    llvm::Value* unwrapTagged(llvm::Value* slot, TypeAST* ty);
+    /// @brief True if the declaration owns a heap resource.
+    bool ownsResource(ValueDeclAST* decl) const {
+        return classifyResource(decl) != ResourceKind::None;
+    }
 };
 
 } // namespace codegen

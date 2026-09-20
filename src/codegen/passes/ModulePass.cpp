@@ -3,12 +3,12 @@
 
 #include "Passes.hpp"
 
-#include "codegen/Emitter.hpp"
+#include "codegen/LLVMTypeHelpers.hpp"
+#include "codegen/emit/Emitter.hpp"
 #include "codegen/Program.hpp"
 #include "codegen/Types.hpp"
 
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/ModuleAST.hpp"
 #include "core/trace/Trace.hpp"
 
 #include <llvm/IR/Constants.h>
@@ -33,7 +33,7 @@ llvm::GlobalVariable* emitModuleStateGlobal(
     if (!layout.type) return nullptr;
 
     std::string name = "__module_state_"
-                     + sanitizeForSymbol(program.pool.lookup(module->filePath));
+                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
 
     llvm::GlobalVariable* existing = program.module().getGlobalVariable(
         name, /*AllowInternal=*/true);
@@ -53,7 +53,7 @@ void emitModuleSize(ModuleAST* module,
                     ProgramState& program,
                     ModuleInstanceLayout& layout) {
     std::string name = "__module_size_"
-                     + sanitizeForSymbol(program.pool.lookup(module->filePath));
+                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
 
     if (program.module().getFunction(name)) return;
 
@@ -88,7 +88,7 @@ void emitModuleInit(ModuleAST* module,
     if (layout.fields.empty()) return;
 
     std::string name = "__init_module_"
-                     + sanitizeForSymbol(program.pool.lookup(module->filePath));
+                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
     if (program.module().getFunction(name)) return;
 
     llvm::LLVMContext& ctx = program.llvmContext();
@@ -159,7 +159,7 @@ void emitModuleFree(ModuleAST* module,
     if (layout.fields.empty()) return;
 
     std::string name = "__free_module_"
-                     + sanitizeForSymbol(program.pool.lookup(module->filePath));
+                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
     if (program.module().getFunction(name)) return;
 
     llvm::LLVMContext& ctx = program.llvmContext();
@@ -224,7 +224,7 @@ void emitProgramInit(const std::vector<ModuleAST*>& modules,
         if (!layout.type) continue;
 
         std::string stateName = "__module_state_"
-                              + sanitizeForSymbol(
+                              + sanitizeForLLVMSymbol(
                                     program.pool.lookup(modules[i]->filePath));
         llvm::GlobalVariable* state =
             program.module().getGlobalVariable(stateName, true);
@@ -267,7 +267,7 @@ void emitProgramFree(const std::vector<ModuleAST*>& modules,
         if (!layout.type) continue;
 
         std::string stateName = "__module_state_"
-                              + sanitizeForSymbol(
+                              + sanitizeForLLVMSymbol(
                                     program.pool.lookup(modules[idx]->filePath));
         llvm::GlobalVariable* state =
             program.module().getGlobalVariable(stateName, true);
@@ -282,6 +282,86 @@ void emitProgramFree(const std::vector<ModuleAST*>& modules,
     program.builder().CreateRetVoid();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Manifest Population Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Record every runtime ABI symbol the program actually references.
+///
+/// Reads `program.usedRuntimeFns()`, populated by `Abi::declareOrGet` on
+/// every call. The `symbolName` lookup is the single place the enumerator
+/// maps back to the linker-level `__lucid_*` string, so the manifest
+/// cannot disagree with the actual declarations in the module.
+///
+/// Deduplicated (the usage set is already a set, but the manifest's vector
+/// may already contain entries from a previous call — this pass runs once,
+/// so in practice the vector starts empty).
+void populateRuntimeSymbols(ProgramState& program, Manifest& manifest) {
+    manifest.runtimeSymbols.clear();
+    manifest.runtimeSymbols.reserve(program.usedRuntimeFns().size());
+
+    for (RuntimeFn fn : program.usedRuntimeFns()) {
+        ManifestRuntimeSymbol sym;
+        sym.symbol = std::string(program.abi().symbolName(fn));
+        sym.definedByModule = false;   // every ABI row is runtime-defined
+        manifest.runtimeSymbols.push_back(std::move(sym));
+    }
+}
+
+/// Collect `@[link("name")]` attributes from every module's declarations.
+///
+/// A `@[link]` attribute can appear on any declaration in the module; the
+/// library it names applies to the whole program, not to that declaration
+/// specifically. The walk visits every declaration's attributes and
+/// accumulates the distinct library names.
+///
+/// The current AST stores attributes on `DeclAST` (via the base class), so
+/// a module-level `@[link]` must be attached to *some* declaration — in
+/// practice, the parser attaches it to the first declaration it sees after
+/// the attribute, or to a synthetic declaration. This walk collects from
+/// every declaration regardless.
+void populateForeignLibraries(const std::vector<ModuleAST*>& modules,
+                              ProgramState& program,
+                              Manifest& manifest) {
+    // Deduplicate: the same library named twice in different modules (or
+    // twice in one module) must appear once in the manifest.
+    std::set<std::string> seen;
+
+    for (ModuleAST* module : modules) {
+        if (!module) continue;
+
+        for (DeclAST* decl : module->decls) {
+            if (!decl) continue;
+
+            for (AttributeAST* attr : decl->attributes) {
+                if (!attr) continue;
+                if (program.pool.lookupView(attr->name) != "link") continue;
+
+                // `@[link("opengl")]` — the first argument is the library
+                // name. Multiple arguments are allowed (a future revision
+                // may name link flags); for now, take them all as library
+                // names and let the linker sort it out.
+                for (LiteralExprAST* arg : attr->args) {
+                    if (!arg || arg->kind != LiteralKind::String) {
+                        program.diagnostics.errorAt(
+                            DiagCode::Backend_CodegenError, arg ? arg->loc : attr->loc,
+                            "@[link] argument must be a string literal");
+                        continue;
+                    }
+
+                    std::string name = program.pool.lookup(arg->value);
+                    if (name.empty()) continue;
+                    if (!seen.insert(name).second) continue;   // already recorded
+
+                    ManifestForeignLibrary lib;
+                    lib.name = std::move(name);
+                    manifest.foreignLibraries.push_back(std::move(lib));
+                }
+            }
+        }
+    }
+}
+
 } // anonymous namespace
 
 void runModulePass(const std::vector<ModuleAST*>& modules,
@@ -294,9 +374,6 @@ void runModulePass(const std::vector<ModuleAST*>& modules,
     std::vector<std::string> freeSymbols(modules.size());
 
     // ─── Dependency order check ───────────────────────────────────────────
-    // The modules list is supposed to be in dependency order: a module's
-    // dependencies appear before it. Verify by checking each module's
-    // resolved imports against the set of modules seen so far.
     std::set<ModuleAST*> seenSoFar;
     for (ModuleAST* module : modules) {
         if (!module) continue;
@@ -321,17 +398,12 @@ void runModulePass(const std::vector<ModuleAST*>& modules,
         program.currentModule = module;
         ModuleInstanceLayout& layout = program.moduleLayouts()[module];
 
-        // Emit the state global.
         emitModuleStateGlobal(module, program, layout);
-
-        // Emit the three helpers.
         emitModuleSize(module, program, layout);
         emitModuleInit(module, program, emitter, layout);
         emitModuleFree(module, program, layout);
 
-        // Record the symbol names in the manifest (overwriting what
-        // DeclarePass wrote, if anything changed).
-        std::string sanitized = sanitizeForSymbol(
+        std::string sanitized = sanitizeForLLVMSymbol(
             program.pool.lookup(module->filePath));
         initSymbols[i] = "__init_module_" + sanitized;
         freeSymbols[i] = "__free_module_" + sanitized;
@@ -344,19 +416,26 @@ void runModulePass(const std::vector<ModuleAST*>& modules,
     program.currentModule = nullptr;
 
     // ─── Populate manifest ────────────────────────────────────────────────
+    //
+    // The `manifest.modules` vector was already populated by DeclarePass.
+    // This pass fills the program-level symbols and the two derived lists:
+    // runtime symbols (from `usedRuntimeFns`) and foreign libraries (from
+    // `@[link]` attributes).
+    //
+    // The `manifest.entry` was populated by DefinePass. If it's empty and
+    // the program has an `@[export]` function, that's a bug in DefinePass,
+    // not something to patch here.
+
     manifest.programInitSymbol = "__lucid_program_init";
     manifest.programFreeSymbol = "__lucid_program_free";
+    manifest.usesGlobalModuleState = true;
 
-    // Runtime symbols — populated by Abi's used-functions set.
-    for (RuntimeFn fn : program.usedRuntimeFns()) {
-        ManifestRuntimeSymbol sym;
-        sym.symbol = std::string(
-            getRuntimeFunctionInfo(fn).name);  // or via a lookup helper
-        sym.definedByModule = false;
-        manifest.runtimeSymbols.push_back(std::move(sym));
-    }
+    populateRuntimeSymbols(program, manifest);
+    populateForeignLibraries(modules, program, manifest);
 
-    Trace::detail("ModulePass complete");
+    Trace::detail("ModulePass complete: ",
+                  manifest.runtimeSymbols.size(), " runtime symbol(s), ",
+                  manifest.foreignLibraries.size(), " foreign library(ies)");
 }
 
 } // namespace codegen
