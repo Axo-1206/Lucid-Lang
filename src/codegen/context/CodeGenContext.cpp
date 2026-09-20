@@ -33,6 +33,8 @@ namespace codegen {
 
 void CodeGenContext::setCurrentFunction(llvm::Function* fn,
                                          TypeAST* declaredReturnType) {
+    assert(fn && "setCurrentFunction requires a non-null llvm::Function");
+
     // Constructing a `FunctionState`:
     //   - captures the enclosing function state
     //   - installs `fn` as the current function

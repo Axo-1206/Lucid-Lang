@@ -21,25 +21,13 @@ FunctionState::FunctionState(ProgramState& program_,
 {
     assert(fn && "FunctionState requires a non-null llvm::Function");
 
-    // ─── Capture the enclosing function's state ───────────────────────────
-    // If there is no enclosing function state, the captures are the
-    // program's initial (empty) state.
+    // Capture the enclosing function state before installing the new one.
+    enclosing = program.currentFunctionState;
+    program.currentFunctionState = this;
+
     captured.prevFunction = program.currentFunction;
     captured.prevReturnType = program.currentDeclaredReturnType;
     captured.prevEnvPtr = program.currentEnvPtr;
-
-    // Move (not copy) the scope/loop stacks and the value map. This is
-    // what makes the enclosing state "unavailable" while the nested
-    // function is being lowered, and what makes restoration cheap.
-    captured.prevScopes = std::move(program.enclosingScopes);
-    captured.prevLoops = std::move(program.enclosingLoops);
-    captured.prevValues = std::move(program.enclosingValues);
-
-    // The moved-from containers are unspecified but valid; ensure they're
-    // empty so the new function body starts clean.
-    program.enclosingScopes.clear();
-    program.enclosingLoops.clear();
-    program.enclosingValues.clear();
 
     // ─── Install the new state ────────────────────────────────────────────
     program.currentFunction = fn;
@@ -73,11 +61,13 @@ void FunctionState::restore() {
     // declarations rebound to env-loaded values in a closure body) are
     // restored here. Reverse order so a decl saved twice gets the
     // outermost value last.
-    for (auto it = savedBindings.rbegin(); it != savedBindings.rend(); ++it) {
-        if (it->second) {
-            program.enclosingValues[it->first] = it->second;
-        } else {
-            program.enclosingValues.erase(it->first);
+    if (enclosing) {
+        for (auto it = savedBindings.rbegin(); it != savedBindings.rend(); ++it) {
+            if (it->second) {
+                enclosing->values[it->first] = it->second;
+            } else {
+                enclosing->values.erase(it->first);
+            }
         }
     }
     savedBindings.clear();
@@ -86,10 +76,7 @@ void FunctionState::restore() {
     program.currentFunction = captured.prevFunction;
     program.currentDeclaredReturnType = captured.prevReturnType;
     program.currentEnvPtr = captured.prevEnvPtr;
-
-    program.enclosingScopes = std::move(captured.prevScopes);
-    program.enclosingLoops = std::move(captured.prevLoops);
-    program.enclosingValues = std::move(captured.prevValues);
+    program.currentFunctionState = enclosing;
 
     // `captured.insertGuard`'s destructor runs after this body, restoring
     // the builder's insertion point. Member destruction order is reverse
@@ -174,21 +161,23 @@ void FunctionState::eraseValue(ValueDeclAST* decl) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void FunctionState::saveBinding(ValueDeclAST* decl) {
-    if (!decl) return;
-    // Save the current binding (which is the enclosing function's binding
-    // for this declaration, if any). If the declaration has no binding,
-    // save `nullptr` so the restore path erases it.
-    auto it = values.find(decl);
-    llvm::Value* prev = (it != values.end()) ? it->second : nullptr;
+    if (!decl || !enclosing) return;
+    // Save the current binding from the enclosing function's value map,
+    // not from this function's local table. If the declaration has no
+    // binding in the outer frame, save `nullptr` so the restore path
+    // erases it.
+    auto it = enclosing->values.find(decl);
+    llvm::Value* prev = (it != enclosing->values.end()) ? it->second : nullptr;
     savedBindings.emplace_back(decl, prev);
 }
 
 void FunctionState::restoreSavedBindings() {
+    if (!enclosing) return;
     for (auto it = savedBindings.rbegin(); it != savedBindings.rend(); ++it) {
         if (it->second) {
-            values[it->first] = it->second;
+            enclosing->values[it->first] = it->second;
         } else {
-            values.erase(it->first);
+            enclosing->values.erase(it->first);
         }
     }
     savedBindings.clear();

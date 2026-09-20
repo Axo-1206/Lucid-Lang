@@ -238,6 +238,7 @@ private:
     // ─── State ────────────────────────────────────────────────────────────
 
     ProgramState& program;
+    FunctionState* enclosing = nullptr;
 
     llvm::Function* fn = nullptr;
     TypeAST* returnType = nullptr;

@@ -138,19 +138,12 @@ public:
     ModuleAST* currentModule = nullptr;
     InternedString currentFile;
 
-    // ─── Per-Function State (moved in and out by FunctionState) ───────────    //
-    // See the class comment: these are the storage for per-function state,
-    // moved into a freshly constructed `FunctionState` and restored when
-    // it's destroyed. The naming ("enclosing") reflects that while a nested
-    // function is active, these hold the *enclosing* function's state.
+    // Points to the currently active function body, if any.
+    FunctionState* currentFunctionState = nullptr;
 
     llvm::Function* currentFunction = nullptr;
     TypeAST* currentDeclaredReturnType = nullptr;
     llvm::Value* currentEnvPtr = nullptr;
-
-    std::vector<Scope> enclosingScopes;
-    std::vector<LoopInfo> enclosingLoops;
-    std::unordered_map<ValueDeclAST*, llvm::Value*> enclosingValues;
 
 private:
     // ─── Owned LLVM Objects ───────────────────────────────────────────────
