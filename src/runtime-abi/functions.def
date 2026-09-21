@@ -182,6 +182,31 @@ LUCID_RT(StrConcat, __lucid_str_concat, Void, (StrPtr, StrPtr, StrPtr))
 LUCID_RT(StrSlice,  __lucid_str_slice,  Void, (StrPtr, StrPtr, I64, I64))
 LUCID_RT(StrEq,     __lucid_str_eq,     I1,   (StrPtr, StrPtr))
 
+//   void __lucid_str_from_ptr(LucidString* out, void* ptr, int64_t len)
+//     Copies `len` bytes from `ptr` into a fresh heap allocation,
+//     appends a NUL terminator (not counted in len), and writes the
+//     resulting LucidString into `*out`. The buffer at `ptr` remains
+//     owned by the caller — this function only reads it.
+//
+//     A copy is made because the caller's buffer may live in a scope
+//     arena, a stack frame, a static C string, or a foreign allocation
+//     Lucid cannot manage. Copying into a Lucid-owned buffer makes the
+//     resulting string self-contained and gives it a normal Lucid
+//     lifetime. This also matches the grammar's description of
+//     `#str_from_ptr` ("compiler copies") and its example, which frees
+//     the source buffer after construction.
+//
+//     A null `ptr`, a negative `len`, or `len == 0` leaves the out-slot
+//     as {null, 0, 0} — an empty static string. CodeGen does not check
+//     `ptr`; the caller is responsible for passing a valid pointer when
+//     `len > 0`.
+//
+//     TODO(utf8): the grammar says this function validates UTF-8. The
+//     current implementation copies bytes verbatim without validation.
+//     Add validation once the grammar's UTF-8 policy is settled (panic?
+//     leave the out-slot empty? return a fallible type?).
+LUCID_RT(StrFromPtr, __lucid_str_from_ptr, Void, (StrPtr, Ptr, I64))
+
 // ─── Formatters (#tostr, #ptrstr) ─────────────────────────────────────────
 //   All formatters use the out-pointer convention: the caller allocates
 //   the result slot and passes its address, the runtime writes the string
@@ -234,8 +259,7 @@ LUCID_RT(Panic, __lucid_panic, Void, (Ptr))
 //     and frees the box with __lucid_free.
 //   void __lucid_shutdown(void)
 //     Signals all threads to stop, waits, cleans up pending handles.
-LUCID_RT(Async,    __lucid_async,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Await,    __lucid_await,    Ptr,  (Ptr))
 LUCID_RT(Spawn,    __lucid_spawn,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Join,     __lucid_join,     Ptr,  (Ptr))
-LUCID_RT(Shutdown, __lucid_shutdown, Void, ())
+LUCID_RT(Shutdown, __lucid_shutdown, Void, ())

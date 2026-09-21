@@ -143,13 +143,12 @@ Val wrapStringResult(llvm::Value* strValue,
     return out;
 }
 
-// ─── Runtime string helpers (out-pointer convention) ──────────────────────
-
 /// Call `__lucid_str_concat(out, a, b)` and return the loaded result.
 ///
 /// Internal helper: returns `llvm::Value*` (the loaded `lucid.String`),
-/// not a `Val`, so the `#tostr` recursion can chain concatenations without
-/// threading a `TypeAST*` through every intermediate. See `TODO(F1b)`.
+/// not a `Val`, so the `#tostr` recursion can chain concatenations
+/// without threading a fabricated `TypeAST*` through every
+/// intermediate. See the design note above `emitTostrValue`.
 llvm::Value* emitStrConcatRaw(llvm::Value* a,
                               llvm::Value* b,
                               Emitter& emitter) {
@@ -283,20 +282,39 @@ std::string getFieldAccessPath(FieldAccessExprAST* field,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `#tostr` recursive value formatter (F1a)
+// `#tostr` recursive value formatter
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// `emitTostrValue` returns `llvm::Value*` — the SSA value of a
-// `lucid.String` — not a `Val`. The recursion into struct fields, the
-// concatenation chain, and the enum switch all operate on raw
-// `llvm::Value*`.
+// `emitTostrValue` and its helpers (`emitStrConcatRaw`, `emitScalarToStr`,
+// `emitTostrForEnum`, `emitTostrForStruct`) all operate on raw
+// `llvm::Value*` rather than `Val`, and the public `emitTostr` wraps the
+// final result once.
 //
-// `TODO(F1b)`: when a `string` AST type is cheaply reachable (e.g. cached
-// on `ProgramState` or `Types`), switch this to return `Val` with
-// `Own::Owned` so the recursion participates in the ownership model
-// uniformly. For now, every value this function produces is a freshly
-// allocated heap string (`Owned` by construction), so the eventual wrap at
-// `emitTostr` is correct.
+// ─── Why Not `Val` Throughout ─────────────────────────────────────────
+// `Val` carries an AST type (`TypeAST* ty`) alongside the LLVM value and
+// the ownership tag. It exists so that *callers of the emitter* — the
+// code between `emit` calls — know a value's type and ownership without
+// re-deriving them from the AST.
+//
+// The `#tostr` recursion is *inside* one emitter, not between two. It
+// builds strings by concatenating literals, field values, and previously
+// concatenated strings — none of which corresponds to a user-written AST
+// expression, and none of which has a natural `TypeAST*` to attach.
+// Threading a fabricated `PrimitiveTypeAST(PrimitiveKind::String)` through
+// every intermediate would add infrastructure (a cached node on
+// `ProgramState` or `Types`) and touch every line of a currently-working
+// recursion, in exchange for a value that no consumer outside `emitTostr`
+// ever sees.
+//
+// The rule this follows: **use `Val` at the emitter's boundaries (between
+// `emit` calls); use `llvm::Value*` inside an emitter that is assembling
+// a value from scratch.** The `#tostr` recursion is the latter case.
+//
+// Every string the recursion produces is a fresh heap allocation, so
+// `Own::Owned` is correct for all of them. `emitTostr` tags the final
+// result correctly. No consumer of the recursion's intermediates exists
+// today; if one ever does, the refactor to `Val` is available but not
+// needed now.
 //
 // `sourceExpr` is the syntactic expression the value came from. It is
 // meaningful only for function/closure values (to recover a declared name)
@@ -1089,14 +1107,17 @@ Val emitStrPtr(IntrinsicCallExprAST* expr, Emitter& emitter) {
     return out;
 }
 
-/// `#str_from_ptr(ptr, len) -> string`. Build a `lucid.String` from a raw
-/// pointer and a length. The `cap` field is set to `len` (so a drop will
-/// free the buffer); the caller is responsible for ensuring `ptr` points
-/// into a valid buffer that `__lucid_free` understands.
+/// `#str_from_ptr(ptr, len) -> string`.
 ///
-/// TODO: verify the ownership semantics against the runtime — if
-/// `str_from_ptr` is meant to borrow rather than own, `cap` should be 0
-/// and the buffer would leak. Check `StringRuntime.cpp`.
+/// Constructs a `lucid.String` by copying `len` bytes from `ptr` into a
+/// fresh heap buffer. The original `ptr` remains owned by the caller —
+/// the string owns a *copy*, not the source. This matches the grammar's
+/// description ("compiler copies") and its example, which frees the
+/// source buffer with `#free` after constructing the string.
+///
+/// The copy is done by `__lucid_str_from_ptr`, which allocates via
+/// `__lucid_alloc`, `memcpy`s the bytes, and null-terminates. See
+/// `functions.def` for the ABI.
 Val emitStrFromPtr(IntrinsicCallExprAST* expr, Emitter& emitter) {
     if (expr->args.size() != 2) {
         return argCountError(expr, "2 (ptr, len)", emitter);
@@ -1110,22 +1131,43 @@ Val emitStrFromPtr(IntrinsicCallExprAST* expr, Emitter& emitter) {
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(emitter.program.llvmContext());
     llvm::StructType* strTy = emitter.program.types().stringType();
 
+    // ─── The pointer argument ─────────────────────────────────────────────
+    // The `Ptr` tag is opaque, so any pointer type passes through. Sema
+    // should have rejected a non-pointer argument; verify defensively.
+    llvm::Value* srcPtr = ptrVal.v;
+    if (!srcPtr->getType()->isPointerTy()) {
+        emitter.program.diagnostics.errorAt(
+            DiagCode::Sem_TypeMismatch, expr->args[0]->loc,
+            "#str_from_ptr's first argument must be a pointer");
+        return {};
+    }
+
+    // ─── The length argument ──────────────────────────────────────────────
+    // The ABI's length parameter is `I64`, so normalize any integer width.
     llvm::Value* len = lenVal.v;
     if (len->getType() != i64Ty) {
-        len = irb.CreateIntCast(len, i64Ty, /*isSigned=*/false,
+        if (!len->getType()->isIntegerTy()) {
+            emitter.program.diagnostics.errorAt(
+                DiagCode::Sem_TypeMismatch, expr->args[1]->loc,
+                "#str_from_ptr's second argument must be an integer");
+            return {};
+        }
+        len = irb.CreateIntCast(len, i64Ty, /*isSigned=*/true,
                                 "str_from_ptr_len");
     }
 
-    llvm::Value* str = llvm::UndefValue::get(strTy);
-    str = irb.CreateInsertValue(str, ptrVal.v, 0, "str_fp_data");
-    str = irb.CreateInsertValue(str, len, 1, "str_fp_len");
-    str = irb.CreateInsertValue(str, len, 2, "str_fp_cap");
+    // ─── Out-pointer convention ───────────────────────────────────────────
+    // Every string-producing runtime function takes an out-slot as its
+    // first parameter. Allocate the slot, pass its address, load the
+    // result.
+    llvm::AllocaInst* out = emitter.createEntryAlloca(
+        strTy, "str_from_ptr_out");
 
-    Val out;
-    out.v = str;
-    out.ty = expr->resolvedType;
-    out.own = Own::Owned;
-    return out;
+    emitter.program.abi().StrFromPtr(irb, out, srcPtr, len);
+
+    llvm::Value* result = irb.CreateLoad(
+        strTy, out, "str_from_ptr_result");
+    return wrapStringResult(result, expr);
 }
 
 /// `#str_concat(a, b) -> string`.

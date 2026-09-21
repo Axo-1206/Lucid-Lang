@@ -170,6 +170,45 @@ void __lucid_str_slice(LucidString* out, LucidString* s, LucidI64 from, LucidI64
     }
 }
 
+/// @brief Construct a string by copying bytes from a raw pointer.
+///
+/// Allocates `len + 1` bytes via the one-allocator registry, copies
+/// `len` bytes from `ptr`, appends a NUL terminator, and writes the
+/// resulting `LucidString` into `*out`. The source buffer at `ptr`
+/// remains owned by the caller — this function only reads it.
+///
+/// ─── Why a Copy ────────────────────────────────────────────────────
+/// The caller's buffer may live anywhere: a scope arena, a stack
+/// frame, a static C string, or a foreign allocation Lucid cannot
+/// manage. Copying into a Lucid-owned buffer is what makes the
+/// resulting string self-contained and gives it a normal Lucid
+/// lifetime (drop frees the copy, not the source). It's also what the
+/// grammar documents: `#str_from_ptr` is described as "compiler
+/// copies and validates UTF-8", and the grammar's usage example frees
+/// the source buffer immediately after constructing the string.
+///
+/// ─── Failure ───────────────────────────────────────────────────────
+/// A null `out`, a null `ptr`, or a negative/zero `len` leaves the
+/// out-slot as `{null, 0, 0}` — an empty static string. CodeGen does
+/// not insert a check; the caller passes a valid pointer when
+/// `len > 0`.
+///
+/// TODO(utf8): this function copies bytes verbatim; it does not
+/// validate UTF-8. See the functions.def row for the policy question.
+void __lucid_str_from_ptr(LucidString* out, LucidPtr ptr, LucidI64 len) {
+    if (!out) return;
+    if (!ptr || len <= 0) {
+        clearSlot(out);
+        return;
+    }
+
+    char* buffer = makeBuffer(out, len);
+    if (!buffer) {
+        return;
+    }
+    std::memcpy(buffer, ptr, static_cast<std::size_t>(len));
+}
+
 /// @brief Compare two strings for equality.
 ///
 /// Returns 1 if equal, 0 otherwise. Length-then-bytes comparison; no
