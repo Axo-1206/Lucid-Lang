@@ -284,11 +284,6 @@ Val Emitter::emitAnonFunc(AnonFuncExprAST* expr) {
     fat = b.CreateInsertValue(fat, closureFn, 0, "closure.fn");
     fat = b.CreateInsertValue(fat, envPtr, 1, "closure.env");
 
-    Trace::detail("Lowered closure literal '",
-                  program.pool.lookup(expr->funcType ? expr->funcType->name
-                                                       : expr->loc.file),
-                  "' with ", expr->captures.size(), " capture(s)");
-
     return Val{fat, expr->resolvedType, Own::Owned};
 }
 
@@ -312,7 +307,9 @@ llvm::StructType* Emitter::buildClosureEnvironment(AnonFuncExprAST* expr) {
     if (!expr) return nullptr;
 
     // ─── Cache hit ────────────────────────────────────────────────────────
-    if (expr->environmentType) return expr->environmentType;
+    if (llvm::StructType* cached = program.lookupClosureEnvType(expr)) {
+        return cached;
+    }
 
     // ─── Field types ──────────────────────────────────────────────────────
     std::vector<llvm::Type*> fieldTypes;
@@ -358,7 +355,7 @@ llvm::StructType* Emitter::buildClosureEnvironment(AnonFuncExprAST* expr) {
     envTy->setBody(fieldTypes);
 
     // ─── Cache and return ─────────────────────────────────────────────────
-    expr->environmentType = envTy;
+    program.storeClosureEnvType(expr, envTy);
     return envTy;
 }
 
@@ -381,7 +378,9 @@ llvm::Function* Emitter::createClosureFunction(AnonFuncExprAST* expr) {
     if (!expr) return nullptr;
 
     // ─── Cache hit ────────────────────────────────────────────────────────
-    if (expr->closureFunction) return expr->closureFunction;
+    if (llvm::Function* cached = program.lookupClosureFunction(expr)) {
+        return cached;
+    }
 
     // ─── Function type ────────────────────────────────────────────────────
     // The `isClosure=true` flag tells `Types::functionType` to prepend
@@ -406,7 +405,7 @@ llvm::Function* Emitter::createClosureFunction(AnonFuncExprAST* expr) {
     emitClosureBody(expr, fn, fn->getArg(0));
 
     // ─── Cache and return ─────────────────────────────────────────────────
-    expr->closureFunction = fn;
+    program.storeClosureFunction(expr, fn);
     return fn;
 }
 
@@ -458,7 +457,7 @@ void Emitter::emitClosureBody(AnonFuncExprAST* expr,
     func().pushScope();
 
     // ─── 4. Bind captures ─────────────────────────────────────────────────
-    llvm::StructType* envTy = expr->environmentType;
+    llvm::StructType* envTy = program.lookupClosureEnvType(expr);
     if (!envTy) {
         // If the env type wasn't set, the closure was created without
         // `buildClosureEnvironment` being called first — a bug in the
@@ -752,7 +751,7 @@ void Emitter::emitClosureFuncDecl(FuncDeclAST* decl) {
     closureVal = coerceTo(closureVal, decl->funcType);
     if (!closureVal.isValid()) {
         program.diagnostics.errorAt(
-            DiagCode::Backend_TypeMismatch, decl->loc,
+            DiagCode::Sem_TypeMismatch, decl->loc,
             "cls-shaped function '", program.pool.lookup(decl->name),
             "' initializer cannot be coerced to its declared type");
         return;

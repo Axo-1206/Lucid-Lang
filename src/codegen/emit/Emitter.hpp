@@ -246,6 +246,52 @@ public:
 
     ProgramState& program;
 
+    // ─── Calls and Coercion (expr/EmitCall.cpp) ───────────────────────────
+
+    Val emitCall(CallExprAST* expr);
+    Val emitIntrinsic(IntrinsicCallExprAST* expr);
+
+    /// @brief Dispatch a call on the callee's `FuncShape`.
+    ///
+    /// `fn`-shaped callees are bare function pointers: cast and call.
+    /// `cls`-shaped callees are fat pointers: extract `{fn, env}`,
+    /// prepend `env` to the argument list, and call `fn` indirectly.
+    llvm::Value* emitCallableCall(llvm::Value* callee,
+                                  llvm::ArrayRef<llvm::Value*> args,
+                                  llvm::FunctionType* fnType,
+                                  FuncShape shape,
+                                  const llvm::Twine& name);
+
+    /// @brief Coerce an argument value to a parameter's declared type.
+    ///
+    /// Handles `fn → cls` widening, integer widening/narrowing, pointer
+    /// casts, and aggregate-by-value conversions. Returns an invalid
+    /// `Val` if the coercion is not supported (which is a Sema bug —
+    /// Sema should have rejected the assignment).
+    Val coerceArgument(Val arg, TypeAST* paramTy);
+
+    /// @brief Coerce a value to a target AST type.
+    ///
+    /// Unlike `coerceArgument`, this handles return-value coercion, which
+    /// has a slightly different surface (it may insert the `fn → cls`
+    /// widening before the type-based coercions).
+    Val coerceTo(Val val, TypeAST* targetTy);
+
+    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
+    ///
+    /// Low-level: integer widening/narrowing, pointer cast, aggregate
+    /// bitcast. Used by the higher-level coercion helpers.
+    llvm::Value* coerceValueToType(llvm::Value* val,
+                                   llvm::Type* targetTy,
+                                   llvm::IRBuilder<>& builder);
+
+    /// @brief Spill an aggregate argument to a stack slot and return the
+    ///        slot's pointer; pass scalars through unchanged.
+    ///
+    /// The runtime ABI passes aggregates by pointer, not by value. This
+    /// helper implements the caller side of that convention.
+    llvm::Value* materializeArgument(Val val);
+
 private:
     // ─── Expression Emitters (expr/*.cpp) ─────────────────────────────────
     //
@@ -307,52 +353,6 @@ private:
     /// dispatch mirrors `emitBinary`'s but operates on already-emitted
     /// values rather than AST expressions.
     Val applyCompoundOp(AssignOp op, Val oldValue, Val rhs, SourceLocation loc);
-
-    // ─── Calls and Coercion (expr/EmitCall.cpp) ───────────────────────────
-
-    Val emitCall(CallExprAST* expr);
-    Val emitIntrinsic(IntrinsicCallExprAST* expr);
-
-    /// @brief Dispatch a call on the callee's `FuncShape`.
-    ///
-    /// `fn`-shaped callees are bare function pointers: cast and call.
-    /// `cls`-shaped callees are fat pointers: extract `{fn, env}`,
-    /// prepend `env` to the argument list, and call `fn` indirectly.
-    llvm::Value* emitCallableCall(llvm::Value* callee,
-                                  llvm::ArrayRef<llvm::Value*> args,
-                                  llvm::FunctionType* fnType,
-                                  FuncShape shape,
-                                  const llvm::Twine& name);
-
-    /// @brief Coerce an argument value to a parameter's declared type.
-    ///
-    /// Handles `fn → cls` widening, integer widening/narrowing, pointer
-    /// casts, and aggregate-by-value conversions. Returns an invalid
-    /// `Val` if the coercion is not supported (which is a Sema bug —
-    /// Sema should have rejected the assignment).
-    Val coerceArgument(Val arg, TypeAST* paramTy);
-
-    /// @brief Coerce a value to a target AST type.
-    ///
-    /// Unlike `coerceArgument`, this handles return-value coercion, which
-    /// has a slightly different surface (it may insert the `fn → cls`
-    /// widening before the type-based coercions).
-    Val coerceTo(Val val, TypeAST* targetTy);
-
-    /// @brief Coerce an `llvm::Value*` to a target `llvm::Type*`.
-    ///
-    /// Low-level: integer widening/narrowing, pointer cast, aggregate
-    /// bitcast. Used by the higher-level coercion helpers.
-    llvm::Value* coerceValueToType(llvm::Value* val,
-                                   llvm::Type* targetTy,
-                                   llvm::IRBuilder<>& builder);
-
-    /// @brief Spill an aggregate argument to a stack slot and return the
-    ///        slot's pointer; pass scalars through unchanged.
-    ///
-    /// The runtime ABI passes aggregates by pointer, not by value. This
-    /// helper implements the caller side of that convention.
-    llvm::Value* materializeArgument(Val val);
 
     // ─── Statement Emitters (EmitStmt.cpp) ────────────────────────────────
 

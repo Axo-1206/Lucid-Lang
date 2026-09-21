@@ -167,6 +167,17 @@ public:
     void storeCopyGlue(TypeAST* type, llvm::Function* fn);
     llvm::Function* lookupCopyGlue(TypeAST* type) const;
 
+    // ─── Closure Caches ──────────────────────────────────────────────────
+    //
+    // LLVM facts for anonymous functions are cached here rather than on the
+    // AST, keeping the AST free of codegen-specific state.
+
+    void storeClosureEnvType(AnonFuncExprAST* expr, llvm::StructType* ty);
+    llvm::StructType* lookupClosureEnvType(AnonFuncExprAST* expr) const;
+
+    void storeClosureFunction(AnonFuncExprAST* expr, llvm::Function* fn);
+    llvm::Function* lookupClosureFunction(AnonFuncExprAST* expr) const;
+
     // ─── Module Layouts ───────────────────────────────────────────────────
     //
     // Per-module instance struct types and their field order. Populated
@@ -258,6 +269,8 @@ private:
     std::unordered_map<FuncDeclAST*, llvm::Function*> functions_;
     std::unordered_map<TypeAST*, llvm::Function*> dropGlue_;
     std::unordered_map<TypeAST*, llvm::Function*> copyGlue_;
+    std::unordered_map<AnonFuncExprAST*, llvm::StructType*> closureEnvTypes_;
+    std::unordered_map<AnonFuncExprAST*, llvm::Function*> closureFunctions_;
     std::unordered_map<ModuleAST*, ModuleInstanceLayout> moduleLayouts_;
 
     std::set<RuntimeFn> usedRuntimeFns_;

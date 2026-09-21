@@ -86,6 +86,38 @@ llvm::Function* ProgramState::lookupFunction(FuncDeclAST* decl) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Closure Caches
+// ─────────────────────────────────────────────────────────────────────────────
+
+void ProgramState::storeClosureEnvType(AnonFuncExprAST* expr,
+                                       llvm::StructType* ty) {
+    assert(expr && "storeClosureEnvType() with null expression");
+    assert(ty && "storeClosureEnvType() with null type");
+    closureEnvTypes_[expr] = ty;
+}
+
+llvm::StructType* ProgramState::lookupClosureEnvType(
+    AnonFuncExprAST* expr) const {
+    if (!expr) return nullptr;
+    auto it = closureEnvTypes_.find(expr);
+    return it != closureEnvTypes_.end() ? it->second : nullptr;
+}
+
+void ProgramState::storeClosureFunction(AnonFuncExprAST* expr,
+                                        llvm::Function* fn) {
+    assert(expr && "storeClosureFunction() with null expression");
+    assert(fn && "storeClosureFunction() with null function");
+    closureFunctions_[expr] = fn;
+}
+
+llvm::Function* ProgramState::lookupClosureFunction(
+    AnonFuncExprAST* expr) const {
+    if (!expr) return nullptr;
+    auto it = closureFunctions_.find(expr);
+    return it != closureFunctions_.end() ? it->second : nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module Symbol Naming
 // ─────────────────────────────────────────────────────────────────────────────
 

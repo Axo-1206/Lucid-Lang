@@ -500,17 +500,27 @@ void Emitter::emitSwitchStmt(SwitchStmtAST* stmt) {
                 llvm::dyn_cast<llvm::ConstantInt>(value.v);
             if (!constVal) {
                 program.diagnostics.errorAt(
-                    DiagCode::Sem_InvalidSwitchCase, valueExpr->loc,
+                    DiagCode::Sem_InvalidSwitchType, valueExpr->loc,
                     "switch case value must be a compile-time integer constant");
                 continue;
             }
 
             // Truncate/extend to the subject's width if needed.
+            //
+            // The cast to `IntegerType*` selects the
+            // `ConstantInt::get(IntegerType*, uint64_t, bool)` overload,
+            // which returns `ConstantInt*`. Passing a plain `Type*` selects
+            // the `ConstantInt::get(Type*, APInt)` overload, which returns
+            // `Constant*` — a wider type that doesn't assign to `constVal`.
+            //
+            // The subject's type is guaranteed integer by the check at the
+            // top of this function, so the cast is safe.
             if (constVal->getType() != subjectVal->getType()) {
+                llvm::IntegerType* subjectTy =
+                    llvm::cast<llvm::IntegerType>(subjectVal->getType());
                 constVal = llvm::ConstantInt::get(
-                    subjectVal->getType(),
-                    constVal->getValue().zextOrTrunc(
-                        subjectVal->getType()->getIntegerBitWidth()));
+                    subjectTy,
+                    constVal->getValue().zextOrTrunc(subjectTy->getBitWidth()));
             }
 
             switchInst->addCase(constVal, caseBlocks[i]);
