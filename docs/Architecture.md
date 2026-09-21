@@ -773,6 +773,7 @@ lucid/
     │   │   ├── BaseAST.hpp                 # Base AST node, SourceLocation, visitor interface
     │   │   ├── DeclAST.hpp                 # Declaration nodes
     │   │   ├── ExprAST.hpp                 # Expression nodes
+    │   │   ├── ResourceKind.hpp/cpp        # ResourceKind classification of a Lucid type
     │   │   ├── StmtAST.hpp                 # Statement nodes
     │   │   └── TypeAST.hpp                 # Type annotation nodes
     │   │
@@ -861,7 +862,8 @@ lucid/
     │
     ├── runtime-abi/
     │   ├── functions.def                   # The single source of truth for runtime ABI functions
-    │   └── lucid_abi.h                     # ABI contract between CodeGen, runtime, and interpreter
+    │   ├── lucid_abi.h                     # ABI contract between CodeGen, runtime, and interpreter
+    │   └── lucid_runtime.h                 # extern "C" prototype of every runtime function, expanded from functions.def
     │
     ├── runtime/                            # Lucid native runtime support library
     │   ├── ArenaRuntime.cpp                # Implementation of arena runtime functions
@@ -869,24 +871,39 @@ lucid/
     │   ├── ClosureRuntime.cpp              # Extern "C" entry points for closure runtime
     │   ├── ConcurrencyEntry.cpp            # Extern "C" entry points for concurrency runtime
     │   ├── ConcurrencyRuntime.hpp/cpp      # Thread pool, event loop, registry
+    │   ├── exports.cpp                     # Takes address of every runtime function; linker enforces completeness
     │   ├── MemoryRuntime.cpp               # Memory management runtime functions
     │   ├── PanicRuntime.cpp                # Panic implementation
     │   ├── RuntimeError.hpp                # Runtime error definitions
+    │   ├── RuntimeInternal.hpp             # Internal runtime helpers shared across runtime translation units
     │   └── StringRuntime.cpp               # String operations runtime
     │
     ├── codegen/                            # LLVM IR code generator
-    │   ├── CodeGen.hpp/cpp                 # Orchestrator
-    │   ├── CodeGenDefaults.hpp             # Program-wide constants for codegen callers
+    │   ├── Abi.hpp/cpp                     # Typed, cached access to the runtime ABI surface
+    │   ├── CodeGen.hpp/cpp                 # The one public entry point of the codegen subsystem
+    │   ├── FailureKind.hpp/cpp             # Closed set of runtime failures the compiler emits, and the isRiskyLhs predicate
+    │   ├── FunctionState.hpp/cpp           # Per-function state, RAII-scoped around each function body
+    │   ├── LLVMTypeHelpers.hpp             # Pure LLVM type and value utilities
     │   ├── Manifest.hpp                    # Plain-data contract between CodeGen and consumers
-    │   │
-    │   ├── context/
-    │   │   └── CodeGenContext.hpp/cpp      # LLVM state (module, builder, caches, symbols)
+    │   ├── Program.hpp/cpp                 # Per-program state that outlives any single function body
+    │   ├── Types.hpp/cpp                   # Lucid → LLVM type mapping
     │   │
     │   ├── emit/
-    │   │   ├── CodeGenClosure.hpp/cpp      # Closure code generation & emission
-    │   │   ├── CodeGenDecl.cpp             # Declaration lowering
-    │   │   ├── CodeGenExpr.cpp             # Expression lowering
-    │   │   └── CodeGenStmt.cpp             # Statement lowering
+    │   │   ├── Emitter.hpp/cpp             # The codegen emitter — one class, four public entry points
+    │   │   ├── EmitClosure.cpp             # Closure lowering: environment construction, capture binding, body lowering, env-drop glue
+    │   │   ├── EmitConcurrency.cpp         # Concurrency lowering: async/await/spawn/join emission
+    │   │   ├── EmitDecl.cpp                # Declaration lowering — emit(DeclAST*) entry point and per-kind dispatch
+    │   │   ├── EmitExpr.cpp                # Expression-lowering subsystem entry point: emit(ExprAST*) dispatch and const-fold short-circuit
+    │   │   ├── EmitPlace.cpp               # Place construction and the single write path
+    │   │   ├── EmitStmt.cpp                # Statement lowering — emit(StmtAST*) entry point and scope-management primitives
+    │   │   │
+    │   │   └── expr/
+    │   │       ├── EmitAccess.cpp          # Reads from storage: index, slice, field access, module access, arena access
+    │   │       ├── EmitAggregate.cpp       # Aggregate construction: struct literal, array literal
+    │   │       ├── EmitCall.cpp            # Calls and coercion: emitCall, emitIntrinsic, coerceArgument
+    │   │       ├── EmitScalar.cpp          # Scalar and control-flow expressions: literals, identifiers, binary, unary, if, range
+    │   │       ├── EmitTruthiness.cpp      # Truthiness rules: emitTruthiness
+    │   │       └── EmitWrite.cpp           # Read-modify-write expressions: assign, null-coalesce, pipeline
     │   │
     │   ├── intrinsic/
     │   │   ├── IntrinsicEmitter.hpp/cpp    # Intrinsic emission API base
@@ -894,21 +911,14 @@ lucid/
     │   │   └── LucidIntrinsicEmitter.hpp/cpp# Lucid-specific intrinsic emission logic
     │   │
     │   ├── ownership/
-    │   │   └── CodeGenOwnership.hpp/cpp    # Memory management & ownership rules lowering
+    │   │   ├── DropGlue.hpp/cpp            # Drop glue generation for owned types
+    │   │   └── Ownership.hpp/cpp           # Memory management & ownership rules lowering
     │   │
-    │   ├── passes/                         # Codegen optimization/transformation passes
-    │   │
-    │   ├── support/
-    │   │   ├── ArenaHelpers.hpp            # Arena code generation helpers
-    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, and stack allocation helpers
-    │   │   ├── CodeGenHelpers.hpp/cpp      # General codegen helpers
-    │   │   ├── CodeGenPanic.hpp/cpp        # Panic and error assertion emission
-    │   │   ├── LiveVariableTracker.hpp     # Live variable tracking
-    │   │   └── Truthiness.hpp              # Boolean dynamic condition rules
-    │   │
-    │   └── types/
-    │       ├── CodeGenType.hpp/cpp         # Lucid → LLVM type mapping
-    │       └── LLVMTypeHelpers.hpp         # LLVM type helper utilities
+    │   └── passes/                         # Codegen pass runner
+    │       ├── Passes.hpp                  # Pass declarations and shared pass interface
+    │       ├── DeclarePass.cpp             # Pass 1: emit all function prototypes and type declarations
+    │       ├── DefinePass.cpp              # Pass 2: emit all function bodies
+    │       └── ModulePass.cpp              # Pass 3: module-level finalization and manifest population
     │
     ├── interpreter/                        # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp             # Public API & orchestration logic
@@ -937,11 +947,11 @@ lucid/
     │   └── simd.luc
     │
     ├── cli/                                # Command-line interface
-    │   ├── CLIContext.hpp                  # Shared CLI context for a session
+    │   ├── CLIContext.hpp                  # Shared CLI context for a single run session
     │   ├── CLIOptions.hpp                  # Unified CLI options for all commands
     │   ├── DependencyGraph.hpp             # Bi-directional dependency graph for hot-reload
     │   ├── FileWatcher.hpp                 # File watcher for hot-reload
-    │   ├── RunOptions.hpp                  # Options for run command
+    │   ├── RunOptions.hpp                  # Options for the 'run' command
     │   │
     │   ├── commands/
     │   │   ├── emit-ir.hpp/cpp             # 'emit-ir' command - emit LLVM IR
