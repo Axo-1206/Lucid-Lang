@@ -42,18 +42,6 @@
 /// The guard is the comparison `old.env == new.env` — a cheap pointer
 /// comparison. It's only meaningful for `Refcounted` bindings; for other
 /// binding kinds, the guard is skipped and the store runs unconditionally.
-///
-/// ─── The `??` Context ─────────────────────────────────────────────────────
-/// `emitNullCoalesce` handles the tagged-slot case fully. The
-/// risky-operation case (a division or index inside a `??`) needs
-/// cross-emitter state: when the risky expression's bounds check fails,
-/// it should branch to the `??` fallback instead of panicking. The old
-/// emitter carried this in a `NullCoalesceContext` on `CodeGenContext`;
-/// the new emitter doesn't have the equivalent state yet.
-///
-/// Until it does, `emitNullCoalesce` diagnoses the risky-operation case
-/// with a clear "not yet implemented" message. The tagged-slot case —
-/// which is what most `??` expressions are — works fully.
 
 #include "../Emitter.hpp"
 
@@ -318,7 +306,7 @@ Val Emitter::applyCompoundOp(AssignOp op,
                     program.llvmContext(), "div_assign.continue", fn);
                 b.CreateCondBr(isZero, panicBlock, continueBlock);
                 b.SetInsertPoint(panicBlock);
-                emitPanic(RuntimeErrorKind::DivisionByZero, loc);
+                emitFailure(FailureKind::DivisionByZero, loc);
                 b.SetInsertPoint(continueBlock);
                 result = b.CreateSDiv(oldValue.v, rhs.v, "sdiv_assign");
             } else {
@@ -338,7 +326,7 @@ Val Emitter::applyCompoundOp(AssignOp op,
                     program.llvmContext(), "mod_assign.continue", fn);
                 b.CreateCondBr(isZero, panicBlock, continueBlock);
                 b.SetInsertPoint(panicBlock);
-                emitPanic(RuntimeErrorKind::ModuloByZero, loc);
+                emitFailure(FailureKind::ModuloByZero, loc);
                 b.SetInsertPoint(continueBlock);
                 result = b.CreateSRem(oldValue.v, rhs.v, "srem_assign");
             } else {
@@ -396,22 +384,27 @@ Val Emitter::applyCompoundOp(AssignOp op,
 // emitNullCoalesce — the null-coalescing operator
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// `lhs ?? rhs` returns `lhs`'s inner value if it's present, and `rhs`
-// otherwise.
-//
-// ─── The Two LHS Shapes ───────────────────────────────────────────────────
-//   1. Tagged slot: `x` where `x`'s type is `T?`, `T!`, or `T?!`. The
-//      emitter extracts the tag, branches on "present," uses the inner
-//      value on the present path, and evaluates the RHS on the missing
-//      path.
-//
-//   2. Risky operation: a division, an index, or a slice. The operation
-//      can panic; the `??` catches the failure and uses the RHS instead.
-//
-// The tagged-slot case is implemented fully. The risky-operation case
-// needs cross-emitter state (a "current `??` fallback block" that the
-// risky emitter branches to on failure) which the current design doesn't
-// have. The emitter diagnoses it.
+/// ─── The `??` Context ─────────────────────────────────────────────────────
+/// `emitNullCoalesce` handles three cases, dispatched by the LHS shape:
+///
+///   1. Tagged slot (`T?`, `T!`, `T?!`): the failure is in the value's
+///      tag. Extracted and branched on directly; no cross-emitter state.
+///
+///   2. Risky operation (integer `/`, `%`, `arr[i]`, `arr[lo..hi]`,
+///      `#toRef`, `#simd_extract`, `#simd_insert`, `arena::alloc`):
+///      the failure is a panic the LHS emitter inserts a check for.
+///      The `??` pushes its fallback block onto
+///      `FunctionState::nullCoalesceFallbacks`, emits the LHS, pops
+///      the fallback. Any `emitFailure` call inside the LHS reads the
+///      tracker and branches to the fallback instead of panicking.
+///
+///   3. Plain value: the grammar documents `g ?? 0` as "always g
+///      (legal, but dead code)". The LHS is emitted, the fallback is
+///      ignored. Sema has warned.
+///
+/// The tracker is a stack, so `??` nests correctly:
+///     `(a[i] ?? 0) + (b[j] ?? 1)`
+///     `items[i] ?? (other[j] ?? 0)`
 //
 // ─── Ownership Tag Agreement ──────────────────────────────────────────────
 // The two arms must produce values with the same `Own` tag. If the
@@ -433,157 +426,223 @@ Val Emitter::emitNullCoalesce(NullCoalesceExprAST* expr) {
     }
 
     // ─── Case 1: Tagged slot (T?, T!, T?!) ────────────────────────────────
-    const bool isTagged = lhsTy->isa<NullableTypeAST>()
-                       || lhsTy->isa<FallibleTypeAST>()
-                       || lhsTy->isa<CombinedTypeAST>();
+    // The failure is encoded in the value's tag. The `??` reads the tag
+    // and picks the narrowed inner value or the fallback. No tracker
+    // interaction.
+    if (lhsTy->isa<NullableTypeAST>()
+        || lhsTy->isa<FallibleTypeAST>()
+        || lhsTy->isa<CombinedTypeAST>()) {
+        return emitNullCoalesceTagged(expr, lhsTy);
+    }
 
-    if (isTagged) {
-        // ─── Emit the LHS ─────────────────────────────────────────────────
-        Val lhs = emit(expr->value);
-        if (!lhs.isValid()) return {};
+    // ─── Case 2: Risky operation ──────────────────────────────────────────
+    // The LHS's emitter will call `emitFailure` on its runtime-check
+    // failure path. The `??` pushes a fallback so that failure branches
+    // here instead of panicking.
+    if (isRiskyLhs(expr->value, program.pool)) {
+        return emitNullCoalesceRisky(expr);
+    }
 
-        // The LHS value must be a `{ i8 tag, T inner }` struct.
-        if (!lhs.v->getType()->isStructTy()
-            || lhs.v->getType()->getStructNumElements() != 2) {
-            program.diagnostics.errorAt(
-                DiagCode::Backend_CodegenError, expr->value->loc,
-                "?? left-hand side is not a tagged slot");
-            return {};
-        }
+    // ─── Case 3: Plain value — dead fallback ──────────────────────────────
+    // Grammar: `g ?? 0` is documented as "always g (legal, but dead
+    // code)". The fallback is not evaluated. Sema has warned; codegen
+    // emits the LHS and ignores the fallback.
+    return emit(expr->value);
+}
 
-        llvm::IRBuilder<>& b = program.builder();
-        llvm::Function* fn = b.GetInsertBlock()->getParent();
+/// `x ?? fallback` where `x`'s type is `T?`, `T!`, or `T?!`.
+///
+/// The LHS value is a `{ i8 tag, T inner }` struct. The lowering:
+///   1. Emit the LHS. Its emitter returns the tagged struct; it does
+///      not branch on the tag.
+///   2. Extract the tag, compute "present" (per-kind: `T?` is
+///      tag != 0, `T!` is tag != 2, `T?!` is tag == 1).
+///   3. Branch to present/missing blocks.
+///   4. Present: extract the inner value, branch to merge.
+///   5. Missing: emit the fallback, coerce to the inner type, branch
+///      to merge.
+///   6. Merge: PHI the two values.
+///
+/// No tracker interaction — the failure is in the value, not in an
+/// emitter-inserted branch.
+Val Emitter::emitNullCoalesceTagged(NullCoalesceExprAST* expr,
+                                    TypeAST* lhsTy) {
+    llvm::IRBuilder<>& b = program.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
 
-        // ─── Create blocks ────────────────────────────────────────────────
-        llvm::BasicBlock* presentBlock = llvm::BasicBlock::Create(
-            program.llvmContext(), "coalesce.present", fn);
-        llvm::BasicBlock* missingBlock = llvm::BasicBlock::Create(
-            program.llvmContext(), "coalesce.missing", fn);
-        llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
-            program.llvmContext(), "coalesce.merge", fn);
+    // ─── Emit the LHS ─────────────────────────────────────────────────────
+    Val lhs = emit(expr->value);
+    if (!lhs.isValid()) return {};
 
-        // ─── Extract the tag, compute "present" ───────────────────────────
-        llvm::Value* tag = b.CreateExtractValue(lhs.v, 0, "coalesce.tag");
+    if (!lhs.v->getType()->isStructTy()
+        || lhs.v->getType()->getStructNumElements() != 2) {
+        program.diagnostics.errorAt(
+            DiagCode::Backend_CodegenError, expr->value->loc,
+            "?? left-hand side is not a tagged slot");
+        return {};
+    }
 
-        // The "present" tag differs by kind:
-        //   T?  — tag != 0
-        //   T!  — tag != 2 (2 is err)
-        //   T?! — tag == 1
-        //
-        // The order matters: T?! is checked first because it's a distinct
-        // node type. T? and T! follow.
-        llvm::Value* isPresent = nullptr;
-        if (lhsTy->isa<CombinedTypeAST>()) {
-            isPresent = b.CreateICmpEQ(
-                tag, llvm::ConstantInt::get(tag->getType(), 1),
-                "coalesce.present");
-        } else if (lhsTy->isa<NullableTypeAST>()) {
-            isPresent = b.CreateICmpNE(
-                tag, llvm::ConstantInt::get(tag->getType(), 0),
-                "coalesce.present");
-        } else {  // FallibleTypeAST
-            isPresent = b.CreateICmpNE(
-                tag, llvm::ConstantInt::get(tag->getType(), 2),
-                "coalesce.present");
-        }
+    // ─── Determine the "present" predicate ────────────────────────────────
+    llvm::Value* tag = b.CreateExtractValue(lhs.v, 0, "coalesce.tag");
+    llvm::Value* isPresent = nullptr;
+    if (lhsTy->isa<CombinedTypeAST>()) {
+        isPresent = b.CreateICmpEQ(
+            tag, llvm::ConstantInt::get(tag->getType(), 1),
+            "coalesce.present");
+    } else if (lhsTy->isa<NullableTypeAST>()) {
+        isPresent = b.CreateICmpNE(
+            tag, llvm::ConstantInt::get(tag->getType(), 0),
+            "coalesce.present");
+    } else {
+        isPresent = b.CreateICmpNE(
+            tag, llvm::ConstantInt::get(tag->getType(), 2),
+            "coalesce.present");
+    }
 
-        b.CreateCondBr(isPresent, presentBlock, missingBlock);
+    // ─── Create the three blocks ──────────────────────────────────────────
+    llvm::BasicBlock* presentBlock = llvm::BasicBlock::Create(
+        program.llvmContext(), "coalesce.present", fn);
+    llvm::BasicBlock* missingBlock = llvm::BasicBlock::Create(
+        program.llvmContext(), "coalesce.missing", fn);
+    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+        program.llvmContext(), "coalesce.merge", fn);
 
-        // ─── Present block ────────────────────────────────────────────────
-        b.SetInsertPoint(presentBlock);
-        llvm::Value* inner = b.CreateExtractValue(
-            lhs.v, 1, "coalesce.inner");
-        b.CreateBr(mergeBlock);
-        llvm::BasicBlock* presentEnd = b.GetInsertBlock();
+    b.CreateCondBr(isPresent, presentBlock, missingBlock);
 
-        // ─── Missing block ────────────────────────────────────────────────
-        b.SetInsertPoint(missingBlock);
-        Val fallback = emit(expr->fallback);
+    // ─── Present path ─────────────────────────────────────────────────────
+    b.SetInsertPoint(presentBlock);
+    llvm::Value* inner = b.CreateExtractValue(lhs.v, 1, "coalesce.inner");
+    b.CreateBr(mergeBlock);
+    llvm::BasicBlock* presentEnd = b.GetInsertBlock();
+
+    // ─── Missing path ─────────────────────────────────────────────────────
+    b.SetInsertPoint(missingBlock);
+
+    TypeAST* innerTy =
+        lhsTy->isa<NullableTypeAST>()
+            ? lhsTy->as<NullableTypeAST>()->inner
+        : lhsTy->isa<FallibleTypeAST>()
+            ? lhsTy->as<FallibleTypeAST>()->inner
+            : lhsTy->as<CombinedTypeAST>()->inner;
+
+    Val fallback = emit(expr->fallback);
+    if (!fallback.isValid()) return {};
+
+    if (innerTy) {
+        fallback = coerceTo(fallback, innerTy);
         if (!fallback.isValid()) return {};
+    }
 
-        // Coerce the fallback to the expected type.
-        TypeAST* expectedTy = nullptr;
-        if (lhsTy->isa<NullableTypeAST>()) {
-            expectedTy = lhsTy->as<NullableTypeAST>()->inner;
-        } else if (lhsTy->isa<FallibleTypeAST>()) {
-            expectedTy = lhsTy->as<FallibleTypeAST>()->inner;
-        } else if (lhsTy->isa<CombinedTypeAST>()) {
-            expectedTy = lhsTy->as<CombinedTypeAST>()->inner;
-        }
-        if (expectedTy) {
-            fallback = coerceTo(fallback, expectedTy);
-            if (!fallback.isValid()) return {};
-        }
+    b.CreateBr(mergeBlock);
+    llvm::BasicBlock* missingEnd = b.GetInsertBlock();
 
-        b.CreateBr(mergeBlock);
-        llvm::BasicBlock* missingEnd = b.GetInsertBlock();
+    // ─── Merge ────────────────────────────────────────────────────────────
+    b.SetInsertPoint(mergeBlock);
 
-        // ─── Merge ────────────────────────────────────────────────────────
-        b.SetInsertPoint(mergeBlock);
-
-        // Both arms' LLVM types must match for the phi. If they don't,
-        // coerce the fallback.
-        if (fallback.v->getType() != inner->getType()) {
-            llvm::Value* coerced = coerceValueToType(
-                fallback.v, inner->getType(), b);
-            if (coerced) fallback.v = coerced;
-        }
-        if (fallback.v->getType() != inner->getType()) {
+    llvm::Value* fallbackV = fallback.v;
+    if (fallbackV->getType() != inner->getType()) {
+        llvm::Value* coerced = coerceValueToType(
+            fallbackV, inner->getType(), b);
+        if (!coerced) {
             program.diagnostics.errorAt(
                 DiagCode::Backend_CodegenError, expr->loc,
                 "?? arms have mismatched types");
             return {};
         }
-
-        // ─── Tag agreement ────────────────────────────────────────────────
-        // The inner value's tag matches the slot's own tag — a tagged
-        // slot's inner carries whatever claim the slot does. The fallback
-        // has its own tag. Both must agree.
-        //
-        // The lhs inner is `Borrowed`: the slot still holds the claim.
-        // The fallback's tag is whatever the emitter produced. If they
-        // disagree, we choose `Owned` conservatively (a redundant copy
-        // is safer than a leak).
-        Own resultOwn = fallback.own;
-        if (lhs.own != fallback.own) {
-            // Tag disagreement. The inner is Borrowed, and the fallback
-            // is Owned (or vice versa). Coerce to Owned.
-            resultOwn = Own::Owned;
-        }
-
-        llvm::PHINode* phi = b.CreatePHI(
-            inner->getType(), 2, "coalesce.result");
-        phi->addIncoming(inner, presentEnd);
-        phi->addIncoming(fallback.v, missingEnd);
-
-        // ─── Determine the result type ────────────────────────────────────
-        TypeAST* resultTy = expectedTy ? expectedTy : expr->resolvedType;
-
-        return Val{phi, resultTy, resultOwn};
+        fallbackV = coerced;
     }
 
-    // ─── Case 2: Risky operation ──────────────────────────────────────────
-    // The `??` catches a runtime failure from a division, index, or slice.
-    // The current design doesn't have the cross-emitter state that would
-    // let the risky emitter branch to the `??` fallback instead of
-    // panicking.
-    //
-    // When that state is added (a `NullCoalesceContext*` on
-    // `ProgramState`), this case lowers to:
-    //
-    //   1. Push the context with a fallback block.
-    //   2. Emit the risky expression; its bounds/zero checks branch to
-    //      the fallback on failure.
-    //   3. Pop the context.
-    //   4. On the success path, use the risky expression's value; on the
-    //      fallback path, use the `??` RHS.
-    //
-    // For now, diagnose the case.
-    program.diagnostics.errorAt(
-        DiagCode::Backend_CodegenError, expr->loc,
-        "?? on a risky operation (division, index, or slice) is not yet "
-        "implemented — only ?? on a tagged slot (T?, T!, T?!) works");
-    return {};
+    llvm::PHINode* phi = b.CreatePHI(
+        inner->getType(), 2, "coalesce.result");
+    phi->addIncoming(inner, presentEnd);
+    phi->addIncoming(fallbackV, missingEnd);
+
+    Own resultOwn = (lhs.own == fallback.own) ? lhs.own : Own::Owned;
+    TypeAST* resultTy = innerTy ? innerTy : expr->resolvedType;
+    return Val{phi, resultTy, resultOwn};
+}
+
+/// `x ?? fallback` where `x` is a risky operation (see
+/// `isRiskyLhs` in `FailureKind.hpp` for the full list).
+///
+/// The lowering:
+///   1. Create the fallback and merge blocks.
+///   2. Push the fallback onto `FunctionState::nullCoalesceFallbacks`.
+///   3. Emit the LHS. Its emitter's runtime check calls
+///      `emitFailure`, which reads the tracker and branches to the
+///      fallback on failure. On success, control reaches whatever
+///      block the LHS emitter leaves the builder in.
+///   4. Pop the tracker.
+///   5. Branch the success path to the merge block.
+///   6. Emit the fallback in the fallback block; branch to merge.
+///   7. PHI the two values.
+///
+/// The LHS emitter is not modified — it calls `emitFailure` the same
+/// way it would outside a `??`. Only the tracker's state differs, and
+/// `emitFailure` reads it.
+Val Emitter::emitNullCoalesceRisky(NullCoalesceExprAST* expr) {
+    llvm::IRBuilder<>& b = program.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // ─── Create the two join blocks ───────────────────────────────────────
+    llvm::BasicBlock* fallbackBlock = llvm::BasicBlock::Create(
+        program.llvmContext(), "coalesce.fallback", fn);
+    llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(
+        program.llvmContext(), "coalesce.merge", fn);
+
+    // ─── Push the tracker, emit the LHS, pop the tracker ──────────────────
+    func().pushNullCoalesceFallback(fallbackBlock);
+    Val risky = emit(expr->value);
+    func().popNullCoalesceFallback();
+
+    if (!risky.isValid()) {
+        return {};
+    }
+
+    // ─── Success path → merge ─────────────────────────────────────────────
+    assert(!b.GetInsertBlock()->getTerminator()
+           && "LHS emitter terminated its success block — a value "
+              "cannot reach the merge PHI");
+    llvm::BasicBlock* successEnd = b.GetInsertBlock();
+    b.CreateBr(mergeBlock);
+
+    // ─── Fallback path → emit the RHS → merge ─────────────────────────────
+    b.SetInsertPoint(fallbackBlock);
+    Val fallback = emit(expr->fallback);
+    if (!fallback.isValid()) return {};
+
+    if (expr->resolvedType) {
+        fallback = coerceTo(fallback, expr->resolvedType);
+        if (!fallback.isValid()) return {};
+    }
+
+    b.CreateBr(mergeBlock);
+    llvm::BasicBlock* fallbackEnd = b.GetInsertBlock();
+
+    // ─── Merge ────────────────────────────────────────────────────────────
+    b.SetInsertPoint(mergeBlock);
+
+    llvm::Value* successV = risky.v;
+    llvm::Value* fallbackV = fallback.v;
+    if (successV->getType() != fallbackV->getType()) {
+        llvm::Value* coerced = coerceValueToType(
+            fallbackV, successV->getType(), b);
+        if (!coerced) {
+            program.diagnostics.errorAt(
+                DiagCode::Backend_CodegenError, expr->loc,
+                "?? arms have mismatched types");
+            return {};
+        }
+        fallbackV = coerced;
+    }
+
+    llvm::PHINode* phi = b.CreatePHI(
+        successV->getType(), 2, "coalesce.risky.result");
+    phi->addIncoming(successV, successEnd);
+    phi->addIncoming(fallbackV, fallbackEnd);
+
+    Own resultOwn = (risky.own == fallback.own) ? risky.own : Own::Owned;
+    return Val{phi, expr->resolvedType, resultOwn};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -554,10 +554,10 @@ Val Emitter::emitBinary(BinaryExprAST* expr) {
                 b.CreateCondBr(isZero, panicBlock, continueBlock);
 
                 b.SetInsertPoint(panicBlock);
-                emitPanic(
+                emitFailure(
                     expr->op == BinaryOp::Div
-                        ? RuntimeErrorKind::DivisionByZero
-                        : RuntimeErrorKind::ModuloByZero,
+                        ? FailureKind::DivisionByZero
+                        : FailureKind::ModuloByZero,
                     expr->loc);
 
                 b.SetInsertPoint(continueBlock);

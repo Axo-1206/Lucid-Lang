@@ -136,6 +136,7 @@
 #include "codegen/Abi.hpp"
 #include "codegen/FunctionState.hpp"
 #include "codegen/ownership/Ownership.hpp"
+#include "codegen/FailureKind.hpp"
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -246,6 +247,37 @@ public:
     // ─── Program Access ───────────────────────────────────────────────────
 
     ProgramState& program;
+
+        // ─── Runtime Failure Emission ─────────────────────────────────────────
+    //
+    // Emit the failure path of a runtime check. Centralizes the
+    // "branch to the `??` fallback if one is active, otherwise panic"
+    // logic.
+    //
+    // Every runtime check the emitter inserts calls this. It's the
+    // single place the coalesce tracker is consulted, and the single
+    // place `emitPanic` is called from a runtime-check context.
+    //
+    // The caller is responsible for having set the insertion point to
+    // the check's failure block. This function either branches out of
+    // that block (fallback case) or terminates it (panic case); it
+    // never returns with the block still unterminated.
+    //
+    // `kind` selects the diagnostic message and the interceptability.
+    // See `FailureKind.hpp` for the metadata.
+    void emitFailure(FailureKind kind, SourceLocation loc);
+
+    // ─── Null-Coalesce Fallback Queries ───────────────────────────────────
+    //
+    // Public queries for the emitter's own use. `emitFailure` reads them
+    // internally; they're exposed so the intrinsic emitters (which are
+    // friends) can query the same state if they need to.
+
+    /// True if a `??` fallback is currently in scope.
+    bool insideNullCoalesce() const;
+
+    /// The innermost `??` fallback block, or null if none.
+    llvm::BasicBlock* nullCoalesceFallbackBlock() const;
 
     // ─── Calls and Coercion (expr/EmitCall.cpp) ───────────────────────────
 
@@ -495,6 +527,20 @@ private:
     /// dispatch mirrors `emitBinary`'s but operates on already-emitted
     /// values rather than AST expressions.
     Val applyCompoundOp(AssignOp op, Val oldValue, Val rhs, SourceLocation loc);
+
+    // ─── Null-Coalesce Lowering ───────────────────────────────────────────
+
+    /// `x ?? fallback` where `x`'s type is `T?`, `T!`, or `T?!`.
+    /// Extracts the tag, branches, and PHIs the narrowed inner value
+    /// with the fallback.
+    Val emitNullCoalesceTagged(NullCoalesceExprAST* expr, TypeAST* lhsTy);
+
+    /// `x ?? fallback` where `x` is a risky operation (division, index,
+    /// slice, or one of the risky intrinsics). Pushes a fallback onto
+    /// the coalesce tracker, emits the LHS (whose runtime check will
+    /// branch to the fallback on failure), pops the tracker, and PHIs
+    /// the success value with the fallback.
+    Val emitNullCoalesceRisky(NullCoalesceExprAST* expr);
 
     // ─── Statement Emitters (EmitStmt.cpp) ────────────────────────────────
 

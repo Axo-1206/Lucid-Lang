@@ -40,20 +40,9 @@ enum class RuntimeErrorKind {
     ArenaInvalidDescriptor,  ///< Invalid arena descriptor
     ArenaOutOfCapacity,      ///< Arena out of remaining capacity
     
-    // ─── Type System Errors ──────────────────────────────────────────────
-    UnwrappedNil,            ///< Using nil value without narrowing
-    UnwrappedErr,            ///< Using err value without narrowing
-    TagMismatch,             ///< Tagged slot tag mismatch
-    
     // ─── Foreign Function Errors ──────────────────────────────────────────
     ForeignCallFailed,       ///< Foreign function call failed
     ForeignSymbolNotFound,   ///< Foreign symbol not found
-    
-    // ─── Concurrency Errors ──────────────────────────────────────────────
-    AwaitOnNonFuture,        ///< Awaiting something that isn't a Future
-    JoinOnNonThread,         ///< Joining something that isn't a Thread
-    FutureAlreadyConsumed,   ///< Awaiting a future that was already consumed
-    ThreadAlreadyJoined,     ///< Joining a thread that was already joined
     
     // ─── Runtime Library Errors ──────────────────────────────────────────
     RuntimePanic,            ///< Generic runtime panic
@@ -92,20 +81,9 @@ inline const std::string getRuntimeErrorMessage(RuntimeErrorKind kind) {
         case RuntimeErrorKind::ArenaInvalidDescriptor:  return "invalid arena descriptor";
         case RuntimeErrorKind::ArenaOutOfCapacity:      return "arena out of remaining capacity";
         
-        // ─── Type System Errors ───────────────────────────────────────────
-        case RuntimeErrorKind::UnwrappedNil:            return "unwrapped nil value";
-        case RuntimeErrorKind::UnwrappedErr:            return "unwrapped err value";
-        case RuntimeErrorKind::TagMismatch:             return "tagged slot tag mismatch";
-        
         // ─── Foreign Function Errors ──────────────────────────────────────
         case RuntimeErrorKind::ForeignCallFailed:       return "foreign function call failed";
         case RuntimeErrorKind::ForeignSymbolNotFound:   return "foreign symbol not found";
-        
-        // ─── Concurrency Errors ───────────────────────────────────────────
-        case RuntimeErrorKind::AwaitOnNonFuture:        return "await called on non-future value";
-        case RuntimeErrorKind::JoinOnNonThread:         return "join called on non-thread value";
-        case RuntimeErrorKind::FutureAlreadyConsumed:   return "future already consumed";
-        case RuntimeErrorKind::ThreadAlreadyJoined:     return "thread already joined";
         
         // ─── Runtime Library Errors ───────────────────────────────────────
         case RuntimeErrorKind::RuntimePanic:            return "runtime panic";
@@ -159,20 +137,9 @@ inline DiagCode toDiagCode(RuntimeErrorKind kind) {
         case RuntimeErrorKind::ArenaInvalidDescriptor:  return DiagCode::Sem_ArenaInvalidDescriptor;
         case RuntimeErrorKind::ArenaOutOfCapacity:      return DiagCode::Sem_ArenaOutOfCapacity;
 
-        // ─── Type System Errors ───────────────────────────────────────────
-        case RuntimeErrorKind::UnwrappedNil:            return DiagCode::Sem_UnhandledNil;
-        case RuntimeErrorKind::UnwrappedErr:            return DiagCode::Sem_UnhandledErr;
-        case RuntimeErrorKind::TagMismatch:             return DiagCode::Sem_TagMismatch;
-
         // ─── Foreign Function Errors ──────────────────────────────────────
         case RuntimeErrorKind::ForeignCallFailed:       return DiagCode::Ffi_CallFailed;
         case RuntimeErrorKind::ForeignSymbolNotFound:   return DiagCode::Ffi_SymbolNotFound;
-
-        // ─── Concurrency Errors ───────────────────────────────────────────
-        case RuntimeErrorKind::AwaitOnNonFuture:        return DiagCode::Sem_AwaitNonAsync;
-        case RuntimeErrorKind::JoinOnNonThread:         return DiagCode::Sem_JoinNonSpawn;
-        case RuntimeErrorKind::FutureAlreadyConsumed:   return DiagCode::Sem_DoubleAwait;
-        case RuntimeErrorKind::ThreadAlreadyJoined:     return DiagCode::Sem_DoubleJoin;
 
         // ─── Runtime Library Errors ───────────────────────────────────────
         case RuntimeErrorKind::RuntimePanic:            return DiagCode::Sem_RuntimePanic;

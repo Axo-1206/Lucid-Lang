@@ -846,11 +846,6 @@ Val emitPtrstr(IntrinsicCallExprAST* expr, Emitter& emitter) {
 /// On null, the old code branched to the enclosing `??` fallback if one
 /// was active, or to a panic otherwise. The new `Emitter` has no
 /// null-coalesce state yet, so this always panics.
-///
-/// `TODO(null-coalesce)`: see `Emitter.hpp`. When
-/// `Emitter::insideNullCoalesce()` and
-/// `Emitter::nullCoalesceFallbackBlock()` exist, replace the unconditional
-/// panic branch below with the old conditional.
 Val emitToRef(IntrinsicCallExprAST* expr, Emitter& emitter) {
     if (expr->args.size() != 1) {
         return argCountError(expr, "1", emitter);
@@ -881,7 +876,7 @@ Val emitToRef(IntrinsicCallExprAST* expr, Emitter& emitter) {
     irb.CreateCondBr(isNull, panicBlock, continueBlock);
 
     irb.SetInsertPoint(panicBlock);
-    emitter.emitPanic(RuntimeErrorKind::NullPointerDereference, expr->loc);
+    emitter.emitFailure(FailureKind::NullPointerDereference, expr->loc);
     // emitPanic is expected to terminate the block with `unreachable`.
     // If it doesn't, add `irb.CreateUnreachable()` here.
 

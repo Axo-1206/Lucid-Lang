@@ -190,6 +190,22 @@ public:
     LoopInfo* currentLoop();
     const LoopInfo* currentLoop() const;
 
+    // ─── Null-Coalesce Fallback Tracking ──────────────────────────────────
+
+    /// Push a `??` fallback block onto the stack.
+    void pushNullCoalesceFallback(llvm::BasicBlock* fallback);
+
+    /// Pop the innermost `??` fallback. Asserts the stack is non-empty.
+    void popNullCoalesceFallback();
+
+    /// The innermost fallback, or null if no `??` is in scope.
+    llvm::BasicBlock* currentNullCoalesceFallback() const;
+
+    /// True if a `??` fallback is currently in scope.
+    bool isInsideNullCoalesce() const {
+        return !nullCoalesceFallbacks.empty();
+    }
+
     // ─── Value Bindings ───────────────────────────────────────────────────
     //
     // The `ValueDeclAST* → llvm::Value*` map that the emitter reads when
@@ -270,6 +286,24 @@ private:
 
     std::vector<Scope> scopes;
     std::vector<LoopInfo> loops;
+
+    /// Stack of `??` fallback blocks currently in scope, innermost last.
+    ///
+    /// Pushed by `Emitter::emitNullCoalesceRisky` before emitting the
+    /// LHS, popped after. Read by `Emitter::emitFailure`: if the stack
+    /// is non-empty and the failure is `??`-interceptable, the failure
+    /// path branches to the innermost fallback instead of panicking.
+    ///
+    /// A stack, not a single pointer, because `??` nests:
+    ///     (a[i] ?? 0) + (b[j] ?? 1)
+    /// Each `??` pushes its own fallback, and the innermost one wins
+    /// for any check it lexically contains.
+    ///
+    /// Per-`FunctionState`, so a closure body nested inside a function
+    /// inside a `??` does NOT see the enclosing function's fallback.
+    /// That's correct: a failure inside a closure body panics, not
+    /// silently unwinds into a `??` in a different function.
+    std::vector<llvm::BasicBlock*> nullCoalesceFallbacks;
 
     std::unordered_map<ValueDeclAST*, llvm::Value*> values;
 

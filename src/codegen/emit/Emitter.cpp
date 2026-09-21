@@ -192,4 +192,35 @@ void Emitter::emitScopeExitCallback(const ScopeExitRegistration* reg) {
     emitClosureCall(funcPtr, envPtr, closureArgs, voidTy);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Runtime Failure Emission
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Emitter::emitFailure(FailureKind kind, SourceLocation loc) {
+    const FailureInfo& info = failureInfo(kind);
+
+    // ─── Interceptable + fallback active: branch to it ────────────────────
+    if (info.interceptableByCoalesce) {
+        if (llvm::BasicBlock* fallback = func().currentNullCoalesceFallback()) {
+            program.builder().CreateBr(fallback);
+            return;
+        }
+    }
+
+    // ─── Otherwise: emit the panic ────────────────────────────────────────
+    // `emitPanic` writes the message global, calls `__lucid_panic`, and
+    // terminates the block with `unreachable`.
+    emitPanic(info.runtimeKind, loc);
+}
+
+bool Emitter::insideNullCoalesce() const {
+    FunctionState* fs = program.currentFunctionState;
+    return fs && fs->isInsideNullCoalesce();
+}
+
+llvm::BasicBlock* Emitter::nullCoalesceFallbackBlock() const {
+    FunctionState* fs = program.currentFunctionState;
+    return fs ? fs->currentNullCoalesceFallback() : nullptr;
+}
+
 } // namespace codegen

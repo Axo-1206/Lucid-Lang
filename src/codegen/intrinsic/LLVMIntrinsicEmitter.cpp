@@ -331,10 +331,6 @@ llvm::VectorType* vectorTypeForSimd(IntrinsicCallExprAST* expr,
 ///
 /// On failure, emits a panic and `unreachable`; on success, leaves the
 /// builder at the continue block. Returns the (possibly cast) index value.
-///
-/// `TODO(null-coalesce)`: the old code branched to the `??` fallback on
-/// failure. The new `Emitter` has no null-coalesce state yet; this always
-/// panics. See the same TODO in `LucidIntrinsicEmitter.cpp::emitToRef`.
 llvm::Value* emitSimdBoundsCheck(llvm::Value* index,
                                  uint64_t laneCount,
                                  const char* operation,
@@ -362,7 +358,7 @@ llvm::Value* emitSimdBoundsCheck(llvm::Value* index,
     irb.CreateCondBr(inBounds, continueBlock, panicBlock);
 
     irb.SetInsertPoint(panicBlock);
-    emitter.emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, loc);
+    emitter.emitFailure(FailureKind::SimdLaneOutOfBounds, loc);
     // emitPanic terminates with `unreachable`.
 
     irb.SetInsertPoint(continueBlock);

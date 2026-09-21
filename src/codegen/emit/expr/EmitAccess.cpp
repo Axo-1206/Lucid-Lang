@@ -412,7 +412,7 @@ Val Emitter::emitSlice(SliceExprAST* expr) {
     b.CreateCondBr(ok, continueBlock, panicBlock);
 
     b.SetInsertPoint(panicBlock);
-    emitPanic(RuntimeErrorKind::SliceBoundsOutOfRange, expr->loc);
+    emitFailure(FailureKind::SliceBoundsOutOfRange, expr->loc);
 
     b.SetInsertPoint(continueBlock);
 
@@ -956,7 +956,7 @@ Val Emitter::emitArenaAccess(ArenaAccessExprAST* expr) {
         b.CreateCondBr(isNull, panicBlock, continueBlock);
 
         b.SetInsertPoint(panicBlock);
-        emitPanic(RuntimeErrorKind::ArenaOutOfCapacity, expr->loc);
+        emitFailure(FailureKind::ArenaOutOfCapacity, expr->loc);
 
         b.SetInsertPoint(continueBlock);
 
@@ -1102,7 +1102,7 @@ llvm::Value* Emitter::emitFixedArrayBoundsCheck(llvm::Value* index,
     b.CreateCondBr(inBounds, continueBlock, panicBlock);
 
     b.SetInsertPoint(panicBlock);
-    emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, loc);
+    emitFailure(FailureKind::FixedArrayIndexOutOfBounds, loc);
 
     b.SetInsertPoint(continueBlock);
     return inBounds;
@@ -1129,7 +1129,7 @@ llvm::Value* Emitter::emitSliceBoundsCheck(llvm::Value* index,
     b.CreateCondBr(inBounds, continueBlock, panicBlock);
 
     b.SetInsertPoint(panicBlock);
-    emitPanic(RuntimeErrorKind::ArrayIndexOutOfBounds, loc);
+    emitFailure(FailureKind::SliceIndexOutOfBounds, loc);
 
     b.SetInsertPoint(continueBlock);
     return inBounds;

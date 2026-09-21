@@ -74,6 +74,10 @@ FunctionState::~FunctionState() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void FunctionState::restore() {
+    assert(nullCoalesceFallbacks.empty()
+           && "null-coalesce fallback stack not empty at function exit — "
+              "a `??` lowering failed to pop");
+              
     // ─── Restore saved bindings ───────────────────────────────────────────
     // Bindings clobbered by this function's setup (e.g. captured
     // declarations rebound to env-loaded values in a closure body) are
@@ -150,6 +154,27 @@ LoopInfo* FunctionState::currentLoop() {
 
 const LoopInfo* FunctionState::currentLoop() const {
     return loops.empty() ? nullptr : &loops.back();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Null-Coalesce Fallback
+// ─────────────────────────────────────────────────────────────────────────────
+
+void FunctionState::pushNullCoalesceFallback(llvm::BasicBlock* fallback) {
+    assert(fallback && "pushNullCoalesceFallback with null block");
+    nullCoalesceFallbacks.push_back(fallback);
+}
+
+void FunctionState::popNullCoalesceFallback() {
+    assert(!nullCoalesceFallbacks.empty()
+           && "popNullCoalesceFallback on empty stack");
+    nullCoalesceFallbacks.pop_back();
+}
+
+llvm::BasicBlock* FunctionState::currentNullCoalesceFallback() const {
+    return nullCoalesceFallbacks.empty()
+        ? nullptr
+        : nullCoalesceFallbacks.back();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
