@@ -259,6 +259,7 @@ LUCID_RT(Panic, __lucid_panic, Void, (Ptr))
 //     and frees the box with __lucid_free.
 //   void __lucid_shutdown(void)
 //     Signals all threads to stop, waits, cleans up pending handles.
+LUCID_RT(Async,    __lucid_async,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Await,    __lucid_await,    Ptr,  (Ptr))
 LUCID_RT(Spawn,    __lucid_spawn,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Join,     __lucid_join,     Ptr,  (Ptr))
