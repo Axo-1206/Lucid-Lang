@@ -255,6 +255,14 @@ private:
     // The methods take the specific AST node type, not the base, because
     // the dispatch has already narrowed.
 
+
+    // ─── Folded constant ─────────────────────────────────────────────────
+    // Sema folds some expressions to `ConstantValue`s. If this one was
+    // folded, emit the constant directly. `emitFoldedConstant` returns an
+    // invalid `Val` for constants it can't lower (structs, arrays,
+    // function pointers), which fall through to the per-kind emitter.
+    Val emitFoldedConstant(ExprAST* expr);
+
     // ─── Scalar (expr/EmitScalar.cpp) ─────────────────────────────────────
 
     Val emitLiteral(LiteralExprAST* expr);

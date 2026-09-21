@@ -177,6 +177,31 @@ public:
         return moduleLayouts_;
     }
 
+    // ─── Module State Symbol Naming ──────────────────────────────────────
+    //
+    // Keep module state, init, free, and size symbol derivation in one place
+    // so emitters and consumers cannot disagree about the sanitized path.
+
+    /// @brief The linker-level symbol name of a module's state global.
+    ///
+    /// Returns an empty string if `module` is null.
+    std::string moduleStateSymbol(ModuleAST* module) const;
+
+    /// @brief The linker-level symbol name of a module's initializer.
+    ///
+    /// Returns an empty string if `module` is null.
+    std::string moduleInitSymbol(ModuleAST* module) const;
+
+    /// @brief The linker-level symbol name of a module's finalizer.
+    ///
+    /// Returns an empty string if `module` is null.
+    std::string moduleFreeSymbol(ModuleAST* module) const;
+
+    /// @brief The linker-level symbol name of a module's size helper.
+    ///
+    /// Returns an empty string if `module` is null.
+    std::string moduleSizeSymbol(ModuleAST* module) const;
+
     // ─── Current Module ───────────────────────────────────────────────────
     //
     // The `ModuleAST` currently being lowered. Set by the pass runner

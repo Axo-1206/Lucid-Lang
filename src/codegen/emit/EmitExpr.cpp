@@ -126,7 +126,8 @@ Val Emitter::emit(ExprAST* expr) {
     // invalid `Val` for constants it can't lower (structs, arrays,
     // function pointers), which fall through to the per-kind emitter.
     if (expr->isConst && expr->constValue.isEvaluated()) {
-        if (Val folded = emitFoldedConstant(expr)) {
+        Val folded = emitFoldedConstant(expr);
+        if (folded.isValid()) {
             return folded;
         }
     }

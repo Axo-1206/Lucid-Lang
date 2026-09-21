@@ -457,7 +457,7 @@ llvm::Function* Emitter::buildConcurrencyThunk(CallExprAST* call,
     }
 
     llvm::LLVMContext& ctx = program.llvmContext();
-    llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+    llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
     // ─── Create the function ──────────────────────────────────────────────
     llvm::FunctionType* fnTy = llvm::FunctionType::get(
@@ -621,7 +621,7 @@ llvm::Value* Emitter::buildConcurrencyPacket(CallExprAST* call) {
 
     llvm::IRBuilder<>& b = program.builder();
     llvm::LLVMContext& ctx = program.llvmContext();
-    llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+    llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
     // ─── Build the packet struct type ─────────────────────────────────────
     std::vector<llvm::Type*> fieldTys;

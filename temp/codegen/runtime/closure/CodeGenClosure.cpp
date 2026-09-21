@@ -28,7 +28,6 @@
 /// By-reference captures require the captured variable to be heap-allocated
 /// if the closure may escape. This is handled by Sema (promotion analysis).
 ///
-#include "CodeGenClosure.hpp"
 #include "codegen/CodeGen.hpp"
 #include "codegen/memory/CodeGenAlloca.hpp"
 #include "codegen/memory/CodeGenOwnership.hpp"

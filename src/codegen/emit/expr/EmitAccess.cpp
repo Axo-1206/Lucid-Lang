@@ -708,6 +708,17 @@ Val Emitter::emitModuleAccess(ModuleAccessExprAST* expr) {
             return {};
         }
 
+        // ─── Module instance layout ───────────────────────────────────────
+        // The layout gives the LLVM struct type and the field index. It
+        // does NOT carry the state global's symbol name — that lives on
+        // the manifest, for the host. Codegen derives the name the same
+        // way `ModulePass::emitModuleStateGlobal` does:
+        //
+        //     "__module_state_" + sanitizeForLLVMSymbol(filePath)
+        //
+        // The derivation must match ModulePass's, or the global lookup
+        // below will fail. Both use `sanitizeForLLVMSymbol` (or the
+        // equivalent helper) on the file path.
         auto it = program.moduleLayouts().find(home);
         if (it == program.moduleLayouts().end() || !it->second.type) {
             program.diagnostics.errorAt(
@@ -718,29 +729,30 @@ Val Emitter::emitModuleAccess(ModuleAccessExprAST* expr) {
         }
         ModuleInstanceLayout& layout = it->second;
 
-        // Load the module instance pointer from the state global.
-        std::string stateName = layout.stateSymbol.empty()
-            ? "__module_state_" + sanitizeForLLVMSymbol(
-                                    program.pool.lookup(home->filePath))
-            : layout.stateSymbol;
+        // ─── Locate the state global ──────────────────────────────────────
+        // Use the same canonical derivation as ModulePass.
+        std::string stateName = program.moduleStateSymbol(home);
+
         llvm::GlobalVariable* stateGlobal =
             program.module().getGlobalVariable(stateName, /*AllowInternal=*/true);
         if (!stateGlobal) {
             program.diagnostics.errorAt(
                 DiagCode::Backend_CodegenError, expr->loc,
-                "module state global '", stateName, "' not found");
+                "module state global '", stateName, "' not found — "
+                "the module pass did not emit it, or the naming "
+                "derivation disagrees with DeclarePass/ModulePass");
             return {};
         }
 
-        // GEP into the instance struct's field.
+        // ─── GEP into the instance struct ─────────────────────────────────
         llvm::Value* fieldPtr = b.CreateStructGEP(
             layout.type,
             stateGlobal,
             static_cast<unsigned>(var->moduleFieldIndex),
             "mod." + program.pool.lookup(var->name));
 
-        // Load the field.
-        llvm::Type* fieldTy = layout.type->getElementType(var->moduleFieldIndex);
+        llvm::Type* fieldTy = layout.type->getElementType(
+            var->moduleFieldIndex);
         if (!fieldTy) {
             program.diagnostics.errorAt(
                 DiagCode::Backend_CodegenError, expr->loc,
@@ -748,6 +760,7 @@ Val Emitter::emitModuleAccess(ModuleAccessExprAST* expr) {
                 "' has no LLVM field type");
             return {};
         }
+
         llvm::Value* loaded = b.CreateLoad(
             fieldTy, fieldPtr,
             "mod.value." + program.pool.lookup(var->name));
@@ -1024,7 +1037,7 @@ Val Emitter::emitArenaAccess(ArenaAccessExprAST* expr) {
     if (program.pool.lookupView(method) == "canFit") {
         if (expr->genericArgs.empty() || expr->args.empty()) {
             program.diagnostics.errorAt(
-                DiagCode::ArgCountMismatch, expr->loc,
+                DiagCode::Sem_ArgCountMismatch, expr->loc,
                 "arena::canFit requires a type argument and a count");
             return {};
         }

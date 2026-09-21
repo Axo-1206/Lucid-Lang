@@ -2,7 +2,9 @@
 /// @brief Implementation of per-program state.
 
 #include "Program.hpp"
-#include "Emitter.hpp"
+#include "codegen/LLVMTypeHelpers.hpp"
+#include "codegen/emit/Emitter.hpp"
+#include "emit/Emitter.hpp"
 #include "ownership/Ownership.hpp"
 
 #include "core/ast/DeclAST.hpp"
@@ -81,6 +83,34 @@ llvm::Function* ProgramState::lookupFunction(FuncDeclAST* decl) const {
     if (!decl) return nullptr;
     auto it = functions_.find(decl);
     return it != functions_.end() ? it->second : nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module Symbol Naming
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string ProgramState::moduleStateSymbol(ModuleAST* module) const {
+    if (!module) return {};
+    return "__module_state_" + sanitizeForLLVMSymbol(
+        pool.lookup(module->filePath));
+}
+
+std::string ProgramState::moduleInitSymbol(ModuleAST* module) const {
+    if (!module) return {};
+    return "__init_module_" + sanitizeForLLVMSymbol(
+        pool.lookup(module->filePath));
+}
+
+std::string ProgramState::moduleFreeSymbol(ModuleAST* module) const {
+    if (!module) return {};
+    return "__free_module_" + sanitizeForLLVMSymbol(
+        pool.lookup(module->filePath));
+}
+
+std::string ProgramState::moduleSizeSymbol(ModuleAST* module) const {
+    if (!module) return {};
+    return "__module_size_" + sanitizeForLLVMSymbol(
+        pool.lookup(module->filePath));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

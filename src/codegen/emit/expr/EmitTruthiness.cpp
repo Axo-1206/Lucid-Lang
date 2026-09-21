@@ -40,7 +40,7 @@
 /// caller already has a `Val` from `emit(expr)`. Passing the pair
 /// separately would just be an un-pack-and-repack at every call site.
 
-#include "Emitter.hpp"
+#include "../Emitter.hpp"
 
 #include "codegen/Program.hpp"
 #include "codegen/Types.hpp"

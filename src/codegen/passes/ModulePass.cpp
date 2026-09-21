@@ -32,8 +32,7 @@ llvm::GlobalVariable* emitModuleStateGlobal(
 {
     if (!layout.type) return nullptr;
 
-    std::string name = "__module_state_"
-                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
+    std::string name = program.moduleStateSymbol(module);
 
     llvm::GlobalVariable* existing = program.module().getGlobalVariable(
         name, /*AllowInternal=*/true);
@@ -52,8 +51,7 @@ llvm::GlobalVariable* emitModuleStateGlobal(
 void emitModuleSize(ModuleAST* module,
                     ProgramState& program,
                     ModuleInstanceLayout& layout) {
-    std::string name = "__module_size_"
-                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
+    std::string name = program.moduleSizeSymbol(module);
 
     if (program.module().getFunction(name)) return;
 
@@ -87,8 +85,7 @@ void emitModuleInit(ModuleAST* module,
                     ModuleInstanceLayout& layout) {
     if (layout.fields.empty()) return;
 
-    std::string name = "__init_module_"
-                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
+    std::string name = program.moduleInitSymbol(module);
     if (program.module().getFunction(name)) return;
 
     llvm::LLVMContext& ctx = program.llvmContext();
@@ -158,8 +155,7 @@ void emitModuleFree(ModuleAST* module,
                     ModuleInstanceLayout& layout) {
     if (layout.fields.empty()) return;
 
-    std::string name = "__free_module_"
-                     + sanitizeForLLVMSymbol(program.pool.lookup(module->filePath));
+    std::string name = program.moduleFreeSymbol(module);
     if (program.module().getFunction(name)) return;
 
     llvm::LLVMContext& ctx = program.llvmContext();
@@ -223,9 +219,7 @@ void emitProgramInit(const std::vector<ModuleAST*>& modules,
             program.moduleLayouts()[modules[i]];
         if (!layout.type) continue;
 
-        std::string stateName = "__module_state_"
-                              + sanitizeForLLVMSymbol(
-                                    program.pool.lookup(modules[i]->filePath));
+          std::string stateName = program.moduleStateSymbol(modules[i]);
         llvm::GlobalVariable* state =
             program.module().getGlobalVariable(stateName, true);
         if (!state) continue;
@@ -266,9 +260,7 @@ void emitProgramFree(const std::vector<ModuleAST*>& modules,
             program.moduleLayouts()[modules[idx]];
         if (!layout.type) continue;
 
-        std::string stateName = "__module_state_"
-                              + sanitizeForLLVMSymbol(
-                                    program.pool.lookup(modules[idx]->filePath));
+          std::string stateName = program.moduleStateSymbol(modules[idx]);
         llvm::GlobalVariable* state =
             program.module().getGlobalVariable(stateName, true);
         if (!state) continue;
@@ -403,10 +395,8 @@ void runModulePass(const std::vector<ModuleAST*>& modules,
         emitModuleInit(module, program, emitter, layout);
         emitModuleFree(module, program, layout);
 
-        std::string sanitized = sanitizeForLLVMSymbol(
-            program.pool.lookup(module->filePath));
-        initSymbols[i] = "__init_module_" + sanitized;
-        freeSymbols[i] = "__free_module_" + sanitized;
+        initSymbols[i] = program.moduleInitSymbol(module);
+        freeSymbols[i] = program.moduleFreeSymbol(module);
     }
 
     // ─── Emit program-level init and free ─────────────────────────────────

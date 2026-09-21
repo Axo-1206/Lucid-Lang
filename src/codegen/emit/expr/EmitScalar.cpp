@@ -117,12 +117,21 @@ void Emitter::emitPanic(RuntimeErrorKind kind, SourceLocation loc) {
     // `SourceLocation` provides file/line/column; the message body comes
     // from the RuntimeError registry.
     std::string message;
-    if (loc.isValid()) {
-        message = program.pool.lookup(loc.file)
+    if (loc.isKnown()) {
+        // The file path comes from the current module, not from `loc`.
+        // A `SourceLocation` carries only line/column; the file is a
+        // per-module fact.
+        std::string filePath = program.currentModule
+            ? program.pool.lookup(program.currentModule->filePath)
+            : "<unknown>";
+        message = filePath
                 + ":" + std::to_string(loc.line())
                 + ":" + std::to_string(loc.column())
                 + ": " + getRuntimeErrorMessage(kind);
     } else {
+        // No source location. The panic is a runtime-detected error with no
+        // source anchor (e.g. a bounds check in a synthesized thunk, or a
+        // diagnostic from a helper).
         message = "runtime: " + getRuntimeErrorMessage(kind);
     }
 
