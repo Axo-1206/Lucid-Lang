@@ -370,8 +370,16 @@ llvm::Value* emitTostrForEnum(llvm::Value* val,
         if (!variant) continue;
 
         // Variants carry their explicit integer values in the AST.
+        //
+        // `ConstantInt::get` has two relevant overloads:
+        //   get(IntegerType*, uint64_t, bool) -> ConstantInt*
+        //   get(Type*,          APInt)        -> Constant*
+        // Passing a plain `Type*` selects the second. Cast to `IntegerType*` to
+        // select the first, so the result is `ConstantInt*` (what `addCase`
+        // expects).
+        llvm::IntegerType* caseTy = llvm::cast<llvm::IntegerType>(val->getType());
         llvm::ConstantInt* caseVal = llvm::ConstantInt::get(
-            val->getType(), static_cast<uint64_t>(variant->value));
+            caseTy, static_cast<uint64_t>(variant->value));
 
         llvm::BasicBlock* caseBlock = llvm::BasicBlock::Create(
             emitter.program.llvmContext(),

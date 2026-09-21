@@ -399,7 +399,7 @@ Val emitMappedIntrinsic(IntrinsicCallExprAST* expr,
         overloadTypesFor(info.kind, expr, emitter);
 
     llvm::Function* decl = llvm::Intrinsic::getDeclaration(
-        &emitter.program.module(), *info.llvmID, overloadTypes);
+        &emitter.program.module(), info.llvmID, overloadTypes);
     if (!decl) {
         emitter.program.diagnostics.errorAt(
             DiagCode::Backend_CodegenError, expr->loc,
@@ -417,7 +417,7 @@ Val emitMappedIntrinsic(IntrinsicCallExprAST* expr,
     //
     // Several LLVM intrinsics take parameters the AST call doesn't supply.
     // The canonical values for each are added here.
-    switch (*info.llvmID) {
+    switch (info.llvmID) {
         // llvm.abs(x, is_int_min_poison): saturate rather than poison
         // at INT_MIN. Sema's `#abs` should have already done this for
         // integer arguments, but the mapped path handles the case where
@@ -473,7 +473,7 @@ Val emitMappedIntrinsic(IntrinsicCallExprAST* expr,
     //
     // TODO: when Sema records an alignment for `#memcpy<T>(...)` etc.,
     // thread it through here instead of guessing.
-    switch (*info.llvmID) {
+    switch (info.llvmID) {
         case llvm::Intrinsic::memcpy:
         case llvm::Intrinsic::memmove: {
             call->addParamAttr(0, llvm::Attribute::getWithAlignment(
@@ -958,7 +958,7 @@ Val emitLLVMIntrinsic(IntrinsicCallExprAST* expr,
     // Intrinsics with an `llvm::Intrinsic::ID` go through the generic
     // `getDeclaration` + `CreateCall` path. Exceptions are `#abs`, `#min`,
     // `#max`, which have special argument shapes even when they have IDs.
-    if (info.llvmID.has_value()) {
+    if (info.isValid()) {
         switch (info.kind) {
             case IntrinsicKind::Abs:
                 // Falls through to the generic path below; `#abs` over an
