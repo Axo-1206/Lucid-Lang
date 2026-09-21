@@ -521,23 +521,18 @@ void Emitter::emitSwitchStmt(SwitchStmtAST* stmt) {
                 continue;
             }
 
-            // Truncate/extend to the subject's width if needed.
+            // Sema's type checker guarantees the case value's type matches
+            // the subject's type. The assert fires in debug builds if Sema
+            // ever lets a mismatched case through — that's the point: fail
+            // fast at the source of the bug, not at an `addCase` call two
+            // frames down.
             //
-            // The cast to `IntegerType*` selects the
-            // `ConstantInt::get(IntegerType*, uint64_t, bool)` overload,
-            // which returns `ConstantInt*`. Passing a plain `Type*` selects
-            // the `ConstantInt::get(Type*, APInt)` overload, which returns
-            // `Constant*` — a wider type that doesn't assign to `constVal`.
-            //
-            // The subject's type is guaranteed integer by the check at the
-            // top of this function, so the cast is safe.
-            if (constVal->getType() != subjectVal->getType()) {
-                llvm::IntegerType* subjectTy =
-                    llvm::cast<llvm::IntegerType>(subjectVal->getType());
-                constVal = llvm::ConstantInt::get(
-                    subjectTy,
-                    constVal->getValue().zextOrTrunc(subjectTy->getBitWidth()));
-            }
+            // The `llvm::SwitchInst::addCase` API also asserts this in debug
+            // builds, so an out-of-type `ConstantInt` is caught either way.
+            // We add our own assert for a clearer message.
+            assert(constVal->getType() == subjectVal->getType()
+                && "switch case value type differs from subject type — "
+                    "Sema should have rejected this");
 
             switchInst->addCase(constVal, caseBlocks[i]);
         }

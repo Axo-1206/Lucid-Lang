@@ -261,29 +261,45 @@ Val Emitter::emitCall(CallExprAST* expr) {
 // emitIntrinsic — dispatch to the intrinsic subsystem
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The intrinsic subsystem lives in `src/codegen/intrinsic/`. It handles
-// argument coercion and returns a value. The emitter wraps the value in
-// a `Val` with the AST's resolved type and the `Owned` tag.
+// The intrinsic subsystem lives in `src/codegen/intrinsic/`. Its entry
+// point `emitIntrinsicFromAST(IntrinsicCallExprAST*, Emitter&)` returns
+// a `Val`, not a bare `llvm::Value*`.
 //
-// ─── Why `Owned` ──────────────────────────────────────────────────────────
-// Intrinsics compute a value. Even an intrinsic that reads from memory
-// (like `#memcpy`'s source) produces a result that the caller owns; the
-// source is not aliased by the result. The `Owned` tag reflects that.
+// ─── Why `Val`, Not `llvm::Value*` ────────────────────────────────────────
+// The intrinsic subsystem is the authority on three things the emitter
+// can't derive from the call expression alone:
 //
-// If an intrinsic ever needs to return a `Borrowed` result (a
-// hypothetical `#ptr` that returns a view of a value), the intrinsic
-// subsystem must signal it. Today, no intrinsic does.
+//   1. **The ownership tag.** Some intrinsics produce fresh values
+//      (`#tostr`, `#alloc`); others return a view of an existing value
+//      (a future `#fieldPtr` or `#ptr`). Only the intrinsic knows which.
+//
+//   2. **The AST type.** Some intrinsics produce a value whose type
+//      differs from the call's `resolvedType`. The intrinsic's `Val`
+//      carries the authoritative type.
+//
+//   3. **The failure case.** An intrinsic that can't lower its operands
+//      returns an invalid `Val` (a default-constructed one). The
+//      emitter propagates it; the caller's `isValid()` check fires.
+//
+// `emitIntrinsic` is therefore a thin forwarder. It passes the emitter
+// so the intrinsic subsystem can call back into `emit`, `coerceTo`, and
+// `program.abi()`, and returns the result unchanged.
+//
+// ─── The Emitter Reference ────────────────────────────────────────────────
+// The `*this` argument is how the intrinsic subsystem reaches the
+// emitter's helpers. It's the same pattern the closure and concurrency
+// subsystems use when they need to lower sub-expressions: a callback
+// interface, expressed as a reference.
 
 Val Emitter::emitIntrinsic(IntrinsicCallExprAST* expr) {
     assert(expr && "emitIntrinsic() with null expression");
 
-    // The intrinsic subsystem returns a bare `llvm::Value*`; the emitter
-    // tags it. `emitIntrinsicFromAST` is the entry point defined in
-    // `intrinsic/IntrinsicEmitter.hpp`.
-    llvm::Value* result = emitIntrinsicFromAST(expr, *this);
-    if (!result) return {};
-
-    return Val{result, expr->resolvedType, Own::Owned};
+    // The intrinsic subsystem owns the coercion, the ownership tag, and
+    // the failure case. It returns a `Val` for the same reason every
+    // expression emitter does: an intrinsic's result may be `Owned` or
+    // `Borrowed`, and only the intrinsic knows which. `emitIntrinsic`
+    // is a forwarder — it does not re-wrap.
+    return emitIntrinsicFromAST(expr, *this);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
