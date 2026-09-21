@@ -148,6 +148,22 @@ llvm::AllocaInst* Emitter::createEntryAlloca(llvm::Type* ty,
 
 void Emitter::dropScopeAlive(Scope& scope) {
     llvm::IRBuilder<>& b = program.builder();
+
+    // Piece 1: run #scope_exit callbacks first, reverse registration order.
+    // They run before the binding drops so a callback can reference a
+    // binding that's still alive.
+    //
+    // #scope_exit callbacks run LIFO, before the bindings they may
+    // reference are dropped. Iterate the block's registrations in
+    // reverse registration order.
+    if (scope.block) {
+        auto exits = scope.block->scopeExits;
+        for (size_t i = exits.size(); i > 0; --i) {
+            emitScopeExitCallback(exits[i - 1]);
+        }
+    }
+
+    // Piece 2: drop every still-alive binding, reverse declaration order.
     for (auto it = scope.declarationOrder.rbegin();
          it != scope.declarationOrder.rend(); ++it) {
         ValueDeclAST* decl = *it;

@@ -143,6 +143,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/ResourceKind.hpp"
+#include "core/registry/IntrinsicRegistry.hpp"
 #include "runtime/RuntimeError.hpp"
 
 #include <llvm/ADT/ArrayRef.h>
@@ -292,6 +293,147 @@ public:
     /// helper implements the caller side of that convention.
     llvm::Value* materializeArgument(Val val);
 
+    // ─── Place Construction (EmitPlace.cpp) ───────────────────────────────
+
+    /// @brief Get the `Place` for an expression that names storage.
+    ///
+    /// Only "assignable" expressions have places: identifiers, field
+    /// accesses on l-values, index expressions on l-value arrays, and
+    /// dereferences. Anything else returns an invalid `Place`.
+    Place emitPlace(ExprAST* expr);
+
+    /// @brief Get the place for an identifier expression.
+    Place emitIdentifierPlace(IdentifierExprAST* expr);
+
+    /// @brief Get the place for a field access.
+    Place emitFieldPlace(FieldAccessExprAST* expr);
+
+    /// @brief Get the place for an index expression.
+    Place emitIndexPlace(IndexExprAST* expr);
+
+    /// @brief Load the value currently in a place.
+    ///
+    /// Returns a `Borrowed` `Val`: the place still holds the claim, and
+    /// the loaded value is an alias. Anyone who wants to store the loaded
+    /// value must call `intoOwned` first (which `store` does).
+    Val loadPlace(Place place, llvm::IRBuilder<>& builder);
+
+    // ─── Scope Management (EmitStmt.cpp) ──────────────────────────────────
+
+    /// @brief Allocate in the current function's entry block.
+    ///
+    /// Every emitter-side alloca goes in the entry block. Creating
+    /// allocas in the current block would make a loop body allocate a
+    /// new slot per iteration and accumulate them until the function
+    /// returns. This helper enforces the discipline.
+    ///
+    /// Returns null if there's no current function to attach to.
+    llvm::AllocaInst* createEntryAlloca(llvm::Type* ty,
+                                        const llvm::Twine& name);
+
+    /// @brief Emit drops for the current scope, then clear its alive set.
+    ///
+    /// Called at the natural end of a block (by `emitBlock`) and at the
+    /// natural end of a function body (by `emitFuncBody` and
+    /// `emitClosureBody`). Does not pop the scope — the caller does that.
+    ///
+    /// A no-op if the current insertion block is already terminated, or
+    /// if the scope has no alive bindings.
+    void emitScopeFallthrough();
+
+    /// @brief Emit drops for every scope from the innermost down to
+    ///        (but not including) `targetDepth`.
+    ///
+    /// Called by `return` (target 0), `break` and `continue` (target =
+    /// the loop's entry scope depth). Does not pop the scopes — the
+    /// structurally-paired `popScope` at each block's natural end pops
+    /// them.
+    void emitUnwindTo(size_t targetDepth);
+
+    /// @brief Emit drops for every still-alive binding in one scope, in
+    ///        reverse declaration order, and clear the scope's alive
+    ///        set.
+    ///
+    /// The shared body of `emitScopeFallthrough` (called on the current
+    /// scope) and `emitUnwindTo` (called on each scope in the unwind
+    /// range). The caller is responsible for checking that the current
+    /// insertion block isn't already terminated.
+    void dropScopeAlive(Scope& scope);
+
+    // ─── Runtime Diagnostics (EmitScalar.cpp) ─────────────────────────────
+
+    /// @brief Emit a runtime panic with a formatted message.
+    ///
+    /// Format: `"file:line:col: description"`. Emits a call to
+    /// `__lucid_panic` followed by `unreachable`. Used by every
+    /// runtime-check emitter (division-by-zero, index bounds, arena
+    /// capacity).
+    void emitPanic(RuntimeErrorKind kind, SourceLocation loc);
+
+    // ─── Bounds Checks (EmitAccess.cpp) ───────────────────────────────────
+
+    /// @brief Bounds-check `0 <= index < size` on a fixed-size array.
+    ///
+    /// On failure, emits a panic and `unreachable`. On success, leaves
+    /// the builder in the success block. Returns the `i1` in-bounds
+    /// predicate.
+    llvm::Value* emitFixedArrayBoundsCheck(llvm::Value* index,
+                                            uint64_t size,
+                                            SourceLocation loc);
+
+    /// @brief Bounds-check `0 <= index < len` for a slice or dynamic
+    ///        array.
+    ///
+    /// Same shape as `emitFixedArrayBoundsCheck`, but `len` is a runtime
+    /// value.
+    llvm::Value* emitSliceBoundsCheck(llvm::Value* index,
+                                       llvm::Value* len,
+                                       SourceLocation loc);
+
+    // ─── Closure Lowering (EmitClosure.cpp) ───────────────────────────────
+
+    /// @brief Build the environment struct type for a closure.
+    llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr);
+
+    /// @brief Create the LLVM function that implements the closure body.
+    llvm::Function* createClosureFunction(AnonFuncExprAST* expr);
+
+    /// @brief Emit the body of a closure function.
+    ///
+    /// Uses a nested `FunctionState` for the closure's scope, and binds
+    /// each captured declaration to its environment-loaded value (or its
+    /// spilled alloca for by-value captures).
+    void emitClosureBody(AnonFuncExprAST* expr,
+                         llvm::Function* closureFn,
+                         llvm::Value* envPtr);
+
+    /// @brief Generate the environment-drop function for a closure.
+    ///
+    /// Returns null if the closure's environment owns nothing that needs
+    /// releasing (e.g. all captures are `fn`-shaped or non-resources).
+    llvm::Function* buildEnvDropFunction(AnonFuncExprAST* expr,
+                                         llvm::StructType* envType);
+
+    /// @brief Emit the fat-pointer construction for a `cls`-shaped
+    ///        named function declaration.
+    void emitClosureFuncDecl(FuncDeclAST* decl);
+
+    /// @brief The public closure-literal entry point.
+    ///
+    /// Produces a `{ ptr fn, ptr env }` fat pointer. Allocates the
+    /// environment, stores the captures, retains captured `cls` envs,
+    /// and constructs the fat pointer.
+    Val emitAnonFunc(AnonFuncExprAST* expr);
+
+    /// @brief The low-level call through a closure fat pointer.
+    ///
+    /// Extracts `{func, env}`, prepends `env` to the argument list, and
+    /// calls `func` indirectly.
+    llvm::Value* emitClosureCall(llvm::Value* funcPtr,
+                                 llvm::Value* envPtr,
+                                 llvm::ArrayRef<llvm::Value*> args,
+                                 llvm::Type* returnType);
+
 private:
     // ─── Expression Emitters (expr/*.cpp) ─────────────────────────────────
     //
@@ -377,117 +519,6 @@ private:
     void emitStructDecl(StructDeclAST* decl);
     void emitEnumDecl(EnumDeclAST* decl);
 
-    // ─── Place Construction (EmitPlace.cpp) ───────────────────────────────
-
-    /// @brief Get the `Place` for an expression that names storage.
-    ///
-    /// Only "assignable" expressions have places: identifiers, field
-    /// accesses on l-values, index expressions on l-value arrays, and
-    /// dereferences. Anything else returns an invalid `Place`.
-    Place emitPlace(ExprAST* expr);
-
-    /// @brief Get the place for an identifier expression.
-    Place emitIdentifierPlace(IdentifierExprAST* expr);
-
-    /// @brief Get the place for a field access.
-    Place emitFieldPlace(FieldAccessExprAST* expr);
-
-    /// @brief Get the place for an index expression.
-    Place emitIndexPlace(IndexExprAST* expr);
-
-    /// @brief Load the value currently in a place.
-    ///
-    /// Returns a `Borrowed` `Val`: the place still holds the claim, and
-    /// the loaded value is an alias. Anyone who wants to store the loaded
-    /// value must call `intoOwned` first (which `store` does).
-    Val loadPlace(Place place, llvm::IRBuilder<>& builder);
-
-    // ─── Scope Management (EmitStmt.cpp) ──────────────────────────────────
-
-    /// @brief Allocate in the current function's entry block.
-    ///
-    /// Every emitter-side alloca goes in the entry block. Creating
-    /// allocas in the current block would make a loop body allocate a
-    /// new slot per iteration and accumulate them until the function
-    /// returns. This helper enforces the discipline.
-    ///
-    /// Returns null if there's no current function to attach to.
-    llvm::AllocaInst* createEntryAlloca(llvm::Type* ty,
-                                        const llvm::Twine& name);
-
-    /// @brief Emit drops for the current scope, then clear its alive set.
-    ///
-    /// Called at the natural end of a block (by `emitBlock`) and at the
-    /// natural end of a function body (by `emitFuncBody` and
-    /// `emitClosureBody`). Does not pop the scope — the caller does that.
-    ///
-    /// A no-op if the current insertion block is already terminated, or
-    /// if the scope has no alive bindings.
-    void emitScopeFallthrough();
-
-    /// @brief Emit drops for every scope from the innermost down to
-    ///        (but not including) `targetDepth`.
-    ///
-    /// Called by `return` (target 0), `break` and `continue` (target =
-    /// the loop's entry scope depth). Does not pop the scopes — the
-    /// structurally-paired `popScope` at each block's natural end pops
-    /// them.
-    void emitUnwindTo(size_t targetDepth);
-
-    /// @brief Emit drops for every still-alive binding in one scope, in
-    ///        reverse declaration order, and clear the scope's alive
-    ///        set.
-    ///
-    /// The shared body of `emitScopeFallthrough` (called on the current
-    /// scope) and `emitUnwindTo` (called on each scope in the unwind
-    /// range). The caller is responsible for checking that the current
-    /// insertion block isn't already terminated.
-    void dropScopeAlive(Scope& scope);
-
-    // ─── Closure Lowering (EmitClosure.cpp) ───────────────────────────────
-
-    /// @brief Build the environment struct type for a closure.
-    llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr);
-
-    /// @brief Create the LLVM function that implements the closure body.
-    llvm::Function* createClosureFunction(AnonFuncExprAST* expr);
-
-    /// @brief Emit the body of a closure function.
-    ///
-    /// Uses a nested `FunctionState` for the closure's scope, and binds
-    /// each captured declaration to its environment-loaded value (or its
-    /// spilled alloca for by-value captures).
-    void emitClosureBody(AnonFuncExprAST* expr,
-                         llvm::Function* closureFn,
-                         llvm::Value* envPtr);
-
-    /// @brief Generate the environment-drop function for a closure.
-    ///
-    /// Returns null if the closure's environment owns nothing that needs
-    /// releasing (e.g. all captures are `fn`-shaped or non-resources).
-    llvm::Function* buildEnvDropFunction(AnonFuncExprAST* expr,
-                                         llvm::StructType* envType);
-
-    /// @brief Emit the fat-pointer construction for a `cls`-shaped
-    ///        named function declaration.
-    void emitClosureFuncDecl(FuncDeclAST* decl);
-
-    /// @brief The public closure-literal entry point.
-    ///
-    /// Produces a `{ ptr fn, ptr env }` fat pointer. Allocates the
-    /// environment, stores the captures, retains captured `cls` envs,
-    /// and constructs the fat pointer.
-    Val emitAnonFunc(AnonFuncExprAST* expr);
-
-    /// @brief The low-level call through a closure fat pointer.
-    ///
-    /// Extracts `{func, env}`, prepends `env` to the argument list, and
-    /// calls `func` indirectly.
-    llvm::Value* emitClosureCall(llvm::Value* funcPtr,
-                                 llvm::Value* envPtr,
-                                 llvm::ArrayRef<llvm::Value*> args,
-                                 llvm::Type* returnType);
-
     // ─── Concurrency Lowering (EmitConcurrency.cpp) ───────────────────────
 
     void emitAsyncStmt(AsyncStmtAST* stmt);
@@ -512,36 +543,6 @@ private:
     /// into its field, and returns a pointer to the packet.
     llvm::Value* buildConcurrencyPacket(CallExprAST* call);
 
-    // ─── Runtime Diagnostics (EmitScalar.cpp) ─────────────────────────────
-
-    /// @brief Emit a runtime panic with a formatted message.
-    ///
-    /// Format: `"file:line:col: description"`. Emits a call to
-    /// `__lucid_panic` followed by `unreachable`. Used by every
-    /// runtime-check emitter (division-by-zero, index bounds, arena
-    /// capacity).
-    void emitPanic(RuntimeErrorKind kind, SourceLocation loc);
-
-    // ─── Bounds Checks (EmitAccess.cpp) ───────────────────────────────────
-
-    /// @brief Bounds-check `0 <= index < size` on a fixed-size array.
-    ///
-    /// On failure, emits a panic and `unreachable`. On success, leaves
-    /// the builder in the success block. Returns the `i1` in-bounds
-    /// predicate.
-    llvm::Value* emitFixedArrayBoundsCheck(llvm::Value* index,
-                                            uint64_t size,
-                                            SourceLocation loc);
-
-    /// @brief Bounds-check `0 <= index < len` for a slice or dynamic
-    ///        array.
-    ///
-    /// Same shape as `emitFixedArrayBoundsCheck`, but `len` is a runtime
-    /// value.
-    llvm::Value* emitSliceBoundsCheck(llvm::Value* index,
-                                       llvm::Value* len,
-                                       SourceLocation loc);
-
     // ─── Resource Classification ──────────────────────────────────────────
 
     /// @brief The declaration's cached resource kind.
@@ -555,6 +556,57 @@ private:
     bool ownsResource(ValueDeclAST* decl) const {
         return classifyResource(decl) != ResourceKind::None;
     }
+
+        // ─── Intrinsic Subsystem (codegen/intrinsic/*) ────────────────────────
+    //
+    // The intrinsic emitters are peers of `Emitter`, not members: they
+    // live in their own translation units and their own headers, and they
+    // are dispatched from `emit(ExprAST*)` via `emitIntrinsicFromAST`.
+    // They need access to a handful of `Emitter`'s private helpers —
+    // `emitPlace` (for `#addrof`, `#ptrstr`, `#toRef`), `createEntryAlloca`
+    // (for out-pointer runtime calls), `emitPanic` (for the null check in
+    // `#toRef` and the bounds check in `#simd_extract`/`#simd_insert`),
+    // and `emitClosureCall` (for the `str`-override path in `#tostr`) —
+    // but promoting those to public would widen `Emitter`'s public surface
+    // far beyond the four entry points the header's design commentary
+    // commits to.
+    //
+    // Friendship is the right tool: it grants exactly the two dispatcher
+    // entry points access to exactly the helpers they need, without
+    // exposing anything to the rest of the codebase.
+    //
+    // The two functions are declared in
+    // `codegen/intrinsic/LLVMIntrinsicEmitter.hpp` and
+    // `codegen/intrinsic/LucidIntrinsicEmitter.hpp`. They are named here
+    // as friends; no declaration is needed in this header.
+    friend Val emitLLVMIntrinsic(IntrinsicCallExprAST*, const IntrinsicInfo&, Emitter&);
+    friend Val emitLucidIntrinsic(IntrinsicCallExprAST*, const IntrinsicInfo&, Emitter&);
+
+    // ─── Scope-Exit Callback Emission ─────────────────────────────────────
+    //
+    // `#scope_exit(f, args)` registers `f` with the enclosing block during
+    // Sema (`BlockStmtAST::scopeExits`). At block exit — both the natural
+    // fall-through and every unwind path (`return`, `break`, `continue`) —
+    // the emitter walks the block's registrations in reverse (LIFO) and
+    // emits a call to each.
+    //
+    // Declared here because the walk happens in `dropScopeAlive`
+    // (EmitStmt.cpp), and the intrinsic subsystem owns the calling
+    // convention (plain function reference vs. closure fat pointer).
+    // `#scope_exit`'s own `emitLucidIntrinsic` case is a no-op — the call
+    // site emits nothing; the callback is emitted here.
+    //
+    // `reg` must be non-null. Sema guarantees every entry in
+    // `scopeExits` is a valid registration.
+    //
+    // The body is a straight port of the old
+    // `emitScopeExitCallback(reg, ctx)` free function: it reads
+    // `reg->callback` (plain function reference, resolved to an
+    // `llvm::Function*` via `program.lookupFunction`), or, if that is
+    // null, `reg->callExpr->args[0]` (a closure expression, lowered to a
+    // fat pointer and called through `emitClosureCall`). All access to
+    // `ctx` becomes access to `*this` / `program`.
+    void emitScopeExitCallback(const ScopeExitRegistration* reg);
 };
 
 } // namespace codegen

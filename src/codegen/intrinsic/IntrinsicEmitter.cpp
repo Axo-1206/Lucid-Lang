@@ -5,7 +5,7 @@
 #include "LucidIntrinsicEmitter.hpp"
 #include "LLVMIntrinsicEmitter.hpp"
 
-#include "codegen/Emitter.hpp"
+#include "codegen/emit/Emitter.hpp"
 #include "codegen/Program.hpp"
 
 #include "core/registry/IntrinsicRegistry.hpp"
@@ -37,22 +37,29 @@ Val emitIntrinsicFromAST(IntrinsicCallExprAST* expr, Emitter& emitter) {
     }
 
     // ─── Dispatch ─────────────────────────────────────────────────────────
-    // Two routes:
+    // The registry has TWO independent classifications:
     //
-    //   - If the intrinsic has an `llvmID`, it maps to an LLVM intrinsic.
-    //     Delegate to the LLVM-side emitter, which calls
-    //     `llvm::Intrinsic::getDeclaration` and emits the call.
+    //   - `info.llvmID` — whether the intrinsic maps to a literal
+    //     `llvm::Intrinsic::ID`. Set for `#sqrt`, `#fma`, `#memcpy`,
+    //     `#clz`, etc. Unset (`llvm::Intrinsic::not_intrinsic`) for
+    //     `#min`, `#max`, `#fence`, `#pause`, every `#atomic_*`, every
+    //     `#simd_*`, and every Lucid-side intrinsic.
     //
-    //   - Otherwise, it's a Lucid-side intrinsic implemented directly by
-    //     CodeGen. Delegate to the Lucid-side emitter.
+    //   - `info.emitterKind` — which emitter file owns the codegen.
+    //     `LLVM` for anything that lowers to a native LLVM construct
+    //     (a real IR instruction or an `Intrinsic::ID`); `Lucid` for
+    //     anything CodeGen implements directly.
     //
-    // The registry's `llvmID` field is `std::optional<llvm::Intrinsic::ID>`
-    // — null for Lucid-side intrinsics, set for LLVM-mapped ones. Some
-    // Lucid-side intrinsics (`#sizeof`, `#typeof`) are also compiler-
-    // folded by Sema; by the time the intrinsic emitter runs, `expr->isConst`
-    // would have short-circuited via `Emitter::emit`. If the fold didn't
-    // happen, the Lucid-side emitter handles them at runtime.
-    if (info->llvmID.has_value()) {
+    // These are deliberately different axes — see the long comment in
+    // `IntrinsicRegistry.hpp` for why. `#min` has no `llvmID` (LLVM
+    // has no `min` intrinsic) but is still emitted by
+    // `LLVMIntrinsicEmitter.cpp` as a cmp + select. The dispatch here
+    // must be on `emitterKind`, NOT on `llvmID`.
+    //
+    // Dispatching on `llvmID` (as an earlier revision of this file did)
+    // routes `#min`, `#fence`, every `#atomic_*`, and every `#simd_*`
+    // to the Lucid emitter, which does not handle them.
+    if (info->emitterKind == IntrinsicEmitterKind::LLVM) {
         return emitLLVMIntrinsic(expr, *info, emitter);
     }
 

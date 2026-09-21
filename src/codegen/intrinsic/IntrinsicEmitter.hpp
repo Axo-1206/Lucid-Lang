@@ -31,6 +31,7 @@
 #include "codegen/ownership/Ownership.hpp"   // for `Val`
 
 #include "core/ast/ExprAST.hpp"
+#include "core/registry/IntrinsicRegistry.hpp"
 
 namespace codegen {
 
@@ -48,5 +49,40 @@ class Emitter;
 ///
 /// Emits a diagnostic and returns an invalid `Val` on error.
 Val emitIntrinsicFromAST(IntrinsicCallExprAST* expr, Emitter& emitter);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-emitter entry points
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These are the two halves of the dispatcher. Each is implemented in its
+// own translation unit (`LLVMIntrinsicEmitter.cpp` and
+// `LucidIntrinsicEmitter.cpp`) and declared in its own header
+// (`LLVMIntrinsicEmitter.hpp` and `LucidIntrinsicEmitter.hpp`). They are
+// re-declared here so a caller that only includes `IntrinsicEmitter.hpp`
+// can see the full dispatch surface without pulling in either sub-header.
+//
+// Both take the already-resolved `IntrinsicInfo` so they don't have to
+// re-query the registry. Both return an invalid `Val` (not `nullptr`) on
+// error, so the caller has one error convention to check.
+
+/// @brief Emit an intrinsic that maps to an LLVM intrinsic.
+///
+/// The caller has already confirmed `info.llvmID.has_value()`. This
+/// emitter lowers the intrinsic's arguments to `llvm::Value*`, resolves
+/// the LLVM intrinsic declaration for `*info.llvmID`, and emits the call.
+Val emitLLVMIntrinsic(IntrinsicCallExprAST* expr,
+                      const IntrinsicInfo& info,
+                      Emitter& emitter);
+
+/// @brief Emit an intrinsic that CodeGen implements directly.
+///
+/// The caller has already confirmed `!info.llvmID.has_value()`. This
+/// emitter dispatches on the intrinsic's `kind` (the
+/// `IntrinsicEmitterKind::Lucid` rows in the registry) and lowers the
+/// intrinsic to a sequence of LLVM IR operations, runtime ABI calls, or
+/// both.
+Val emitLucidIntrinsic(IntrinsicCallExprAST* expr,
+                       const IntrinsicInfo& info,
+                       Emitter& emitter);
 
 } // namespace codegen

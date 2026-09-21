@@ -101,4 +101,95 @@ FunctionState& Emitter::func() {
     return *program.currentFunctionState;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scope-Exit Callback Emission
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Ported from the old `emitScopeExitCallback(const ScopeExitRegistration*,
+// CodeGenContext&)` free function. The two-branch structure is unchanged:
+//
+//   - Plain function-reference callback: `reg->callback` is non-null and
+//     resolves to an `llvm::Function*` in the function table. Emit a
+//     direct call.
+//
+//   - Closure callback: `reg->callback` is null, meaning the argument was
+//     a closure literal or a closure-typed expression rather than a bare
+//     function reference. `reg->callExpr->args[0]` is that expression.
+//     Lower it, unpack the fat pointer, and call through
+//     `emitClosureCall`.
+//
+// All `ctx.X` become either `program.X` or a direct method call on
+// `*this`; `lowerExpression(arg, ctx)` becomes `emit(arg)`; the old
+// `loadIfNeeded` calls are gone because `emit` returns an already-loaded
+// `Val`.
+
+void Emitter::emitScopeExitCallback(const ScopeExitRegistration* reg) {
+    if (!reg) return;
+
+    // ─── Plain function-reference callback ────────────────────────────────
+    if (reg->callback) {
+        llvm::Function* callee = program.lookupFunction(reg->callback);
+
+        // Sema (validateScopeExit) guarantees a plain function-reference
+        // callback resolves to a real declaration. If it didn't, that's a
+        // Sema bug, not something CodeGen should diagnose at runtime.
+        assert(callee && "scope_exit callback not found — Sema should "
+                         "have caught this");
+        if (!callee) {
+            return;
+        }
+
+        std::vector<llvm::Value*> args;
+        args.reserve(reg->args.size());
+        for (ExprAST* arg : reg->args) {
+            Val argVal = emit(arg);
+            if (!argVal.isValid()) {
+                return;
+            }
+            args.push_back(argVal.v);
+        }
+
+        program.builder().CreateCall(callee, args);
+        return;
+    }
+
+    // ─── Closure callback ─────────────────────────────────────────────────
+    // `reg->callback` is null; the argument wasn't a plain function
+    // reference. `reg->callExpr` is the original `#scope_exit(...)` call,
+    // and its first argument is the callee slot.
+    assert(reg->callExpr && !reg->callExpr->args.empty() &&
+           "scope_exit closure registration missing callee expression");
+    if (!reg->callExpr || reg->callExpr->args.empty()) {
+        return;
+    }
+
+    ExprAST* closureExpr = reg->callExpr->args[0];
+    Val closureVal = emit(closureExpr);
+    if (!closureVal.isValid()) {
+        return;
+    }
+
+    // The closure value is the `{ ptr func, ptr env }` fat pointer built
+    // in `emitAnonFunc`. Unpack it for `emitClosureCall`.
+    llvm::Value* funcPtr = program.builder().CreateExtractValue(
+        closureVal.v, 0, "scope_exit_closure_func");
+    llvm::Value* envPtr = program.builder().CreateExtractValue(
+        closureVal.v, 1, "scope_exit_closure_env");
+
+    std::vector<llvm::Value*> closureArgs;
+    closureArgs.reserve(reg->args.size());
+    for (ExprAST* arg : reg->args) {
+        Val argVal = emit(arg);
+        if (!argVal.isValid()) {
+            return;
+        }
+        closureArgs.push_back(argVal.v);
+    }
+
+    // `#scope_exit` is a void intrinsic: the callback's declared return
+    // type is void, so the indirect call's return type is void too.
+    llvm::Type* voidTy = llvm::Type::getVoidTy(program.llvmContext());
+    emitClosureCall(funcPtr, envPtr, closureArgs, voidTy);
+}
+
 } // namespace codegen
