@@ -39,13 +39,46 @@
 /// ============================================================================
 /// FIELD CATEGORIES
 /// ============================================================================
-/// 
-/// | Category        | Mutability          | Set By  | Examples                                    |
-/// | --------------- | ------------------- | ------- | ------------------------------------------- |
-/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
-/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `mangledName`, `closureDepth` |
-/// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
-/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmFunction`, `llvmType`, `llvmAlloca`    |
+///
+/// | Category        | Mutability          | Set By  | Examples                          |
+/// | --------------- | ------------------- | ------- | --------------------------------- |
+/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`    |
+/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `mangledName`,    |
+/// |                 |                     |         | `fieldIndex`, `resourceKind`      |
+///
+/// ─── No CodeGen Fields ────────────────────────────────────────────────────
+/// The AST holds NO LLVM-level facts. There is no `llvmType`,
+/// `llvmFunction`, `llvmAlloca`, `totalSize`, `alignment`, or `byteSize`
+/// on any node. Every LLVM-level fact lives on a codegen-side object:
+///
+///   - LLVM types:         `Types` (cached per `TypeAST*`)
+///   - LLVM functions:     `ProgramState`'s function table
+///   - Local storage:      `FunctionState`'s value map
+///   - Sizes/alignments:   `DataLayout`, queried through `Types::sizeOf`
+///                         / `Types::alignOf`
+///
+/// The reason is that LLVM-level facts are properties of one codegen run
+/// against one target. The AST outlives any single `ProgramState` (the
+/// interpreter lowers the same AST against new targets on hot reload), so
+/// a cached LLVM fact on the AST would be a snapshot of the wrong run.
+///
+/// ─── Constructor Pattern ──────────────────────────────────────────────────
+///
+/// All declaration nodes use constructor initialization for parser fields:
+///
+/// ```cpp
+/// struct VarDeclAST : ValueDeclAST {
+///     // Parser fields - const (set once in constructor)
+///     ExprAST* init;
+///
+///     // Semantic fields - mutable, set by Sema
+///     InternedString mangledName;
+///
+///     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
+///         : ValueDeclAST(ASTKind::VarDecl, n, kw, t)
+///         , init(i) {}
+/// };
+/// ```
 /// 
 /// ## Constructor Pattern
 /// 
@@ -400,15 +433,15 @@ struct FieldDeclAST : ValueDeclAST {
 // ─── StructDeclAST ────────────────────────────────────────────────────────
 
 /// @brief Represents a struct definition with fields and optional generic parameters.
-/// 
+///
 /// @example
 ///   struct Point { x float = 0.0, y float = 0.0 }
 ///   struct Node<T> { value T, next ptr<Node<T>>? }
 ///   struct Entity : Vector2, Named { name string, x float, y float, health int }
-/// 
+///
 /// A struct may implement one or more traits by listing them after `:`.
 /// The traits are stored in `traitRefs` and resolved during semantic analysis.
-/// 
+///
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// The semantic pass must enforce the following rules for struct declarations:
 /// 1. **Trait Implementation**: For each trait in `traitRefs`, verify that the
@@ -421,6 +454,23 @@ struct FieldDeclAST : ValueDeclAST {
 /// 5. **Generic Parameters**: All generic parameters must be used in at least
 ///    one field type. Unused parameters are a compile error.
 /// 6. **No Reference Fields**: Fields cannot have reference type (`&T`).
+///
+/// ─── No Layout Fields ────────────────────────────────────────────────────
+/// This node deliberately has NO `totalSize` or `alignment` fields. An
+/// earlier revision carried them, intending Sema to compute them. But size
+/// and alignment are `DataLayout`-dependent — they're a property of the
+/// target, not of the AST — so Sema (which is target-independent) can't
+/// compute them. CodeGen queries them on demand:
+///
+///     llvm::Type* ty = program.types().get(someStructTypeAST);
+///     uint64_t size  = module.getDataLayout().getTypeAllocSize(ty);
+///     uint64_t align = module.getDataLayout().getABITypeAlign(ty);
+///
+/// Caching them on the AST would make the AST a snapshot of one codegen
+/// run's `DataLayout`, which is wrong when the same AST is lowered against
+/// two different targets (the interpreter reloading, an AOT build for
+/// another architecture). The AST holds source-level facts; the layout is
+/// a codegen-side fact.
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
@@ -429,11 +479,13 @@ struct StructDeclAST : TypeDeclAST {
     ArenaSpan<FieldDeclAST*> fields;
     ArenaSpan<NamedTypeAST*> traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
-    
-    // ─── Semantic / Layout Fields (set by Sema) ─────────────────────────
-    InternedString mangledName;        // Mangled name for AOT compilation
-    uint64_t totalSize = 0;
-    uint64_t alignment = 0;
+
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    /// The linker-level name of the struct's LLVM type. Read by
+    /// `Types::structType` to name the `llvm::StructType`. It is NOT a
+    /// codegen cache — it's a Sema-produced fact that identifies the
+    /// struct across the whole program.
+    InternedString mangledName;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructDeclAST(InternedString n,
@@ -446,40 +498,51 @@ struct StructDeclAST : TypeDeclAST {
         , fields(flds)
         , traitRefs(traits)
         , isPacked(packed) {}
-    
+
     size_t indexOfField(InternedString name) const {
         for (size_t i = 0; i < fields.size(); ++i) {
             if (fields[i]->name == name) return i;
         }
         return SIZE_MAX;
     }
-    
+
     bool isGeneric() const { return !genericParams.empty(); }
 };
 
 // ─── EnumDeclAST ──────────────────────────────────────────────────────────
 
 /// @brief Represents an enum definition.
-/// 
+///
 /// @example
 ///   enum Direction { North = 0, East = 1, South = 2, West = 3 }
 ///   enum Status : int32 { Ok = 200, NotFound = 404, Error = 500 }
-/// 
+///
 /// Each variant must have an explicit integer value. Values are required
-/// (no auto-increment) – this matches the no-inference stance applied
+/// (no auto-increment) — this matches the no-inference stance applied
 /// everywhere else in the grammar.
-/// 
+///
+/// ─── No Layout Fields ────────────────────────────────────────────────────
+/// Like `StructDeclAST`, this node deliberately has NO
+/// `backingLLVMType` or `byteSize`. The backing LLVM integer type is
+/// derived on demand by `Types::enumType` (which returns a
+/// context-interned `llvm::IntegerType*` — LLVM's interning is the cache);
+/// the size is a `DataLayout` query. Caching either on the AST would make
+/// the AST a snapshot of one codegen run, which is wrong.
+///
 /// @field variants      Enum variants with their explicit values
 /// @field backingType   Optional backing integer type (defaults to int32)
-// In DeclAST.hpp
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<EnumVariantAST*> variants;
     PrimitiveTypeAST* backingType;
-    
-    // ─── Semantic / Layout Fields (set by Sema) ─────────────────────────
+
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    /// The linker-level name of the enum's LLVM type. Enums lower to a
+    /// bare integer, so `mangledName` is used mainly for diagnostics and
+    /// for correlating the AST node with the emitted IR; the actual LLVM
+    /// type is `Types::enumType`'s result.
     InternedString mangledName;
 
     // ─── Constructor ─────────────────────────────────────────────────────

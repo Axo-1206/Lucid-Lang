@@ -176,7 +176,7 @@ void Emitter::emitVarDecl(VarDeclAST* decl) {
     initVal = coerceTo(initVal, decl->type);
     if (!initVal.isValid()) {
         program.diagnostics.errorAt(
-            DiagCode::Backend_TypeMismatch, decl->loc,
+            DiagCode::Sem_TypeMismatch, decl->loc,
             "initializer for '", program.pool.lookup(decl->name),
             "' cannot be coerced to its declared type");
         return;
@@ -615,28 +615,48 @@ void Emitter::emitStructDecl(StructDeclAST* decl) {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // An enum lowers to a bare integer of its backing type's width. Two enums
-// with the same backing type share the same `llvm::IntegerType*` (LLVM
-// interns integer types by bit width per context). So there is no per-enum
-// LLVM type to create — the "type" is just the integer type.
+// with the same backing type share the same `llvm::IntegerType*`, because
+// LLVM interns integer types by bit width per context.
 //
-// What `emitEnumDecl` does:
+// ─── Why This Is Almost A No-Op ───────────────────────────────────────────
+// There is no per-enum LLVM type to create. The "type" is an integer type
+// that LLVM interns. `Types::enumType` computes it on demand:
 //
-//   1. Resolves the backing integer type via `Types::enumType`.
-//   2. Caches it on `decl->backingLLVMType` for later reads.
-//   3. Computes the byte size for layout purposes.
+//     llvm::IntegerType* Types::enumType(const EnumDeclAST* decl) {
+//         if (decl->backingType)
+//             return integerType(decl->backingType->primitiveKind);
+//         return llvm::Type::getInt32Ty(llvmCtx);
+//     }
 //
-// Unlike the old `lowerEnumDecl`, it does NOT materialize per-variant
-// `ConstantInt`s. Variants are lowered on demand by `emitIdentifier`'s
-// `EnumVariantAST` branch, which reads `variant->value` and the resolved
-// type. Caching constants on the AST was an optimization for the old
-// design; the new design prefers laziness.
+// The result is stable: `integerType(kind)` calls
+// `llvm::IntegerType::get(ctx, bits)`, which returns the same pointer for
+// the same width in the same context. No AST-side cache is needed.
+//
+// The old `lowerEnumDecl` wrote two fields to the AST — `backingLLVMType`
+// and `byteSize`. Both were CodeGen caches, and both are redundant:
+//
+//   - `backingLLVMType` duplicates `Types::enumType`'s result. LLVM's
+//     interning is the cache; a second copy would drift.
+//
+//   - `byteSize` duplicates `Types::sizeOf`. The size is a query against
+//     the module's DataLayout, which the AST doesn't and shouldn't know
+//     about. Caching it on the AST would make the AST a snapshot of one
+//     codegen run's DataLayout, which is wrong when the same AST is
+//     lowered by two `ProgramState`s.
+//
+// Both fields were removed in the redesign. This emitter does not
+// reintroduce them; it resolves the backing type and logs, then returns.
+// Every consumer that needs the LLVM type calls `Types::enumType`; every
+// consumer that needs the size calls `Types::sizeOf`.
 
 void Emitter::emitEnumDecl(EnumDeclAST* decl) {
     assert(decl && "emitEnumDecl() with null declaration");
 
     // ─── Resolve the backing integer type ─────────────────────────────────
     // `Types::enumType` reads `decl->backingType` if Sema set it, and
-    // falls back to i32 if not. The result is a cached integer type.
+    // falls back to i32 if not. The result is a context-interned
+    // `llvm::IntegerType*` — the same pointer on every call for the same
+    // width. No AST-side cache is needed; LLVM's interning is the cache.
     llvm::IntegerType* backingTy = program.types().enumType(decl);
     if (!backingTy) {
         program.diagnostics.errorAt(
@@ -645,18 +665,21 @@ void Emitter::emitEnumDecl(EnumDeclAST* decl) {
             program.pool.lookup(decl->name), "'");
         return;
     }
-    decl->backingLLVMType = backingTy;
 
-    // ─── Cache the byte size ──────────────────────────────────────────────
-    // Used by `sizeof` and by layout calculations. `getTypeAllocSize` is
-    // the alloc size (includes padding to alignment), which is what
-    // aggregate layout uses.
-    const llvm::DataLayout& dl = program.module().getDataLayout();
-    decl->byteSize = dl.getTypeAllocSize(backingTy).getFixedValue();
+    // ─── Log ──────────────────────────────────────────────────────────────
+    // The size is a query, not a stored fact. The DataLayout is the
+    // authoritative source; the AST never holds a cached size. Two enums
+    // with the same backing type have the same size, and LLVM interns
+    // the integer type, so the query is cheap.
+    uint64_t byteSize = 0;
+    if (backingTy->isSized()) {
+        byteSize = program.module().getDataLayout()
+            .getTypeAllocSize(backingTy).getFixedValue();
+    }
 
     Trace::detail("Lowered enum '", program.pool.lookup(decl->name),
                   "' (", decl->variants.size(), " variant(s), ",
-                  decl->byteSize, " byte(s))");
+                  byteSize, " byte(s))");
 }
 
 } // namespace codegen
