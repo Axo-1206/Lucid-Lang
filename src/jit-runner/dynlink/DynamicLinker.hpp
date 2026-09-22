@@ -12,7 +12,7 @@
 #include <vector>
 #include <string>
 
-namespace interpreter {
+namespace jit_runner {
 
 class JITSession;
 
@@ -75,4 +75,4 @@ private:
     void rebuildCache() const;
 };
 
-} // namespace interpreter
+} // namespace jit_runner

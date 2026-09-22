@@ -6,7 +6,7 @@
 #include <string>
 #include <memory>
 
-namespace interpreter {
+namespace jit_runner {
 
 /// @brief RAII wrapper for a dynamic library handle.
 ///
@@ -56,4 +56,4 @@ private:
     void unload();
 };
 
-} // namespace interpreter
+} // namespace jit_runner

@@ -2,7 +2,7 @@
 /// @brief RAII wrapper for dynamic library handles.
 
 #include "LibraryHandle.hpp"
-#include "../support/InterpreterError.hpp"
+#include "../support/JITRunnerError.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -15,7 +15,7 @@
 #include <cstring>
 #endif
 
-namespace interpreter {
+namespace jit_runner {
 
 // ─── LibraryHandle ──────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ LibraryHandle::LibraryHandle(const std::string& path)
 #ifdef _WIN32
     m_handle = LoadLibraryA(path.c_str());
     if (!m_handle) {
-        throw InterpreterError(InterpreterErrorKind::LibraryLoadFailed,
+        throw Jit_runnerError(JITRunnerErrorKind::LibraryLoadFailed,
                               "Failed to load library '" + path + "': " + 
                               std::to_string(GetLastError()));
     }
@@ -33,7 +33,7 @@ LibraryHandle::LibraryHandle(const std::string& path)
     m_handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!m_handle) {
         const char* error = dlerror();
-        throw InterpreterError(InterpreterErrorKind::LibraryLoadFailed,
+        throw Jit_runnerError(Jit_runnerErrorKind::LibraryLoadFailed,
                               "Failed to load library '" + path + "': " + 
                               (error ? error : "unknown error"));
     }
@@ -129,4 +129,4 @@ void LibraryHandle::unload() {
     }
 }
 
-} // namespace interpreter
+} // namespace jit_runner

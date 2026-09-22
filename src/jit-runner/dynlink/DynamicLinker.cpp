@@ -3,7 +3,6 @@
 
 #include "DynamicLinker.hpp"
 #include "../jit/JITSession.hpp"
-#include "../support/InterpreterError.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/ExprAST.hpp"
 
@@ -20,7 +19,7 @@
 #include <unistd.h>
 #endif
 
-namespace interpreter {
+namespace jit_runner {
 
 // ─── Platform-Specific Helpers ─────────────────────────────────────────
 
@@ -60,9 +59,9 @@ bool DynamicLinker::load(const std::string& name) {
         m_libraries[name] = std::move(handle);
         m_cacheDirty = true;
         return true;
-    } catch (const InterpreterError& e) {
+    } catch (const Jit_runnerError& e) {
         // Re-throw with more context
-        throw InterpreterError(InterpreterErrorKind::LibraryLoadFailed,
+        throw Jit_runnerError(Jit_runnerErrorKind::LibraryLoadFailed,
                               "Failed to load library '" + name + "': " + e.what());
     }
 }
@@ -96,9 +95,9 @@ bool DynamicLinker::loadPath(const std::string& path) {
         m_libraries[name] = std::move(handle);
         m_cacheDirty = true;
         return true;
-    } catch (const InterpreterError& e) {
+    } catch (const Jit_runnerError& e) {
         // Re-throw with more context
-        throw InterpreterError(InterpreterErrorKind::LibraryLoadFailed,
+        throw Jit_runnerError(Jit_runnerErrorKind::LibraryLoadFailed,
                               "Failed to load library from path '" + path + "': " + e.what());
     }
 }
@@ -134,7 +133,7 @@ void DynamicLinker::registerLibrariesFromModule(DiagnosticEngine& diagnostics,
                         if (!isPath) {
                             try {
                                 load(libName);
-                            } catch (const InterpreterError& e) {
+                            } catch (const Jit_runnerError& e) {
                                 if (verbose) {
                                     std::cerr << "Warning: " << e.what() << "\n";
                                 }
@@ -257,4 +256,4 @@ void DynamicLinker::rebuildCache() const {
     m_cacheDirty = false;
 }
 
-} // namespace interpreter
+} // namespace jit_runner
