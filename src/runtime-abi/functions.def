@@ -257,10 +257,18 @@ LUCID_RT(Panic, __lucid_panic, Void, (Ptr))
 //     worker), and returns the boxed result, or null if the task failed or
 //     the slot was already empty. CodeGen loads the result out of the box
 //     and frees the box with __lucid_free.
-//   void __lucid_shutdown(void)
-//     Signals all threads to stop, waits, cleans up pending handles.
+//   void __lucid_shutdown_concurrency(void)
+//     Shuts down the concurrency runtime: joins all thread-pool workers
+//     and drains pending event-loop tasks. **Process-wide and
+//     non-restartable.** After this call, `spawn` and `async` cannot be
+//     used again in this process — the thread pool has no workers and
+//     the event loop is stopped.
+//
+//     NOT called by codegen. The JIT runner calls it via lookupSymbol
+//     at final teardown time. The runtime's `shutdownConcurrency` is
+//     the implementation.
+LUCID_RT(ShutdownConcurrency, __lucid_shutdown_concurrency, Void, ())
 LUCID_RT(Async,    __lucid_async,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Await,    __lucid_await,    Ptr,  (Ptr))
 LUCID_RT(Spawn,    __lucid_spawn,    Void, (Ptr, Ptr, Ptr))
 LUCID_RT(Join,     __lucid_join,     Ptr,  (Ptr))
-LUCID_RT(Shutdown, __lucid_shutdown, Void, ())
