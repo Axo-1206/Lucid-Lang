@@ -35,8 +35,8 @@
 ///
 /// Recording happens in `declareOrGet`, not in the generated methods,
 /// because every path into a runtime function goes through
-/// `declareOrGet` — the generated methods call it, and `panicFn` and
-/// `shutdownFn` call it. One hook covers every case.
+/// `declareOrGet`. The generated methods are the only callers, so one
+/// hook covers every case.
 
 #include "Abi.hpp"
 #include "Program.hpp"
@@ -334,19 +334,6 @@ llvm::Value* Abi::emitCall(RuntimeFn fn,
     call->setAttributes(llvmFn->getAttributes());
 
     return call->getType()->isVoidTy() ? nullptr : call;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Special Cases
-// ─────────────────────────────────────────────────────────────────────────────
-
-llvm::Function* Abi::panicFn() {
-    // `noreturn` is applied in `declareOrGet`.
-    return declareOrGet(RuntimeFn::Panic);
-}
-
-llvm::Function* Abi::shutdownFn() {
-    return declareOrGet(RuntimeFn::Shutdown);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

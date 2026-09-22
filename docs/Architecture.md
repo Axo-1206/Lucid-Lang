@@ -682,7 +682,7 @@ in C++ and links against the LLVM-generated code via the ABI contracts in
 - `ClosureRuntime.cpp` — `__lucid_alloc_env`, `__lucid_retain_env`,
   `__lucid_release_env`.
 - `ConcurrencyEntry.cpp`, `ConcurrencyRuntime.hpp/cpp` — `__lucid_async`,
-  `__lucid_await`, `__lucid_spawn`, `__lucid_join`, `__lucid_shutdown`,
+  `__lucid_await`, `__lucid_spawn`, `__lucid_join`, `__lucid_shutdown_concurrency`,
   the thread pool, and the event loop.
 - `PanicRuntime.cpp` — `__lucid_panic`.
 - `ClosureEnvironment.hpp` — the internal closure environment layout,

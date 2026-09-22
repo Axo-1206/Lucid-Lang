@@ -222,12 +222,10 @@ private:
     size_t m_numWorkers;
 };
 
-// ─── Shutdown ──────────────────────────────────────────────────────────────
-
 /// @brief Shutdown the entire concurrency runtime.
 ///
 /// This must be called before program exit to ensure all threads are joined
-/// and all resources are cleaned up. Called automatically from __lucid_shutdown.
+/// and all resources are cleaned up. Called automatically from __lucid_shutdown_concurrency.
 void shutdownConcurrency();
 
 } // namespace lucid::runtime

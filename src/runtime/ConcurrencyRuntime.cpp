@@ -342,13 +342,17 @@ size_t ThreadPool::activeCount() const {
     return m_activeCount.load(std::memory_order_acquire);
 }
 
-// ─── Shutdown Implementation ──────────────────────────────────────────────
-
 void shutdownConcurrency() {
-    // ─── 1. Shutdown the event loop ──────────────────────────────────────────
+    // This is the final-teardown path for the concurrency runtime. It is
+    // process-wide and non-restartable: after this returns, the singletons
+    // have no workers and no running loop, and there is no API to restart
+    // them. Callers must not invoke it more than once, and must not call
+    // it from a program that will use spawn/async afterward.
+
+    // ─── 1. Shut down the event loop ──────────────────────────────────
     EventLoop::getInstance().shutdown();
 
-    // ─── 2. Shutdown the thread pool ─────────────────────────────────────────
+    // ─── 2. Shut down the thread pool ─────────────────────────────────
     ThreadPool::getInstance().shutdown();
 }
 

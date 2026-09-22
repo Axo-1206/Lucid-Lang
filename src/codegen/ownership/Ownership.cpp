@@ -7,6 +7,7 @@
 #include "codegen/Program.hpp"
 #include "codegen/Abi.hpp"
 #include "codegen/Types.hpp"
+#include "codegen/LLVMTypeHelpers.hpp"
 
 #include "core/ast/ResourceKind.hpp"
 #include "core/trace/Trace.hpp"
@@ -28,37 +29,6 @@ Ownership::Ownership(ProgramState& program_)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Entry-Block Alloca Helper
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Every alloca the ownership engine creates is placed in the current
-// function's entry block. Creating allocas in the current block would make
-// each drop inside a loop allocate a new stack slot per iteration, and the
-// slots would accumulate until the function returns.
-
-namespace {
-
-llvm::AllocaInst* createEntryBlockAlloca(llvm::IRBuilder<>& builder,
-                                          llvm::Type* ty,
-                                          const llvm::Twine& name) {
-    llvm::Function* func = builder.GetInsertBlock()
-        ? builder.GetInsertBlock()->getParent()
-        : nullptr;
-    if (!func) return nullptr;
-
-    llvm::BasicBlock& entry = func->getEntryBlock();
-    llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
-    builder.SetInsertPoint(&entry, entry.getFirstInsertionPt());
-
-    llvm::AllocaInst* alloca = builder.CreateAlloca(ty, nullptr, name);
-
-    builder.restoreIP(saved);
-    return alloca;
-}
-
-} // anonymous namespace
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Null-Checked Call Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,16 +36,20 @@ void Ownership::emitNullCheckedCall(llvm::Value* arg,
                                      llvm::Function* fn,
                                      llvm::IRBuilder<>& builder,
                                      const llvm::Twine& prefix) {
+    // Precondition: the builder has an active insertion point. This is
+    // guaranteed by the call sites: `emitNullCheckedCall` is only called
+    // from `dropRefcounted`, `dropOwnedBuffer`, and `dropArena`, all of
+    // which run while emitting an aggregate's drop glue inside a live
+    // function body. Reaching it without an insertion point would be a
+    // caller bug, not a condition to handle here.
+    llvm::BasicBlock* cur = builder.GetInsertBlock();
+    assert(cur && "emitNullCheckedCall() called with no insertion point");
     llvm::Function* func = builder.GetInsertBlock()->getParent();
-    if (!func) return;
 
-    llvm::BasicBlock* callBlock =
-        llvm::BasicBlock::Create(builder.getContext(), prefix + ".call", func);
-    llvm::BasicBlock* skipBlock =
-        llvm::BasicBlock::Create(builder.getContext(), prefix + ".skip", func);
+    llvm::BasicBlock* callBlock = llvm::BasicBlock::Create(builder.getContext(), prefix + ".call", func);
+    llvm::BasicBlock* skipBlock = llvm::BasicBlock::Create(builder.getContext(), prefix + ".skip", func);
 
-    llvm::Value* isNull =
-        builder.CreateIsNull(arg, prefix + ".is_null");
+    llvm::Value* isNull = builder.CreateIsNull(arg, prefix + ".is_null");
     builder.CreateCondBr(isNull, skipBlock, callBlock);
 
     builder.SetInsertPoint(callBlock);
@@ -193,8 +167,23 @@ void Ownership::drop(TypeAST* type,
             return;
 
         case ResourceKind::Handle:
-            // Future<T>, Thread<T>. Sema guarantees the handle was
-            // consumed by await/join before scope exit.
+            // Future<T>, Thread<T>.
+            //
+            // The no-op is correct ONLY because Sema enforces a compile-time
+            // linearity invariant: a live Thread<T>/Future<T> reaching scope
+            // exit without being consumed by await/join is a compile error, so
+            // by the time this drop runs, the handle was already consumed and
+            // its box freed by the await/join site.
+            //
+            // If Sema's check is ever relaxed — a new language feature that
+            // permits a handle to escape, a bug in the linearity pass — this
+            // no-op silently leaks the handle's box. There is no runtime
+            // signal: the value is a raw pointer and the drop has no way to
+            // know whether it was consumed.
+            //
+            // The corresponding invariant on the Sema side is documented in
+            // the grammar under "Future<T> — Linear Value Rules" and
+            // "Thread<T>". Any change to that rule must revisit this case.
             return;
 
         case ResourceKind::Aggregate: {
@@ -353,10 +342,15 @@ Val Ownership::intoOwned(Val val, llvm::IRBuilder<>& builder) {
 
         case ResourceKind::Arena:
         case ResourceKind::Handle: {
-            Val result = val;
-            result.own = Own::Owned;
-            return result;
+            // Sema guarantees this branch is unreachable: an Arena or a
+            // Thread<T>/Future<T> handle is a linear value and cannot be copied,
+            // so `intoOwned` should never see a Borrowed one. If this fires,
+            // Sema let a copy through.
+            assert(false && "[BACKEND] intoOwned() called on a Borrowed Arena/Handle — "
+                            "Sema should have rejected this copy");
+            return val;   // best-effort: return the input unchanged
         }
+
     }
 
     return val;

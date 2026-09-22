@@ -663,6 +663,49 @@ inline llvm::ConstantPointerNull* getNullPtr(llvm::LLVMContext& ctx) {
 }
 
 // =============================================================================
+// ENTRY-BLOCK ALLOCA HELPER
+// =============================================================================
+
+/// @brief Create an alloca in the current function's entry block.
+///
+/// `IRBuilder::CreateAlloca` inserts at the current insertion point. If
+/// the current block is inside a loop, the alloca is inside the loop, and
+/// a fresh stack slot is allocated per iteration — a stack leak that
+/// scales with iteration count. This helper saves the insertion point,
+/// moves to the entry block (just after the last existing instruction),
+/// creates the alloca, and restores the insertion point.
+///
+/// Every emitter-side alloca goes through this helper. Two copies of it
+/// existed before — one on `Emitter`, one in `Ownership.cpp` — which is
+/// exactly the kind of duplication the codebase avoids elsewhere.
+///
+/// Returns null if there is no active insertion point (no current
+/// function to attach to). Callers should treat a null return as "cannot
+/// create the alloca here" and bail.
+inline llvm::AllocaInst* createEntryBlockAlloca(
+    llvm::IRBuilder<>& builder,
+    llvm::Type* ty,
+    const llvm::Twine& name)
+{
+    if (!ty) return nullptr;
+
+    llvm::BasicBlock* cur = builder.GetInsertBlock();
+    if (!cur) return nullptr;
+    llvm::Function* fn = cur->getParent();
+    if (!fn) return nullptr;
+
+    llvm::BasicBlock& entry = fn->getEntryBlock();
+
+    llvm::IRBuilderBase::InsertPoint saved = builder.saveIP();
+    builder.SetInsertPoint(&entry, entry.getFirstInsertionPt());
+
+    llvm::AllocaInst* alloca = builder.CreateAlloca(ty, nullptr, name);
+
+    builder.restoreIP(saved);
+    return alloca;
+}
+
+// =============================================================================
 // MEMORY ORDERING HELPERS
 // =============================================================================
 

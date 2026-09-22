@@ -40,6 +40,7 @@
 
 #include "Emitter.hpp"
 
+#include "codegen/LLVMTypeHelpers.hpp"
 #include "codegen/Program.hpp"
 #include "codegen/FunctionState.hpp"
 
@@ -115,35 +116,14 @@ void Emitter::emit(StmtAST* stmt) {
 // Requires an active `llvm::Function*` with at least one basic block (the
 // entry block). Both are guaranteed inside a function body or closure body.
 // Returns null if either is missing, so callers can bail gracefully.
+//
+// NOTE: The mechanism lives in LLVMTypeHelpers.hpp; this method exists 
+// so callers write createEntryAlloca(ty, name) without reaching for 
+// program.builder().
 
 llvm::AllocaInst* Emitter::createEntryAlloca(llvm::Type* ty,
                                               const llvm::Twine& name) {
-    if (!ty) return nullptr;
-
-    llvm::IRBuilder<>& b = program.builder();
-
-    llvm::BasicBlock* cur = b.GetInsertBlock();
-    if (!cur) return nullptr;
-    llvm::Function* fn = cur->getParent();
-    if (!fn) return nullptr;
-
-    llvm::BasicBlock& entry = fn->getEntryBlock();
-
-    // Save where we were. `InsertPointGuard` restores on scope exit, but
-    // we want the alloca to have a name, and the guard form doesn't play
-    // well with the extra local. Use saveIP/restoreIP explicitly.
-    llvm::IRBuilderBase::InsertPoint saved = b.saveIP();
-
-    // Move to the start of the entry block (after the last existing
-    // instruction), so multiple entry allocas don't reorder each other.
-    b.SetInsertPoint(&entry, entry.getFirstInsertionPt());
-
-    llvm::AllocaInst* alloca = b.CreateAlloca(ty, nullptr, name);
-
-    // Restore the insertion point.
-    b.restoreIP(saved);
-
-    return alloca;
+    return createEntryBlockAlloca(program.builder(), ty, name);
 }
 
 void Emitter::dropScopeAlive(Scope& scope) {
@@ -204,27 +184,9 @@ void Emitter::dropScopeAlive(Scope& scope) {
 // iterating `alive` skips everything already moved out. That's the whole
 // point of the two-set design.
 //
-// ─── `Scope::alive` Is an Unordered Set ───────────────────────────────────
-// `Scope::alive` is `std::unordered_set<ValueDeclAST*>`. Its iteration
-// order is unspecified. For most programs that's fine — bindings that
-// don't reference each other can drop in any order. But for correctness
-// we need a deterministic order that respects declaration nesting.
-//
-// The `FunctionState` doesn't currently track declaration order within a
-// scope. Two options:
-//
-//   1. Add a `std::vector<ValueDeclAST*> declarationOrder` to `Scope`,
-//      appended by `markAlive`, and iterate that in reverse.
-//
-//   2. Accept unordered drops and rely on Sema to reject programs where
-//      drop order matters (a `let` holding a reference into an earlier
-//      `let` in the same scope).
-//
-// Sema already rejects `&T` fields and `&T` returns, so intra-scope
-// reference chains are the only case where order matters, and they're
-// rare. For now, use option 2 (unordered) and note the limitation. A
-// future revision of `Scope` can add the ordered vector without changing
-// this function's call sites.
+// The order the drops run in is `Scope::declarationOrder`, iterated in
+// reverse by `dropScopeAlive` below. See `FunctionState.hpp` for the
+// per-scope declaration order vector.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // emitScopeFallthrough — shared helper

@@ -157,18 +157,6 @@ public:
     // the actual declaration.
     std::string_view symbolName(RuntimeFn fn) const;
 
-    // ─── Convenience ──────────────────────────────────────────────────────
-
-    /// @brief `__lucid_panic` is marked `noreturn` in the generated IR.
-    ///
-    /// The attribute is applied when the function is declared, so it holds
-    /// no matter which path first reaches it (`abi.Panic(...)` or this).
-    /// Codegen needs it so it can omit the fall-through block after a panic.
-    llvm::Function* panicFn();
-
-    /// @brief `__lucid_shutdown` is emitted at the end of `main`.
-    llvm::Function* shutdownFn();
-
 private:
     // ─── Internals ────────────────────────────────────────────────────────
 

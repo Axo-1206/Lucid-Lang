@@ -21,6 +21,18 @@
 /// ─── ABI Stability ──────────────────────────────────────────────────────────
 /// These functions form a stable ABI between the compiler and the runtime.
 /// Changing their signatures means changing their rows in functions.def.
+///
+/// ─── The `ShutdownConcurrency` Entry Point ────────────────────────────────
+/// `__lucid_shutdown_concurrency` is NOT called by codegen. It has no
+/// call site in any codegen pass — the trigger for shutting down the
+/// concurrency runtime is a host-level event (program exit, JIT session
+/// close), not a Lucid function returning. `generate()` has no idea
+/// whether it is building for a single AOT run or a hot-reload dev
+/// session, so it cannot decide when to emit the call.
+///
+/// The JIT runner calls this via `lookupSymbol` at close time. See
+/// `ConcurrencyRuntime.hpp`'s `shutdownConcurrency` for the process-wide,
+/// non-restartable semantics.
 
 #include "ConcurrencyRuntime.hpp"
 #include "runtime-abi/lucid_runtime.h"
@@ -208,18 +220,22 @@ void* __lucid_join(void* handle_slot) {
     return result;
 }
 
-// ─── Shutdown ──────────────────────────────────────────────────────────────
-
 /// @brief Shutdown the entire concurrency runtime.
 ///
-/// ─── Usage ──────────────────────────────────────────────────────────────────
-/// Emitted by CodeGen at the end of `main` (see Abi::shutdownFn). This
-/// ensures all threads are joined and all resources are cleaned up.
-///
-/// ─── Example ──────────────────────────────────────────────────────────────
-/// // At program exit:
-/// __lucid_shutdown()
-void __lucid_shutdown() {
+// `__lucid_shutdown_concurrency` is NOT emitted by CodeGen. It has no call site
+// in any codegen pass — the grammar's intent ("signals all threads to
+// stop, waits, cleans up pending handles") describes a final-teardown
+// operation that codegen has no way to trigger: `generate()` has no
+// idea whether it's building for a single AOT run or a hot-reload dev
+// session, and the trigger for a drain is a file-watcher event, not a
+// Lucid function returning.
+//
+// The JIT runner calls this at close time (via `lookupSymbol`), not
+// codegen. If a future design needs a per-reload drain, it belongs in
+// the runtime as a separate, non-destructive operation — see the
+// runtime's `EventLoop::flushPending` and the bounded-wait
+// `ThreadPool::waitAll` overload.
+void __lucid_shutdown_concurrency() {
     lucid::runtime::shutdownConcurrency();
 }
 
