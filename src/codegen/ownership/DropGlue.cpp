@@ -287,6 +287,21 @@ llvm::Function* generateCopyGlue(Ownership& ownership,
         //   - Arena/Handle: Sema forbids; no-op.
         Val src{srcVal, field->type, Own::Borrowed};
         Val copied = ownership.intoOwned(src, builder);
+        if (!copied.isValid()) {
+            // A field whose type is a linear value (Arena or Handle)
+            // reached copy glue. Sema rejects such struct declarations
+            // at the language level, so this is a Sema-regression
+            // signal. Bail out cleanly: terminate the partial function
+            // so the module remains well-formed, and return null so
+            // the caller treats the copy as failed.
+            assert(false && "intoOwned() failed on an Aggregate field — "
+                             "Sema should have rejected a linear-value "
+                             "struct field");
+            builder.CreateRet(
+                llvm::ConstantPointerNull::get(
+                    llvm::PointerType::get(llvmCtx, 0)));
+            return nullptr;
+        }
 
         // Store the copy.
         builder.CreateStore(copied.v, dstPtr);

@@ -483,18 +483,36 @@ void Emitter::emitSwitchStmt(SwitchStmtAST* stmt) {
                 continue;
             }
 
-            // Sema's type checker guarantees the case value's type matches
-            // the subject's type. The assert fires in debug builds if Sema
-            // ever lets a mismatched case through — that's the point: fail
-            // fast at the source of the bug, not at an `addCase` call two
-            // frames down.
+            // Coerce the case value to the subject's integer width.
             //
-            // The `llvm::SwitchInst::addCase` API also asserts this in debug
-            // builds, so an out-of-type `ConstantInt` is caught either way.
-            // We add our own assert for a clearer message.
-            assert(constVal->getType() == subjectVal->getType()
-                && "switch case value type differs from subject type — "
-                    "Sema should have rejected this");
+            // Sema *may* produce case values whose type already matches
+            // the subject's, in which case this is a no-op. But the
+            // emitter does not rely on it: `llvm::SwitchInst::addCase`
+            // asserts (in debug) that the case value's type matches the
+            // condition's type, and in release builds a mismatched case
+            // is undefined IR. Truncate or extend so the case is always
+            // valid, regardless of Sema's choice.
+            //
+            // The cast to `IntegerType*` selects the
+            // `ConstantInt::get(IntegerType*, uint64_t, bool)` overload,
+            // which returns `ConstantInt*`. Passing a plain `Type*`
+            // selects the `ConstantInt::get(Type*, APInt)` overload,
+            // which returns `Constant*` — a wider type that doesn't
+            // assign to `constVal`.
+            if (constVal->getType() != subjectVal->getType()) {
+                llvm::IntegerType* subjectTy =
+                    llvm::cast<llvm::IntegerType>(subjectVal->getType());
+                // `zextOrTrunc` returns APInt; `getZExtValue` narrows to uint64_t.
+                // The `get(IntegerType*, uint64_t, bool)` overload is the only one
+                // that returns ConstantInt*; the `get(Type*, const APInt&)` overload
+                // returns Constant* and won't assign.
+                uint64_t raw = constVal->getValue()
+                    .zextOrTrunc(subjectTy->getBitWidth())
+                    .getZExtValue();
+                constVal = llvm::ConstantInt::get(subjectTy, raw);
+            }
+
+            switchInst->addCase(constVal, caseBlocks[i]);
 
             switchInst->addCase(constVal, caseBlocks[i]);
         }
@@ -1004,7 +1022,14 @@ void Emitter::emitReturnStmt(ReturnStmtAST* stmt) {
         // The caller owns the returned value. If it was `Borrowed`, acquire
         // a fresh claim before unwinding. If it was `Owned`, this is a
         // no-op.
+        //
+        // The only case where `intoOwned` returns an invalid Val is the
+        // Arena/Handle branch, which is a Sema-level linearity violation.
+        // Bail before unwinding rather than emit a `ret` with a null
+        // value — the diagnostic (if any) was emitted inside intoOwned's
+        // assert path, and the function has no valid return value to emit.
         returnVal = program.ownership().intoOwned(returnVal, b);
+        if (!returnVal.isValid()) return;
     }
 
     // ─── Step 4: Unwind all scopes to depth 0 ─────────────────────────────

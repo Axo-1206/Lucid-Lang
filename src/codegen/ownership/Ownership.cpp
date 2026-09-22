@@ -318,14 +318,38 @@ Val Ownership::intoOwned(Val val, llvm::IRBuilder<>& builder) {
         case ResourceKind::Aggregate: {
             llvm::Function* glue = copyGlueFor(val.ty);
             if (!glue) {
-                Val result = val;
-                result.own = Own::Owned;
-                return result;
+                // Copy glue could not be generated for this aggregate
+                // type. This is either a tagged slot whose inner type
+                // owns a resource (not yet supported by the glue
+                // generator), a fixed array of resource-bearing
+                // elements (also unsupported), or a genuine generation
+                // failure.
+                //
+                // Returning a Val with a flipped ownership tag would
+                // produce two "Owned" bindings to the same storage.
+                // Return an invalid Val instead; the caller is
+                // expected to check and bail.
+                //
+                // TODO: implement glue for tagged slots and fixed
+                // arrays of resources. Until then, `??` on a Borrowed
+                // value of one of those types will fail rather than
+                // silently corrupt.
+                assert(false && "copy glue not available for an "
+                                 "aggregate type that requires one — "
+                                 "see DropGlue.cpp's getAggregateInfo");
+                return Val{};
             }
 
             llvm::AllocaInst* srcSlot = createEntryBlockAlloca(
                 builder, val.v->getType(), "copy_src");
-            if (!srcSlot) return val;
+            if (!srcSlot) {
+                // Stack allocation failed. This is an internal
+                // compiler error (no insertion point); returning an
+                // invalid Val is the correct signal.
+                assert(false && "createEntryBlockAlloca failed in "
+                                 "intoOwned's Aggregate branch");
+                return Val{};
+            }
             builder.CreateStore(val.v, srcSlot);
 
             llvm::Value* dstSlot =
@@ -343,14 +367,27 @@ Val Ownership::intoOwned(Val val, llvm::IRBuilder<>& builder) {
         case ResourceKind::Arena:
         case ResourceKind::Handle: {
             // Sema guarantees this branch is unreachable: an Arena or a
-            // Thread<T>/Future<T> handle is a linear value and cannot be copied,
-            // so `intoOwned` should never see a Borrowed one. If this fires,
-            // Sema let a copy through.
-            assert(false && "[BACKEND] intoOwned() called on a Borrowed Arena/Handle — "
-                            "Sema should have rejected this copy");
-            return val;   // best-effort: return the input unchanged
+            // Thread<T>/Future<T> handle is a linear value and cannot be
+            // copied, so `intoOwned` should never see a Borrowed one. If
+            // it does, Sema's linearity check let a copy through.
+            //
+            // Returning a Val with a flipped ownership tag would produce
+            // two "Owned" bindings to the same storage — a double-free
+            // for Arena (both `dropArena` calls free `base`), a
+            // double-consume race for Handle (two `await`/`join` sites
+            // race for the same box). Return an invalid Val instead;
+            // every caller is expected to check `isValid()` and bail
+            // before doing anything with the result.
+            //
+            // Returning the input unchanged (still `Borrowed`) would be
+            // marginally better than flipping the tag — the caller sees
+            // "I couldn't acquire a claim" — but the caller would still
+            // store a value it doesn't own. An invalid Val forces the
+            // caller's check to fire, which is the correct contract.
+            assert(false && "intoOwned() called on a Borrowed Arena/Handle — "
+                             "Sema should have rejected this copy");
+            return Val{};
         }
-
     }
 
     return val;

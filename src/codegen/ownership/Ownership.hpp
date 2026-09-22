@@ -158,11 +158,18 @@ public:
     //   OwnedBuffer  — deep-copy the buffer; return the new buffer with Owned.
     //   Aggregate    — call `__copy_<type>`; return the result with Owned.
     //   None         — bit copy; return with Owned.
-    //   Arena        — reject (Sema guarantees no copies).
-    //   Handle       — reject (Sema guarantees only await/join consumes).
+    //   Arena        — unreachable (Sema guarantees linearity); if
+    //                  reached, returns an invalid Val.
+    //   Handle       — unreachable (Sema guarantees linearity); if
+    //                  reached, returns an invalid Val.
     //
     // Called by `Emitter::store` before every store, and by every
     // argument-passing site for a `cls`-shaped parameter.
+    //
+    // When the return value is invalid, the caller must check
+    // `isValid()` and bail before using it. The `Arena` and `Handle`
+    // cases are the only ones that can return an invalid Val on the
+    // success path; every other case returns a valid result.
     Val intoOwned(Val val, llvm::IRBuilder<>& builder);
 
     // ─── Release ──────────────────────────────────────────────────────────

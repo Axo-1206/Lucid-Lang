@@ -151,8 +151,19 @@ EventLoop& EventLoop::getInstance() {
 }
 
 void EventLoop::schedule(FutureHandle* handle) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_tasks.push(handle);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_running.load(std::memory_order_acquire)) {
+            // The loop was shut down. Mark the future as errored so the
+            // caller's await sees "no result" and returns null, then
+            // drop the scheduler's reference. The caller's reference
+            // (if any) is still valid; it can await and clean up.
+            handle->setError();
+            FutureHandle::release(handle);
+            return;
+        }
+        m_tasks.push(handle);
+    }
 }
 
 void EventLoop::runUntilEmpty() {
@@ -262,6 +273,11 @@ ThreadPool& ThreadPool::getInstance() {
 void ThreadPool::submit(ThreadHandle* handle) {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_stop.load(std::memory_order_acquire)) {
+            handle->setError();
+            ThreadHandle::release(handle);
+            return;
+        }
         m_tasks.push(handle);
     }
     m_cv.notify_one();

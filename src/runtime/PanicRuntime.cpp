@@ -44,36 +44,61 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+
+#if defined(_WIN32)
+#  include <io.h>
+#  include <process.h>
+#  define WRITE_FD(fd, buf, len) _write(fd, buf, static_cast<unsigned>(len))
+#  define STDERR_FD 2
+#  define EXIT_NOW() _exit(1)
+#else
+#  include <unistd.h>
+#  define WRITE_FD(fd, buf, len) write(fd, buf, len)
+#  define STDERR_FD STDERR_FILENO
+#  define EXIT_NOW() _exit(1)
+#endif
 
 namespace lucid::runtime {
 
+namespace {
+
+/// Async-signal-safe write of a NUL-terminated string to stderr.
+///
+/// Uses `write(2)` (or `_write` on Windows), which is on POSIX's
+/// async-signal-safe list. Does not allocate, does not take stdio locks,
+/// does not use iostream. Safe to call from:
+///
+///   - A panicking thread, even if another thread holds the stderr lock.
+///   - A signal handler (SIGSEGV for stack overflow, SIGABRT, ...).
+///   - Multiple threads simultaneously; the kernel serializes writes at
+///     the file-descriptor level per-call, so output is at worst
+///     interleaved at byte boundaries, never lost or truncated.
+///
+/// The message is written in two calls (prefix, then message) rather than
+/// one, so no buffer is needed. On a POSIX pipe, writes under PIPE_BUF
+/// are atomic; interleaving between threads is bounded by that.
+void asyncSafeWriteStderr(const char* s) {
+    if (!s) return;
+    const size_t len = std::strlen(s);
+    if (len == 0) return;
+    // Best-effort: ignore the return value. If the write fails (stderr
+    // closed, disk full), there is nothing useful to do at panic time.
+    (void)WRITE_FD(STDERR_FD, s, len);
+}
+
+} // anonymous namespace
+
 void panic(const char* message) {
-    if (message) {
-        std::fprintf(stderr, "\npanic: %s\n", message);
-    } else {
-        std::fprintf(stderr, "\npanic: unknown error\n");
-    }
-    std::fflush(stderr);
-    // For now, abort the program
-    // In a full implementation, this would unwind or return to the interpreter
-    std::abort();
+    asyncSafeWriteStderr("\npanic: ");
+    asyncSafeWriteStderr(message ? message : "unknown error");
+    asyncSafeWriteStderr("\n");
+
+    // Terminate immediately. `_exit` does not run atexit handlers,
+    // flush stdio, or invoke other finalizers — which is correct for a
+    // panic: the program is in an unknown state and should not attempt
+    // cleanup. See PanicRuntime.hpp's file header for the reasoning.
+    EXIT_NOW();
 }
 
 } // namespace lucid::runtime
-
-extern "C" {
-
-/// @brief Panic with a message.
-/// @param message NUL-terminated `const char*`, passed as `void*` because the
-///                row's tag is `Ptr`. Format: "file:line:column: description"
-///
-/// ─── Example ──────────────────────────────────────────────────────────────────
-///   __lucid_panic("main.luc:42:10: division by zero");
-///
-///   Output:
-///   panic: main.luc:42:10: division by zero
-void __lucid_panic(void* message) {
-    lucid::runtime::panic(static_cast<const char*>(message));
-}
-
-} // extern "C"

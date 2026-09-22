@@ -222,10 +222,18 @@ private:
     size_t m_numWorkers;
 };
 
-/// @brief Shutdown the entire concurrency runtime.
+/// @brief Shut down the concurrency runtime.
 ///
-/// This must be called before program exit to ensure all threads are joined
-/// and all resources are cleaned up. Called automatically from __lucid_shutdown_concurrency.
+/// Joins all thread-pool workers and drains any pending event-loop tasks.
+/// **Process-wide and non-restartable.** After this call, `spawn` and
+/// `async` cannot be used again in this process — the thread pool has no
+/// workers and the event loop is stopped.
+///
+/// Not called by codegen. The JIT runner calls it via `lookupSymbol` at
+/// close time (see `__lucid_shutdown_concurrency` in
+/// `ConcurrencyEntry.cpp`). Callers must not invoke it more than once,
+/// and must not call it from a program that will use `spawn`/`async`
+/// afterward.
 void shutdownConcurrency();
 
 } // namespace lucid::runtime
