@@ -1,31 +1,33 @@
 /**
  * @file core/ASTStrings.hpp
- * @brief String conversion helpers for AST enums and tokens.
- * 
+ * @brief String conversion helpers for AST enums and nodes.
+ *
  * These utilities convert AST enum values (kinds, operators, primitive types,
- * token types, etc.) to human-readable strings. Used throughout the compiler
+ * etc.) and AST nodes to human-readable strings. Used throughout the compiler
  * for debug output, serialization, and diagnostics.
- * 
+ *
  * All functions are inline and header-only for easy inclusion without
  * creating unnecessary compilation dependencies.
+ *
+ * ─── No LLVM Dependency ─────────────────────────────────────────────────
+ * This file lives in core/ and must not depend on LLVM. Token string
+ * conversion lives in `core/Tokens.hpp` next to `token_type_name`. LLVM
+ * type stringification, if needed, lives in the codegen layer.
  */
 
 #pragma once
 
+#include "ast/StmtAST.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/memory/StringPool.hpp"
 
-#include <llvm/IR/Type.h>
-#include <llvm/IR/Value.h>
-#include <llvm/Support/raw_ostream.h>
 #include <string>
 #include <cstdint>
 
 // ─── ASTKind to String ─────────────────────────────────────────────────────
 
-/// @brief Convert an ASTKind to a human-readable string.
 inline std::string astKindToString(ASTKind kind) {
     switch (kind) {
         // Unknown
@@ -39,6 +41,16 @@ inline std::string astKindToString(ASTKind kind) {
         case ASTKind::ValueDecl:        return "ValueDecl";
         case ASTKind::TypeDecl:         return "TypeDecl";
 
+        // Type nodes
+        case ASTKind::PrimitiveType:    return "PrimitiveType";
+        case ASTKind::NamedType:        return "NamedType";
+        case ASTKind::ArrayType:        return "ArrayType";
+        case ASTKind::NullableType:     return "NullableType";
+        case ASTKind::FallibleType:     return "FallibleType";
+        case ASTKind::CombinedType:     return "CombinedType";
+        case ASTKind::RefType:          return "RefType";
+        case ASTKind::FuncType:         return "FuncType";
+
         // Declarations
         case ASTKind::ImportDecl:       return "ImportDecl";
         case ASTKind::VarDecl:          return "VarDecl";
@@ -51,25 +63,12 @@ inline std::string astKindToString(ASTKind kind) {
         case ASTKind::EnumDecl:         return "EnumDecl";
         case ASTKind::TraitFieldDecl:   return "TraitFieldDecl";
         case ASTKind::TraitDecl:        return "TraitDecl";
-
-        // Statements
-        case ASTKind::BlockStmt:        return "BlockStmt";
-        case ASTKind::ExprStmt:         return "ExprStmt";
-        case ASTKind::DeclStmt:         return "DeclStmt";
-        case ASTKind::IfStmt:           return "IfStmt";
-        case ASTKind::SwitchStmt:       return "SwitchStmt";
-        case ASTKind::SwitchCase:       return "SwitchCase";
-        case ASTKind::ForStmt:          return "ForStmt";
-        case ASTKind::WhileStmt:        return "WhileStmt";
-        case ASTKind::DoWhileStmt:      return "DoWhileStmt";
-        case ASTKind::ReturnStmt:       return "ReturnStmt";
-        case ASTKind::BreakStmt:        return "BreakStmt";
-        case ASTKind::ContinueStmt:     return "ContinueStmt";
-        case ASTKind::FuncRefStmt:      return "FuncRefStmt";
-        case ASTKind::AsyncStmt:        return "AsyncStmt";
-        case ASTKind::AwaitStmt:        return "AwaitStmt";
-        case ASTKind::SpawnStmt:        return "SpawnStmt";
-        case ASTKind::JoinStmt:         return "JoinStmt";
+        case ASTKind::TraitRequireDecl: return "TraitRequireDecl";
+        case ASTKind::SatisfyDecl:      return "SatisfyDecl";
+        case ASTKind::DefDecl:          return "DefDecl";
+        case ASTKind::HostTypeDecl:     return "HostTypeDecl";
+        case ASTKind::TypeAliasDecl:    return "TypeAliasDecl";
+        case ASTKind::StaticFnDecl:     return "StaticFnDecl";
 
         // Expressions
         case ASTKind::LiteralExpr:         return "LiteralExpr";
@@ -80,40 +79,43 @@ inline std::string astKindToString(ASTKind kind) {
         case ASTKind::BinaryExpr:          return "BinaryExpr";
         case ASTKind::UnaryExpr:           return "UnaryExpr";
         case ASTKind::CallExpr:            return "CallExpr";
-        case ASTKind::IntrinsicCallExpr:   return "IntrinsicCallExpr";
         case ASTKind::IndexExpr:           return "IndexExpr";
         case ASTKind::SliceExpr:           return "SliceExpr";
         case ASTKind::FieldAccessExpr:     return "FieldAccessExpr";
         case ASTKind::ModuleAccessExpr:    return "ModuleAccessExpr";
-        case ASTKind::ArenaAccessExpr:     return "ArenaAccessExpr";
         case ASTKind::AssignExpr:          return "AssignExpr";
-        case ASTKind::NullableChainExpr:   return "NullableChainExpr";
         case ASTKind::NullCoalesceExpr:    return "NullCoalesceExpr";
         case ASTKind::PipelineExpr:        return "PipelineExpr";
         case ASTKind::PipelineStep:        return "PipelineStep";
         case ASTKind::AnonFuncExpr:        return "AnonFuncExpr";
         case ASTKind::IfExpr:              return "IfExpr";
         case ASTKind::RangeExpr:           return "RangeExpr";
+        case ASTKind::CaseValue:           return "CaseValue";
 
-        // Types
-        case ASTKind::PrimitiveType:     return "PrimitiveType";
-        case ASTKind::NamedType:         return "NamedType";
-        case ASTKind::ModuleTypeAccess:  return "ModuleTypeAccess";
-        case ASTKind::ArrayType:         return "ArrayType";
-        case ASTKind::NullableType:      return "NullableType";
-        case ASTKind::FallibleType:      return "FallibleType";
-        case ASTKind::CombinedType:      return "CombinedType";
-        case ASTKind::RefType:           return "RefType";
-        case ASTKind::PtrType:           return "PtrType";
-        case ASTKind::FuncType:          return "FuncType";
-        case ASTKind::FutureType:        return "FutureType";
-        case ASTKind::ThreadType:        return "ThreadType";
+        // Concurrency
+        case ASTKind::AwaitStmt:           return "AwaitStmt";
+        case ASTKind::SpawnStmt:           return "SpawnStmt";
+        case ASTKind::StartStmt:           return "StartStmt";
+
+        // Statements
+        case ASTKind::BlockStmt:           return "BlockStmt";
+        case ASTKind::ExprStmt:            return "ExprStmt";
+        case ASTKind::DeclStmt:            return "DeclStmt";
+        case ASTKind::IfStmt:              return "IfStmt";
+        case ASTKind::SwitchStmt:          return "SwitchStmt";
+        case ASTKind::SwitchCase:          return "SwitchCase";
+        case ASTKind::ForStmt:             return "ForStmt";
+        case ASTKind::WhileStmt:           return "WhileStmt";
+        case ASTKind::DoWhileStmt:         return "DoWhileStmt";
+        case ASTKind::ReturnStmt:          return "ReturnStmt";
+        case ASTKind::BreakStmt:           return "BreakStmt";
+        case ASTKind::ContinueStmt:        return "ContinueStmt";
 
         // Root
-        case ASTKind::Program:           return "Program";
+        case ASTKind::Program:             return "Program";
 
         // Compiler directives
-        case ASTKind::Attribute:         return "Attribute";
+        case ASTKind::Attribute:           return "Attribute";
 
         default: return "Unknown(" + std::to_string(static_cast<int>(kind)) + ")";
     }
@@ -121,7 +123,6 @@ inline std::string astKindToString(ASTKind kind) {
 
 // ─── LiteralKind to String ─────────────────────────────────────────────────
 
-/// @brief Convert a LiteralKind to a human-readable string.
 inline std::string literalKindToString(LiteralKind kind) {
     switch (kind) {
         case LiteralKind::Int:       return "Int";
@@ -139,37 +140,35 @@ inline std::string literalKindToString(LiteralKind kind) {
     }
 }
 
-// ─── BinaryOp to String ─────────────────────────────────────────────────────
+// ─── BinaryOp to String ────────────────────────────────────────────────────
 
-/// @brief Convert a BinaryOp to a human-readable string.
 inline std::string binaryOpToString(BinaryOp op) {
     switch (op) {
-        case BinaryOp::Add:     return "+";
-        case BinaryOp::Sub:     return "-";
-        case BinaryOp::Mul:     return "*";
-        case BinaryOp::Div:     return "/";
-        case BinaryOp::Pow:     return "**";
-        case BinaryOp::Mod:     return "%";
-        case BinaryOp::Eq:      return "==";
-        case BinaryOp::Ne:      return "!=";
-        case BinaryOp::Lt:      return "<";
-        case BinaryOp::Gt:      return ">";
-        case BinaryOp::Le:      return "<=";
-        case BinaryOp::Ge:      return ">=";
-        case BinaryOp::And:     return "and";
-        case BinaryOp::Or:      return "or";
-        case BinaryOp::BitAnd:  return "&";
-        case BinaryOp::BitOr:   return "|";
-        case BinaryOp::BitXor:  return "^";
-        case BinaryOp::Shl:     return "<<";
-        case BinaryOp::Shr:     return ">>";
+        case BinaryOp::Add:    return "+";
+        case BinaryOp::Sub:    return "-";
+        case BinaryOp::Mul:    return "*";
+        case BinaryOp::Div:    return "/";
+        case BinaryOp::Pow:    return "**";
+        case BinaryOp::Mod:    return "%";
+        case BinaryOp::Eq:     return "==";
+        case BinaryOp::Ne:     return "!=";
+        case BinaryOp::Lt:     return "<";
+        case BinaryOp::Gt:     return ">";
+        case BinaryOp::Le:     return "<=";
+        case BinaryOp::Ge:     return ">=";
+        case BinaryOp::And:    return "and";
+        case BinaryOp::Or:     return "or";
+        case BinaryOp::BitAnd: return "&";
+        case BinaryOp::BitOr:  return "|";
+        case BinaryOp::BitXor: return "^";
+        case BinaryOp::Shl:    return "<<";
+        case BinaryOp::Shr:    return ">>";
         default: return "Unknown";
     }
 }
 
 // ─── UnaryOp to String ─────────────────────────────────────────────────────
 
-/// @brief Convert a UnaryOp to a human-readable string.
 inline std::string unaryOpToString(UnaryOp op) {
     switch (op) {
         case UnaryOp::Neg:    return "-";
@@ -181,7 +180,6 @@ inline std::string unaryOpToString(UnaryOp op) {
 
 // ─── AssignOp to String ────────────────────────────────────────────────────
 
-/// @brief Convert an AssignOp to a human-readable string.
 inline std::string assignOpToString(AssignOp op) {
     switch (op) {
         case AssignOp::Assign:       return "=";
@@ -200,9 +198,8 @@ inline std::string assignOpToString(AssignOp op) {
     }
 }
 
-// ─── PrimitiveKind to String ──────────────────────────────────────────────
+// ─── PrimitiveKind to String ───────────────────────────────────────────────
 
-/// @brief Convert a PrimitiveKind to a human-readable string.
 inline std::string primitiveKindToString(PrimitiveKind kind) {
     switch (kind) {
         case PrimitiveKind::Bool:    return "bool";
@@ -231,9 +228,8 @@ inline std::string primitiveKindToString(PrimitiveKind kind) {
     }
 }
 
-// ─── ArrayKind to String ──────────────────────────────────────────────────
+// ─── ArrayKind to String ───────────────────────────────────────────────────
 
-/// @brief Convert an ArrayKind to a human-readable string.
 inline std::string arrayKindToString(ArrayKind kind) {
     switch (kind) {
         case ArrayKind::Slice:   return "Slice";
@@ -245,7 +241,6 @@ inline std::string arrayKindToString(ArrayKind kind) {
 
 // ─── DeclKeyword to String ─────────────────────────────────────────────────
 
-/// @brief Convert a DeclKeyword to a human-readable string.
 inline std::string declKeywordToString(DeclKeyword keyword) {
     switch (keyword) {
         case DeclKeyword::Let:   return "let";
@@ -256,7 +251,6 @@ inline std::string declKeywordToString(DeclKeyword keyword) {
 
 // ─── ValueState to String ──────────────────────────────────────────────────
 
-/// @brief Convert a ValueState to a human-readable string.
 inline std::string valueStateToString(ValueState state) {
     switch (state) {
         case ValueState::None:     return "None";
@@ -268,179 +262,52 @@ inline std::string valueStateToString(ValueState state) {
     }
 }
 
-// ─── TokenType to String ───────────────────────────────────────────────────
+// ─── FuncShape to String ───────────────────────────────────────────────────
 
-/// @brief Convert a TokenType to a human-readable string.
-inline std::string tokenTypeToString(TokenType type) {
-    switch (type) {
-        case TokenType::EOF_TOKEN:      return "EOF";
-        case TokenType::IDENTIFIER:     return "IDENTIFIER";
-        case TokenType::INT_LITERAL:    return "INT_LITERAL";
-        case TokenType::FLOAT_LITERAL:  return "FLOAT_LITERAL";
-        case TokenType::STRING_LITERAL: return "STRING_LITERAL";
-        case TokenType::RAW_STRING_LITERAL: return "RAW_STRING_LITERAL";
-        case TokenType::CHAR_LITERAL:   return "CHAR_LITERAL";
-        case TokenType::HEX_LITERAL:    return "HEX_LITERAL";
-        case TokenType::BINARY_LITERAL: return "BINARY_LITERAL";
-        case TokenType::TRUE:           return "TRUE";
-        case TokenType::FALSE:          return "FALSE";
-        case TokenType::NIL:            return "NIL";
-        case TokenType::ERR:            return "ERR";
-        case TokenType::UNDERSCORE:     return "_";
-        
-        // Keywords
-        case TokenType::IMPORT:         return "import";
-        case TokenType::AS:             return "as";
-        case TokenType::STRUCT:         return "struct";
-        case TokenType::ENUM:           return "enum";
-        case TokenType::TRAIT:          return "trait";
-        case TokenType::LET:            return "let";
-        case TokenType::CONST:          return "const";
-        case TokenType::IF:             return "if";
-        case TokenType::ELSE:           return "else";
-        case TokenType::SWITCH:         return "switch";
-        case TokenType::CASE:           return "case";
-        case TokenType::DEFAULT:        return "default";
-        case TokenType::WHILE:          return "while";
-        case TokenType::FOR:            return "for";
-        case TokenType::IN:             return "in";
-        case TokenType::DO:             return "do";
-        case TokenType::RETURN:         return "return";
-        case TokenType::BREAK:          return "break";
-        case TokenType::CONTINUE:       return "continue";
-        case TokenType::SPAWN:          return "spawn";
-        case TokenType::JOIN:           return "join";
-        case TokenType::ASYNC:          return "async";
-        case TokenType::AWAIT:          return "await";
-        case TokenType::AND:            return "and";
-        case TokenType::OR:             return "or";
-        case TokenType::NOT:            return "not";
-        
-        // Types
-        case TokenType::TYPE_BOOL:      return "bool";
-        case TokenType::TYPE_INT8:      return "int8";
-        case TokenType::TYPE_INT16:     return "int16";
-        case TokenType::TYPE_INT32:     return "int32";
-        case TokenType::TYPE_INT64:     return "int64";
-        case TokenType::TYPE_UINT8:     return "uint8";
-        case TokenType::TYPE_UINT16:    return "uint16";
-        case TokenType::TYPE_UINT32:    return "uint32";
-        case TokenType::TYPE_UINT64:    return "uint64";
-        case TokenType::TYPE_BYTE:      return "byte";
-        case TokenType::TYPE_SHORT:     return "short";
-        case TokenType::TYPE_INT:       return "int";
-        case TokenType::TYPE_LONG:      return "long";
-        case TokenType::TYPE_UBYTE:     return "ubyte";
-        case TokenType::TYPE_USHORT:    return "ushort";
-        case TokenType::TYPE_UINT:      return "uint";
-        case TokenType::TYPE_ULONG:     return "ulong";
-        case TokenType::TYPE_FLOAT:     return "float";
-        case TokenType::TYPE_DOUBLE:    return "double";
-        case TokenType::TYPE_DECIMAL:   return "decimal";
-        case TokenType::TYPE_STRING:    return "string";
-        case TokenType::TYPE_CHAR:      return "char";
-        case TokenType::TYPE_FUTURE:    return "Future";
-        
-        // Operators
-        case TokenType::PLUS:           return "+";
-        case TokenType::MINUS:          return "-";
-        case TokenType::MUL:            return "*";
-        case TokenType::DIV:            return "/";
-        case TokenType::MOD:            return "%";
-        case TokenType::POW:            return "**";
-        case TokenType::BIT_AND:        return "&";
-        case TokenType::BIT_OR:         return "|";
-        case TokenType::BIT_XOR:        return "^";
-        case TokenType::BIT_NOT:        return "~";
-        case TokenType::SHL:            return "<<";
-        case TokenType::SHR:            return ">>";
-        case TokenType::EQUAL_EQUAL:    return "==";
-        case TokenType::NOT_EQUAL:      return "!=";
-        case TokenType::LESS:           return "<";
-        case TokenType::LESS_EQUAL:     return "<=";
-        case TokenType::GREATER:        return ">";
-        case TokenType::GREATER_EQUAL:  return ">=";
-        case TokenType::ASSIGN:         return "=";
-        case TokenType::PLUS_ASSIGN:    return "+=";
-        case TokenType::MINUS_ASSIGN:   return "-=";
-        case TokenType::MUL_ASSIGN:     return "*=";
-        case TokenType::DIV_ASSIGN:     return "/=";
-        case TokenType::MOD_ASSIGN:     return "%=";
-        case TokenType::POW_ASSIGN:     return "**=";
-        case TokenType::BIT_AND_ASSIGN: return "&=";
-        case TokenType::BIT_OR_ASSIGN:  return "|=";
-        case TokenType::BIT_XOR_ASSIGN: return "^=";
-        case TokenType::SHL_ASSIGN:     return "<<=";
-        case TokenType::SHR_ASSIGN:     return ">>=";
-        case TokenType::ARROW:          return "->";
-        case TokenType::PIPELINE:       return "|>";
-        case TokenType::RANGE:          return "..";
-        case TokenType::RANGE_EXCLUSIVE:return "..<";
-        case TokenType::BANG:           return "!";
-        case TokenType::QUESTION:       return "?";
-        case TokenType::QUESTION_DOT:   return "?.";
-        case TokenType::QUESTION_QUESTION: return "??";
-        case TokenType::VARIADIC:       return "...";
-        case TokenType::DOT:            return ".";
-        case TokenType::COLON:          return ":";
-        case TokenType::COMMA:          return ",";
-        case TokenType::SEMICOLON:      return ";";
-        case TokenType::LPAREN:         return "(";
-        case TokenType::RPAREN:         return ")";
-        case TokenType::LBRACE:         return "{";
-        case TokenType::RBRACE:         return "}";
-        case TokenType::LBRACKET:       return "[";
-        case TokenType::RBRACKET:       return "]";
-        case TokenType::AT_SIGN:        return "@";
-        case TokenType::HASH:           return "#";
-        case TokenType::AMPERSAND:      return "&";
-        case TokenType::ARRAY_STAR:     return "[*]";
-        case TokenType::ARRAY_UNDER:    return "[_]";
-        case TokenType::DOC_COMMENT:    return "/-- ... --/";
-        case TokenType::LINE_COMMENT:   return "-- ...";
-        case TokenType::UNKNOWN:        return "UNKNOWN";
-        default: return "Token(" + std::to_string(static_cast<int>(type)) + ")";
+inline std::string funcShapeToString(FuncShape shape) {
+    switch (shape) {
+        case FuncShape::Fn:  return "fn";
+        case FuncShape::Cls: return "cls";
+        default: return "Unknown";
     }
 }
 
-// ─── Token to String ──────────────────────────────────────────────────────
+// ─── AwaitKind to String ───────────────────────────────────────────────────
 
-/// @brief Convert a Token to a human-readable string.
-inline std::string tokenToString(const Token& token) {
-    std::string result = tokenTypeToString(token.type);
-    if (!token.value.empty()) {
-        result += "('" + token.value + "')";
+inline std::string awaitKindToString(AwaitKind kind) {
+    switch (kind) {
+        case AwaitKind::Single: return "Single";
+        case AwaitKind::All:    return "All";
+        case AwaitKind::Any:    return "Any";
+        default: return "Unknown";
     }
-    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type to String - Full Type Signature
+// Type to String — full type signature
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Convert a TypeAST to a human-readable string representation.
- * 
- * Supports full type signatures including:
- *   - Primitive types: int, float, string, etc.
- *   - Named types: Vec2, Buffer<int>, etc.
- *   - Array types: [*]int, [_]float, [4]Vec2
- *   - Nullable/Fallible/Combined: T?, T!, T?!
- *   - Reference: &T
- *   - Pointer: *T (shown as ptr<T>)
- *   - Function types: (int, string) -> bool
- *   - Struct and enum types with their fields
+ *
+ * Supports:
+ *   - Primitive types: `int`, `float`, `string`, ...
+ *   - Named types: `Vec2`, `Buffer<int>`, `Map<string, Vec2>`
+ *   - Array types: `[*]int`, `[_]float`, `[4]Vec2`
+ *   - Nullable / Fallible / Combined: `T?`, `T!`, `T?!`
+ *   - Reference: `&T`
+ *   - Function types: `fn (int, string) -> bool`, `cls (a) -> cls (b) -> int`
  */
 inline std::string typeToString(TypeAST* type, StringPool& pool) {
     if (!type) return "<null>";
 
-    // ─── PrimitiveType ──────────────────────────────────────────────────────
+    // ─── PrimitiveType ─────────────────────────────────────────────────────
     if (type->isa<PrimitiveTypeAST>()) {
         auto* prim = type->as<PrimitiveTypeAST>();
         return primitiveKindToString(prim->primitiveKind);
     }
 
-    // ─── NamedType ──────────────────────────────────────────────────────────
+    // ─── NamedType ─────────────────────────────────────────────────────────
     if (type->isa<NamedTypeAST>()) {
         auto* named = type->as<NamedTypeAST>();
         std::string result = std::string(pool.lookup(named->name));
@@ -455,7 +322,7 @@ inline std::string typeToString(TypeAST* type, StringPool& pool) {
         return result;
     }
 
-    // ─── ArrayType ──────────────────────────────────────────────────────────
+    // ─── ArrayType ─────────────────────────────────────────────────────────
     if (type->isa<ArrayTypeAST>()) {
         auto* arr = type->as<ArrayTypeAST>();
         std::string result = "[";
@@ -489,34 +356,26 @@ inline std::string typeToString(TypeAST* type, StringPool& pool) {
         return typeToString(combined->inner, pool) + "?!";
     }
 
-    // ─── RefType ────────────────────────────────────────────────────────────
+    // ─── RefType ───────────────────────────────────────────────────────────
     if (type->isa<RefTypeAST>()) {
         auto* ref = type->as<RefTypeAST>();
         return "&" + typeToString(ref->inner, pool);
     }
 
-    // ─── PtrType ────────────────────────────────────────────────────────────
-    if (type->isa<PtrTypeAST>()) {
-        auto* ptr = type->as<PtrTypeAST>();
-        return "*" + typeToString(ptr->inner, pool);
-    }
-
-    // ─── FuncType ───────────────────────────────────────────────────────────
+    // ─── FuncType ──────────────────────────────────────────────────────────
     if (type->isa<FuncTypeAST>()) {
         auto* func = type->as<FuncTypeAST>();
-        std::string result = "(";
-        
-        // Parameters
+        std::string result = funcShapeToString(func->shape) + " (";
         for (size_t i = 0; i < func->params.size(); ++i) {
             if (i > 0) result += ", ";
             ParamAST* param = func->params[i];
-            if (param->isVariadic) result += "...";
-            if (param->isConst()) result += "const ";
+            if (param->isConstParam) result += "const ";
+            result += std::string(pool.lookup(param->name)) + " ";
             result += typeToString(param->type, pool);
+            if (param->isVariadic) result += "...";
         }
         result += ")";
-        
-        // Add "->" when a return type is present
+
         if (func->returnType) {
             result += " -> ";
             result += typeToString(func->returnType, pool);
@@ -524,63 +383,22 @@ inline std::string typeToString(TypeAST* type, StringPool& pool) {
         return result;
     }
 
-    // ─── Unknown ────────────────────────────────────────────────────────────
+    // ─── Unknown ───────────────────────────────────────────────────────────
     return astKindToString(type->kind);
 }
 
-// ─── LLVM Type to String ───────────────────────────────────────────────────
-
-/// @brief Convert an LLVM type to a human-readable string.
-/// @param type The LLVM type.
-/// @return A human-readable string representation of the LLVM type.
-inline std::string llvmTypeToString(const llvm::Type* type) {
-    if (!type) return "<null>";
-    
-    std::string result;
-    llvm::raw_string_ostream os(result);
-    type->print(os);
-    os.flush();
-    return result;
-}
-
-/// @brief Convert an LLVM type to a human-readable string (with pool).
-inline std::string llvmTypeToString(const llvm::Type* type, StringPool& pool) {
-    // The pool is unused but kept for API consistency
-    (void)pool;
-    return llvmTypeToString(type);
-}
-
-// ─── Overload: typeToString with llvm::Type* ─────────────────────────────
-
-/// @brief Convert an LLVM type to a human-readable string.
-/// @param type The LLVM type.
-/// @return A human-readable string representation.
-inline std::string typeToString(const llvm::Type* type) {
-    return llvmTypeToString(type);
-}
-
-/// @brief Convert an LLVM type to a human-readable string (with pool).
-inline std::string typeToString(const llvm::Type* type, StringPool& pool) {
-    return llvmTypeToString(type, pool);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Type Decl to String - Includes field/param names
+// TypeDecl to String — full declaration with fields / variants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Convert a TypeDeclAST to a human-readable string with full structure.
- * 
- * Shows struct/enum/trait definitions with their fields/variants.
- */
 inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
     if (!decl) return "<null>";
 
+    // ─── Struct ────────────────────────────────────────────────────────────
     if (decl->isa<StructDeclAST>()) {
         auto* structDecl = decl->as<StructDeclAST>();
         std::string result = "struct " + std::string(pool.lookup(structDecl->name));
-        
-        // Generic parameters
+
         if (!structDecl->genericParams.empty()) {
             result += "<";
             for (size_t i = 0; i < structDecl->genericParams.size(); ++i) {
@@ -589,8 +407,7 @@ inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
             }
             result += ">";
         }
-        
-        // Trait implementations
+
         if (!structDecl->traitRefs.empty()) {
             result += " : ";
             for (size_t i = 0; i < structDecl->traitRefs.size(); ++i) {
@@ -598,21 +415,21 @@ inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
                 result += std::string(pool.lookup(structDecl->traitRefs[i]->name));
             }
         }
-        
-        // Fields
+
         result += " { ";
         for (size_t i = 0; i < structDecl->fields.size(); ++i) {
             if (i > 0) result += ", ";
             FieldDeclAST* field = structDecl->fields[i];
             if (field->isConst()) result += "const ";
+            if (field->isOpaque) result += "@[opaque] ";
             result += std::string(pool.lookup(field->name)) + " ";
             result += typeToString(field->type, pool);
         }
         result += " }";
-        
         return result;
     }
 
+    // ─── Enum ──────────────────────────────────────────────────────────────
     if (decl->isa<EnumDeclAST>()) {
         auto* enumDecl = decl->as<EnumDeclAST>();
         std::string result = "enum " + std::string(pool.lookup(enumDecl->name));
@@ -623,17 +440,22 @@ inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
         for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
             if (i > 0) result += ", ";
             EnumVariantAST* variant = enumDecl->variants[i];
-            result += std::string(pool.lookup(variant->name)) + " = " + std::to_string(variant->value);
+            result += std::string(pool.lookup(variant->name));
+            if (variant->hasValue) {
+                result += " = " + std::to_string(variant->value);
+            } else if (variant->payloadType) {
+                result += "(" + typeToString(variant->payloadType, pool) + ")";
+            }
         }
         result += " }";
         return result;
     }
 
+    // ─── Trait ─────────────────────────────────────────────────────────────
     if (decl->isa<TraitDeclAST>()) {
         auto* traitDecl = decl->as<TraitDeclAST>();
         std::string result = "trait " + std::string(pool.lookup(traitDecl->name));
-        
-        // Generic parameters
+
         if (!traitDecl->genericParams.empty()) {
             result += "<";
             for (size_t i = 0; i < traitDecl->genericParams.size(); ++i) {
@@ -642,18 +464,70 @@ inline std::string typeDeclToString(TypeDeclAST* decl, StringPool& pool) {
             }
             result += ">";
         }
-        
-        // Fields
+
+        if (!traitDecl->parentTraits.empty()) {
+            result += " : ";
+            for (size_t i = 0; i < traitDecl->parentTraits.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(traitDecl->parentTraits[i]->name));
+            }
+        }
+
         result += " { ";
-        for (size_t i = 0; i < traitDecl->fields.size(); ++i) {
-            if (i > 0) result += ", ";
-            TraitFieldDeclAST* field = traitDecl->fields[i];
+        bool first = true;
+        for (TraitFieldDeclAST* field : traitDecl->fields) {
+            if (!first) result += ", ";
+            first = false;
             if (field->isConst()) result += "const ";
             result += std::string(pool.lookup(field->name)) + " ";
             result += typeToString(field->type, pool);
         }
+        for (TraitRequireDeclAST* req : traitDecl->requires) {
+            if (!first) result += ", ";
+            first = false;
+            result += "REQUIRE ";
+            result += std::string(pool.lookup(req->opKindName)) + " ";
+            result += std::string(pool.lookup(req->symbol));
+        }
         result += " }";
-        
+        return result;
+    }
+
+    // ─── Host type ─────────────────────────────────────────────────────────
+    if (decl->isa<HostTypeDeclAST>()) {
+        auto* host = decl->as<HostTypeDeclAST>();
+        std::string result = "TYPE " + std::string(pool.lookup(host->name));
+        if (!host->genericParams.empty()) {
+            result += "<";
+            for (size_t i = 0; i < host->genericParams.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(host->genericParams[i]->name));
+            }
+            result += ">";
+        }
+        result += " = ";
+        switch (host->kind) {
+            case HostTypeKind::Host:    result += "#host(";    break;
+            case HostTypeKind::Native:  result += "#native(";  break;
+            case HostTypeKind::Builtin: result += "#builtin("; break;
+        }
+        result += std::string(pool.lookup(host->targetName)) + ")";
+        return result;
+    }
+
+    // ─── Type alias ────────────────────────────────────────────────────────
+    if (decl->isa<TypeAliasDeclAST>()) {
+        auto* alias = decl->as<TypeAliasDeclAST>();
+        std::string result = "TYPE " + std::string(pool.lookup(alias->name));
+        if (!alias->genericParams.empty()) {
+            result += "<";
+            for (size_t i = 0; i < alias->genericParams.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(alias->genericParams[i]->name));
+            }
+            result += ">";
+        }
+        result += " = " + typeToString(alias->targetType, pool);
         return result;
     }
 
