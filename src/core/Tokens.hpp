@@ -1,10 +1,20 @@
 /**
  * @file Tokens.hpp
- * 
+ *
  * @responsibility Data structures for the Lexer's output and the Parser's input.
  *
  * @fundamental This file is used by every stage of the compiler/interpreter.
  * Changes here usually require updates to the Lexer AND the Parser.
+ *
+ * ─── Design ─────────────────────────────────────────────────────────────
+ * This file defines the fixed vocabulary the lexer recognizes: keywords,
+ * content markers, operators, delimiters, and literals. It also provides
+ * a small set of classification helpers used by the parser to dispatch
+ * on token categories.
+ *
+ * The categories here are limited to the ones the *parser* needs. Sema-side
+ * categories (is this type an integer? is this a numeric type?) live in
+ * TypeAST.hpp, where the `PrimitiveKind` predicates are defined.
  */
 
 #pragma once
@@ -15,115 +25,92 @@
 
 /**
  * @brief All possible token types in the Lucid language.
- * 
+ *
  * This is a plain enum (not enum class) for convenience:
  * - Values can be used directly in switch statements
  * - Bitwise operations work naturally
  * - No need for static_cast when comparing
- * 
- * @note The prefix `TOKEN_` is not used because the enum name itself
- *       provides context: `TokenType::IDENTIFIER`.
  */
 enum TokenType {
     // ─── End of File ────────────────────────────────────────────────────
     EOF_TOKEN,
 
-    // ─── Keywords: Top Level ───────────────────────────────────────────
-    IMPORT,      // import std.io
-    AS,       // as math
-    STRUCT,   // struct Vec2 { x float, y float }
-    ENUM,     // enum Direction { North = 0, South = 1 }
-    TRAIT,    // trait Vector2 { x float, y float }
+    // ─── Frame Keywords ─────────────────────────────────────────────────
+    // Value-frame keywords (lowercase)
+    IMPORT,        // import std.io
+    AS,            // as math
+    LET,           // let x int = 42
+    CONST,         // const pi float = 3.14
+    TRAIT,         // trait Vector2 { ... }
+    SATISFY,       // satisfy Numeric for int { ... }
 
-    // ─── Keywords: Declarations ────────────────────────────────────────
-    LET,      // let x int = 42          (mutable)
-    CONST,    // const pi float = 3.14   (immutable)
+    // Host- and behavior-frame keywords (uppercase)
+    TYPE_KW,       // TYPE X = ...
+    FN_KW,         // FN f(...) = #host(...)
+    DEF_KW,        // DEF BINARY_OP '+' (...) = ...
+    REQUIRE_KW,    // REQUIRE BINARY_OP '+' (...) -> ...;   (inside trait)
+    FIELD_KW,      // FIELD name type;                       (inside trait)
 
-    // ─── Keywords: Control Flow ────────────────────────────────────────
-    IF,       // if condition { ... }
-    ELSE,     // else { ... }
-    SWITCH,   // switch value { case 1: ... }
-    CASE,     // case 1, 2, 3: ...
-    DEFAULT,  // default: ...
-    WHILE,    // while condition { ... }
-    FOR,      // for i int in 0..10 { ... }
-    IN,       // for item T in collection { ... }
-    DO,       // do { ... } while condition
-    RETURN,   // return value
-    BREAK,    // break
-    CONTINUE, // continue
+    // ─── Type Content Markers ───────────────────────────────────────────
+    STRUCT,        // struct Vec2 { ... }   (sugar for TYPE X = struct { ... })
+    ENUM,          // enum Direction { ... } (sugar for TYPE X = enum { ... })
 
-    // ─── Keywords: Concurrency ──────────────────────────────────────────
-    SPAWN,    // spawn result = function()   (parallelism with optional join)
-    JOIN,     // join result                 (wait for spawn)
-    ASYNC,    // async result = function()   (concurrency)
-    AWAIT,    // await result                (wait for async)
+    // ─── Control Flow Keywords ──────────────────────────────────────────
+    IF,            // if condition { ... }
+    ELSE,          // else { ... }
+    SWITCH,        // switch value { case 1: ... }
+    CASE,          // case 1, 2, 3: ...
+    DEFAULT,       // default: ...
+    WHILE,         // while condition { ... }
+    FOR,           // for i int in 0..10 { ... }
+    IN,            // for item T in collection { ... }
+    DO,            // do { ... } while condition
+    RETURN,        // return value
+    BREAK,         // break
+    CONTINUE,      // continue
 
-    // ─── Keywords: Logical ─────────────────────────────────────────────
-    AND,      // and      (logical AND, short-circuits)
-    OR,       // or       (logical OR, short-circuits)
-    NOT,      // not      (logical NOT)
+    // ─── Concurrency Keywords ───────────────────────────────────────────
+    ASYNC,         // async f(...) -> T      (declaration marker)
+    SPAWN,         // spawn f(args);          (fire-and-forget)
+    START,         // start d T = f(args);    (produces Deferred<T>)
+    AWAIT,         // await d;                (consume deferred)
+    ALL,           // await all(a, b, c);
+    ANY,           // await any(a, b, c);
 
-    // ─── Keywords: Literals ────────────────────────────────────────────
-    TRUE,     // true
-    FALSE,    // false
-    NIL,      // nil      (null value)
-    ERR,      // err      (error sentinel)
+    // ─── Logical Keywords ───────────────────────────────────────────────
+    AND,           // and
+    OR,            // or
+    NOT,           // not
 
-    // ─── Types: Primitives ─────────────────────────────────────────────
-    // Function
-    TYPE_FN,     // fn
-    TYPE_CLS,    // cls
+    // ─── Literal Keywords ───────────────────────────────────────────────
+    TRUE,          // true
+    FALSE,         // false
+    NIL,           // nil
+    ERR,           // err
 
-    // Boolean
-    TYPE_BOOL,   // bool
+    // ─── Type Markers ───────────────────────────────────────────────────
+    TYPE_FN,       // fn   (function-type stage, content marker)
+    TYPE_CLS,      // cls  (function-type stage, content marker)
 
-    // Signed integers (fixed-width)
-    TYPE_INT8,   // int8
-    TYPE_INT16,  // int16
-    TYPE_INT32,  // int32
-    TYPE_INT64,  // int64
+    // ─── Primitive Type Names ───────────────────────────────────────────
+    TYPE_BOOL,
+    TYPE_INT8,  TYPE_INT16,  TYPE_INT32,  TYPE_INT64,
+    TYPE_UINT8, TYPE_UINT16, TYPE_UINT32, TYPE_UINT64,
+    TYPE_BYTE,  TYPE_SHORT,  TYPE_INT,    TYPE_LONG,
+    TYPE_UBYTE, TYPE_USHORT, TYPE_UINT,   TYPE_ULONG,
+    TYPE_FLOAT, TYPE_DOUBLE, TYPE_DECIMAL,
+    TYPE_STRING, TYPE_CHAR,
 
-    // Unsigned integers (fixed-width)
-    TYPE_UINT8,  // uint8
-    TYPE_UINT16, // uint16
-    TYPE_UINT32, // uint32
-    TYPE_UINT64, // uint64
-
-    // Platform-dependent integer aliases
-    TYPE_BYTE,   // byte      (int8)
-    TYPE_SHORT,  // short     (int16)
-    TYPE_INT,    // int       (int32)
-    TYPE_LONG,   // long      (int64)
-    TYPE_UBYTE,  // ubyte     (uint8)
-    TYPE_USHORT, // ushort    (uint16)
-    TYPE_UINT,   // uint      (uint32)
-    TYPE_ULONG,  // ulong     (uint64)
-
-    // Floating point
-    TYPE_FLOAT,   // float     (32-bit)
-    TYPE_DOUBLE,  // double    (64-bit)
-    TYPE_DECIMAL, // decimal   (128-bit, high precision)
-
-    // Text
-    TYPE_STRING, // string
-    TYPE_CHAR,   // char
-
-    // ─── Types: Special ─────────────────────────────────────────────────
-    TYPE_FUTURE, // Future<T> (internal, not written by user)
-
-    // ─── Types: Array Size Qualifiers ──────────────────────────────────
-    ARRAY_STAR,  // [*]T      (owned heap array)
-    ARRAY_UNDER, // [_]T      (slice, borrowed view)
+    // ─── Array Size Qualifiers ──────────────────────────────────────────
+    ARRAY_STAR,    // [*]T   (dynamic array)
+    ARRAY_UNDER,   // [_]T   (slice)
     // INT_LITERAL is used for fixed-size arrays: [N]T
 
-    // ─── Attributes ─────────────────────────────────────────────────────
-    AT_SIGN,    // @         (attribute prefix: @[export], @[inline])
+    // ─── Attribute and Target Sigils ────────────────────────────────────
+    AT_SIGN,       // @      (attribute prefix: @[export], @[inline])
+    HASH,          // #      (target prefix: #host, #native, #builtin)
 
-    // ─── Intrinsics ────────────────────────────────────────────────────
-    HASH,       // #         (intrinsic prefix: #sizeof, #sqrt)
-
-    // ─── Operators: Assignment ─────────────────────────────────────────
+    // ─── Assignment Operators ───────────────────────────────────────────
     ASSIGN,         // =
     PLUS_ASSIGN,    // +=
     MINUS_ASSIGN,   // -=
@@ -137,7 +124,7 @@ enum TokenType {
     SHL_ASSIGN,     // <<=
     SHR_ASSIGN,     // >>=
 
-    // ─── Operators: Arithmetic ──────────────────────────────────────────
+    // ─── Arithmetic Operators ───────────────────────────────────────────
     PLUS,    // +
     MINUS,   // -
     MUL,     // *
@@ -145,37 +132,36 @@ enum TokenType {
     MOD,     // %
     POW,     // **
 
-    // ─── Operators: Bitwise ─────────────────────────────────────────────
-    BIT_AND,    // &       (bitwise AND)
-    BIT_OR,     // |       (bitwise OR)
-    BIT_XOR,    // ^       (bitwise XOR)
-    BIT_NOT,    // ~       (bitwise NOT, unary)
-    SHL,        // <<      (shift left)
-    SHR,        // >>      (shift right)
+    // ─── Bitwise Operators ──────────────────────────────────────────────
+    BIT_AND,    // &       (also reference type marker in type position)
+    BIT_OR,     // |
+    BIT_XOR,    // ^
+    BIT_NOT,    // ~
+    SHL,        // <<
+    SHR,        // >>
 
-    // ─── Operators: Comparison ──────────────────────────────────────────
-    EQUAL_EQUAL,    // ==    (value equality)
+    // ─── Comparison Operators ───────────────────────────────────────────
+    EQUAL_EQUAL,    // ==
     NOT_EQUAL,      // !=
-    LESS,           // <     (also used for generics: <T>)
+    LESS,           // <     (also used in generics: <T>)
     LESS_EQUAL,     // <=
-    GREATER,        // >     (also used for generics: <T>)
+    GREATER,        // >     (also used in generics: <T>)
     GREATER_EQUAL,  // >=
 
-    // ─── Operators: Special ─────────────────────────────────────────────
-    ARROW,          // ->      (function return type)
-    PIPELINE,       // |>      (pipeline operator)
-    RANGE,          // ..      (inclusive range: 0..10)
-    RANGE_EXCLUSIVE,// ..<     (exclusive range: 0..<10)
-    VARIADIC,       // ...     (variadic parameters)
-    BANG,           // !       (fallible type suffix, or pipeline arg pack)
-    QUESTION,       // ?       (nullable type suffix)
-    QUESTION_DOT,   // ?.      (nullable field access)
-    QUESTION_QUESTION, // ??   (nil/err fallback)
+    // ─── Special Operators ──────────────────────────────────────────────
+    ARROW,              // ->   (function return type)
+    PIPELINE,           // |>   (pipeline operator)
+    RANGE,              // ..   (inclusive range)
+    RANGE_EXCLUSIVE,    // ..<  (exclusive range)
+    VARIADIC,           // ...  (variadic parameters)
+    BANG,               // !    (fallible suffix / pipeline arg pack)
+    QUESTION,           // ?    (nullable suffix)
+    QUESTION_QUESTION,  // ??   (nil/err fallback)
 
-    // ─── Access ──────────────────────────────────────────────────────────
-    DOT,         // .  (field access: player.health)
-    COLON,       // :  (module access: math:sqrt, or trait constraint: T : Trait)
-    COLON_COLON, // :: (builtin type operation: arena::alloc, Arena::create)
+    // ─── Access ─────────────────────────────────────────────────────────
+    DOT,          // .    (field access, enum variant access)
+    COLON,        // :    (trait constraint only: <T : Trait>)
+    COLON_COLON,  // ::   (module access, static struct member access)
 
     // ─── Delimiters ─────────────────────────────────────────────────────
     COMMA,      // ,
@@ -188,45 +174,42 @@ enum TokenType {
     RBRACKET,   // ]
 
     // ─── Special Symbols ────────────────────────────────────────────────
-    AMPERSAND,  // &       (reference type: &T) -- same as BIT_AND but contextual
-    UNDERSCORE, // _       (discard pattern: spawn _ = function())
+    UNDERSCORE, // _   (discard pattern)
 
-    // ─── Literals ──────────────────────────────────────────────────────
-    IDENTIFIER,         // variable, function, type names
-    INT_LITERAL,        // 42
-    FLOAT_LITERAL,      // 3.14
-    STRING_LITERAL,     // "hello"
-    RAW_STRING_LITERAL, // """raw\nno escaping"""
-    CHAR_LITERAL,       // 'a'
-    HEX_LITERAL,        // 0xFF
-    BINARY_LITERAL,     // 0b1010
+    // ─── Literals ───────────────────────────────────────────────────────
+    IDENTIFIER,
+    INT_LITERAL,
+    FLOAT_LITERAL,
+    STRING_LITERAL,
+    RAW_STRING_LITERAL,
+    CHAR_LITERAL,
+    HEX_LITERAL,
+    BINARY_LITERAL,
 
-    // ─── Comments ──────────────────────────────────────────────────────
-    DOC_COMMENT,        // /-- ... --/      (block documentation)
-    BLOCK_COMMENT,      // /- ... -/        (block comments)
-    LINE_COMMENT,       // -- text          (line comment, captured for docs)
+    // ─── Comments ───────────────────────────────────────────────────────
+    DOC_COMMENT,     // /-- ... --/
+    BLOCK_COMMENT,   // /- ... -/
+    LINE_COMMENT,    // -- text
 
-    // ─── Error ────────────────────────────────────────────────────────
-    UNKNOWN         // unrecognized character
+    // ─── Error ──────────────────────────────────────────────────────────
+    UNKNOWN
 };
 
 /**
  * @brief A single token produced by the lexer.
- * 
+ *
  * Tokens carry:
  * - The token type (IDENTIFIER, INT_LITERAL, etc.)
  * - The raw lexeme (the actual text from source)
  * - Source location (line, column)
- * - Source file name (for error reporting)
  */
 struct Token {
     TokenType type;
     std::string value;     // raw lexeme
-    unsigned int line;     // 0 to 4,294,967,295
-    unsigned short column; // 0 to 65,535
-    
-    // ─── Helper Methods ──────────────────────────────────────────────────
-    
+    unsigned int line;
+    unsigned short column;
+
+    // ─── Classification Helpers ─────────────────────────────────────────
     bool is_operator() const;
     bool is_assignment_op() const;
     bool is_binary_op() const;
@@ -234,48 +217,32 @@ struct Token {
     bool is_keyword() const;
     bool is_function_type_keyword() const;
     bool is_primitive_type() const;
-    bool is_integer_type() const;
-    bool is_float_type() const;
-    bool is_numeric_type() const;
-    bool is_control_flow() const;
-    bool is_declaration_keyword() const;
-    bool is_concurrency_keyword() const;
-    bool is_type_keyword() const;
-    bool is_statement_keyword() const;
-    bool is_control_flow_keyword() const;
-    bool is_concurrency_statement_keyword() const;
-    bool is_declaration_statement_keyword() const;
+
     std::string to_string() const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Token Category Functions (Global, No Parser Dependency)
+// Parser-Relevant Classification Helpers
+//
+// Only the categories the parser actually dispatches on are listed here.
+// Semantic categories (is this an integer type? is this numeric?) live in
+// TypeAST.hpp with the PrimitiveKind predicates.
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline bool is_primitive_type(TokenType type) {
     switch (type) {
         case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_INT8:   case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:  case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:  case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32: case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_BYTE:   case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:    case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:  case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:   case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_FLOAT:  case TokenType::TYPE_DOUBLE:
         case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_STRING: case TokenType::TYPE_CHAR:
             return true;
         default:
             return false;
@@ -283,152 +250,39 @@ inline bool is_primitive_type(TokenType type) {
 }
 
 inline bool is_function_type_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::TYPE_FN:
-        case TokenType::TYPE_CLS:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_integer_type(TokenType type) {
-    switch (type) {
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_float_type(TokenType type) {
-    switch (type) {
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_numeric_type(TokenType type) {
-    return is_integer_type(type) || is_float_type(type);
-}
-
-inline bool is_control_flow(TokenType type) {
-    switch (type) {
-        case TokenType::IF:
-        case TokenType::ELSE:
-        case TokenType::SWITCH:
-        case TokenType::CASE:
-        case TokenType::DEFAULT:
-        case TokenType::WHILE:
-        case TokenType::FOR:
-        case TokenType::IN:
-        case TokenType::DO:
-        case TokenType::RETURN:
-        case TokenType::BREAK:
-        case TokenType::CONTINUE:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_declaration_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::LET:
-        case TokenType::CONST:
-        case TokenType::STRUCT:
-        case TokenType::ENUM:
-        case TokenType::TRAIT:
-        case TokenType::IMPORT:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_concurrency_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::SPAWN:
-        case TokenType::JOIN:
-        case TokenType::ASYNC:
-        case TokenType::AWAIT:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_type_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::STRUCT:
-        case TokenType::ENUM:
-        case TokenType::TRAIT:
-            return true;
-        default:
-            return false;
-    }
+    return type == TokenType::TYPE_FN || type == TokenType::TYPE_CLS;
 }
 
 inline bool is_operator(TokenType type) {
     switch (type) {
-        case TokenType::PLUS:
-        case TokenType::MINUS:
-        case TokenType::MUL:
-        case TokenType::DIV:
-        case TokenType::MOD:
-        case TokenType::POW:
+        // Arithmetic
+        case TokenType::PLUS:   case TokenType::MINUS:
+        case TokenType::MUL:    case TokenType::DIV:
+        case TokenType::MOD:    case TokenType::POW:
+        // Assignment
         case TokenType::ASSIGN:
-        case TokenType::PLUS_ASSIGN:
-        case TokenType::MINUS_ASSIGN:
-        case TokenType::MUL_ASSIGN:
-        case TokenType::DIV_ASSIGN:
-        case TokenType::MOD_ASSIGN:
-        case TokenType::POW_ASSIGN:
-        case TokenType::BIT_AND_ASSIGN:
-        case TokenType::BIT_OR_ASSIGN:
-        case TokenType::BIT_XOR_ASSIGN:
-        case TokenType::SHL_ASSIGN:
+        case TokenType::PLUS_ASSIGN:   case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:    case TokenType::DIV_ASSIGN:
+        case TokenType::MOD_ASSIGN:    case TokenType::POW_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN: case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN: case TokenType::SHL_ASSIGN:
         case TokenType::SHR_ASSIGN:
-        case TokenType::BIT_AND:
-        case TokenType::BIT_OR:
-        case TokenType::BIT_XOR:
-        case TokenType::BIT_NOT:
-        case TokenType::SHL:
-        case TokenType::SHR:
-        case TokenType::EQUAL_EQUAL:
-        case TokenType::NOT_EQUAL:
-        case TokenType::LESS:
-        case TokenType::LESS_EQUAL:
-        case TokenType::GREATER:
-        case TokenType::GREATER_EQUAL:
+        // Bitwise
+        case TokenType::BIT_AND: case TokenType::BIT_OR:
+        case TokenType::BIT_XOR: case TokenType::BIT_NOT:
+        case TokenType::SHL:     case TokenType::SHR:
+        // Comparison
+        case TokenType::EQUAL_EQUAL: case TokenType::NOT_EQUAL:
+        case TokenType::LESS:        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:     case TokenType::GREATER_EQUAL:
+        // Logical
+        case TokenType::AND: case TokenType::OR: case TokenType::NOT:
+        // Special
         case TokenType::PIPELINE:
-        case TokenType::RANGE:
-        case TokenType::RANGE_EXCLUSIVE:
-        case TokenType::BANG:
-        case TokenType::QUESTION:
-        case TokenType::QUESTION_DOT:
+        case TokenType::RANGE: case TokenType::RANGE_EXCLUSIVE:
+        case TokenType::BANG:  case TokenType::QUESTION:
         case TokenType::QUESTION_QUESTION:
-        case TokenType::DOT:
-        case TokenType::COLON:
+        case TokenType::DOT:   case TokenType::COLON:
         case TokenType::COLON_COLON:
             return true;
         default:
@@ -439,16 +293,11 @@ inline bool is_operator(TokenType type) {
 inline bool is_assignment_op(TokenType type) {
     switch (type) {
         case TokenType::ASSIGN:
-        case TokenType::PLUS_ASSIGN:
-        case TokenType::MINUS_ASSIGN:
-        case TokenType::MUL_ASSIGN:
-        case TokenType::DIV_ASSIGN:
-        case TokenType::MOD_ASSIGN:
-        case TokenType::POW_ASSIGN:
-        case TokenType::BIT_AND_ASSIGN:
-        case TokenType::BIT_OR_ASSIGN:
-        case TokenType::BIT_XOR_ASSIGN:
-        case TokenType::SHL_ASSIGN:
+        case TokenType::PLUS_ASSIGN:   case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:    case TokenType::DIV_ASSIGN:
+        case TokenType::MOD_ASSIGN:    case TokenType::POW_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN: case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN: case TokenType::SHL_ASSIGN:
         case TokenType::SHR_ASSIGN:
             return true;
         default:
@@ -459,31 +308,25 @@ inline bool is_assignment_op(TokenType type) {
 inline bool is_binary_op(TokenType type) {
     switch (type) {
         // Arithmetic
-        case TokenType::PLUS:
-        case TokenType::MINUS:
-        case TokenType::MUL:
-        case TokenType::DIV:
-        case TokenType::POW:
-        case TokenType::MOD:
+        case TokenType::PLUS:   case TokenType::MINUS:
+        case TokenType::MUL:    case TokenType::DIV:
+        case TokenType::MOD:    case TokenType::POW:
         // Comparison
-        case TokenType::EQUAL_EQUAL:
-        case TokenType::NOT_EQUAL:
-        case TokenType::LESS:
-        case TokenType::LESS_EQUAL:
-        case TokenType::GREATER:
-        case TokenType::GREATER_EQUAL:
+        case TokenType::EQUAL_EQUAL: case TokenType::NOT_EQUAL:
+        case TokenType::LESS:        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:     case TokenType::GREATER_EQUAL:
         // Logical
-        case TokenType::AND:
-        case TokenType::OR:
+        case TokenType::AND: case TokenType::OR:
         // Bitwise
-        case TokenType::BIT_AND:
-        case TokenType::BIT_OR:
-        case TokenType::BIT_XOR:
-        case TokenType::SHL:
+        case TokenType::BIT_AND: case TokenType::BIT_OR:
+        case TokenType::BIT_XOR: case TokenType::SHL:
         case TokenType::SHR:
         // Range
-        case TokenType::RANGE:
-        case TokenType::RANGE_EXCLUSIVE:
+        case TokenType::RANGE: case TokenType::RANGE_EXCLUSIVE:
+        // Pipeline
+        case TokenType::PIPELINE:
+        // Fallback
+        case TokenType::QUESTION_QUESTION:
             return true;
         default:
             return false;
@@ -511,139 +354,47 @@ inline bool is_literal(TokenType type) {
 
 inline bool is_keyword(TokenType type) {
     switch (type) {
-        case TokenType::IMPORT:
-        case TokenType::AS:
-        case TokenType::STRUCT:
-        case TokenType::ENUM:
-        case TokenType::TRAIT:
-        case TokenType::LET:
-        case TokenType::CONST:
-        case TokenType::IF:
-        case TokenType::ELSE:
-        case TokenType::SWITCH:
-        case TokenType::CASE:
-        case TokenType::DEFAULT:
-        case TokenType::WHILE:
-        case TokenType::FOR:
-        case TokenType::IN:
-        case TokenType::DO:
-        case TokenType::RETURN:
-        case TokenType::BREAK:
-        case TokenType::CONTINUE:
-        case TokenType::SPAWN:
-        case TokenType::JOIN:
-        case TokenType::ASYNC:
-        case TokenType::AWAIT:
-        case TokenType::AND:
-        case TokenType::OR:
-        case TokenType::NOT:
-        case TokenType::TRUE:
-        case TokenType::FALSE:
-        case TokenType::NIL:
-        case TokenType::ERR:
-        case TokenType::TYPE_FN:
-        case TokenType::TYPE_CLS:
-        case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
-            return true;
-        default:
-            return false;
-    }
-}
-
-
-inline bool is_statement_keyword(TokenType type) {
-    switch (type) {
-        // Control Flow
-        case TokenType::IF:
-        case TokenType::ELSE:
-        case TokenType::SWITCH:
-        case TokenType::CASE:
-        case TokenType::DEFAULT:
-        case TokenType::WHILE:
-        case TokenType::FOR:
-        case TokenType::IN:
-        case TokenType::DO:
-        case TokenType::RETURN:
-        case TokenType::BREAK:
-        case TokenType::CONTINUE:
+        // Frame keywords
+        case TokenType::IMPORT:   case TokenType::AS:
+        case TokenType::LET:      case TokenType::CONST:
+        case TokenType::TRAIT:    case TokenType::SATISFY:
+        case TokenType::TYPE_KW:  case TokenType::FN_KW:
+        case TokenType::DEF_KW:   case TokenType::REQUIRE_KW:
+        case TokenType::FIELD_KW:
+        // Content markers
+        case TokenType::STRUCT:   case TokenType::ENUM:
+        // Control flow
+        case TokenType::IF:       case TokenType::ELSE:
+        case TokenType::SWITCH:   case TokenType::CASE:
+        case TokenType::DEFAULT:  case TokenType::WHILE:
+        case TokenType::FOR:      case TokenType::IN:
+        case TokenType::DO:       case TokenType::RETURN:
+        case TokenType::BREAK:    case TokenType::CONTINUE:
         // Concurrency
-        case TokenType::ASYNC:
-        case TokenType::AWAIT:
-        case TokenType::SPAWN:
-        case TokenType::JOIN:
-        // Declarations
-        case TokenType::LET:
-        case TokenType::CONST:
-        case TokenType::STRUCT:
-        case TokenType::ENUM:
-        case TokenType::TRAIT:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_control_flow_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::IF:
-        case TokenType::ELSE:
-        case TokenType::SWITCH:
-        case TokenType::CASE:
-        case TokenType::DEFAULT:
-        case TokenType::WHILE:
-        case TokenType::FOR:
-        case TokenType::IN:
-        case TokenType::DO:
-        case TokenType::RETURN:
-        case TokenType::BREAK:
-        case TokenType::CONTINUE:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_concurrency_statement_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::ASYNC:
-        case TokenType::AWAIT:
-        case TokenType::SPAWN:
-        case TokenType::JOIN:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool is_declaration_statement_keyword(TokenType type) {
-    switch (type) {
-        case TokenType::LET:
-        case TokenType::CONST:
-        case TokenType::STRUCT:
-        case TokenType::ENUM:
-        case TokenType::TRAIT:
-        case TokenType::IMPORT:
+        case TokenType::ASYNC:    case TokenType::SPAWN:
+        case TokenType::START:    case TokenType::AWAIT:
+        case TokenType::ALL:      case TokenType::ANY:
+        // Logical
+        case TokenType::AND:      case TokenType::OR:
+        case TokenType::NOT:
+        // Literal keywords
+        case TokenType::TRUE:     case TokenType::FALSE:
+        case TokenType::NIL:      case TokenType::ERR:
+        // Type markers
+        case TokenType::TYPE_FN:  case TokenType::TYPE_CLS:
+        // Primitive type names
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_INT8:   case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:  case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:  case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32: case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_BYTE:   case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:    case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:  case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:   case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_FLOAT:  case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING: case TokenType::TYPE_CHAR:
             return true;
         default:
             return false;
@@ -652,78 +403,13 @@ inline bool is_declaration_statement_keyword(TokenType type) {
 
 // ─── Token Method Implementations ─────────────────────────────────────────
 
-inline bool Token::is_operator() const {
-    return ::is_operator(type);
-}
-
-inline bool Token::is_assignment_op() const {
-    return ::is_assignment_op(type);
-}
-
-inline bool Token::is_binary_op() const {
-    return ::is_binary_op(type);
-}
-
-inline bool Token::is_literal() const {
-    return ::is_literal(type);
-}
-
-inline bool Token::is_keyword() const {
-    return ::is_keyword(type);
-}
-
-inline bool Token::is_primitive_type() const {
-    return ::is_primitive_type(type);
-}
-
-inline bool Token::is_function_type_keyword() const {
-    return ::is_function_type_keyword(type);
-}
-
-inline bool Token::is_integer_type() const {
-    return ::is_integer_type(type);
-}
-
-inline bool Token::is_float_type() const {
-    return ::is_float_type(type);
-}
-
-inline bool Token::is_numeric_type() const {
-    return ::is_numeric_type(type);
-}
-
-inline bool Token::is_control_flow() const {
-    return ::is_control_flow(type);
-}
-
-inline bool Token::is_declaration_keyword() const {
-    return ::is_declaration_keyword(type);
-}
-
-inline bool Token::is_concurrency_keyword() const {
-    return ::is_concurrency_keyword(type);
-}
-
-inline bool Token::is_type_keyword() const {
-    return ::is_type_keyword(type);
-}
-
-
-inline bool Token::is_statement_keyword() const {
-    return ::is_statement_keyword(type);
-}
-
-inline bool Token::is_control_flow_keyword() const {
-    return ::is_control_flow_keyword(type);
-}
-
-inline bool Token::is_concurrency_statement_keyword() const {
-    return ::is_concurrency_statement_keyword(type);
-}
-
-inline bool Token::is_declaration_statement_keyword() const {
-    return ::is_declaration_statement_keyword(type);
-}
+inline bool Token::is_operator() const { return ::is_operator(type); }
+inline bool Token::is_assignment_op() const { return ::is_assignment_op(type); }
+inline bool Token::is_binary_op() const { return ::is_binary_op(type); }
+inline bool Token::is_literal() const { return ::is_literal(type); }
+inline bool Token::is_keyword() const { return ::is_keyword(type); }
+inline bool Token::is_function_type_keyword() const { return ::is_function_type_keyword(type); }
+inline bool Token::is_primitive_type() const { return ::is_primitive_type(type); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Token Type Name Mapping
@@ -734,11 +420,17 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::EOF_TOKEN, "EOF"},
         {TokenType::IMPORT, "import"},
         {TokenType::AS, "as"},
-        {TokenType::STRUCT, "struct"},
-        {TokenType::ENUM, "enum"},
-        {TokenType::TRAIT, "trait"},
         {TokenType::LET, "let"},
         {TokenType::CONST, "const"},
+        {TokenType::TRAIT, "trait"},
+        {TokenType::SATISFY, "satisfy"},
+        {TokenType::TYPE_KW, "TYPE"},
+        {TokenType::FN_KW, "FN"},
+        {TokenType::DEF_KW, "DEF"},
+        {TokenType::REQUIRE_KW, "REQUIRE"},
+        {TokenType::FIELD_KW, "FIELD"},
+        {TokenType::STRUCT, "struct"},
+        {TokenType::ENUM, "enum"},
         {TokenType::IF, "if"},
         {TokenType::ELSE, "else"},
         {TokenType::SWITCH, "switch"},
@@ -751,10 +443,12 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::RETURN, "return"},
         {TokenType::BREAK, "break"},
         {TokenType::CONTINUE, "continue"},
-        {TokenType::SPAWN, "spawn"},
-        {TokenType::JOIN, "join"},
         {TokenType::ASYNC, "async"},
+        {TokenType::SPAWN, "spawn"},
+        {TokenType::START, "start"},
         {TokenType::AWAIT, "await"},
+        {TokenType::ALL, "all"},
+        {TokenType::ANY, "any"},
         {TokenType::AND, "and"},
         {TokenType::OR, "or"},
         {TokenType::NOT, "not"},
@@ -786,7 +480,6 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::TYPE_DECIMAL, "decimal"},
         {TokenType::TYPE_STRING, "string"},
         {TokenType::TYPE_CHAR, "char"},
-        {TokenType::TYPE_FUTURE, "Future"},
         {TokenType::ARRAY_STAR, "[*]"},
         {TokenType::ARRAY_UNDER, "[_]"},
         {TokenType::AT_SIGN, "@"},
@@ -828,7 +521,6 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::VARIADIC, "..."},
         {TokenType::BANG, "!"},
         {TokenType::QUESTION, "?"},
-        {TokenType::QUESTION_DOT, "?."},
         {TokenType::QUESTION_QUESTION, "??"},
         {TokenType::DOT, "."},
         {TokenType::COLON, ":"},
@@ -841,7 +533,6 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::RBRACE, "}"},
         {TokenType::LBRACKET, "["},
         {TokenType::RBRACKET, "]"},
-        {TokenType::AMPERSAND, "&"},
         {TokenType::UNDERSCORE, "_"},
         {TokenType::IDENTIFIER, "IDENTIFIER"},
         {TokenType::INT_LITERAL, "INT_LITERAL"},
@@ -853,41 +544,47 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::BINARY_LITERAL, "BINARY_LITERAL"},
         {TokenType::DOC_COMMENT, "DOC_COMMENT"},
         {TokenType::LINE_COMMENT, "LINE_COMMENT"},
+        {TokenType::BLOCK_COMMENT, "BLOCK_COMMENT"},
         {TokenType::UNKNOWN, "UNKNOWN"}
     };
-    
     auto it = names.find(type);
-    if (it != names.end()) {
-        return it->second;
-    }
-    return "UNKNOWN_TOKEN";
+    return it != names.end() ? it->second : "UNKNOWN_TOKEN";
 }
 
 inline std::string Token::to_string() const {
     std::string result = "Token(";
     result += token_type_name(type);
     result += ", '" + value + "', ";
-    result += std::to_string(line);
-    result += ":" + std::to_string(column);
+    result += std::to_string(line) + ":" + std::to_string(column);
     result += ")";
     return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Keyword Helpers
+// Keyword String Helpers (used by the lexer)
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline bool is_keyword(const std::string& str) {
     static const std::unordered_set<std::string> keywords = {
-        "import", "as", "struct", "enum", "trait",
-        "let", "const",
+        // Frame keywords
+        "import", "as", "let", "const", "trait", "satisfy",
+        "TYPE", "FN", "DEF", "REQUIRE", "FIELD",
+        // Content markers
+        "struct", "enum",
+        // Control flow
         "if", "else", "switch", "case", "default",
         "while", "for", "in", "do",
         "return", "break", "continue",
-        "spawn", "join", "async", "await",
+        // Concurrency
+        "async", "spawn", "start", "await", "all", "any",
+        // Logical
         "and", "or", "not",
+        // Literal keywords
         "true", "false", "nil", "err",
-        "fn", "cls","bool",
+        // Type markers
+        "fn", "cls",
+        // Primitive type names
+        "bool",
         "int8", "int16", "int32", "int64",
         "uint8", "uint16", "uint32", "uint64",
         "byte", "short", "int", "long",
@@ -900,13 +597,22 @@ inline bool is_keyword(const std::string& str) {
 
 inline TokenType keyword_to_type(const std::string& str) {
     static const std::unordered_map<std::string, TokenType> keyword_map = {
+        // Frame keywords
         {"import", TokenType::IMPORT},
         {"as", TokenType::AS},
-        {"struct", TokenType::STRUCT},
-        {"enum", TokenType::ENUM},
-        {"trait", TokenType::TRAIT},
         {"let", TokenType::LET},
         {"const", TokenType::CONST},
+        {"trait", TokenType::TRAIT},
+        {"satisfy", TokenType::SATISFY},
+        {"TYPE", TokenType::TYPE_KW},
+        {"FN", TokenType::FN_KW},
+        {"DEF", TokenType::DEF_KW},
+        {"REQUIRE", TokenType::REQUIRE_KW},
+        {"FIELD", TokenType::FIELD_KW},
+        // Content markers
+        {"struct", TokenType::STRUCT},
+        {"enum", TokenType::ENUM},
+        // Control flow
         {"if", TokenType::IF},
         {"else", TokenType::ELSE},
         {"switch", TokenType::SWITCH},
@@ -919,19 +625,26 @@ inline TokenType keyword_to_type(const std::string& str) {
         {"return", TokenType::RETURN},
         {"break", TokenType::BREAK},
         {"continue", TokenType::CONTINUE},
-        {"spawn", TokenType::SPAWN},
-        {"join", TokenType::JOIN},
+        // Concurrency
         {"async", TokenType::ASYNC},
+        {"spawn", TokenType::SPAWN},
+        {"start", TokenType::START},
         {"await", TokenType::AWAIT},
+        {"all", TokenType::ALL},
+        {"any", TokenType::ANY},
+        // Logical
         {"and", TokenType::AND},
         {"or", TokenType::OR},
         {"not", TokenType::NOT},
+        // Literal keywords
         {"true", TokenType::TRUE},
         {"false", TokenType::FALSE},
         {"nil", TokenType::NIL},
         {"err", TokenType::ERR},
-        {"fn",  TokenType::TYPE_FN},
+        // Type markers
+        {"fn", TokenType::TYPE_FN},
         {"cls", TokenType::TYPE_CLS},
+        // Primitive type names
         {"bool", TokenType::TYPE_BOOL},
         {"int8", TokenType::TYPE_INT8},
         {"int16", TokenType::TYPE_INT16},
@@ -955,22 +668,12 @@ inline TokenType keyword_to_type(const std::string& str) {
         {"string", TokenType::TYPE_STRING},
         {"char", TokenType::TYPE_CHAR}
     };
-    
     auto it = keyword_map.find(str);
-    if (it != keyword_map.end()) {
-        return it->second;
-    }
-    return TokenType::IDENTIFIER;
+    return it != keyword_map.end() ? it->second : TokenType::IDENTIFIER;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EOF Token Sentinel - SINGLE DEFINITION
+// EOF Token Sentinel
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief The single sentinel EOF token used by both Lexer and TokenStream.
-/// 
-/// This is defined once in Tokens.hpp to avoid duplication between Lexer and
-/// TokenStream. Both use the same constant, ensuring consistent EOF representation.
-/// 
-/// @note This is a compile-time constant, not a runtime-created object.
 inline const Token EOF_TOKEN_SENTINEL = {TokenType::EOF_TOKEN, "EOF", 0, 0};
