@@ -551,6 +551,172 @@ inline std::string token_type_name(TokenType type) {
     return it != names.end() ? it->second : "UNKNOWN_TOKEN";
 }
 
+/// @brief Convert a TokenType to a human-readable string.
+inline std::string tokenTypeToString(TokenType type) {
+    switch (type) {
+        case TokenType::EOF_TOKEN:              return "EOF";
+        case TokenType::IDENTIFIER:             return "IDENTIFIER";
+        case TokenType::INT_LITERAL:            return "INT_LITERAL";
+        case TokenType::FLOAT_LITERAL:          return "FLOAT_LITERAL";
+        case TokenType::STRING_LITERAL:         return "STRING_LITERAL";
+        case TokenType::RAW_STRING_LITERAL:     return "RAW_STRING_LITERAL";
+        case TokenType::CHAR_LITERAL:           return "CHAR_LITERAL";
+        case TokenType::HEX_LITERAL:            return "HEX_LITERAL";
+        case TokenType::BINARY_LITERAL:         return "BINARY_LITERAL";
+        case TokenType::TRUE:                   return "TRUE";
+        case TokenType::FALSE:                  return "FALSE";
+        case TokenType::NIL:                    return "NIL";
+        case TokenType::ERR:                    return "ERR";
+        case TokenType::UNDERSCORE:             return "_";
+
+        // Frame keywords
+        case TokenType::IMPORT:                 return "import";
+        case TokenType::AS:                     return "as";
+        case TokenType::LET:                    return "let";
+        case TokenType::CONST:                  return "const";
+        case TokenType::TRAIT:                  return "trait";
+        case TokenType::SATISFY:                return "satisfy";
+        case TokenType::TYPE_KW:                return "TYPE";
+        case TokenType::FN_KW:                  return "FN";
+        case TokenType::DEF_KW:                 return "DEF";
+        case TokenType::REQUIRE_KW:             return "REQUIRE";
+        case TokenType::FIELD_KW:               return "FIELD";
+        case TokenType::STRUCT:                 return "struct";
+        case TokenType::ENUM:                   return "enum";
+
+        // Control flow
+        case TokenType::IF:                     return "if";
+        case TokenType::ELSE:                   return "else";
+        case TokenType::SWITCH:                 return "switch";
+        case TokenType::CASE:                   return "case";
+        case TokenType::DEFAULT:                return "default";
+        case TokenType::WHILE:                  return "while";
+        case TokenType::FOR:                    return "for";
+        case TokenType::IN:                     return "in";
+        case TokenType::DO:                     return "do";
+        case TokenType::RETURN:                 return "return";
+        case TokenType::BREAK:                  return "break";
+        case TokenType::CONTINUE:               return "continue";
+
+        // Concurrency
+        case TokenType::ASYNC:                  return "async";
+        case TokenType::SPAWN:                  return "spawn";
+        case TokenType::START:                  return "start";
+        case TokenType::AWAIT:                  return "await";
+        case TokenType::ALL:                    return "all";
+        case TokenType::ANY:                    return "any";
+
+        // Logical
+        case TokenType::AND:                    return "and";
+        case TokenType::OR:                     return "or";
+        case TokenType::NOT:                    return "not";
+
+        // Type markers
+        case TokenType::TYPE_FN:                return "fn";
+        case TokenType::TYPE_CLS:               return "cls";
+
+        // Primitive type names
+        case TokenType::TYPE_BOOL:              return "bool";
+        case TokenType::TYPE_INT8:              return "int8";
+        case TokenType::TYPE_INT16:             return "int16";
+        case TokenType::TYPE_INT32:             return "int32";
+        case TokenType::TYPE_INT64:             return "int64";
+        case TokenType::TYPE_UINT8:             return "uint8";
+        case TokenType::TYPE_UINT16:            return "uint16";
+        case TokenType::TYPE_UINT32:            return "uint32";
+        case TokenType::TYPE_UINT64:            return "uint64";
+        case TokenType::TYPE_BYTE:              return "byte";
+        case TokenType::TYPE_SHORT:             return "short";
+        case TokenType::TYPE_INT:               return "int";
+        case TokenType::TYPE_LONG:              return "long";
+        case TokenType::TYPE_UBYTE:             return "ubyte";
+        case TokenType::TYPE_USHORT:            return "ushort";
+        case TokenType::TYPE_UINT:              return "uint";
+        case TokenType::TYPE_ULONG:             return "ulong";
+        case TokenType::TYPE_FLOAT:             return "float";
+        case TokenType::TYPE_DOUBLE:            return "double";
+        case TokenType::TYPE_DECIMAL:           return "decimal";
+        case TokenType::TYPE_STRING:            return "string";
+        case TokenType::TYPE_CHAR:              return "char";
+
+        // Array size qualifiers
+        case TokenType::ARRAY_STAR:             return "[*]";
+        case TokenType::ARRAY_UNDER:            return "[_]";
+
+        // Sigils
+        case TokenType::AT_SIGN:                return "@";
+        case TokenType::HASH:                   return "#";
+
+        // Operators
+        case TokenType::PLUS:                   return "+";
+        case TokenType::MINUS:                  return "-";
+        case TokenType::MUL:                    return "*";
+        case TokenType::DIV:                    return "/";
+        case TokenType::MOD:                    return "%";
+        case TokenType::POW:                    return "**";
+        case TokenType::BIT_AND:                return "&";
+        case TokenType::BIT_OR:                 return "|";
+        case TokenType::BIT_XOR:                return "^";
+        case TokenType::BIT_NOT:                return "~";
+        case TokenType::SHL:                    return "<<";
+        case TokenType::SHR:                    return ">>";
+        case TokenType::EQUAL_EQUAL:            return "==";
+        case TokenType::NOT_EQUAL:              return "!=";
+        case TokenType::LESS:                   return "<";
+        case TokenType::LESS_EQUAL:             return "<=";
+        case TokenType::GREATER:                return ">";
+        case TokenType::GREATER_EQUAL:          return ">=";
+        case TokenType::ASSIGN:                 return "=";
+        case TokenType::PLUS_ASSIGN:            return "+=";
+        case TokenType::MINUS_ASSIGN:           return "-=";
+        case TokenType::MUL_ASSIGN:             return "*=";
+        case TokenType::DIV_ASSIGN:             return "/=";
+        case TokenType::MOD_ASSIGN:             return "%=";
+        case TokenType::POW_ASSIGN:             return "**=";
+        case TokenType::BIT_AND_ASSIGN:         return "&=";
+        case TokenType::BIT_OR_ASSIGN:          return "|=";
+        case TokenType::BIT_XOR_ASSIGN:         return "^=";
+        case TokenType::SHL_ASSIGN:             return "<<=";
+        case TokenType::SHR_ASSIGN:             return ">>=";
+        case TokenType::ARROW:                  return "->";
+        case TokenType::PIPELINE:               return "|>";
+        case TokenType::RANGE:                  return "..";
+        case TokenType::RANGE_EXCLUSIVE:        return "..<";
+        case TokenType::BANG:                   return "!";
+        case TokenType::QUESTION:               return "?";
+        case TokenType::QUESTION_QUESTION:      return "??";
+        case TokenType::VARIADIC:               return "...";
+        case TokenType::DOT:                    return ".";
+        case TokenType::COLON:                  return ":";
+        case TokenType::COLON_COLON:            return "::";
+        case TokenType::COMMA:                  return ",";
+        case TokenType::SEMICOLON:              return ";";
+        case TokenType::LPAREN:                 return "(";
+        case TokenType::RPAREN:                 return ")";
+        case TokenType::LBRACE:                 return "{";
+        case TokenType::RBRACE:                 return "}";
+        case TokenType::LBRACKET:               return "[";
+        case TokenType::RBRACKET:               return "]";
+
+        // Comments
+        case TokenType::DOC_COMMENT:            return "/-- ... --/";
+        case TokenType::LINE_COMMENT:           return "-- ...";
+        case TokenType::BLOCK_COMMENT:          return "/- ... -/";
+
+        case TokenType::UNKNOWN:                return "UNKNOWN";
+        default: return "Token(" + std::to_string(static_cast<int>(type)) + ")";
+    }
+}
+
+/// @brief Convert a Token to a human-readable string.
+inline std::string tokenToString(const Token& token) {
+    std::string result = tokenTypeToString(token.type);
+    if (!token.value.empty()) {
+        result += "('" + token.value + "')";
+    }
+    return result;
+}
+
 inline std::string Token::to_string() const {
     std::string result = "Token(";
     result += token_type_name(type);
