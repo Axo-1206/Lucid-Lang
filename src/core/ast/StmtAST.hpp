@@ -22,17 +22,21 @@
 
 /// @brief A scope-exit callback registration (semantic metadata).
 ///
-/// This is NOT an AST node - it's created by Sema during semantic analysis
-/// from a #scope_exit intrinsic call. Stored on BlockStmtAST as metadata
-/// for CodeGen to emit LIFO callbacks on scope exit.
+/// This is NOT an AST node — it's created by Sema during semantic analysis
+/// from a `scope_exit(callback, value)` call. Stored on `BlockStmtAST` as
+/// metadata for CodeGen to emit LIFO callbacks on scope exit.
 ///
-/// @field callExpr   The original #scope_exit intrinsic call expression.
-/// @field callback   The resolved function to call (FuncDeclAST or closure).
-/// @field args       The resolved arguments to pass to the callback.
+/// Multiple registrations within one block run in LIFO order (last registered,
+/// first called). The callback must be `cls`-shaped and take exactly one
+/// argument.
+///
+/// @field callExpr   The original `scope_exit(...)` call expression (for diagnostics).
+/// @field callback   The resolved callback expression (a `cls`-shaped function value).
+/// @field value      The resolved value expression passed to the callback.
 struct ScopeExitRegistration {
-    IntrinsicCallExprAST* callExpr = nullptr;   // The original #scope_exit call
-    FuncDeclAST* callback = nullptr;            // Resolved function to call
-    ArenaSpan<ExprAST*> args;                   // Resolved arguments
+    CallExprAST* callExpr = nullptr;   // The original scope_exit(...) call, for diagnostics
+    ExprAST*     callback = nullptr;   // Resolved callback expression
+    ExprAST*     value    = nullptr;   // Resolved value expression
 };
 using ScopeExitRegistrationPtr = ScopeExitRegistration*;
 
@@ -145,7 +149,7 @@ struct DeclStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprAST* condition = nullptr;  // The test expression (must resolve to `bool`)
+    ExprAST* condition = nullptr;  // The test expression (evaluated by truthiness table)
     StmtAST* thenBranch = nullptr; // Always a `BlockStmtAST`
     StmtAST* elseBranch = nullptr; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
@@ -155,33 +159,36 @@ struct IfStmtAST : StmtAST {
 /// @brief One case clause inside a `switch` statement.
 /// 
 /// @example
-///   case 200, 201, 202: { io:printl("success") }
-///   case 1..10:         { io:printl("light") }
-///   case 0x41, 0x30..0x39: { handleInput() }
+///   case 200, 201, 202: { printl("success") }
+///   case 1..10:         { printl("light") }
 ///   case Direction.North, Direction.South: { moveVertical() }
+///   case JsonValue.Num(n): { printl(n) }
 /// 
-/// `values` – one or more match values. Each entry is:
+/// `values` – one or more `CaseValueAST` entries. Each entry is:
 ///   - a literal (e.g., `case 200`)
 ///   - an enum variant (e.g., `case Direction.North`)
+///   - a payload-carrying variant with binding (e.g., `case JsonValue.Num(n)`)
 ///   - a literal range (e.g., `case 1..10`)
 /// 
 /// The body is a block of statements executed when any of the values matches.
-/// There is no fallthrough – each case is isolated.
+/// There is no fallthrough — each case is isolated. Payload bindings introduced
+/// by `CaseValueAST` are in scope for the duration of the body block.
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Exhaustiveness**: For enum types, the compiler errors on missing
 ///    variants when no `default` clause is present.
-/// 2. **Range Bounds**: Range bounds in case values must be literals
-///    (enforced by the parser).
+/// 2. **Range Bounds**: Range bounds in case values must be compile-time literals.
 /// 3. **Duplicate Values**: Duplicate case values within the same switch
 ///    are a compile error.
 /// 4. **Type Compatibility**: All case values must be compatible with the
 ///    switch subject's type.
+/// 5. **Payload Bindings**: A payload binding (`case Variant(x)`) introduces
+///    `x` into the body's scope with the variant's payload type.
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
-    ArenaSpan<ExprAST*> values;          ///< Match values (literals, enum variants, or ranges)
-    BlockStmtAST* body = nullptr;                 ///< Statements executed on match
+    ArenaSpan<CaseValueAST*> values;  ///< Match values (CaseValueAST entries)
+    BlockStmtAST* body = nullptr;     ///< Statements executed on match
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
@@ -256,8 +263,8 @@ struct SwitchStmtAST : StmtAST {
 /// ─── Collection Iteration ────────────────────────────────────────────────
 /// Both index and value are required. Use `_` to ignore either.
 /// Every named loop variable requires its own type annotation, even though the
-/// collection's own declaration already fixes it. The index is always `int`;
-/// the value must match the collection's element type.
+/// collection's own declaration already fixes it. For range iteration: a single binding is used; no index/value split.
+/// For collection iteration: the index type is `uint` (for arrays) or the key type `K` (for maps);
 /// 
 /// ─── Ignored Values (`_`) ──────────────────────────────────────────────────
 /// The `_` binding requires no type annotation. Attempting to access `_` in
@@ -290,7 +297,7 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprAST* condition = nullptr; // Must resolve to `bool`
+    ExprAST* condition = nullptr; // Evaluated by the truthiness table (see BinaryExprAST)
     StmtAST* body = nullptr;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
@@ -307,7 +314,7 @@ struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
     StmtAST* body = nullptr;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprAST* condition = nullptr;  ///< Evaluated after each iteration; must resolve to `bool`
+    ExprAST* condition = nullptr;  ///< Evaluated after each iteration; uses truthiness table
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
@@ -327,8 +334,6 @@ struct DoWhileStmtAST : StmtAST {
 /// 3. **Fallible Propagation**: Returning an un-narrowed fallible value is
 ///    forbidden – the compiler cannot tell this apart from forgetting to
 ///    handle the failure.
-/// 4. **Parallel Body Restriction**: `return` is not allowed inside `~[parallel]`
-///    block bodies (no single caller to return to).
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
@@ -345,8 +350,6 @@ struct ReturnStmtAST : StmtAST {
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Loop Context**: Only valid directly inside a loop body.
 /// 2. **Not Valid Outside Loop**: Using `break` outside any loop is a semantic error.
-/// 3. **Parallel Body Restriction**: `break` is not allowed inside `~[parallel]`
-///    block bodies (no loop context to break from).
 struct BreakStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BreakStmt;
 
@@ -361,8 +364,6 @@ struct BreakStmtAST : StmtAST {
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Loop Context**: Only valid directly inside a loop body.
 /// 2. **Not Valid Outside Loop**: Using `continue` outside any loop is a semantic error.
-/// 3. **Parallel Body Restriction**: `continue` is not allowed inside `~[parallel]`
-///    block bodies (no loop context to continue from).
 struct ContinueStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ContinueStmt;
 
@@ -373,154 +374,90 @@ struct ContinueStmtAST : StmtAST {
 // CONCURRENCY STATEMENTS (Async, Spawn, Join)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief An async operation – schedules a function call on the event loop.
+/// @brief An await operation — waits for one or more `Deferred<T>` values to complete.
 /// 
 /// @example
-///   async const result int = fetchData(url)
-///   async let result int = fetchData(url)
+///   await d
+///   await a, b, c
+///   await all(a, b, c)
+///   await any(a, b, c)
 /// 
-/// Note the surface syntax names the *inner* type (`int`), not `Future<T>`
-/// directly — the parser wraps it into `Future<int>` itself, the same way
-/// `int?` wraps `int` into `NullableTypeAST` without the source ever
-/// spelling `Nullable<int>`.
+/// After a successful `await`, each target variable is narrowed from
+/// `Deferred<T>` to plain `T` for the rest of the enclosing scope — the same
+/// flow-sensitive narrowing mechanism used for `T?`/`T!`.
 /// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Cooperative concurrency (single-threaded event loop)
-/// - Non-blocking – the calling thread continues immediately
-/// - Must be awaited with `await` to get the result
-/// - Lightweight – can schedule thousands of async operations
-/// - Binds exactly one variable per statement
-/// 
-/// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
-/// `async const result int = ...` *introduces* `result` — it does not assign into
-/// a pre-existing variable, the same way `let`/`const` introduce a name
-/// rather than reassign one. `binding` is therefore a synthesized
-/// `VarDeclAST*`, not a general `ExprAST*` lvalue.
-/// 
-/// ─── `keyword` Support ─────────────────────────────────────────────────────
-/// The `async` statement supports both `let` and `const` keywords:
-/// - `async let result int = fn()` → mutable binding (can be awaited, but also reassigned)
-/// - `async const result int = fn()` → immutable binding (cannot be reassigned)
-/// 
-/// The const-ness applies to the binding itself, not to the Future<T> type.
-/// 
-/// @field binding        The freshly introduced local. `binding->keyword`
-///                        is either `Let` or `Const` as specified in source.
-/// @field call           The async call expression.
-struct AsyncStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
-
-    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
-    ExprAST* call = nullptr;          // the async call
-
-    AsyncStmtAST() : StmtAST(ASTKind::AsyncStmt) {}
-};
-
-/// @brief An await operation – waits for async operations to complete.
-/// 
-/// @example
-///   await result
-///   await value, ok
-/// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Blocks the current thread until all awaited operations complete
-/// - After `await`, the variables become plain `T` (no longer `Future<T>`)
-/// - Only valid inside a function body (not at top level)
+/// ─── AwaitKind ──────────────────────────────────────────────────────────────
+/// - `Single`: await one or more deferreds sequentially (`await d` or `await a, b, c`).
+/// - `All`: await a group; all must succeed (`await all(a, b, c)`).
+/// - `Any`: await a group; the first to complete wins (`await any(a, b, c)`).
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Narrowing, Not Reassignment**: Each entry in `targets` is an
-///    `IdentifierExprAST` resolving back to the `VarDeclAST` a prior
-///    `AsyncStmtAST::binding` introduced. `await` narrows that binding's
-///    type from `FutureTypeAST(T)` to plain `T` for the rest of the
-///    enclosing scope — the same flow-sensitive mechanism that narrows
-///    `T?` after a nil-check, not a distinct runtime state transition.
-/// 2. **Cannot Await Twice**: Once narrowed to `T`, the type checker
-///    rejects a second `await` on the same binding the same way it rejects
-///    any other use of a plain `T` value as if it were still `Future<T>` —
-///    there is nothing `Future`-specific to enforce here beyond ordinary
-///    type checking once narrowing has already happened.
-/// 3. **Multiple Variables**: Waits for all named variables to be ready.
-/// 4. **Scope**: Only valid inside a function body (not at top level).
+/// 1. **Narrowing**: Each target is narrowed from `Deferred<T>` to `T` after await.
+/// 2. **Cannot Await Twice**: Once narrowed, re-awaiting is a type error.
+/// 3. **`cancel` is mutually exclusive**: `await` after `cancel(d)` is a compile error.
 /// 
-/// @field targets        The variables to await (must currently be `Future<T>`).
+/// @field kind     The await form (Single, All, Any).
+/// @field targets  The `Deferred<T>` identifiers to await.
+enum class AwaitKind { Single, All, Any };
+
 struct AwaitStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitStmt;
 
-    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    AwaitKind kind = AwaitKind::Single;
+    ArenaSpan<ExprAST*> targets;   // identifiers resolving to Deferred<T> bindings
 
     AwaitStmtAST() : StmtAST(ASTKind::AwaitStmt) {}
 };
 
-/// @brief A spawn operation – launches a function call on a separate OS thread.
+/// @brief A start operation — launches a call and produces a `Deferred<T>` binding.
 /// 
 /// @example
-///   spawn const result int = computeHeavyData()
-///   spawn let result int = computeHeavyData()
-///   spawn _ = logToFile("started")            – discard the return value
+///   start result T = fetchData(url)
 /// 
-/// Note `_` is the one case with no keyword and no type to write at all — the discard
-/// pattern never produces a binding, so there is nothing to wrap.
+/// `start d T = f(args)` runs `f(args)` asynchronously and binds its
+/// `Deferred<T>` handle to `d`. The handle can later be consumed by `await`
+/// or `cancel(d)`.
+/// 
+/// Unlike `spawn`, `start` always produces a binding — the caller is responsible
+/// for consuming the deferred on every control-flow path (await or cancel).
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Parallelism (OS threads)
-/// - Preemptive multitasking
-/// - Can be joined with `join` to get the result
-/// - Heavy overhead – limited to CPU cores (dozens of threads)
+/// - Cooperative or OS-thread concurrency (determined at the call site).
+/// - Produces a `Deferred<T>` binding that must be consumed exactly once.
+/// - The binding's type is `Deferred<T>` where `T` is the written inner type.
 /// 
-/// ─── The Discard Pattern (`_`) ──────────────────────────────────────────────
-/// - `spawn _ = fn()` = fire and forget (`binding == nullptr`, no join required)
-/// - `spawn const x T = fn()` = fire and join later (join required)
+/// @field binding   The freshly introduced local (type = `Deferred<T>`).
+/// @field call      The async call expression.
+struct StartStmtAST : StmtAST {
+    static constexpr ASTKind staticKind = ASTKind::StartStmt;
+
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    VarDeclAST* binding = nullptr;   // fresh local of type Deferred<T>
+    ExprAST*    call    = nullptr;   // the async call
+
+    StartStmtAST() : StmtAST(ASTKind::StartStmt) {}
+};
+
+/// @brief A spawn operation — launches a fire-and-forget call on a separate OS thread.
 /// 
-/// ─── `keyword` Support ─────────────────────────────────────────────────────
-/// The `spawn` statement supports both `let` and `const` keywords for named bindings:
-/// - `spawn let result int = fn()` → mutable binding (can be joined and reassigned)
-/// - `spawn const result int = fn()` → immutable binding (can be joined but not reassigned)
+/// @example
+///   spawn computeHeavyData()
+///   spawn logToFile("started")
 /// 
-/// The const-ness applies to the binding itself, not to the Thread<T> type.
+/// `spawn f(args)` runs `f(args)` on a new OS thread. The result is discarded.
+/// Use `start d T = f(args)` when you need to collect the result later.
 /// 
-/// @field binding          The freshly introduced local, or `nullptr` for
-///                          the `_` discard pattern.
-/// @field call             The spawn call expression.
+/// ─── Key Characteristics ──────────────────────────────────────────────────
+/// - Preemptive OS thread — runs in parallel with the caller.
+/// - Fire-and-forget — no handle is produced; the result cannot be collected.
+/// - The spawned function may not capture `Deferred<T>` values.
+/// 
+/// @field call   The call expression to execute on the new thread.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnStmt;
 
-    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
-                                      // nullptr for the `_` discard pattern
-    ExprAST* call = nullptr;          // the spawn call
+    ExprAST* call = nullptr;   // `spawn f(args);`
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnStmt) {}
-};
-
-/// @brief A join operation – waits for spawned threads to complete.
-/// 
-/// @example
-///   join result
-///   join value, ok
-/// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Blocks the current thread until all joined operations complete
-/// - After `join`, the variables become plain `T` (no longer `Thread<T>`)
-/// - Only valid for `spawn` operations (not `async`)
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Narrowing, Not Reassignment**: Each entry in `targets` is an
-///    `IdentifierExprAST` resolving back to the `VarDeclAST` a prior
-///    `SpawnStmtAST::binding` introduced. `join` narrows that binding's
-///    type from `ThreadTypeAST(T)` to plain `T`, same mechanism as
-///    `AwaitStmtAST`.
-/// 2. **Cannot Join Twice**: Once narrowed to `T`, a second `join` on the
-///    same binding is rejected by ordinary type checking, same as
-///    `AwaitStmtAST`.
-/// 3. **Multiple Variables**: Waits for all named variables to be ready.
-/// 4. **Spawn Only**: `join` only works for `spawn` operations (not `async`).
-/// 5. **Discard Pattern**: `_` results are never joined – they are fire-and-forget,
-///    and never produce a `ThreadTypeAST` binding to join in the first place.
-/// 
-/// @field targets        The variables to join (must currently be `Thread<T>`).
-struct JoinStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::JoinStmt;
-
-    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
-
-    JoinStmtAST() : StmtAST(ASTKind::JoinStmt) {}
 };

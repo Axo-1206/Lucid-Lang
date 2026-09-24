@@ -332,101 +332,9 @@ struct CombinedTypeAST : TypeAST {
         : TypeAST(ASTKind::CombinedType), inner(t) {}
 };
 
-/// @brief The pending result of an `async` operation — `Future<T>`.
-/// 
-/// @example
-///   async result = fetchData(url);   -- result : Future<int>
-///   await result;                    -- result : int, from here on
-/// 
-/// ## Linear Value Rules
-/// 
-/// A `Future<T>` represents a scheduled operation that has not yet
-/// completed. It is a **linear value**: it must be consumed by exactly one
-/// `await` before it can be used, and exactly one `await` is all it can
-/// ever accept. This is a distinct category from every other type in the
-/// Ownership Categories table — not Owned (copying it cannot duplicate the
-/// single underlying scheduled operation), not Shared/refcounted (it is not
-/// meant to have more than one simultaneous holder at all), and not
-/// Borrowed (it has no source it must not outlive; the hazard is
-/// double-consumption, not dangling).
-/// 
-/// 0. **`inner` is always written explicitly at the `async`/`spawn` site,
-///    never inferred.** `AsyncStmtAST::binding`/`SpawnStmtAST::binding` are
-///    always `VarDeclAST*` with a non-null `type` — the parser wraps the
-///    written inner type into `FutureTypeAST` eagerly, the same way it
-///    wraps `T` into `NullableTypeAST`/`FallibleTypeAST` for `?`/`!`.
-///    There is no inferred-type binding form anywhere in Lucid, and this
-///    construct does not introduce the first one — see `AsyncStmtAST` and
-///    `SpawnStmtAST` for the full reasoning.
-/// 1. **Use-before-await is a compile error.** Resolved via the same
-///    flow-sensitive narrowing machinery as `T?`/`T!` — `ExprAST::valueState`
-///    — not a separate runtime check. Before `await`, the identifier's
-///    state is `Future<T>` (unresolved); after, narrowing rewrites it to
-///    plain `T` for the rest of the enclosing scope, exactly as a
-///    successful nil-check narrows `T?` to `T`.
-/// 2. **Not copyable.** `let copy = result;` is a compile error while
-///    `result`'s type is `Future<T>`. There must never be two bindings that
-///    could each independently attempt to consume the same underlying
-///    operation — this is what prevents double-await, rather than relying
-///    on a lookup table to correctly propagate "pending" status through
-///    every possible copy site (assignment, parameter pass, return,
-///    struct/array storage).
-/// 3. **May only exist as a local variable or a function parameter.**
-///    Never a struct field, never an array/slice element. This closes off
-///    every indirect path into rule 4 below — a `Future<T>` cannot be
-///    smuggled into a closure's capture set through a container it's
-///    allowed to sit in.
-/// 4. **A closure literal may never capture a `Future<T>`**, whether the
-///    variable arrived by direct capture from an enclosing scope or as the
-///    enclosing function's own parameter. This is a **separate** rule from
-///    the Downward Flow Rule's closure-capture restriction on `&T`/`[_]T`
-///    — that one exists because a closure might *outlive* a borrowed
-///    view's source; this one exists because a closure might *run more
-///    than once*, and a plain function body (which runs exactly once per
-///    call) does not have that problem. Do not conflate the two
-///    justifications when diagnosing a rejection.
-/// 5. **Must be consumed on every control-flow path out of the scope that
-///    holds it.** A live, un-awaited `Future<T>` reaching scope exit —
-///    including via `return`, `break`, or any branch of an `if`/`switch`
-///    — is a compile error, not a warning. This requires genuine
-///    reachability analysis (every exit path checked for a live unresolved
-///    future), the same family of dataflow pass as return-exhaustiveness
-///    checking, run in the must-consume direction instead of the
-///    must-assign direction.
-/// 
-/// @see ThreadTypeAST for the `spawn`/`join` equivalent — identical rules,
-///      substituting `spawn` for `async` and `join` for `await`.
-struct FutureTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::FutureType;
 
-    TypeAST* inner = nullptr;
 
-    explicit FutureTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::FutureType), inner(t) {}
-};
 
-/// @brief The pending result of a `spawn` operation — `Thread<T>`.
-/// 
-/// @example
-///   spawn result = computeHeavyData();   -- result : Thread<int>
-///   join result;                         -- result : int, from here on
-///   spawn _ = logToFile("started");      -- discard pattern, no Thread<T> binding at all
-/// 
-/// Identical linear-value rules to `FutureTypeAST` (use-before-join is a
-/// compile error via narrowing, not copyable, local/parameter-only storage,
-/// never captured by a closure, must be joined on every control-flow path)
-/// — see `FutureTypeAST` for the full rationale behind each rule. The
-/// discard pattern (`spawn _ = fn()`) never produces a `Thread<T>` binding
-/// in the first place, so none of these rules apply to it — there is
-/// nothing to double-join, capture, or leave unconsumed.
-struct ThreadTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::ThreadType;
-
-    TypeAST* inner = nullptr;
-
-    explicit ThreadTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::ThreadType), inner(t) {}
-};
 
 /// @brief Represents a concrete array type: slice, dynamic, or fixed.
 /// 
@@ -471,21 +379,18 @@ struct ArrayTypeAST : TypeAST {
 ///   &int    → inner = PrimitiveTypeAST(Int)
 ///   &Vec2   → inner = NamedTypeAST("Vec2")
 /// 
-/// References are always valid (non‑nullable by default). To express a nullable
-/// reference, wrap in `NullableTypeAST`: `&Vec2?`.
+/// References are refcounted. Storability is unrestricted:
+///   - Struct fields may have reference type (`&T`).
+///   - Arrays and slices may store reference types.
+///   - Functions may return reference types.
+///   - Closures may capture reference values.
 /// 
-/// ## The Downward Flow Rule (Reference Scoping)
+/// Cycles between reference-typed fields must use `Weak<T>` to break the cycle.
+/// A `Weak<T>` is a non-owning reference that does not participate in
+/// refcounting; accessing it requires a nil-check (it becomes nil when the
+/// referent is freed).
 /// 
-/// References (`&T`) are strictly scoped. They are allowed to flow *downward*
-/// (into nested calls), but never *upward or sideways*:
-/// 
-/// 1. **No Struct Storage:** A struct field cannot have a reference type.
-/// 2. **No Array/Slice Storage:** An array or slice cannot store reference types.
-/// 3. **No Reference Returns:** A function cannot return a reference type.
-/// 
-/// As a result, a reference (`&T`) can only exist in two places:
-///   - As a **function parameter** (e.g., `const process (p &Player)`)
-///   - As a **local variable alias** inside a block (e.g., `let ref &Weapon = player.weapon`)
+/// To express a nullable reference, wrap in `NullableTypeAST`: `&Vec2?`.
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
@@ -495,46 +400,7 @@ struct RefTypeAST : TypeAST {
         : TypeAST(ASTKind::RefType), inner(t) {}
 };
 
-/// @brief A raw, unmanaged pointer – the **sealed conduit**.
-/// 
-/// ## The Sealed Conduit Model
-/// 
-/// Raw pointers (`*T`) are sealed conduits. You can carry them, pass them to
-/// `@[foreign("C")]` functions, check for nil, but never dereference directly.
-/// 
-/// **Allowed operations:**
-/// 1. Store in a variable, struct field, or parameter
-/// 2. Pass to a `@[foreign("C")]` function
-/// 3. Nil check (`== nil`, `!= nil`)
-/// 4. Pass to pointer intrinsics (`#toRef`, `#ptrOffset`, etc.)
-/// 5. Print the address for debugging
-/// 
-/// **Forbidden operations (compiler error):**
-///   - Dereferencing: `*ptr`
-///   - Field access: `ptr.field`
-///   - Indexing: `ptr[i]`
-///   - Arithmetic: `ptr + 4` – use `#ptrOffset` instead
-///   - Assignment: `*ptr = value`
-///   - Type casting/conversion: `ptr<float>(x)` – use `#toRef` or `#toPtr`
-/// 
-/// **Boundary crossing (intrinsics):**
-///   - `#toRef(ptr) -> &T`   (assert validity, cross to safe reference)
-///   - `#toPtr(ref) -> *T` (convert back to raw pointer)
-///   - `#ptrOffset(ptr, n) -> *T` (pointer arithmetic)
-///   - `#ptrDiff(p1, p2) -> int64` (distance between pointers)
-/// 
-/// **Valid contexts for `PtrTypeAST`:**
-///   - `@[foreign("C")]`-decorated declarations
-///   - Input/output types of pointer‑related intrinsics
-///   - Variables/parameters holding values returned by `@[foreign("C")]` / intrinsics
-struct PtrTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypeAST* inner = nullptr;
-
-    explicit PtrTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::PtrType), inner(t) {}
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FuncTypeAST — function type.
@@ -621,118 +487,10 @@ struct FuncTypeAST : TypeAST {
     bool isCls() const { return shape == FuncShape::Cls; }
 };
 
-/// @brief Accesses a type from a module via the ':' operator.
-/// 
-/// This is used ONLY for type names, not values. It resolves a type
-/// reference that is qualified with a module name.
-/// 
-/// @example
-///   parser:Result      → module = "parser", typeName = "Result"
-///   sql:Result         → module = "sql", typeName = "Result"
-///   std:io:File        → module = "std:io", typeName = "File" (nested module)
-/// 
-/// @note This node is used when a type name conflict exists and the user
-///       must disambiguate with module qualification. For unqualified
-///       type names, the resolver looks up the type directly.
-/// 
-/// @field moduleName    The module name (left-hand side of `:`).
-/// @field typeName      The type name (right-hand side of `:`).
-/// @field genericArgs   Generic arguments if the type is generic.
-/// NOTE: Sema transforms this into a NamedTypeAST which carries all generic info.
-struct ModuleTypeAccessAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::ModuleTypeAccess;
-
-    InternedString moduleName;
-    InternedString typeName;
-    ArenaSpan<TypeAST*> genericArgs;
-
-    ModuleTypeAccessAST() : TypeAST(ASTKind::ModuleTypeAccess) {}
-};
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SIMD TYPE NODE
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief The SIMD vector type - compiler-builtin for hardware vector operations.
-/// 
-/// @example
-///   Simd<float32, 4>      → elementType = float32, laneCount = 4
-///   Simd<int32, 8>        → elementType = int32, laneCount = 8
-/// 
-/// ─── Validation Rules (enforced in parser) ────────────────────────────────
-/// 1. elementType must be a numeric primitive:
-///    - Signed: int8, int16, int32, int64
-///    - Unsigned: uint8, uint16, uint32, uint64
-///    - Floating: float32, float64 (aka float, double)
-/// 2. laneCount must be > 0
-/// 3. No nullable/fallible modifiers: Simd<T, N>? is NOT allowed
-/// 
-/// ─── Ownership ──────────────────────────────────────────────────────────────
-/// Simd<T,N> is an Owned value - cheap to copy (a handful of machine words),
-/// no heap allocation, can be stored in structs, returned from functions, etc.
-/// 
-/// @note This is a compiler-builtin type, not a user-defined generic.
-///       It has special lowering to LLVM vector types `<N x T>`.
-struct SimdTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::SimdType;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    TypeAST* elementType = nullptr;
-    uint64_t laneCount = 0;
 
-    // ─── Constructor ─────────────────────────────────────────────────────
-    SimdTypeAST(TypeAST* elem, uint64_t lanes)
-        : TypeAST(ASTKind::SimdType), elementType(elem), laneCount(lanes) {}
-};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ARENA TYPE NODE
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief The Arena type - compiler-builtin bump allocator.
-/// 
-/// @example
-///   const arena Arena = Arena::create(4096) ?? Arena::empty();
-///   let nodes [_]Node = arena::alloc<Node>(128);
-/// 
-/// ─── Validation Rules (enforced in parser) ────────────────────────────────
-/// 1. Arena has NO generic arguments - writing `Arena<int>` is a syntax error
-/// 2. Cannot be nullable/fallible - `Arena?` is rejected by the parser
-/// 3. Must be declared `const` (enforced in Sema)
-/// 
-/// ─── Ownership ──────────────────────────────────────────────────────────────
-/// Arena is Owned, scope-confined - cannot be copied, must be passed by
-/// reference (`&Arena`) to other functions.
-struct ArenaTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::ArenaType;
-
-    ArenaTypeAST() : TypeAST(ASTKind::ArenaType) {}
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ARENA DESCRIPTOR TYPE NODE
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief The ArenaDescriptor type - POD struct for FFI boundary.
-/// 
-/// @example
-///   const desc ArenaDescriptor = arena::descriptor();
-///   c_build_graph(nodes, edges, #addrof(desc));
-/// 
-/// ─── Validation Rules (enforced in parser) ────────────────────────────────
-/// 1. ArenaDescriptor has NO generic arguments
-/// 2. Cannot be nullable/fallible
-/// 3. NOT literal-constructible by users (only `arena::descriptor()` produces it)
-/// 
-/// ─── C Layout ──────────────────────────────────────────────────────────────
-/// The C side sees this as:
-///   typedef struct {
-///       uint8_t* base;   // start of the arena region
-///       uint64_t size;   // total byte capacity
-///   } LGE_ArenaDescriptor;
-struct ArenaDescriptorTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::ArenaDescriptorType;
-
-    ArenaDescriptorTypeAST() : TypeAST(ASTKind::ArenaDescriptorType) {}
-};

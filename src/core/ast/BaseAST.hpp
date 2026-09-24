@@ -1,4 +1,4 @@
-/// @file BaseAST.hpp
+﻿/// @file BaseAST.hpp
 /// 
 /// @responsibility The Foundation. Defines the BaseAST, the Visitor interface,
 ///                 and common types (DocComment, SourceLocation, ASTKind).
@@ -71,17 +71,12 @@
 // TypeAST.hpp
 struct PrimitiveTypeAST;
 struct NamedTypeAST;
-struct ModuleTypeAccessAST;
 struct ArrayTypeAST;
 struct NullableTypeAST;
 struct FallibleTypeAST;
 struct CombinedTypeAST;
 struct RefTypeAST;
-struct PtrTypeAST;
 struct FuncTypeAST;
-struct ArenaTypeAST;
-struct ArenaDescriptorTypeAST;
-struct SimdTypeAST;
 
 // DeclAST.hpp
 struct ImportDeclAST;
@@ -95,6 +90,12 @@ struct EnumVariantAST;
 struct EnumDeclAST;
 struct TraitFieldDeclAST;
 struct TraitDeclAST;
+struct TraitRequireDeclAST;
+struct SatisfyDeclAST;
+struct DefDeclAST;
+struct StaticFnDeclAST;
+struct HostTypeDeclAST;
+struct TypeAliasDeclAST;
 
 // ExprAST.hpp
 struct LiteralExprAST;
@@ -109,7 +110,6 @@ struct IndexExprAST;
 struct SliceExprAST;
 struct FieldAccessExprAST;
 struct ModuleAccessExprAST;
-struct ArenaAccessExprAST;
 struct NullCoalesceExprAST;
 struct AssignExprAST;
 struct PipelineExprAST;
@@ -117,12 +117,12 @@ struct PipelineStepAST;
 struct AnonFuncExprAST;
 struct IfExprAST;
 struct RangeExprAST;
+struct CaseValueAST;
 
 // Concurrency
-struct AsyncStmtAST;
 struct AwaitStmtAST;
 struct SpawnStmtAST;
-struct JoinStmtAST;
+struct StartStmtAST;
 
 // StmtAST.hpp
 struct BlockStmtAST;
@@ -153,7 +153,6 @@ struct UnknownTypeAST;
 
 // Compiler Directive nodes
 struct AttributeAST;
-struct IntrinsicCallExprAST;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ASTKind — compile-time tag stored on every node.
@@ -184,21 +183,12 @@ enum class ASTKind : uint16_t {
     // Type nodes
     PrimitiveType,
     NamedType,
-    ModuleTypeAccess,
     ArrayType,
     NullableType,
     FallibleType,
     CombinedType,      // T?!
     RefType,
-    PtrType,
     FuncType,
-    FutureType,        // Future<T> — result of `async`, consumed exactly once by `await`
-    ThreadType,        // Thread<T> — result of `spawn`, consumed exactly once by `join`
-
-    // Built-in type nodes
-    SimdType,            // Simd<T, N>
-    ArenaType,           // Arena
-    ArenaDescriptorType, // ArenaDescriptor
 
     // Declaration nodes
     ImportDecl,
@@ -212,6 +202,12 @@ enum class ASTKind : uint16_t {
     EnumDecl,
     TraitFieldDecl,
     TraitDecl,
+    TraitRequireDecl,   // REQUIRE clause inside a trait
+    SatisfyDecl,        // satisfy block
+    DefDecl,            // DEF declaration
+    HostTypeDecl,       // TYPE X = #host(...) / #native(...) / #builtin(...)
+    TypeAliasDecl,      // TYPE X = Y (alias)
+    StaticFnDecl,       // static member function inside a struct
 
     // Expression nodes
     LiteralExpr,
@@ -221,26 +217,24 @@ enum class ASTKind : uint16_t {
     IdentifierExpr,
     FieldAccessExpr,
     ModuleAccessExpr,
-    ArenaAccessExpr,    // :: access for builtin types like Arena
     CallExpr,
     IndexExpr,
     SliceExpr,
     BinaryExpr,
     UnaryExpr,
     AssignExpr,
-    NullableChainExpr,
     NullCoalesceExpr,
     PipelineExpr,
     PipelineStep,
     AnonFuncExpr,
     IfExpr,
     RangeExpr,
+    CaseValue,          // one value+binding inside a switch case
 
     // Concurrency
-    AsyncStmt,
     AwaitStmt,
     SpawnStmt,
-    JoinStmt,
+    StartStmt,          // start d T = f(args);  (replaces AsyncStmt)
 
     // Statement nodes
     BlockStmt,
@@ -255,14 +249,12 @@ enum class ASTKind : uint16_t {
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
-    FuncRefStmt,
 
     // Root
     Program,
 
     // Compiler directives
     Attribute,
-    IntrinsicCallExpr,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -665,9 +657,7 @@ struct ExprAST : BaseAST {
 ///
 /// @example
 ///   @[export]                      → name="export", args={}
-///   @[foreign("C")]                → name="foreign", args=[String("C")]
 ///   @[deprecated("use new")]       → name="deprecated", args=[String("use new")]
-///   @[link("opengl", "m")]         → name="link", args=[String("opengl"), String("m")]
 struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
 

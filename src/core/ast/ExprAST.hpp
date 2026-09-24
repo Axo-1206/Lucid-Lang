@@ -302,30 +302,38 @@ struct FieldAccessExprAST : ExprAST {
         : ExprAST(ASTKind::FieldAccessExpr), fieldName(n) {}
 };
 
-/// @brief Accesses a module member via the ':' operator.
+/// @brief Accesses a module member or struct static member via the '::' operator.
+/// 
+/// The `::` operator is used uniformly for module member access and struct
+/// static member access. The LHS may be a module name or a struct type name.
 /// 
 /// @example
-///   math:sqrt(x)         → module = "math", member = "sqrt"
-///   std:io.printl("hi")  → nested module access
-///   mymod:PI             → reading an exported value
+///   math::sqrt(x)        → lhsName = "math",  memberName = "sqrt"  (module access)
+///   Vec2::zero()         → lhsName = "Vec2",  memberName = "zero"  (static struct access)
+///   mymod::PI            → lhsName = "mymod", memberName = "PI"    (module value)
+///   Box<int>::default()  → lhsName = "Box",   memberName = "default", genericArgs = [int]
 /// 
-/// @field module        The module name (left-hand side of `:`).
-/// @field member        The member name (right-hand side of `:`).
-/// @field genericArgs   Generic arguments for generic function call.
+/// @field lhsName             Module name or struct type name (left-hand side of `::`).
+/// @field memberName          Exported member or static function name (right-hand side).
+/// @field genericArgs         Generic arguments for generic member access.
+/// @field resolvedDecl        The resolved value declaration (set by Sema).
+/// @field ownerType           The struct type that owns the member (set by Sema; for static access).
+/// @field isStaticStructAccess True if the LHS resolved to a struct type (not a module).
 struct ModuleAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ModuleAccessExpr;
 
-    const InternedString moduleName;
-    const InternedString memberName;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString lhsName;      // module name OR struct type name
+    const InternedString memberName;   // exported member OR static member name
     ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     ValueDeclAST* resolvedDecl = nullptr;
+    TypeDeclAST*  ownerType = nullptr;          // for static struct access; nullptr for module access
+    bool isStaticStructAccess = false;          // true if LHS resolved to a struct type
 
-    ModuleAccessExprAST(InternedString mod, InternedString mem) 
-        : ExprAST(ASTKind::ModuleAccessExpr),
-          moduleName(mod),
-          memberName(mem) {}
+    ModuleAccessExprAST(InternedString lhs, InternedString mem)
+        : ExprAST(ASTKind::ModuleAccessExpr), lhsName(lhs), memberName(mem) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -373,74 +381,9 @@ struct CallExprAST : ExprAST {
         : ExprAST(ASTKind::CallExpr), hasArgPack(a) {}
 };
 
-/// @brief A compiler‑builtin call invoked with the '#' prefix.
-/// 
-/// @example
-///   #sizeof(T)      – compile‑time size of a type in bytes
-///   #memcpy(d,s,l)  – memory copy intrinsic
-///   #sqrt(x)        – hardware‑accelerated sqrt
-/// 
-/// The semantic pass validates arguments and sets resolvedType.
-/// Codegen maps intrinsicName to the corresponding intrinsic operation.
-/// 
-/// @field intrinsicName  The intrinsic name ("sizeof", "memcpy", "sqrt", etc.).
-/// @field intrinsicID    The LLVM intrinsic ID (set during semantic analysis).
-/// @field args           Value arguments in order.
-struct IntrinsicCallExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    const InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<ExprAST*> args;           // value arguments in order
 
-    explicit IntrinsicCallExprAST(InternedString n) 
-        : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
-};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ARENA ACCESS NODE (::)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ARENA ACCESS NODE (::)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Accesses a builtin type operation via the '::' operator.
-/// 
-/// The `::` operator is used for compiler-builtin types like `Arena`.
-/// 
-/// @example
-///   Arena::create(4096)          → method = "create", isStatic = true,  args = [4096]
-///   arena::alloc<Node>(128)      → method = "alloc",  isStatic = false, args = [128], genericArgs = [Node]
-///   arena::reset()               → method = "reset",  isStatic = false, args = []
-///   arena::descriptor()          → method = "descriptor", isStatic = false, args = []
-/// 
-/// Grammar:
-///   arena_access_expr := IDENTIFIER '::' IDENTIFIER [ '<' type_arg { ',' type_arg } '>' ] '(' [ arg_list ] ')'
-///                      | expr '::' IDENTIFIER [ '<' type_arg { ',' type_arg } '>' ] '(' [ arg_list ] ')'
-/// 
-/// @field methodName    The method name ("create", "alloc", "reset", "descriptor").
-/// @field genericArgs   Generic arguments (only valid for "alloc").
-/// @field args          Call arguments.
-/// @field isStatic      True if this is "Arena::create" (type name on LHS).
-struct ArenaAccessExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::ArenaAccessExpr;
-
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const InternedString methodName;     // "create", "alloc", "reset", "descriptor"
-    ArenaSpan<TypeAST*> genericArgs;     // Generic arguments for method
-    ArenaSpan<ExprAST*> args;            // Call arguments
-    const bool isStatic;                 // true for Arena::create/empty, false for instance forms
-    ExprAST* arenaExpr = nullptr;        // LHS expression (nullptr for static form)
-
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    ValueDeclAST* resolvedDecl = nullptr;
-
-    ArenaAccessExprAST(InternedString method, bool stat, ExprAST* lhs = nullptr)
-        : ExprAST(ASTKind::ArenaAccessExpr),
-          methodName(method),
-          isStatic(stat),
-          arenaExpr(lhs) {}
-};
 
 /// @brief Array element access.
 /// 
@@ -521,8 +464,15 @@ struct SliceExprAST : ExprAST {
 ///   a & b    → op = BitAnd (bitwise AND, integer types only)
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Logical Operators**: `and` and `or` are short-circuiting and accept
-///    any type (coerced to bool). Result is always bool.
+/// 1. **Logical Operators**: `and` and `or` are short-circuiting. Their
+///    operands are evaluated using the truthiness table:
+///      - Concrete non-nullable, non-fallible: always true (compile-time fold).
+///      - `bool`: its runtime value.
+///      - `T?`: false if `nil` (runtime check).
+///      - `T!`: false if `err` (runtime check).
+///      - `T?!`: false if `nil` or `err` (runtime check).
+///    Result is always `bool`. Operands that are compile-time constants are
+///    folded at compile time.
 /// 2. **Bitwise Operators**: `&`, `|`, `^`, `<<`, `>>` are integer-only.
 /// 3. **Comparison**: `==` and `!=` compare values. Reference equality is
 ///    not a separate operator (use `&` and compare addresses).
@@ -546,11 +496,15 @@ struct BinaryExprAST : ExprAST {
 ///   ~x      → op = BitNot
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Ref Operator**: `&x` takes a reference to `x`. `x` must be an lvalue.
-///    The result type is `&T` where `T` is the type of `x`.
-/// 2. **Bitwise NOT**: `~` is integer-only.
-/// 3. **Logical NOT**: `not` accepts any type (coerced to bool). Result is bool.
-/// 4. **Arithmetic Negation**: `-` is numeric-only.
+/// 1. **Bitwise NOT**: `~` is integer-only.
+/// 2. **Logical NOT**: `not` accepts any type; evaluated by the truthiness
+///    table (see BinaryExprAST). Result is always `bool`.
+/// 3. **Arithmetic Negation**: `-` is numeric-only.
+/// 
+/// @note There is no unary `&x` reference-taking operator in expression
+///       position. `&T` in type position is a reference type marker handled
+///       by `RefTypeAST`, not by `UnaryExprAST`. The `&` symbol in expression
+///       position is bitwise AND (a binary operator).
 struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
@@ -818,7 +772,10 @@ struct IfExprAST : ExprAST {
 /// @field lo             Start (inclusive).
 /// @field hi             End (inclusive/exclusive depends on flag).
 /// @field isExclusive    True for `..<` syntax (end is exclusive).
-/// @note start and end must always be a positive integer
+/// @note A range only appears in three positions: range iteration in `for`,
+///       slice bounds, and `switch` case values. In `switch` case values,
+///       both bounds must be compile-time literals. In `for` and slice
+///       positions, bounds may be arbitrary integer expressions.
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
@@ -828,4 +785,37 @@ struct RangeExprAST : ExprAST {
 
     RangeExprAST(bool ex) 
         : ExprAST(ASTKind::RangeExpr), isExclusive(ex) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CaseValueAST — one match value (+ optional payload binding) in a switch case.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief One match value inside a `switch` case clause, with an optional
+///        payload binding for payload-carrying enum variants.
+///
+/// A `case` clause can match multiple values; each value is represented by a
+/// `CaseValueAST`. When the matched value is a payload-carrying enum variant,
+/// `hasBinding` is true and `binding` names the variable introduced into the
+/// case body's scope.
+///
+/// @example
+///   case 200:                         → value = LiteralExpr(200), hasBinding = false
+///   case Direction.North:             → value = FieldAccessExpr, hasBinding = false
+///   case 1..10:                       → value = RangeExprAST, hasBinding = false
+///   case JsonValue.Num(n):            → value = FieldAccessExpr, binding = "n", hasBinding = true
+///
+/// @field value       The match value — a literal, enum variant, or range expression.
+/// @field binding     The payload binding name (non-empty iff hasBinding).
+/// @field hasBinding  True if this case value introduces a payload variable.
+struct CaseValueAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::CaseValue;
+
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    ExprAST*       value = nullptr;   // literal, enum variant, or range
+    InternedString binding;           // payload binding name, or empty
+    const bool     hasBinding;        // true iff a payload variable is introduced
+
+    explicit CaseValueAST(bool hb = false)
+        : BaseAST(ASTKind::CaseValue), hasBinding(hb) {}
 };
