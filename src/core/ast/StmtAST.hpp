@@ -1,13 +1,22 @@
 /// @file StmtAST.hpp
 /// 
-/// @responsibility Defines control flow and action nodes (Loops, Blocks, Returns).
+/// @responsibility Defines control flow and action nodes
+///                 (blocks, loops, returns, branches, concurrency).
 /// 
-/// @hierarchy BaseAST -> StmtAST -> [Concrete Nodes]
+/// @hierarchy BaseAST → StmtAST → [Concrete Nodes]
 /// 
 /// @related_files
 ///   - src/parser/ParserStmt.cpp – primary producer of these nodes
 ///   - src/semantic/ – consumes for control flow analysis
-/// 
+///
+/// ─── Removed Nodes ────────────────────────────────────────────────────────
+/// This header deliberately has NO node for:
+///   - `AsyncStmtAST` — `async` is a declaration marker on `FuncDeclAST`,
+///     not a statement.
+///   - `JoinStmtAST` — `await` replaces `join`.
+///   - `IntrinsicCallExprAST`'s use for `#scope_exit` — `scope_exit(...)` is
+///     an ordinary call registered by Sema; the metadata lives on
+///     `BlockStmtAST::scopeExits`, not a dedicated node.
 
 #pragma once
 
@@ -20,6 +29,10 @@
 #include <memory>
 #include <optional>
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ScopeExitRegistration — semantic metadata for scope_exit(...) calls.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief A scope-exit callback registration (semantic metadata).
 ///
 /// This is NOT an AST node — it's created by Sema during semantic analysis
@@ -27,8 +40,8 @@
 /// metadata for CodeGen to emit LIFO callbacks on scope exit.
 ///
 /// Multiple registrations within one block run in LIFO order (last registered,
-/// first called). The callback must be `cls`-shaped and take exactly one
-/// argument.
+/// first called). The callback must be `cls`-shaped (a `fn`-shaped argument
+/// coerces up via the `fn → cls` coercion) and take exactly one argument.
 ///
 /// @field callExpr   The original `scope_exit(...)` call expression (for diagnostics).
 /// @field callback   The resolved callback expression (a `cls`-shaped function value).
@@ -40,15 +53,19 @@ struct ScopeExitRegistration {
 };
 using ScopeExitRegistrationPtr = ScopeExitRegistration*;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BlockStmtAST — the fundamental scoping unit.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief A brace‑delimited sequence of statements – the fundamental scoping unit.
 /// 
 /// @example
 ///   {
 ///       let x int = 10
-///       io:printl(x)
+///       io::println(x)
 ///   }
 /// 
-/// Every function body, if branch, loop body is a BlockStmtAST.
+/// Every function body, if branch, loop body is a `BlockStmtAST`.
 /// The semantic pass opens a new scope when entering a block
 /// and closes it on exit – names declared inside are not visible outside.
 /// 
@@ -59,26 +76,29 @@ struct BlockStmtAST : StmtAST {
 
     ArenaSpan<StmtAST*> stmts; // Statements in execution order
 
-    // ─── Scope Exit Registrations (semantic metadata) ─────────────────────
-    // Each #scope_exit call in this block is stored here in registration order.
-    // LIFO execution: iterate this span in reverse.
-    // Set by Sema during semantic analysis.
+    // ─── Scope Exit Registrations (semantic metadata) ───────────────────
+    // Each `scope_exit(...)` call in this block is stored here in
+    // registration order. LIFO execution: iterate this span in reverse.
+    // Populated by Sema during semantic analysis; read by CodeGen.
     ArenaSpan<ScopeExitRegistrationPtr> scopeExits;
-
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ExprStmtAST — an expression used as a statement.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief An expression used as a statement – its value is silently discarded.
 /// 
 /// @example
 ///   f(args)                – function call for side effects
 ///   x |> validate |> save  – pipeline as a statement
-///   io:printl("done")      – void call
+///   io::println("done")    – void call
 /// 
 /// The semantic pass emits a warning when a non‑void expression result is
 /// discarded without explicit intent (e.g., a function returning `T!`
-/// whose return value is never checked).
+/// whose `err` state is never checked).
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
@@ -88,13 +108,17 @@ struct ExprStmtAST : StmtAST {
         : StmtAST(ASTKind::ExprStmt), expr(e) {}
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DeclStmtAST — a local declaration inside a block.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief A local declaration inside a block body – supports any declaration kind.
 /// 
 /// @example
 ///   const compute () -> int = {
-///       struct Vec2 { x float = 0.0, y float = 0.0 }   // local struct
-///       const add (a int)(b int) -> int = { ... }      // local function
-///       enum Color { Red = 0, Green = 1, Blue = 2 }    // local enum
+///       struct Vec2 { x float = 0.0; y float = 0.0 }
+///       const add (a int)(b int) -> int = { ... }
+///       enum Color { Red = 0; Green = 1; Blue = 2 }
 ///       let p Point = Point { x = 5, y = 5 }
 ///       return add(p.x)(p.y)
 ///   }
@@ -102,8 +126,10 @@ struct ExprStmtAST : StmtAST {
 /// The semantic pass visits the `decl` and registers it in the current block's
 /// scope. Types declared locally are only visible within that block.
 /// 
-/// @note Attributes (@[inline], @[deprecated]) are allowed on local declarations.
-///       @[export] is NOT allowed on local declarations (top-level only).
+/// @note Attributes (`@[inline]`, `@[deprecated]`, ...) are allowed on local
+///       declarations. `@[export]` is not allowed inside a block; it is
+///       top-level only.
+/// @note `import` is top-level only. It never appears inside a `DeclStmtAST`.
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
@@ -117,72 +143,90 @@ struct DeclStmtAST : StmtAST {
     bool isStruct()  const { return decl && decl->isa<StructDeclAST>(); }
     bool isEnum()    const { return decl && decl->isa<EnumDeclAST>(); }
     bool isTrait()   const { return decl && decl->isa<TraitDeclAST>(); }
-    bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
+    bool isDef()     const { return decl && decl->isa<DefDeclAST>(); }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IfStmtAST — the statement form of `if`.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief The statement form of `if` – `else` is optional, no value is produced.
 /// 
 /// @example
-///   if score >= 90 { io:printl("A") }
-///   if score >= 90 { io:printl("A") } else { io:printl("F") }
+///   if score >= 90 { io::println("A") }
+///   if score >= 90 { io::println("A") } else { io::println("F") }
 ///   if x < 0 { return } else if x == 0 { ... } else { ... }
 /// 
-/// Contrast with `IfExprAST` (expression form) which requires `else` and produces a value.
+/// Contrast with `IfExprAST` (expression form), which requires `else` and
+/// produces a value.
 /// 
 /// The `elseBranch` can be:
 ///   - `nullptr`               → no else clause
 ///   - `BlockStmtAST`          → `else { ... }`
 ///   - `IfStmtAST`             → `else if ...` (chained)
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// The semantic pass applies type narrowing inside branches:
-/// 1. **Standard Narrowing**: Inside `thenBranch`, the condition's truth is
-///    applied (e.g., `if a != nil { ... }` narrows `a` to non-nullable).
-/// 2. **Inverse Narrowing**: For standalone `if` with no `else` that contains
-///    a control flow exit (`return`, `break`, `continue`), the inverse of the
-///    condition is applied to the rest of the enclosing scope.
-/// 3. **`or` at Top Level**: When conditions are joined by `or`, the exit fires
-///    if ANY is true. The inverse is ALL negated – every sub-condition's
-///    inverse is safely applied.
-/// 4. **`and` at Top Level**: Narrowing is unsound and not applied when
-///    conditions are joined by `and`.
+/// ─── Condition Evaluation ───────────────────────────────────────────────
+/// The condition is evaluated by the truthiness table (see `BinaryExprAST`
+/// for the full rule):
+///   - A concrete non-nullable, non-fallible type is always true
+///     (compile-time fold, with a "condition is always true" warning).
+///   - `bool` uses its runtime value.
+///   - `T?`, `T!`, `T?!` are runtime checks for the sentinel.
+/// 
+/// ─── Narrowing ──────────────────────────────────────────────────────────
+/// The semantic pass applies narrowing inside `thenBranch`:
+///   - `if x != nil { ... }` narrows `x` to non-nullable inside the block.
+///   - `if x { ... }` on `T?` is equivalent to `if x != nil { ... }`.
+///   - Inverse narrowing applies after a standalone `if` (no `else`) whose
+///     body exits: `if x == nil { return }` narrows `x` to non-nullable for
+///     the rest of the enclosing scope.
+///   - `or`-joined conditions apply their inverses collectively; `and`-joined
+///     conditions do not narrow (the compiler cannot tell which conjunct
+///     caused the exit).
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprAST* condition = nullptr;  // The test expression (evaluated by truthiness table)
+    ExprAST* condition = nullptr;  // Evaluated by the truthiness table
     StmtAST* thenBranch = nullptr; // Always a `BlockStmtAST`
     StmtAST* elseBranch = nullptr; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SwitchCaseAST / SwitchStmtAST — value dispatch.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief One case clause inside a `switch` statement.
 /// 
 /// @example
-///   case 200, 201, 202: { printl("success") }
-///   case 1..10:         { printl("light") }
+///   case 200, 201, 202: { io::println("success") }
+///   case 1..10:         { io::println("light") }
 ///   case Direction.North, Direction.South: { moveVertical() }
-///   case JsonValue.Num(n): { printl(n) }
+///   case JsonValue.Num(n): { io::println(toStr(n)) }
 /// 
 /// `values` – one or more `CaseValueAST` entries. Each entry is:
-///   - a literal (e.g., `case 200`)
-///   - an enum variant (e.g., `case Direction.North`)
-///   - a payload-carrying variant with binding (e.g., `case JsonValue.Num(n)`)
-///   - a literal range (e.g., `case 1..10`)
+///   - a literal (e.g., `case 200`),
+///   - an enum variant (e.g., `case Direction.North`),
+///   - a payload-carrying variant with a binding
+///     (e.g., `case JsonValue.Num(n)`), or
+///   - a literal range (e.g., `case 1..10`).
 /// 
 /// The body is a block of statements executed when any of the values matches.
-/// There is no fallthrough — each case is isolated. Payload bindings introduced
-/// by `CaseValueAST` are in scope for the duration of the body block.
+/// There is no fallthrough — each case is isolated. Payload bindings
+/// introduced by `CaseValueAST` are in scope for the duration of the body
+/// block.
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
 /// 1. **Exhaustiveness**: For enum types, the compiler errors on missing
 ///    variants when no `default` clause is present.
-/// 2. **Range Bounds**: Range bounds in case values must be compile-time literals.
-/// 3. **Duplicate Values**: Duplicate case values within the same switch
+/// 2. **Range bounds**: Range bounds in case values must be compile-time
+///    literals.
+/// 3. **Duplicate values**: Duplicate case values within the same switch
 ///    are a compile error.
-/// 4. **Type Compatibility**: All case values must be compatible with the
+/// 4. **Type compatibility**: All case values must be compatible with the
 ///    switch subject's type.
-/// 5. **Payload Bindings**: A payload binding (`case Variant(x)`) introduces
+/// 5. **Payload bindings**: A payload binding (`case Variant(x)`) introduces
 ///    `x` into the body's scope with the variant's payload type.
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
@@ -197,9 +241,9 @@ struct SwitchCaseAST : BaseAST {
 /// 
 /// @example
 ///   switch code {
-///       case 200, 201: { io:printl("ok") }
-///       case 400:      { io:printl("bad request") }
-///       default:       { io:printl("unknown") }
+///       case 200, 201: { io::println("ok") }
+///       case 400:      { io::println("bad request") }
+///       default:       { io::println("unknown") }
 ///   }
 /// 
 ///   switch dir {
@@ -207,21 +251,22 @@ struct SwitchCaseAST : BaseAST {
 ///       case Direction.East,  Direction.West:  { moveHorizontal() }
 ///   }
 /// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Statement, not expression (produces no value)
-/// - `default` clause is optional
-/// - O(1) dispatch via jump table where possible (integer and enum types)
-/// - No fallthrough – each case is independent
-/// - Exhaustiveness checking for enum types when `default` is absent
+/// ─── Key Characteristics ────────────────────────────────────────────────
+/// - Statement, not expression (produces no value).
+/// - `default` clause is optional.
+/// - O(1) dispatch via jump table where possible (integer and enum types).
+/// - No fallthrough — each case is independent.
+/// - Exhaustiveness checking for enum types when `default` is absent.
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
 /// 1. **Exhaustiveness**: If the subject is an enum type and no `default`
 ///    clause is present, the compiler errors on missing variants.
-/// 2. **Jump Table Eligibility**: The compiler emits a jump table for integer
-///    and enum types, guaranteeing O(1) dispatch.
-/// 3. **Type Compatibility**: The subject's type must be integer, bool, char,
-///    string, or enum. Structs, arrays, floats, and function types are rejected.
-/// 4. **Default Location**: `defaultLoc` is used for error reporting when
+/// 2. **Jump table eligibility**: The compiler emits a jump table for
+///    integer and enum subjects, guaranteeing O(1) dispatch.
+/// 3. **Type compatibility**: The subject's type must be integer, bool, char,
+///    string, or enum. Structs, arrays, floats, and function types are
+///    rejected.
+/// 4. **Default location**: `defaultLoc` is used for error reporting when
 ///    `defaultBody` is present.
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
@@ -229,75 +274,96 @@ struct SwitchStmtAST : StmtAST {
     ExprAST* subject = nullptr;                  ///< The value being dispatched
     ArenaSpan<SwitchCaseAST*> cases;             ///< Non‑default case clauses
     BlockStmtAST* defaultBody = nullptr;         ///< `nullptr` if no `default`
-    std::optional<SourceLocation> defaultLoc;   ///< Location of `default` keyword (for diagnostics)
+    std::optional<SourceLocation> defaultLoc;    ///< Location of `default` keyword
 
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
 };
 
-/// @brief Iterates over a collection or a numeric range with both index and value.
+// ─────────────────────────────────────────────────────────────────────────────
+// ForStmtAST — range and collection iteration.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Iterates over a collection or a numeric range.
 /// 
-/// @example
-///   for i int in 0..10  { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range inclusive
-///   for i int in 0..<10 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range exclusive
-///   for i int in 0..10..2 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }    -- step of 2
-///   for i int, v int in nums { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) } -- collection
-///   for _, v int in nums { io:printl(stringFromInt(v)) }                               -- ignore index
-///   for i int, _ in nums { io:printl(stringFromInt(i)) }                               -- ignore value
-///   for _, _ in nums { io:printl("processing") }                                       -- ignore both
+/// Two forms map to a single node:
 /// 
-/// Both grammar forms (range and collection) map to a single node.
+/// ─── Range iteration ────────────────────────────────────────────────────
+///   for i int in 0..10        -- inclusive
+///   for i int in 0..<10       -- exclusive
+///   for i int in 0..10..2     -- step of 2
 /// 
-/// ─── Grammar ──────────────────────────────────────────────────────────────
-///   for_stmt = 'for' for_binding ',' for_binding 'in' for_iterable [ '..' expr ] block
-///   for_binding = IDENTIFIER type | '_'
-///   for_iterable = range_iter | expr
-///   range_iter = expr range_op expr
-///   range_op = '..' | '..<'
+/// A single binding (`indexVar`), no value binding. The binding's type must
+/// match the range's element type. The optional `step` (a third `..` clause)
+/// defaults to `1`. A step of zero is a compile error; a negative step
+/// counts down. Step is range-only: collections iterate step 1.
 /// 
-/// ─── Range Iteration ──────────────────────────────────────────────────────
-/// Both index and value are required. Use `_` to ignore either.
-/// The loop variables' types must be numeric (`int`, `float`, etc.).
-/// The end bound's inclusivity is controlled by `range_op` (`..` vs `..<`).
-/// An optional trailing `..` *expr* sets the step (defaults to 1).
+/// ─── Collection iteration ───────────────────────────────────────────────
+///   for i uint, x T in xs     -- array or slice: index + value
+///   for k K, v V in m         -- map: key + value
 /// 
-/// ─── Collection Iteration ────────────────────────────────────────────────
-/// Both index and value are required. Use `_` to ignore either.
-/// Every named loop variable requires its own type annotation, even though the
-/// collection's own declaration already fixes it. For range iteration: a single binding is used; no index/value split.
-/// For collection iteration: the index type is `uint` (for arrays) or the key type `K` (for maps);
+/// Two bindings. The first binding's type depends on the collection:
+///   - Arrays / slices: `uint` (the index).
+///   - Maps: `K` (the key type).
+/// The second binding is the element type `T` or the map value type `V`.
 /// 
-/// ─── Ignored Values (`_`) ──────────────────────────────────────────────────
+/// Use `_` to discard either binding:
+///   for _, x int in xs        -- values only
+///   for i uint, _ in xs       -- indices only
+///   for k string, _ in m      -- keys only
+/// 
+/// The two-binding form is required for collections. A single binding on a
+/// collection is a compile error; use `for _, x T in xs` to iterate values.
+/// 
+/// ─── Read-only bindings ─────────────────────────────────────────────────
+/// Loop bindings are `const` within the body. Assigning to `i` or `v` is a
+/// compile error; shadow with a `let` if a mutable copy is needed.
+/// 
+/// ─── Ignored values (`_`) ───────────────────────────────────────────────
 /// The `_` binding requires no type annotation. Attempting to access `_` in
 /// the loop body is a compile error.
 /// 
-/// @field indexVar      The index variable (name + explicit type) – `nullptr` if ignored (`_`)
-/// @field valueVar      The value variable (name + explicit type) – `nullptr` if ignored (`_`)
-/// @field iterable      The iterable expression (collection or `RangeExprAST`)
-/// @field step          Optional step (only for range loops, `nullptr` if omitted)
-/// @field body          Always a `BlockStmtAST`
+/// @field indexVar   The loop's first binding (range value, array index, or
+///                   map key). `nullptr` if discarded (`_`).
+/// @field valueVar   The loop's second binding (collection element or map
+///                   value). `nullptr` for range loops and for `_`.
+/// @field iterable   The iterable expression — a `RangeExprAST` for range
+///                   iteration, or any collection expression.
+/// @field step       Optional step (range loops only, `nullptr` if omitted).
+/// @field body       Always a `BlockStmtAST`.
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
-    ParamAST* indexVar = nullptr;   // Index variable (name + explicit type), nullptr if ignored (`_`)
-    ParamAST* valueVar = nullptr;   // Value variable (name + explicit type), nullptr if ignored (`_`)
-    ExprAST*  iterable = nullptr;     // Collection or `RangeExprAST`
-    ExprAST*  step = nullptr;         // Optional step (only for range loops, `nullptr` if omitted)
-    StmtAST*  body = nullptr;         // Always a `BlockStmtAST`
+    ParamAST* indexVar = nullptr;   // First binding, nullptr if discarded
+    ParamAST* valueVar = nullptr;   // Second binding, nullptr if discarded or range loop
+    ExprAST*  iterable = nullptr;   // Collection or `RangeExprAST`
+    ExprAST*  step = nullptr;       // Optional step (range loops only)
+    StmtAST*  body = nullptr;       // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
+
+    /// True if the iterable is a range (`RangeExprAST`); false for a collection.
+    bool isRangeIteration() const {
+        return iterable && iterable->isa<RangeExprAST>();
+    }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WhileStmtAST / DoWhileStmtAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Condition‑first loop – condition is tested before each iteration.
 /// 
 /// @example
 ///   while n < 5 { n += 1 }
-///   while !queue.isEmpty() { process(queue.pop() ?? defaultItem) }
+///   while queue.notEmpty() { process(queue.pop() ?? defaultItem) }
 /// 
-/// The loop exits when the condition evaluates to `false` or when a `break` is reached.
+/// The loop exits when the condition evaluates to `false` or when a `break`
+/// is reached. The condition is evaluated by the truthiness table (see
+/// `BinaryExprAST`).
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprAST* condition = nullptr; // Evaluated by the truthiness table (see BinaryExprAST)
+    ExprAST* condition = nullptr; // Evaluated by the truthiness table
     StmtAST* body = nullptr;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
@@ -310,34 +376,41 @@ struct WhileStmtAST : StmtAST {
 ///   do { c = readChar() } while c != '\n'
 /// 
 /// Useful when the exit condition depends on a side effect of the body.
+/// The condition is evaluated by the truthiness table.
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
     StmtAST* body = nullptr;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprAST* condition = nullptr;  ///< Evaluated after each iteration; uses truthiness table
+    ExprAST* condition = nullptr;  ///< Evaluated after each iteration
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
 
-/// @brief Exits the enclosing function, optionally yielding one or more values.
+// ─────────────────────────────────────────────────────────────────────────────
+// Jump statements
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Exits the enclosing function, optionally yielding a value.
 /// 
 /// @example
-///   return         – void return (no values)
-///   return 42      – returns a single integer
+///   return         – void return
+///   return 42      – returns a value
 ///   return a + b   – returns an expression result
-///   return x, y    – returns two values
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Type Matching**: The number and types of values must match the
-///    function's declared return signature.
-/// 2. **Void Return**: A void return (empty `values`) is only valid in void functions.
-/// 3. **Fallible Propagation**: Returning an un-narrowed fallible value is
-///    forbidden – the compiler cannot tell this apart from forgetting to
-///    handle the failure.
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
+/// 1. **Type matching**: The returned value's type must match the function's
+///    declared return type. A bare `return` is only valid in a function whose
+///    return type is `unit`.
+/// 2. **Fallible propagation**: Returning an un-narrowed fallible value
+///    (`T!`) is forbidden — the compiler cannot tell this apart from
+///    forgetting to handle the failure. Narrow with `if x == err { return err; }`
+///    or `x ?? fallback` first.
+/// 3. **Return exhaustiveness**: Every path through a function that returns
+///    a non-`unit` value must reach a `return`.
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ExprAST* value = nullptr; // Empty for bare `return`
+    ExprAST* value = nullptr; // nullptr for a bare `return`
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -347,9 +420,8 @@ struct ReturnStmtAST : StmtAST {
 /// @example
 ///   break
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Loop Context**: Only valid directly inside a loop body.
-/// 2. **Not Valid Outside Loop**: Using `break` outside any loop is a semantic error.
+/// @note Only valid directly inside a loop body. Using `break` outside any
+///       loop is a semantic error.
 struct BreakStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BreakStmt;
 
@@ -361,9 +433,8 @@ struct BreakStmtAST : StmtAST {
 /// @example
 ///   continue
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Loop Context**: Only valid directly inside a loop body.
-/// 2. **Not Valid Outside Loop**: Using `continue` outside any loop is a semantic error.
+/// @note Only valid directly inside a loop body. Using `continue` outside
+///       any loop is a semantic error.
 struct ContinueStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ContinueStmt;
 
@@ -371,7 +442,7 @@ struct ContinueStmtAST : StmtAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONCURRENCY STATEMENTS (Async, Spawn, Join)
+// Concurrency statements (await, spawn, start)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief An await operation — waits for one or more `Deferred<T>` values to complete.
@@ -386,15 +457,22 @@ struct ContinueStmtAST : StmtAST {
 /// `Deferred<T>` to plain `T` for the rest of the enclosing scope — the same
 /// flow-sensitive narrowing mechanism used for `T?`/`T!`.
 /// 
-/// ─── AwaitKind ──────────────────────────────────────────────────────────────
-/// - `Single`: await one or more deferreds sequentially (`await d` or `await a, b, c`).
+/// ─── AwaitKind ──────────────────────────────────────────────────────────
+/// - `Single`: await one or more deferreds sequentially (`await d` or
+///   `await a, b, c`).
 /// - `All`: await a group; all must succeed (`await all(a, b, c)`).
 /// - `Any`: await a group; the first to complete wins (`await any(a, b, c)`).
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Narrowing**: Each target is narrowed from `Deferred<T>` to `T` after await.
-/// 2. **Cannot Await Twice**: Once narrowed, re-awaiting is a type error.
-/// 3. **`cancel` is mutually exclusive**: `await` after `cancel(d)` is a compile error.
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
+/// 1. **Narrowing**: Each target is narrowed from `Deferred<T>` to `T`
+///    after the await.
+/// 2. **Cannot await twice**: Once narrowed, re-awaiting is a type error.
+/// 3. **`cancel` is mutually exclusive**: `await` after `cancel(d)` is a
+///    compile error (a deferred is consumed by exactly one of `await` or
+///    `cancel`).
+/// 4. **Must be consumed**: A live `Deferred<T>` reaching scope exit without
+///    being awaited or cancelled is a compile error.
+/// 5. **Scope**: Only valid inside a function body, not at top level.
 /// 
 /// @field kind     The await form (Single, All, Any).
 /// @field targets  The `Deferred<T>` identifiers to await.
@@ -410,20 +488,20 @@ struct AwaitStmtAST : StmtAST {
     AwaitStmtAST() : StmtAST(ASTKind::AwaitStmt) {}
 };
 
-/// @brief A start operation — launches a call and produces a `Deferred<T>` binding.
+/// @brief A start operation — launches an async call and produces a `Deferred<T>` binding.
 /// 
 /// @example
-///   start result T = fetchData(url)
+///   start d User = fetchUser(7)
 /// 
 /// `start d T = f(args)` runs `f(args)` asynchronously and binds its
 /// `Deferred<T>` handle to `d`. The handle can later be consumed by `await`
-/// or `cancel(d)`.
+/// (to obtain the result) or by `cancel(d)` (to abandon it).
 /// 
-/// Unlike `spawn`, `start` always produces a binding — the caller is responsible
-/// for consuming the deferred on every control-flow path (await or cancel).
+/// Unlike `spawn`, `start` always produces a binding — the caller is
+/// responsible for consuming the deferred on every control-flow path.
 /// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Cooperative or OS-thread concurrency (determined at the call site).
+/// ─── Key Characteristics ────────────────────────────────────────────────
+/// - Runs on a fiber, scheduled cooperatively by the VM.
 /// - Produces a `Deferred<T>` binding that must be consumed exactly once.
 /// - The binding's type is `Deferred<T>` where `T` is the written inner type.
 /// 
@@ -439,21 +517,24 @@ struct StartStmtAST : StmtAST {
     StartStmtAST() : StmtAST(ASTKind::StartStmt) {}
 };
 
-/// @brief A spawn operation — launches a fire-and-forget call on a separate OS thread.
+/// @brief A spawn operation — launches a fire-and-forget fiber.
 /// 
 /// @example
 ///   spawn computeHeavyData()
 ///   spawn logToFile("started")
 /// 
-/// `spawn f(args)` runs `f(args)` on a new OS thread. The result is discarded.
+/// `spawn f(args)` runs `f(args)` on a new fiber. The result is discarded.
 /// Use `start d T = f(args)` when you need to collect the result later.
 /// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - Preemptive OS thread — runs in parallel with the caller.
+/// ─── Key Characteristics ────────────────────────────────────────────────
+/// - Runs on a fiber, scheduled cooperatively by the VM.
 /// - Fire-and-forget — no handle is produced; the result cannot be collected.
-/// - The spawned function may not capture `Deferred<T>` values.
+/// - `f` must be an `async` function. Calling a non-`async` function with
+///   `spawn` is a compile error.
+/// - The spawned function may not capture `Deferred<T>` values (linear-value
+///   rule; the same restriction applies to any closure literal).
 /// 
-/// @field call   The call expression to execute on the new thread.
+/// @field call   The call expression to execute on the new fiber.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnStmt;
 

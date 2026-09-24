@@ -1,12 +1,13 @@
 ﻿/// @file BaseAST.hpp
 /// 
-/// @responsibility The Foundation. Defines the BaseAST, the Visitor interface,
-///                 and common types (DocComment, SourceLocation, ASTKind).
+/// @responsibility The Foundation. Defines BaseAST, the visitor-free
+///                 `isa`/`as` helpers, and common types
+///                 (DocComment, SourceLocation, ASTKind, ConstantValue).
 /// 
 /// @architectural_note
-///   This file uses Forward Declarations for all AST families (Expr, Stmt, etc.).
-///   NEVER include a family header (like ExprAST.hpp) here; this keeps the
-///   dependency graph acyclic.
+///   This file uses Forward Declarations for all AST families (Expr, Stmt,
+///   Decl, Type). NEVER include a family header (like ExprAST.hpp) here;
+///   this keeps the dependency graph acyclic.
 /// 
 /// @related_files
 ///   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp
@@ -16,24 +17,30 @@
 /// FIELD CATEGORIES
 /// ============================================================================
 /// 
-/// AST fields are organized into four categories based on who sets them and when:
+/// AST fields are organized into four categories based on who sets them and
+/// when:
 /// 
 /// | Category        | Mutability          | Set By  | Examples                                    |
 /// | --------------- | ------------------- | ------- | ------------------------------------------- |
 /// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
 /// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `constValue`, `isLValue`    |
-/// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
-/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmValue`, `llvmFunction`, `llvmAlloca`   |
+/// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `moduleFieldIndex`            |
+/// | CodeGen Fields  | `mutable`           | CodeGen | (none — see below)                          |
 /// 
 /// ## Layout Fields vs CodeGen Fields
 /// 
-/// Layout fields (fieldIndex, byteOffset, totalSize, alignment) are computed
-/// by Sema during semantic analysis. They represent decisions about the
-/// memory layout of types, which are independent of the target machine.
+/// Layout fields (`fieldIndex`, `moduleFieldIndex`) are computed by Sema
+/// during semantic analysis. They represent decisions about memory layout
+/// and symbol identity that are independent of the target machine.
 /// 
-/// CodeGen fields (llvmType, llvmFunction, llvmAlloca) are created during
-/// IR lowering. They are actual LLVM IR objects that don't exist until
-/// CodeGen runs.
+/// CodeGen fields (`llvmType`, `llvmFunction`, `llvmAlloca`) are created
+/// during IR lowering. They are actual LLVM IR objects that don't exist until
+/// CodeGen runs. The AST holds NONE of them — every LLVM-level fact lives on
+/// a codegen-side object (a `Types` cache, a `FunctionState`, a
+/// `ProgramState`). The reason is that the AST outlives any single codegen
+/// run: the interpreter lowers the same AST against new targets on hot
+/// reload, so a cached LLVM fact on the AST would be a snapshot of the wrong
+/// run.
 /// 
 /// This separation allows:
 ///   1. Sema to validate layout decisions (e.g., no self-referential structs)
@@ -62,7 +69,7 @@
 // can accept a visitor or hold a pointer without pulling in the full family.
 //
 // The actual struct definitions live in their own headers:
-//   TypeAST.hpp     — PrimitiveTypeAST, NamedTypeAST, GenericParamTypeAST, ...
+//   TypeAST.hpp     — PrimitiveTypeAST, NamedTypeAST, ArrayTypeAST, ...
 //   DeclAST.hpp     — FuncDeclAST, StructDeclAST, TraitDeclAST, ...
 //   ExprAST.hpp     — LiteralExprAST, CallExprAST, PipelineExprAST, ...
 //   StmtAST.hpp     — BlockStmtAST, ForStmtAST, ...
@@ -89,13 +96,13 @@ struct StructDeclAST;
 struct EnumVariantAST;
 struct EnumDeclAST;
 struct TraitFieldDeclAST;
-struct TraitDeclAST;
 struct TraitRequireDeclAST;
+struct TraitDeclAST;
 struct SatisfyDeclAST;
 struct DefDeclAST;
-struct StaticFnDeclAST;
 struct HostTypeDeclAST;
 struct TypeAliasDeclAST;
+struct StaticFnDeclAST;
 
 // ExprAST.hpp
 struct LiteralExprAST;
@@ -119,12 +126,10 @@ struct IfExprAST;
 struct RangeExprAST;
 struct CaseValueAST;
 
-// Concurrency
+// StmtAST.hpp
 struct AwaitStmtAST;
 struct SpawnStmtAST;
 struct StartStmtAST;
-
-// StmtAST.hpp
 struct BlockStmtAST;
 struct ExprStmtAST;
 struct DeclStmtAST;
@@ -145,13 +150,13 @@ struct ModuleAST;
 struct ValueDeclAST;
 struct TypeDeclAST;
 
-// Unknown nodes
+// Unknown nodes (parser error recovery)
 struct UnknownDeclAST;
 struct UnknownExprAST;
 struct UnknownStmtAST;
 struct UnknownTypeAST;
 
-// Compiler Directive nodes
+// Compiler directive nodes
 struct AttributeAST;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,8 +180,8 @@ enum class ASTKind : uint16_t {
     UnknownExpr,
     UnknownStmt,
     UnknownType,
-    
-    // Special
+
+    // Special bases
     ValueDecl,
     TypeDecl,
 
@@ -229,12 +234,12 @@ enum class ASTKind : uint16_t {
     AnonFuncExpr,
     IfExpr,
     RangeExpr,
-    CaseValue,          // one value+binding inside a switch case
+    CaseValue,          // one value + optional binding inside a switch case
 
-    // Concurrency
+    // Concurrency statements
     AwaitStmt,
     SpawnStmt,
-    StartStmt,          // start d T = f(args);  (replaces AsyncStmt)
+    StartStmt,
 
     // Statement nodes
     BlockStmt,
@@ -258,7 +263,7 @@ enum class ASTKind : uint16_t {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DocComment — documentation attached to declarations only (stored in DeclAST).
+// DocComment — documentation attached to declarations only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class DocCommentForm {
@@ -268,7 +273,7 @@ enum class DocCommentForm {
 };
 
 struct DocComment {
-    InternedString  text;   // Markdown content, with ' -' prefix already stripped
+    InternedString  text;   // Markdown content, with the ' -' prefix stripped
     DocCommentForm  form;
 };
 
@@ -341,26 +346,46 @@ struct BaseAST {
 // Family bases
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Base for all statement nodes.
 struct StmtAST : BaseAST {
     explicit StmtAST(ASTKind k) : BaseAST(k) {}
 };
 
+/// @brief Base for all declaration nodes.
+/// 
+/// Every declaration has:
+///   - a name (interned string),
+///   - an optional doc comment,
+///   - an attribute list,
+///   - a visibility flag (`isExported`),
+///   - a reference to its declaring module,
+///   - a declaration order within the module (for deterministic
+///     initialization of module-level state).
 struct DeclAST : BaseAST {
     std::optional<DocComment> doc;
     ArenaSpan<AttributeAST*>  attributes;
     const InternedString      name;
-    
+
+    /// @brief True if the declaration is visible outside its module.
+    /// Set by Sema when it resolves the declaration's `@[export]` attribute.
     bool isExported = false;
+
+    /// @brief The module this declaration belongs to. Set by Sema during
+    /// module registration; used for mangled-name computation and for
+    /// diagnostics that need to know which module a name came from.
     ModuleAST* declaringModule = nullptr;
 
-    // ─── We only need orderInModule for deterministic initialization ──────
-    // The module information is already encoded in the mangled name.
-    int orderInModule = 0;  // Declaration order within module
+    /// @brief Declaration order within the module. Used for deterministic
+    /// initialization of module-level state (fields of the module instance
+    /// struct are ordered by this value). The module's own identity is
+    /// already encoded in the mangled name.
+    int orderInModule = 0;
 
     explicit DeclAST(ASTKind k, InternedString n) : BaseAST(k), name(n) {}
     bool hasDoc() const { return doc.has_value(); }
 };
 
+/// @brief Base for all type-annotation nodes.
 struct TypeAST : BaseAST {
     explicit TypeAST(ASTKind k) : BaseAST(k) {}
 };
@@ -375,8 +400,8 @@ struct TypeAST : BaseAST {
 //
 // ## Why Metadata, Not Replacement?
 //
-// 1. **Memory efficiency**: Replacing AST nodes during semantic analysis would
-//    require allocating new nodes (via the arena) for every constant expression.
+// 1. **Memory efficiency**: Replacing AST nodes during Sema would require
+//    allocating new nodes (via the arena) for every constant expression.
 //    The original AST is already allocated; reusing it avoids extra memory
 //    pressure and fragmentation.
 //
@@ -384,30 +409,28 @@ struct TypeAST : BaseAST {
 //    diagnostics. When an error occurs, we can report it in terms of the
 //    original source expression, not a transformed one.
 //
-// 3. **Non‑destructive analysis**: Other semantic passes may need to traverse
-//    the original expression tree (e.g., for type checking, narrowing, or
-//    capture analysis). Replacing the AST would break these passes.
+// 3. **Non-destructive analysis**: Other Sema passes may need to traverse
+//    the original expression tree (for type checking, narrowing, capture
+//    analysis). Replacing the AST would break these passes.
 //
-// 4. **Lazy evaluation**: We can compute and cache the constant value once,
-//    and reuse it wherever needed, without modifying the AST.
+// 4. **Lazy evaluation**: The constant value is computed once and reused
+//    wherever needed, without modifying the AST.
 //
 // ## Implementation Fields (on ExprAST)
 //
 //   - `isConst` : bool
-//         True if the expression has been evaluated to a compile‑time constant.
-//         Set by `ConstEvaluator`; never changes after that.
+//         True if the expression has been evaluated to a compile-time
+//         constant. Set by `ConstEvaluator`; never changes after that.
 //
 //   - `constValue` : ConstantValue
-//         The evaluated constant value (if `isConst` is true). May be a
-//         primitive, enum, struct, array, or function pointer.
+//         The evaluated constant value (if `isConst` is true).
 //
 //   - `valueState` : ValueState
-//         Reflects the result's nullability/fallibility state (Definite, Nil,
-//         Err, Unknown, None). Helps with flow‑sensitive narrowing.
+//         Reflects the result's nullability/fallibility state (Definite,
+//         Nil, Err, Unknown, None). Helps with flow-sensitive narrowing.
 //
 //   - `resolvedType` : TypeAST*
 //         The semantic type of the expression, set during type resolution.
-//         For constants, this is the type of the evaluated value.
 //
 // ## Usage Guidelines
 //
@@ -420,8 +443,7 @@ struct TypeAST : BaseAST {
 //   - Do not modify the AST structure; use the metadata fields.
 //
 // ### Code Generation (CodeGen)
-//   - If `expr->isConst` is true, you may emit the constant directly
-//     (e.g., `emitConstant(expr->constValue)`).
+//   - If `expr->isConst` is true, emit the constant directly.
 //   - Otherwise, emit the expression as usual.
 //
 // ### Diagnostics
@@ -437,12 +459,18 @@ struct TypeAST : BaseAST {
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief The result of compile-time constant evaluation.
+/// 
+/// A default-constructed `ConstantValue` has `Kind::Unknown`, which
+/// `isEvaluated()` reports as false. The invariant `isConst ==
+/// constValue.isEvaluated()` is maintained because only one place writes both
+/// fields together (the const evaluator's post-amble).
 struct ConstantValue {
     enum class Kind : uint8_t {
         Unknown,    ///< Not yet evaluated
         Error,      ///< Evaluation failed
         Void,       ///< No value (void function)
-        Bool,       ///< true/false
+        Bool,       ///< true / false
         Int,        ///< Integer (any size)
         Float,      ///< Floating point (any precision)
         String,     ///< String literal
@@ -458,59 +486,48 @@ struct ConstantValue {
     Kind kind = Kind::Unknown;
     TypeAST* type = nullptr;
 
-    // ─── Value Storage ────────────────────────────────────────────────
-    // Using variant to store different value types efficiently
+    /// @brief Value storage. Using a variant to hold different value types
+    ///        efficiently, avoiding dynamic allocation for scalars.
+    ///
+    /// NOTE: The `FuncDeclAST*` case requires `FuncDeclAST` to be a complete
+    /// type at the point the variant is instantiated. This file only
+    /// forward-declares it. Any translation unit that actually stores a
+    /// function value in a `ConstantValue` must include `DeclAST.hpp` first.
+    /// This is the existing convention and is not a change.
     std::variant<
-        std::monostate,                                              // Unknown, Error, Void
-        bool,                                                        // Bool
-        int64_t,                                                     // Int
-        double,                                                      // Float
-        InternedString,                                              // String, Char, Enum
-        std::vector<ConstantValue>,                                  // Array
-        std::unordered_map<InternedString, ConstantValue>,           // Struct
-        FuncDeclAST*                                          // Function
+        std::monostate,                                      // Unknown, Error, Void
+        bool,                                                // Bool
+        int64_t,                                             // Int
+        double,                                              // Float
+        InternedString,                                      // String, Char, Enum
+        std::vector<ConstantValue>,                          // Array
+        std::unordered_map<InternedString, ConstantValue>,   // Struct
+        FuncDeclAST*                                         // Function
     > value;
 
     // ─── Constructors ──────────────────────────────────────────────────
 
     ConstantValue() : kind(Kind::Unknown) {}
-
-    explicit ConstantValue(bool v) : kind(Kind::Bool), value(v) {}
-
-    explicit ConstantValue(int64_t v) : kind(Kind::Int), value(v) {}
-
-    explicit ConstantValue(double v) : kind(Kind::Float), value(v) {}
-
-    explicit ConstantValue(InternedString v) : kind(Kind::String), value(v) {}
-
-    explicit ConstantValue(FuncDeclAST* f) : kind(Kind::Function), value(f) {}
+    explicit ConstantValue(bool v)                : kind(Kind::Bool),   value(v) {}
+    explicit ConstantValue(int64_t v)             : kind(Kind::Int),    value(v) {}
+    explicit ConstantValue(double v)              : kind(Kind::Float),  value(v) {}
+    explicit ConstantValue(InternedString v)      : kind(Kind::String), value(v) {}
+    explicit ConstantValue(FuncDeclAST* f)        : kind(Kind::Function), value(f) {}
 
     // ─── Factory Methods ──────────────────────────────────────────────
 
     static ConstantValue nil() {
-        ConstantValue v;
-        v.kind = Kind::Nil;
-        return v;
+        ConstantValue v; v.kind = Kind::Nil; return v;
     }
-
     static ConstantValue err() {
-        ConstantValue v;
-        v.kind = Kind::Err;
-        return v;
+        ConstantValue v; v.kind = Kind::Err; return v;
     }
-
     static ConstantValue error() {
-        ConstantValue v;
-        v.kind = Kind::Error;
-        return v;
+        ConstantValue v; v.kind = Kind::Error; return v;
     }
-
     static ConstantValue voidValue() {
-        ConstantValue v;
-        v.kind = Kind::Void;
-        return v;
+        ConstantValue v; v.kind = Kind::Void; return v;
     }
-
     static ConstantValue unknown() {
         return ConstantValue();
     }
@@ -520,64 +537,40 @@ struct ConstantValue {
     bool isEvaluated() const {
         return kind != Kind::Unknown && kind != Kind::Error;
     }
+    bool isError() const { return kind == Kind::Error; }
+    bool isUnknown() const { return kind == Kind::Unknown; }
 
-    bool isError() const {
-        return kind == Kind::Error;
-    }
-
-    bool isUnknown() const {
-        return kind == Kind::Unknown;
-    }
-
-    bool isBool() const { return kind == Kind::Bool; }
-    bool isInt() const { return kind == Kind::Int; }
-    bool isFloat() const { return kind == Kind::Float; }
-    bool isString() const { return kind == Kind::String; }
-    bool isChar() const { return kind == Kind::Char; }
-    bool isVoid() const { return kind == Kind::Void; }
+    bool isBool()     const { return kind == Kind::Bool; }
+    bool isInt()      const { return kind == Kind::Int; }
+    bool isFloat()    const { return kind == Kind::Float; }
+    bool isString()   const { return kind == Kind::String; }
+    bool isChar()     const { return kind == Kind::Char; }
+    bool isVoid()     const { return kind == Kind::Void; }
     bool isFunction() const { return kind == Kind::Function; }
-    bool isNil() const { return kind == Kind::Nil; }
-    bool isErr() const { return kind == Kind::Err; }
-    bool isStruct() const { return kind == Kind::Struct; }
-    bool isArray() const { return kind == Kind::Array; }
-    bool isEnum() const { return kind == Kind::Enum; }
+    bool isNil()      const { return kind == Kind::Nil; }
+    bool isErr()      const { return kind == Kind::Err; }
+    bool isStruct()   const { return kind == Kind::Struct; }
+    bool isArray()    const { return kind == Kind::Array; }
+    bool isEnum()     const { return kind == Kind::Enum; }
 
     // ─── Accessors ────────────────────────────────────────────────────
 
-    bool asBool() const {
-        return std::get<bool>(value);
-    }
-
-    int64_t asInt() const {
-        return std::get<int64_t>(value);
-    }
-
-    double asFloat() const {
-        return std::get<double>(value);
-    }
-
-    InternedString asString() const {
-        return std::get<InternedString>(value);
-    }
-
-    FuncDeclAST* asFunction() const {
-        return std::get<FuncDeclAST*>(value);
-    }
+    bool         asBool()     const { return std::get<bool>(value); }
+    int64_t      asInt()      const { return std::get<int64_t>(value); }
+    double       asFloat()    const { return std::get<double>(value); }
+    InternedString asString() const { return std::get<InternedString>(value); }
+    FuncDeclAST* asFunction() const { return std::get<FuncDeclAST*>(value); }
 
     const std::vector<ConstantValue>& asArray() const {
         return std::get<std::vector<ConstantValue>>(value);
     }
-
     const std::unordered_map<InternedString, ConstantValue>& asStruct() const {
         return std::get<std::unordered_map<InternedString, ConstantValue>>(value);
     }
 
-    // ─── Mutating Accessors ──────────────────────────────────────────
-
     std::vector<ConstantValue>& asArrayMut() {
         return std::get<std::vector<ConstantValue>>(value);
     }
-
     std::unordered_map<InternedString, ConstantValue>& asStructMut() {
         return std::get<std::unordered_map<InternedString, ConstantValue>>(value);
     }
@@ -589,57 +582,56 @@ struct ConstantValue {
         if (type != other.type) return false;
         return value == other.value;
     }
-
     bool operator!=(const ConstantValue& other) const {
         return !(*this == other);
     }
 };
 
+/// @brief Reflects the nullability/fallibility state of an expression.
+/// 
+/// Used by the flow-sensitive narrowing machinery to track whether a value
+/// is currently definite, `nil`, `err`, unknown, or `None` (void-returning
+/// call).
 enum class ValueState {
-    None,       // For any call expression that return no value
+    None,       // A call that returns no value
     Definite,   // Produces a definite value (T)
     Nil,        // Produces nil (T?)
     Err,        // Produces err (T!)
-    Unknown,    // Unknown at compile-time (needs runtime evaluation)
+    Unknown,    // Unknown at compile time (needs runtime evaluation)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ExprAST — Base class for all expression nodes.
+// ExprAST — base class for all expression nodes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct ExprAST : BaseAST {
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    TypeAST* resolvedType = nullptr;  // The resolved type of this expression
-    ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
-    bool isLValue = false;                  // Can this appear on LHS of assignment?
-    bool isConst = false;                   // Is this a compile-time constant?
-    
-    /// @brief The folded constant value, if this expression was
-    ///        const-evaluated by Sema.
-    ///
-    /// Written only by ConstEvaluator::evaluate's post-amble. Read by
-    /// CodeGen before falling back to runtime lowering, and by other
-    /// Sema passes that want the compile-time value without re-running
-    /// the evaluator.
-    ///
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+
+    /// @brief The resolved type of this expression.
+    TypeAST* resolvedType = nullptr;
+
+    /// @brief The nullability/fallibility state, for narrowing.
+    ValueState valueState = ValueState::Unknown;
+
+    /// @brief True if this expression can appear on the left of an assignment.
+    bool isLValue = false;
+
+    /// @brief True if this expression was folded to a compile-time constant.
+    bool isConst = false;
+
+    /// @brief The folded constant value, if `isConst` is true.
     /// Invariant: `isConst == true` iff `constValue.isEvaluated()`.
-    /// A default-constructed ConstantValue has Kind::Unknown, which
-    /// isEvaluated() reports as false — so the two fields agree at
-    /// construction and stay in sync because only one place writes
-    /// them, together.
     ConstantValue constValue;
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
-    
-    // Convenience methods
-    bool isNone() const { return valueState == ValueState::None; }
+
+    // Convenience predicates for `valueState`.
+    bool isNone()     const { return valueState == ValueState::None; }
     bool isDefinite() const { return valueState == ValueState::Definite; }
-    bool isNil() const { return valueState == ValueState::Nil; }
-    bool isErr() const { return valueState == ValueState::Err; }
-    bool isUnknown() const { return valueState == ValueState::Unknown; }
+    bool isNil()      const { return valueState == ValueState::Nil; }
+    bool isErr()      const { return valueState == ValueState::Err; }
+    bool isUnknown()  const { return valueState == ValueState::Unknown; }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -648,16 +640,18 @@ struct ExprAST : BaseAST {
 
 /// @brief Represents an attribute attached to a declaration.
 ///
-/// Attributes are compiler directives that provide additional information
-/// to the compiler. Each attribute has a name and an optional list of
-/// literal arguments.
+/// Attributes are compiler directives that provide additional information to
+/// the compiler. Each attribute has a name and an optional list of literal
+/// arguments. The attribute set is closed; see the grammar's Attributes
+/// section for the valid names.
 ///
-/// @note Arguments are restricted to literals only (no expressions).
-///       The parser enforces this restriction by parsing LiteralExprAST.
+/// @note Arguments are restricted to literals only (no expressions). The
+///       parser enforces this restriction by parsing `LiteralExprAST`.
 ///
 /// @example
 ///   @[export]                      → name="export", args={}
 ///   @[deprecated("use new")]       → name="deprecated", args=[String("use new")]
+///   @[opaque]                      → name="opaque", args={}
 struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
 
@@ -668,13 +662,13 @@ struct AttributeAST : BaseAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ValueDeclAST – base for declarations that produce values
+// ValueDeclAST — base for declarations that produce values.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Distinguishes between mutable and immutable declarations.
 /// 
-/// - Let:   mutable binding (can be reassigned)
-/// - Const: immutable binding (cannot be reassigned)
+/// - `Let`:   mutable binding (can be reassigned)
+/// - `Const`: immutable binding (cannot be reassigned)
 /// 
 /// @note For struct fields, `Const` means the field cannot be reassigned
 ///       after construction, even if the containing variable is `let`.
@@ -683,38 +677,42 @@ enum class DeclKeyword {
     Const   // immutable
 };
 
-/// @brief Base class for declarations that produce values (can appear in expressions).
+/// @brief Base class for declarations that produce values.
 /// 
-/// Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
-/// in an expression context, the lookup searches this namespace first.
+/// Value declarations live in the VALUE NAMESPACE. When an identifier is
+/// resolved in an expression context, the lookup searches this namespace
+/// first.
 /// 
 /// Value declarations include:
-///   - Variables (VarDeclAST)
-///   - Functions (FuncDeclAST)
-///   - Parameters (ParamAST)
-///   - Fields (FieldDeclAST)
-///   - Enum variants (EnumVariantAST)
+///   - Variables (`VarDeclAST`)
+///   - Functions (`FuncDeclAST`)
+///   - Parameters (`ParamAST`)
+///   - Fields (`FieldDeclAST`)
+///   - Enum variants (`EnumVariantAST`)
+///   - Static members (`StaticFnDeclAST`)
+///   - DEF declarations (`DefDeclAST`)
 /// 
-/// ─── Const-ness ─────────────────────────────────────────────────────────────
+/// ─── Const-ness ─────────────────────────────────────────────────────────
 /// The `keyword` field determines whether this value can be mutated:
 ///   - `DeclKeyword::Let`:  mutable (can be reassigned)
 ///   - `DeclKeyword::Const`: immutable (cannot be reassigned)
 /// 
-/// For enum variants, the keyword is always `Const` (they are immutable constants).
+/// For enum variants, the keyword is always `Const` (they are immutable
+/// constants).
 /// 
-/// ─── Type Resolution ─────────────────────────────────────────────────────────
-/// The `resolvedType` field stores the fully resolved type of this declaration.
-/// This is set during semantic analysis (Phase 2) and is used by expression
-/// resolvers when an identifier references this declaration.
+/// ─── Type Resolution ────────────────────────────────────────────────────
+/// The `type` field stores the fully resolved type of this declaration. This
+/// is set during semantic analysis and is used by expression resolvers when
+/// an identifier references this declaration.
 /// 
-/// @note ValueDeclAST nodes are stored in Scope::values map.
+/// @note `ValueDeclAST` nodes are stored in `Scope::values` map.
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
     const DeclKeyword keyword;
     TypeAST* type = nullptr;
 
-    /// What kind of heap resource this binding owns, if any.
+    /// @brief What kind of heap resource this binding owns, if any.
     ///
     /// ─── The Contract ─────────────────────────────────────────────────────
     /// This field is written exactly once, by Sema, at the moment the
@@ -724,92 +722,75 @@ struct ValueDeclAST : DeclAST {
     ///
     /// Every `ValueDeclAST` — every `VarDeclAST`, `ParamAST`, `FuncDeclAST`,
     /// `FieldDeclAST`, `EnumVariantAST` — has this field populated before
-    /// CodeGen runs. Sema's call sites are:
-    ///
-    ///   - `resolveVarDecl` — local and module-level variables
-    ///   - `resolveParam` — function parameters
-    ///   - `resolveFuncDecl` — function declarations
-    ///   - `resolveStructFieldDeclarations` — struct fields
-    ///   - `resolveEnumDecl` — enum variants (always None)
-    ///   - `resolveAsyncStmt` / `resolveSpawnStmt` — Future/Thread bindings
-    ///   - `resolveForStmt` — loop index and value bindings
-    ///   - `finalizeInstantiatedFunction` — generic specializations
-    ///
-    /// A debug-build assertion in `generate()` walks every module's
-    /// declarations and asserts each `ValueDeclAST` was classified. A
-    /// binding that reaches CodeGen with its default `None` when it should
-    /// have been classified is a Sema bug, and the assertion catches it at
-    /// the boundary rather than as a codegen miscompile.
+    /// CodeGen runs. A debug-build assertion in `generate()` walks every
+    /// module's declarations and asserts each `ValueDeclAST` was
+    /// classified. A binding that reaches CodeGen with its default `None`
+    /// when it should have been classified is a Sema bug, and the assertion
+    /// catches it at the boundary rather than as a codegen miscompile.
     ///
     /// ─── Why On Declarations, Not Expressions ─────────────────────────────
     /// An expression's resource kind is derived on demand, from its resolved
     /// type, at the point of use — `Ownership::drop(expr->resolvedType,
     /// value)`. It is not cached on the expression, because an expression
     /// has no lifetime: it is evaluated, its value is consumed or stored,
-    /// and it is gone. Every use site that needs the classification
-    /// computes it from the type it already has.
+    /// and it is gone. Every use site that needs the classification computes
+    /// it from the type it already has.
     ///
-    /// A declaration *does* have a lifetime — scope entry to scope exit —
-    /// and its binding owns a resource for the duration of that lifetime.
-    /// Every use site within that lifetime must agree on what the binding
-    /// owns, so the classification is cached once and read many times.
+    /// A declaration *does* have a lifetime — scope entry to scope exit — and
+    /// its binding owns a resource for the duration of that lifetime. Every
+    /// use site within that lifetime must agree on what the binding owns, so
+    /// the classification is cached once and read many times.
     ///
-    /// ─── What Each Kind Means ─────────────────────────────────────────────
-    /// See the `ResourceKind` enum above for the per-kind semantics and
-    /// the reasoning behind the `Aggregate` case.
-    ///
-    /// `mutable` because Sema writes it after construction; a `const`
-    /// field would fight the existing two-phase model.
+    /// `mutable` because Sema writes it after construction.
     ResourceKind resourceKind = ResourceKind::None;
-    
+
     /// @brief Index of this binding's slot in its owning module's instance
-    ///        struct, or SIZE_MAX if the binding is not module-level.
+    ///        struct, or `SIZE_MAX` if the binding is not module-level.
     ///
     /// Set once by Sema, in `registerTopLevelNames`, for every top-level
-    /// `VarDeclAST` (and, once the follow-up lands, every top-level
-    /// `cls`-shaped `FuncDeclAST`). Read by CodeGen when emitting
-    /// `__init_module_<name>`, `__free_module_<name>`, and every
-    /// module-level access.
+    /// `VarDeclAST` (and every top-level `cls`-shaped `FuncDeclAST`). Read
+    /// by CodeGen when emitting `__init_module_<name>`,
+    /// `__free_module_<name>`, and every module-level access.
     ///
-    /// This is a Layout Field in the taxonomy at the top of BaseAST.hpp:
-    /// set by Sema, read by later passes, describing the memory layout of
-    /// module state. It replaces the old `VarDeclAST::llvmGlobal` field —
-    /// under the module-as-namespace model there is no per-variable
-    /// `GlobalVariable`; the variable's storage is a field in the module
-    /// instance, and this index is how CodeGen finds it.
+    /// This is a Layout Field: set by Sema, read by later passes, describing
+    /// the memory layout of module state. Under the module-as-namespace
+    /// model there is no per-variable `GlobalVariable`; the variable's
+    /// storage is a field in the module instance, and this index is how
+    /// CodeGen finds it.
     ///
     /// Invariant: at most one `ValueDeclAST*` per module has any given
     /// index. Non-module-level bindings (locals, params, fields) have
-    /// SIZE_MAX.
+    /// `SIZE_MAX`.
     size_t moduleFieldIndex = SIZE_MAX;
 
     bool isModuleLevel() const { return moduleFieldIndex != SIZE_MAX; }
-
     bool isConst() const { return keyword == DeclKeyword::Const; }
-    bool isLet() const { return keyword == DeclKeyword::Let; }
-    
+    bool isLet()   const { return keyword == DeclKeyword::Let; }
+
     explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw, TypeAST* t)
         : DeclAST(k, n), keyword(kw), type(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TypeDeclAST – base for declarations that define types
+// TypeDeclAST — base for declarations that define types.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Base class for declarations that define types.
 /// 
-/// Type declarations live in the TYPE NAMESPACE. When an identifier is resolved
-/// in a type annotation context, the lookup searches this namespace.
+/// Type declarations live in the TYPE NAMESPACE. When an identifier is
+/// resolved in a type-annotation context, the lookup searches this namespace.
 /// 
 /// Type declarations include:
-///   - Structs (StructDeclAST)
-///   - Enums (EnumDeclAST)
-///   - Traits (TraitDeclAST)
+///   - Structs (`StructDeclAST`)
+///   - Enums (`EnumDeclAST`)
+///   - Traits (`TraitDeclAST`)
+///   - Host-backed types (`HostTypeDeclAST`)
+///   - Type aliases (`TypeAliasDeclAST`)
 /// 
-/// @note TypeDeclAST nodes are stored in Scope::types map.
+/// @note `TypeDeclAST` nodes are stored in `Scope::types` map.
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
-    
+
     explicit TypeDeclAST(ASTKind k, InternedString n) : DeclAST(k, n) {}
 };
 
@@ -819,30 +800,34 @@ struct TypeDeclAST : DeclAST {
 
 /// @brief Root node for a source file module.
 /// 
-/// A ModuleAST represents the entire parsed contents of a single `.luc` file.
+/// A `ModuleAST` represents the entire parsed contents of a single `.luc`
+/// file.
 /// 
-/// ─── Imports Storage ──────────────────────────────────────────────────────
+/// ─── File Path and Module Identity ──────────────────────────────────────
+/// A file is a module; the file's path relative to the package root is the
+/// module's identity. There is no in-file declaration that names the module.
+/// `filePath` is the resolved canonical path; it is the stable key for
+/// dependency tracking and module lookup.
 /// 
-/// The `imports` field stores the resolved file paths of all imported modules.
-/// This is a **derived view** computed during parsing by ModuleResolver.
+/// ─── Imports Storage ────────────────────────────────────────────────────
+/// The `imports` field stores the user-written module paths of all imported
+/// modules. This is what the source actually wrote; the resolved
+/// `ModuleAST*` pointers for those imports are stored in `resolvedImports`,
+/// keyed by the alias (or the last path segment if no alias was written).
 /// 
-/// Why not store ImportDeclAST*?
-///   - ImportDeclAST stores the user‑written path (e.g., "io.math")
-///   - The CLI and Interpreter need the resolved file path (e.g., "io/math.luc")
-///   - The resolved path is the stable key for dependency tracking, JIT module
-///     naming, and the file watcher.
-/// 
-/// The user‑written path (ImportDeclAST::path) is preserved on the AST for:
-///   - Error messages (show the user what they wrote)
-///   - Alias resolution (ImportDeclAST::alias)
-/// 
-/// The `imports` field is purely a cache for:
-///   - CLI DependencyGraph (build reverse dependencies)
-///   - Interpreter ModuleLoader (extract dependencies for hot reload)
-///   - LSP (incremental parsing)
-/// 
-/// @note This field is populated during parsing. It is NOT user input — it is
-///       the resolved, canonical path to the imported file.
+/// ─── Semantic Fields ────────────────────────────────────────────────────
+/// The `specializations` vector holds the generic instantiations built during
+/// resolution of *this module's* declarations. A specialization is created
+/// once per distinct (template, args) pair and shared by every module that
+/// references it. The *declaration* is unique; what needs a per-module home
+/// is the question "which module should emit the LLVM type or function for
+/// this?" — the module whose resolution first triggered the instantiation.
+///
+/// Push order is completion order during resolution. Since Sema resolves
+/// depth-first and a specialization is only appended after its own body has
+/// been fully resolved, the vector is already in dependency order: a
+/// specialization's dependencies appear before it. CodeGen can lower the
+/// vector front-to-back without a topological sort.
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
@@ -850,50 +835,16 @@ struct ModuleAST : BaseAST {
     ArenaSpan<DeclAST*> decls;
     bool hasErrors = false;
 
-    // ─── Resolved imports (still needed for cross-module access) ──────────
+    /// @brief Resolved imports, keyed by alias (or last path segment).
     std::unordered_map<InternedString, ModuleAST*> resolvedImports;
 
-    // ─── Dependency order (still needed for initialization ordering) ──────
-    int dependencyOrder = -1;
-
-    // ─── Legacy imports vector ──────────────────────────────────────────────
+    /// @brief User-written import paths, in declaration order.
     std::vector<InternedString> imports;
 
-    // ─── Semantic Fields (set by Sema) ─────────────────────────────────────
-    //
-    // Specializations built during resolution of *this module's*
-    // declarations. Populated by Sema as it instantiates generic structs
-    // and functions; read by CodeGen when lowering this module.
-    //
-    // ─── Why a Field, Not a SemaContext Map ─────────────────────────────
-    // A specialization is created once per distinct (template, args) pair
-    // and shared by every module that references it. The *declaration*
-    // is unique; what needs a per-module home is the question "which
-    // module should emit the LLVM type or function for this?" — the
-    // module whose resolution first triggered the instantiation.
-    //
-    // A `SemaContext`-side map keyed on `ModuleAST*` would answer that
-    // question too, but it forces CodeGen to hold a `SemaContext&`,
-    // coupling the two layers. This field keeps the answer on the module
-    // node itself, where both layers can already reach it through their
-    // own module pointer. CodeGen walks `decls` and `specializations`;
-    // Sema appends to `specializations` during resolution.
-    //
-    // ─── Field Category ─────────────────────────────────────────────────
-    // This is a Semantic Field, in the sense of the table at the top of
-    // this file: set by Sema, read by later passes. The Parser initializes
-    // it empty and never touches it again. It is not a Parser Field, and
-    // it is not a Layout or CodeGen Field. The same category covers
-    // `hasErrors`, which is likewise a fact produced by one phase and
-    // consumed by another.
-    //
-    // ─── Ordering ───────────────────────────────────────────────────────
-    // Push order is completion order during resolution. Since Sema
-    // resolves depth-first and a specialization is only appended after
-    // its own body has been fully resolved, the vector is already in
-    // dependency order: a specialization's dependencies appear before
-    // it. CodeGen can lower the vector front-to-back without a
-    // topological sort.
+    /// @brief Dependency order in the topological sort of imports.
+    int dependencyOrder = -1;
+
+    /// @brief Specializations built during this module's resolution.
     std::vector<DeclAST*> specializations;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
@@ -903,43 +854,36 @@ struct ModuleAST : BaseAST {
 // GenericParamDeclAST — a generic type parameter declaration.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 
 /// @brief Represents a single generic type parameter declaration.
 /// 
 /// This node appears in the generic parameter list of functions, structs,
-/// and traits. Each parameter has a name and an optional list of trait constraints.
+/// enums, traits, and host-backed types. Each parameter has a name and an
+/// optional list of trait constraints.
 /// 
-/// @par Grammar Reference (from LUCID_GRAMMAR.md)
+/// @par Grammar Reference
 ///   generic_param := IDENTIFIER
 ///                  | IDENTIFIER ':' trait_ref { '+' trait_ref }
 /// 
 /// @par Examples
 ///   @code
 ///   struct Box<T> { ... }                         // unconstrained T
-///   const magnitude<T : Vector2> (v T) -> float   // T must implement Vector2
+///   const magnitude<T : Vector2> (v T) -> float   // T must satisfy Vector2
 ///   struct Pair<A : Named, B : Named> { ... }     // two constrained parameters
+///   TYPE Map<K : Eq, V> = #host(LucidMap)         // constrained host type
 ///   @endcode
-/// 
-/// @par Memory Layout (64-bit, typical)
-///   - BaseAST overhead    : ~16 bytes (vtable + kind + loc + padding)
-///   - `name`              : 4 bytes (InternedString is uint32_t)
-///   - `constraints` span  : 16 bytes (ptr + size, each 8 bytes)
-///   @n Total: ~36 bytes per generic parameter (excluding constraint nodes)
 /// 
 /// @par Semantic Resolution
 ///   During semantic analysis, each constraint type is resolved to a
 ///   `TraitDeclAST`. The order of constraints does not affect semantics,
 ///   but is preserved for source fidelity.
 /// 
-/// @field name        The identifier of the type parameter (e.g., "T", "K", "V").
-/// @field constraints Trait types that this parameter must satisfy.
-///                    Empty span means the parameter is unconstrained.
-///                    Each constraint 'should' be a NamedTypeAST or ModuleTypeAccess node.
+/// @field name          The identifier of the type parameter (e.g., "T").
+/// @field constraints   Trait types this parameter must satisfy. Empty span
+///                      means the parameter is unconstrained. Each constraint
+///                      is a `NamedTypeAST` resolving to a `TraitDeclAST`.
 /// 
-/// @note Multiple constraints are joined with `+` in source (e.g., `T : Vector2 + Named`).
-///       The semantic pass verifies that all constraint types resolve to traits
-///       and that the traits are compatible.
-/// 
+/// @note Multiple constraints are joined with `+` in source (e.g.,
+///       `T : Vector2 + Named`).
 struct GenericParamDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
@@ -948,7 +892,7 @@ struct GenericParamDeclAST : TypeDeclAST {
     explicit GenericParamDeclAST(InternedString n)
         : TypeDeclAST(ASTKind::GenericParamDecl, n) {}
 };
-using ParamGroup        = std::vector<ParamAST*>;
+using ParamGroup = std::vector<ParamAST*>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UnknownAST family — error recovery nodes.
@@ -956,14 +900,15 @@ using ParamGroup        = std::vector<ParamAST*>;
 
 /// @brief Generic unknown node – fallback when the specific kind is ambiguous.
 /// 
-/// Used only when the parser cannot determine whether the invalid syntax
-/// was a declaration, expression, statement, or type. Prefer the more
-/// specific unknown node types when possible.
+/// Used only when the parser cannot determine whether the invalid syntax was
+/// a declaration, expression, statement, or type. Prefer the more specific
+/// unknown node types when possible.
 struct UnknownAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Unknown;
     UnknownAST() : BaseAST(ASTKind::Unknown) { hasSyntaxError = true; }
 };
 
+/// @brief True if `node` is null or one of the error-recovery nodes.
 inline bool isUnknown(BaseAST* node) {
     if (!node) return true;
     switch (node->kind) {
@@ -999,42 +944,45 @@ struct UnknownTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CapturedVariable — Information about a variable captured by a closure.
+// CapturedVariable — information about a variable captured by a closure.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A variable captured by a closure.
+/// 
+/// Each capture is a single slot in the closure's environment. The slot holds
+/// either a snapshot of the captured value (for read-only captures) or a
+/// reference to shared storage (for captures the closure writes to).
 struct CapturedVariable {
-    // ─── Lexical Identity (invariant under generic substitution) ───────
+    // ─── Lexical Identity (invariant under generic substitution) ────────
     InternedString name;
 
-    /// The declaration this capture resolves to, in the specialized
-    /// context. Set by Sema's capture analysis; valid for CodeGen
-    /// because substitution rebuilds the anon before capture analysis
-    /// runs on it, so the declaration pointer is never stale.
+    /// The declaration this capture resolves to, in the specialized context.
+    /// Set by Sema's capture analysis; valid for CodeGen because substitution
+    /// rebuilds the anon before capture analysis runs on it, so the
+    /// declaration pointer is never stale.
     ValueDeclAST* resolvedDecl = nullptr;
 
     // ─── Capture Flags (computed once by capture analysis) ─────────────
-    /// True if this closure may write to the captured variable, and
-    /// therefore must share one heap slot with every other holder (the
-    /// enclosing frame, and any other closure capturing the same
-    /// declaration). False if the closure only reads it, in which case
-    /// it may instead be snapshot-copied into the environment at
-    /// construction time.
+    /// True if the closure writes to the captured variable, and therefore
+    /// must share one heap slot with every other holder (the enclosing
+    /// frame, and any other closure capturing the same declaration). False
+    /// if the closure only reads it, in which case it may be
+    /// snapshot-copied into the environment at construction time.
     bool byReference = false;
 
-    /// True if the *value* being captured is itself a closure — meaning
-    /// the environment slot must hold a fat pointer `{ func, env }` and
-    /// the closure's environment must be retained, rather than holding
-    /// a bare function pointer.
+    /// True if the value being captured is itself a closure — meaning the
+    /// environment slot must hold a fat pointer `{ func, env }` and the
+    /// closure's environment must be retained, rather than holding a bare
+    /// function pointer.
     ///
-    /// Conservative: `true` for function-typed parameters and struct
-    /// fields where the actual value isn't known at compile time, so
-    /// CodeGen can emit a runtime shape check.
+    /// Set for function-typed parameters and struct fields where the actual
+    /// value's shape (fn vs cls) is not known at the capture site. CodeGen
+    /// emits a runtime shape check for these captures.
     bool isClosureValue = false;
 
     // ─── Environment Layout (set by Sema, per closure) ─────────────────
     /// Index of this capture's slot in the owning closure's environment
-    /// struct. Assigned on insert; distinct for each closure that
-    /// captures the same variable.
+    /// struct. Assigned on insert; distinct for each closure that captures
+    /// the same variable.
     size_t index = 0;
 };

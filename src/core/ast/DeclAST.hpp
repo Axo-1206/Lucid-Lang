@@ -12,7 +12,12 @@
 /// 
 /// @note Doc comments and attributes are stored in the DeclAST base class,
 ///       not in every BaseAST node.
-/// 
+///
+/// ─── Removed Declarations ────────────────────────────────────────────────
+/// This header deliberately has NO node for:
+///   - `TraitDeclAST` as a pure field contract. Traits now carry both `FIELD`
+///     and `REQUIRE` clauses (see `TraitDeclAST` and `TraitRequireDeclAST`).
+///
 /// ============================================================================
 /// NAMESPACE SEPARATION
 /// ============================================================================
@@ -25,15 +30,19 @@
 ///     - Parameters (ParamAST)
 ///     - Fields (FieldDeclAST)
 ///     - Enum variants (EnumVariantAST)
+///     - DEF declarations (DefDeclAST)
+///     - Static members (StaticFnDeclAST)
 /// 
 ///   TYPE NAMESPACE (TypeDeclAST):
 ///     - Structs (StructDeclAST)
 ///     - Enums (EnumDeclAST)
 ///     - Traits (TraitDeclAST)
+///     - Host-backed types (HostTypeDeclAST)
+///     - Type aliases (TypeAliasDeclAST)
 /// 
 /// This separation allows:
 ///   - `struct Point` and `let Point = 42` to coexist
-///   - Faster lookup (search only relevant namespace)
+///   - Faster lookup (search only the relevant namespace)
 ///   - Clearer error messages ("undefined variable" vs "undefined type")
 /// 
 /// ============================================================================
@@ -47,9 +56,9 @@
 /// |                 |                     |         | `fieldIndex`, `resourceKind`      |
 ///
 /// ─── No CodeGen Fields ────────────────────────────────────────────────────
-/// The AST holds NO LLVM-level facts. There is no `llvmType`,
-/// `llvmFunction`, `llvmAlloca`, `totalSize`, `alignment`, or `byteSize`
-/// on any node. Every LLVM-level fact lives on a codegen-side object:
+/// The AST holds NO LLVM-level facts. There is no `llvmType`, `llvmFunction`,
+/// `llvmAlloca`, `totalSize`, `alignment`, or `byteSize` on any node. Every
+/// LLVM-level fact lives on a codegen-side object:
 ///
 ///   - LLVM types:         `Types` (cached per `TypeAST*`)
 ///   - LLVM functions:     `ProgramState`'s function table
@@ -61,45 +70,6 @@
 /// against one target. The AST outlives any single `ProgramState` (the
 /// interpreter lowers the same AST against new targets on hot reload), so
 /// a cached LLVM fact on the AST would be a snapshot of the wrong run.
-///
-/// ─── Constructor Pattern ──────────────────────────────────────────────────
-///
-/// All declaration nodes use constructor initialization for parser fields:
-///
-/// ```cpp
-/// struct VarDeclAST : ValueDeclAST {
-///     // Parser fields - const (set once in constructor)
-///     ExprAST* init;
-///
-///     // Semantic fields - mutable, set by Sema
-///     InternedString mangledName;
-///
-///     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
-///         : ValueDeclAST(ASTKind::VarDecl, n, kw, t)
-///         , init(i) {}
-/// };
-/// ```
-/// 
-/// ## Constructor Pattern
-/// 
-/// All declaration nodes use constructor initialization for parser fields:
-/// 
-/// ```cpp
-/// struct VarDeclAST : ValueDeclAST {
-///     // Parser fields - const (set once in constructor)
-///     TypeAST* type;
-///     ExprAST* init;
-///     
-///     // CodeGen fields - mutable
-///     llvm::AllocaInst* llvmAlloca = nullptr;
-///     llvm::GlobalVariable* llvmGlobal = nullptr;
-///     
-///     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
-///         : ValueDeclAST(ASTKind::VarDecl, n, kw)
-///         , type(t)
-///         , init(i) {}
-/// };
-/// ```
 
 #pragma once
 
@@ -109,17 +79,20 @@
 #include <memory>
 #include <optional>
 
-// ─── ImportDeclAST ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a `import` declaration – imports symbols from another module.
+/// @brief Represents an `import` declaration – imports a module by path.
 /// 
 /// @example
-///   import std.io                → path = "std.io",      alias = std::io
-///   import std.math as math      → path = "std.math",    alias = "math"
-///   import graphics.gl as gl     → path = "graphics.gl", alias = "gl"
+///   import core.io                → path = "core.io",   alias = "io" (derived)
+///   import core.math as math      → path = "core.math", alias = "math"
+///   import graphics.gl as gl      → path = "graphics.gl", alias = "gl"
 /// 
-/// Path segments are split on '.'. The semantic pass joins them back when
-/// resolving against the package root.
+/// The path is the module's identity. The alias is the local name used in
+/// `alias::member` accesses. If no alias is written, the last path segment
+/// is used as the alias.
 /// 
 /// @note NOT a ValueDeclAST or TypeDeclAST – imports are handled by the
 ///       module loader, not by normal scope lookup.
@@ -137,7 +110,9 @@ struct ImportDeclAST : DeclAST {
         , alias(a) {}
 };
 
-// ─── VarDeclAST ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// VarDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents a variable declaration with an explicit type annotation.
 ///
@@ -147,24 +122,19 @@ struct ImportDeclAST : DeclAST {
 ///   let name string?  = nil
 ///
 /// Type annotation is always required in Lucid – `type` is never null.
-/// `init` is null when no initialiser was written (valid for `let` only;
-/// `const` must always have an initialiser – enforced by semantic pass).
-///
-/// @note `@[export]` on a variable makes it read-only from outside the module.
+/// `init` is null when no initializer was written (valid for `let` only;
+/// `const` must always have an initializer – enforced by the semantic pass).
 ///
 /// ─── No Function Types ────────────────────────────────────────────────
 /// A `VarDeclAST` never holds a `FuncTypeAST`. Function-typed bindings
-/// are always `FuncDeclAST` — the parser's `looksLikeFuncDecl` dispatch
-/// guarantees this before construction. A variable declared `let f ...`
-/// with a function-typed initialiser is parsed as a `FuncDeclAST`, not a
-/// `VarDeclAST`; the two node kinds are disjoint by declared type, not by
-/// initialiser shape.
+/// are always `FuncDeclAST`. A variable declared `let f fn (int) -> int = ...`
+/// is parsed as a `FuncDeclAST`, not a `VarDeclAST`; the two node kinds
+/// are disjoint by declared type.
 ///
-/// This is why `classifyResource`, `ownsResource` in codegen, and every other
-/// binding-classification site treats the "FuncDeclAST" and "VarDeclAST"
-/// branches as mutually exclusive: a `VarDeclAST`'s type is never a
-/// `FuncTypeAST`, so the function-typed branch of any classifier fires
-/// only for `FuncDeclAST`.
+/// This is why every binding-classification site treats the "FuncDeclAST"
+/// and "VarDeclAST" branches as mutually exclusive: a `VarDeclAST`'s type
+/// is never a `FuncTypeAST`, so the function-typed branch of any classifier
+/// fires only for `FuncDeclAST`.
 ///
 /// Unlike a function type, a variable's type *may* be nullable or
 /// fallible: `let x int? = nil`, `let y string! = ...`. Those wrap
@@ -172,10 +142,11 @@ struct ImportDeclAST : DeclAST {
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     ExprAST* init;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    InternedString mangledName;        // Mangled name for AOT compilation
+    InternedString mangledName;  // Mangled name for AOT compilation
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
@@ -183,20 +154,22 @@ struct VarDeclAST : ValueDeclAST {
         , init(i) {}
 };
 
-// ─── ParamAST ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ParamAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents a function parameter.
 /// 
 /// @example
-///   In `const add (a int)(b int) -> int`, `a` and `b` are ParamAST nodes.
+///   In `const add (a int, b int) -> int`, `a` and `b` are ParamAST nodes.
 /// 
 /// Parameters are passed by value (a copy) by default. A `const` parameter
-/// marks a read-only reference – the function sees the caller's original value
-/// but cannot modify it.
+/// marks a read-only reference parameter – the function sees the caller's
+/// original value but cannot modify it.
 /// 
-/// @field type        The parameter type (never null).
-/// @field isVariadic  True if this is a variadic parameter (`...type`).
-/// @field isConstParam True if this is a read-only reference parameter (`const type`).
+/// @field type          The parameter type (never null).
+/// @field isVariadic    True if this is a variadic parameter (`...type`).
+/// @field isConstParam  True if this is a read-only reference parameter (`const type`).
 /// 
 /// @note A variadic parameter must be the last parameter in its own param group.
 ///       Variadic parameters collect trailing arguments into a `[*]type` array.
@@ -209,13 +182,15 @@ struct ParamAST : ValueDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, TypeAST* t, bool variadic = false, bool isConstParam = false)
-        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let, t)  // Parameters are always Let by default
+        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let, t)
         , isVariadic(variadic)
         , isConstParam(isConstParam) {}
 };
 using ParamGroup = std::vector<ParamAST*>;
 
-// ─── FuncDeclAST ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FuncDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A named function declaration — a binding whose value is a function.
 ///
@@ -224,89 +199,60 @@ using ParamGroup = std::vector<ParamAST*>;
 /// A `FuncDeclAST` is structurally similar to a `VarDeclAST`: it binds a
 /// name to a value of a declared type. The differences are:
 ///
-///   1. The declared type is always a `FuncTypeAST` (never nullable,
-///      never fallible — see grammar: `?`/`!` on function types is
-///      forbidden).
+///   1. The declared type is always a `FuncTypeAST` (never nullable, never
+///      fallible — `?`/`!` on function types is forbidden).
 ///   2. It carries `genericParams`.
 ///   3. Its initializer may be an `AnonFuncExprAST` (for a block body),
 ///      a reference expression (for a body that names another function),
 ///      or any other expression producing a value of the function type.
 ///
-/// Earlier revisions stored the body directly on this node as a
-/// `StmtAST*`, which forced three workarounds: a second node type
-/// (`FuncRefStmtAST`) to represent a reference body, a synthesized
-/// `closureView` node to feed the body to CodeGen's closure-lowering
-/// path, and a duplicated set of capture fields (`captures`, `hasClosure`,
-/// `isReturned`) that had to be kept in sync with the corresponding
-/// fields on `AnonFuncExprAST`. All three are removed by the current shape.
-///
 /// ─── Two `funcType` Fields, Only One Has Runtime Parameters ───────────
 ///
 /// A `FuncDeclAST` has *two* `FuncTypeAST` nodes in play:
 ///
-///   - `this->funcType` (this struct's field) — the *declared* signature.
-///     Parsed from the declaration header (`const add (a int) -> int = ...`
-///     yields a `FuncTypeAST` with param `a`). Used for type comparison at
-///     call sites, generic substitution, and diagnostics. Its `ParamAST`
-///     nodes are **type-only**: `llvmAlloca`, `llvmValue`, and `llvmType`
-///     on them are never set, and CodeGen never registers them as
+///   - `this->funcType` — the *declared* signature, parsed from the
+///     declaration header. Used for type comparison at call sites, generic
+///     substitution, and diagnostics. Its `ParamAST` nodes are type-only:
+///     they are never allocated, never bound, and never registered as
 ///     bindings.
 ///
-///   - `init->as<AnonFuncExprAST>()->funcType` — the *runtime* signature.
-///     Parsed from the block body (`{ return a + 1; }` yields an
-///     `AnonFuncExprAST` whose `funcType` is a copy of the declared
-///     signature). Its `ParamAST` nodes are the **real parameters**:
-///     CodeGen allocates a stack slot for each, stores the LLVM argument
-///     into it, and registers it as a binding in the function's scope.
+///   - `init->as<AnonFuncExprAST>()->funcType` — the *runtime* signature,
+///     parsed from the block body. Its `ParamAST` nodes are the real
+///     parameters. CodeGen iterates *this* field to allocate each
+///     parameter's stack slot and register it as a binding.
 ///
 /// The parser produces both, and the two signatures match by construction.
-/// CodeGen must iterate `init->as<AnonFuncExprAST>()->funcType` when
-/// registering parameters — iterating `this->funcType` would bind the
-/// type-only `ParamAST` nodes, and body identifiers (whose `resolvedDecl`
-/// points at the runtime `ParamAST` nodes) would find no LLVM binding.
+/// CodeGen must read parameters from `init` (via the `AnonFuncExprAST`),
+/// never from `this->funcType`.
 ///
 /// When `init` is a reference expression (an `IdentifierExprAST`,
-/// `ModuleAccessExprAST`, call) rather than an `AnonFuncExprAST`, 
-/// there are no runtime parameters for *this*
-/// declaration — the reference target's own `AnonFuncExprAST` carries
-/// them, and this declaration is a pure alias.
+/// `ModuleAccessExprAST`, call) rather than an `AnonFuncExprAST`, there are
+/// no runtime parameters for *this* declaration — the reference target's own
+/// `AnonFuncExprAST` carries them, and this declaration is a pure alias.
 ///
 /// ─── Reassignment ──────────────────────────────────────────────────────
 /// `f = expr;` replaces `init` with the new expression. It follows the
 /// ordinary `assign_stmt` rules: `f` must be `let`, and the expression
 /// must evaluate to a value assignable to the declared `funcType`.
 ///
-/// On reassignment, `this->funcType` is unchanged (it's the declaration's
-/// declared type). The *new* `init` supplies a new runtime signature: if
-/// the RHS is `(n int) -> int { ... }`, that `AnonFuncExprAST`'s `funcType`
-/// has param `n`, and `n` is what CodeGen will bind when the new body is
-/// lowered. The declared signature and the runtime signature still match
-/// by the assignment's type check, but the `ParamAST` nodes are different
-/// objects — this is why CodeGen always reads parameters from `init`, never
-/// from `this->funcType`.
-///
 /// ─── Invariant: Generic ⇒ `const` ───────────────────────────────────────
 /// `!genericParams.empty() ⇒ keyword == DeclKeyword::Const`. The parser
-/// accepts either keyword here (`func_decl` still reads `('let' | 'const')`
-/// in the grammar), so this is a Sema-enforced invariant, not a
-/// parse-time one — Sema rejects `let` on a generic declaration with a
-/// targeted diagnostic (D1: "a generic function must be declared 'const'")
-/// rather than letting a generic parse error fall out of the grammar.
+/// accepts either keyword here (`func_decl` still reads `('let' | 'const')`),
+/// so this is a Sema-enforced invariant, not a parse-time one — Sema rejects
+/// `let` on a generic declaration with a targeted diagnostic (D1: "a generic
+/// function must be declared 'const'").
 ///
 /// The reasoning: a generic function's declared type is a *family*, not a
-/// value. No expression form in the language ever produces a family —
-/// a bare `IdentifierExprAST` with empty `genericArgs` names the family but
-/// is not one (see `IdentifierExprAST`, above), and one with non-empty
-/// `genericArgs` denotes a *member* (a specialization), never the family
-/// itself. A `let`-bound generic `FuncDeclAST` would therefore have no
-/// legal `init` expression that could ever reassign it — `let` asks for a
-/// reassignment capability this node has no way to exercise, and `const`
-/// is simply what the declaration already is. By the time this invariant
-/// is checked, every code path that constructs a `FuncDeclAST` with a
-/// non-empty `genericParams` must already have rejected `DeclKeyword::Let`
-/// upstream in Sema; nothing downstream (CodeGen included) needs to
-/// re-check it, but nothing downstream should assume it silently either —
-/// assert it if this node is walked by a new pass.
+/// value. No expression form in the language ever produces a family, so a
+/// `let`-bound generic `FuncDeclAST` would have no legal `init` expression
+/// that could ever reassign it. `const` is simply what the declaration
+/// already is.
+///
+/// ─── Async ──────────────────────────────────────────────────────────────
+/// `isAsync` is set when the declaration is marked `async`. Only `async`
+/// functions may be `spawn`ed, `start`ed, or `await`ed. A bare call to an
+/// `async` function (without `spawn`, `start`, or `await start`) is a
+/// compile error.
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
@@ -325,19 +271,15 @@ struct FuncDeclAST : ValueDeclAST {
     ///   - Reference body: the reference expression itself
     ///     (`IdentifierExprAST`, `ModuleAccessExprAST`, `CallExprAST`, ...).
     ///   - Reassignment: replaced with the new expression.
-    /// NOTE: init != nullptr for all non-foreign functions.
+    ///   - Foreign body: `init == nullptr`, and `isForeignFunction == true`.
     ExprAST* init = nullptr;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    bool isForeignFunction = false;   // @[foreign] isForeignFunction == false implies init != nullptr
+    bool isForeignFunction = false;   // @[foreign("C")]
     bool isInline = false;            // @[inline]
     bool isNoInline = false;          // @[noinline]
-    bool isAsync = false;             // true when the declaration is marked `async`
+    bool isAsync = false;             // `async` marker
 
-    // No `captures`, `hasClosure`, `isReturned`, or `closureView`.
-    // Those live on `init` when `init` is an `AnonFuncExprAST`.
-
-    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     InternedString mangledName;
 
     // ─── Constructor ────────────────────────────────────────────────────
@@ -354,7 +296,9 @@ struct FuncDeclAST : ValueDeclAST {
     bool isGeneric() const { return !genericParams.empty(); }
 };
 
-// ─── EnumVariantAST ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// EnumVariantAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents one variant of an enum — either integer-valued or payload-carrying.
 /// 
@@ -363,17 +307,23 @@ struct FuncDeclAST : ValueDeclAST {
 ///   - Payload form:  `Num(float)` — `hasValue == false`, `payloadType` holds the inner type.
 /// 
 /// The semantic pass computes tag indices for both forms and verifies no
-/// duplicate values (for integer-form enums).
+/// duplicate values (for integer-form enums). A payload variant's tag is its
+/// position in the enum's declaration order, starting from 0.
 /// 
-/// @note Enum variants are accessed as `Direction.North` or `JsonValue.Num(x)` in source.
-///       They live in the value namespace of the enum's scope.
+/// @example
+///   enum Direction { North = 0; East = 1; }
+///   enum JsonValue { Num(float); Str(string); }
+///   enum Token { Eof = 0; Ident(string); Number(float); }
+/// 
+/// @note Enum variants are accessed as `Direction.North` or `JsonValue.Num(x)`
+///       in source. They live in the value namespace of the enum's scope.
 struct EnumVariantAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const bool    hasValue;      // true = integer form (`Variant = N`)
     const int64_t value;         // valid iff hasValue; the explicit integer value
-    TypeAST*      payloadType;   // valid iff !hasValue; the payload type (may be nullptr if bare)
+    TypeAST*      payloadType;   // valid iff !hasValue; the payload type
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     size_t tagIndex = SIZE_MAX;  // the variant's discriminant; assigned by Sema
@@ -389,26 +339,29 @@ struct EnumVariantAST : ValueDeclAST {
         , hasValue(false), value(0), payloadType(t) {}
 };
 
-// ─── FieldDeclAST ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FieldDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A struct field — a typed slot, optionally with a default value.
 ///
 /// ─── Design: Same Shape as FuncDeclAST, for the Same Reason ────────────
 ///
 /// A struct field is not a declaration — it's a *slot* in the struct's
-/// layout. It has no generic parameters of its own (the grammar forbids
-/// this: a field may only be generic over the struct's own parameters).
-/// When a field's type is a function type and the field supplies a
-/// block-body default, that block is parsed into an `AnonFuncExprAST`
-/// (with a synthesized `self` parameter prepended by the parser) and
-/// stored as `defaultVal`. This is the same pattern as `FuncDeclAST`:
-/// the block body becomes an expression, and everything downstream
-/// treats it uniformly.
+/// layout. It has no generic parameters of its own. When a field's type is
+/// a function type and the field supplies a block-body default, that block
+/// is parsed into an `AnonFuncExprAST` (with a synthesized `self` parameter
+/// prepended by the parser) and stored as `defaultVal`. This is the same
+/// pattern as `FuncDeclAST`: the block body becomes an expression, and
+/// everything downstream treats it uniformly.
 ///
-/// Earlier revisions stored block-body defaults separately as a
-/// `StmtAST* defaultBody`, forcing a split between "value default" and
-/// "body default" that duplicated the same machinery `FuncDeclAST` had
-/// before its own redesign. The current shape removes that split.
+/// ─── @[opaque] ──────────────────────────────────────────────────────────
+/// A field marked `@[opaque]` cannot be initialized, read, or assigned from
+/// Lucid source. It is skipped by `toStr`'s struct walker and cannot satisfy
+/// a trait's `FIELD` clause of the same name. It still occupies layout space.
+/// A struct with only `@[opaque]` fields has no literal form; it must be
+/// constructed by an `FN` in the core script (e.g., `map_new`).
+/// The `isOpaque` flag is set by Sema during attribute resolution.
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
@@ -428,7 +381,7 @@ struct FieldDeclAST : ValueDeclAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     size_t fieldIndex = 0;     // position in struct layout
-    bool isOpaque = false;     // true when @[opaque] is present; set by parser or Sema
+    bool   isOpaque = false;   // true when @[opaque] is present
 
     // ─── Constructor ────────────────────────────────────────────────────
     FieldDeclAST(InternedString n, TypeAST* t, ExprAST* dv, bool isConstField)
@@ -439,64 +392,63 @@ struct FieldDeclAST : ValueDeclAST {
     bool isConst() const { return isConstField; }
 };
 
-// ─── StructDeclAST ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// StructDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents a struct definition with fields and optional generic parameters.
 ///
 /// @example
-///   struct Point { x float = 0.0, y float = 0.0 }
-///   struct Node<T> { value T, next ptr<Node<T>>? }
-///   struct Entity : Vector2, Named { name string, x float, y float, health int }
+///   struct Point { x float = 0.0; y float = 0.0 }
+///   struct Node<T> { value T; next Node<T>?; }
+///   struct Entity : Vector2, Named { name string; x float; y float; health int; }
 ///
-/// A struct may implement one or more traits by listing them after `:`.
-/// The traits are stored in `traitRefs` and resolved during semantic analysis.
+/// A struct may list traits it satisfies after `:`. The traits are stored in
+/// `traitRefs` and resolved during semantic analysis.
 ///
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// The semantic pass must enforce the following rules for struct declarations:
-/// 1. **Trait Implementation**: For each trait in `traitRefs`, verify that the
-///    struct declares all fields from the trait with matching names and types.
-/// 2. **Const Matching**: If a trait field is marked `const`, the struct's
-///    corresponding field must also be marked `const`.
-/// 3. **Type Matching**: All trait fields must have matching types.
-/// 4. **Const Conflict Resolution**: If multiple traits require the same field
-///    name with different const-ness, it's a compile error.
-/// 5. **Generic Parameters**: All generic parameters must be used in at least
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
+/// The semantic pass enforces:
+/// 1. **Trait conformance**: For each trait in `traitRefs`, the struct must
+///    declare all fields the trait requires (for `FIELD` clauses) and provide
+///    the required operations (for `REQUIRE` clauses, via `DEF`s).
+/// 2. **Const matching**: A trait field marked `const` requires the struct's
+///    corresponding field to also be `const`.
+/// 3. **Type matching**: All trait fields must have matching types.
+/// 4. **Generic parameters**: All generic parameters must be used in at least
 ///    one field type. Unused parameters are a compile error.
-/// 6. **Reference Fields**: Fields may have reference type (`&T`). Cycles
-///    between reference-typed fields must use `Weak<T>` to break the cycle;
-///    a `next &Node` field without `?` creates an unsatisfiable initialization
-///    (the first node has no existing node to point at) — use `next &Node?`.
+/// 5. **Recursive fields**: A field whose type recursively contains the
+///    enclosing struct must be nullable (`?`). Two cases:
+///      - **Value field** (`next Node`): infinite size. The `?` in
+///        `next Node?` makes the field a nullable pointer, breaking the
+///        recursion.
+///      - **Reference field** (`next &Node`): the field is a pointer, so
+///        there is no infinite-size problem — but a non-nullable recursive
+///        reference cannot be initialized (every instance would need
+///        another instance to point at, with no terminating case). The `?`
+///        in `next &Node?` provides a `nil` case that terminates the
+///        chain.
+///    Both cases are fixed by `?`.
 ///
-/// ─── No Layout Fields ────────────────────────────────────────────────────
-/// This node deliberately has NO `totalSize` or `alignment` fields. An
-/// earlier revision carried them, intending Sema to compute them. But size
-/// and alignment are `DataLayout`-dependent — they're a property of the
-/// target, not of the AST — so Sema (which is target-independent) can't
-/// compute them. CodeGen queries them on demand:
+/// ─── No Layout Fields ───────────────────────────────────────────────────
+/// This node has NO `totalSize` or `alignment` fields. Size and alignment are
+/// `DataLayout`-dependent — a property of the target, not the AST. CodeGen
+/// queries them on demand:
 ///
 ///     llvm::Type* ty = program.types().get(someStructTypeAST);
 ///     uint64_t size  = module.getDataLayout().getTypeAllocSize(ty);
 ///     uint64_t align = module.getDataLayout().getABITypeAlign(ty);
-///
-/// Caching them on the AST would make the AST a snapshot of one codegen
-/// run's `DataLayout`, which is wrong when the same AST is lowered against
-/// two different targets (the interpreter reloading, an AOT build for
-/// another architecture). The AST holds source-level facts; the layout is
-/// a codegen-side fact.
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────────
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
-    ArenaSpan<FieldDeclAST*> fields;
-    ArenaSpan<NamedTypeAST*> traitRefs;
+    ArenaSpan<FieldDeclAST*>        fields;
+    ArenaSpan<NamedTypeAST*>        traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     /// The linker-level name of the struct's LLVM type. Read by
-    /// `Types::structType` to name the `llvm::StructType`. It is NOT a
-    /// codegen cache — it's a Sema-produced fact that identifies the
-    /// struct across the whole program.
+    /// `Types::structType` to name the `llvm::StructType`.
     InternedString mangledName;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -521,48 +473,55 @@ struct StructDeclAST : TypeDeclAST {
     bool isGeneric() const { return !genericParams.empty(); }
 };
 
-// ─── EnumDeclAST ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// EnumDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Represents an enum definition.
 ///
 /// @example
-///   enum Direction { North = 0, East = 1, South = 2, West = 3 }
-///   enum Status : int32 { Ok = 200, NotFound = 404, Error = 500 }
+///   enum Direction { North = 0; East = 1; South = 2; West = 3; }
+///   enum Status : int32 { Ok = 200; NotFound = 404; Error = 500; }
+///   enum JsonValue { Num(float); Str(string); Arr([*]JsonValue); }
 ///
-/// Each variant must have an explicit integer value. Values are required
-/// (no auto-increment) — this matches the no-inference stance applied
-/// everywhere else in the grammar.
+/// ─── Two Kinds of Enum ──────────────────────────────────────────────────
+/// An enum is integer-valued if every variant uses the `Variant = N` form.
+/// It lowers to a bare integer of the backing type.
 ///
-/// ─── No Layout Fields ────────────────────────────────────────────────────
-/// Like `StructDeclAST`, this node deliberately has NO
-/// `backingLLVMType` or `byteSize`. The backing LLVM integer type is
-/// derived on demand by `Types::enumType` (which returns a
-/// context-interned `llvm::IntegerType*` — LLVM's interning is the cache);
-/// the size is a `DataLayout` query. Caching either on the AST would make
-/// the AST a snapshot of one codegen run, which is wrong.
+/// An enum is payload-carrying if any variant uses the `Variant(T)` form.
+/// It lowers to `{ tag: int, payload: byte[] }`, where `tag` identifies
+/// which variant is active and `payload` is sized to hold the largest
+/// variant. The backing type names the **tag's** integer type; the payload
+/// is sized independently.
 ///
-/// @field variants      Enum variants with their explicit values
-/// @field backingType   Optional backing integer type (defaults to int32)
+/// Mixed enums (integer and payload variants in one declaration) are legal.
+/// An enum with any payload variant is a payload enum for all purposes.
+///
+/// ─── No Layout Fields ───────────────────────────────────────────────────
+/// Like `StructDeclAST`, this node has NO `backingLLVMType` or `byteSize`.
+/// The backing LLVM integer type is derived on demand by `Types::enumType`;
+/// the size is a `DataLayout` query.
+///
+/// @field variants         The enum's variants, in declaration order.
+/// @field backingType      Optional backing integer type. For integer enums,
+///                         this is the enum's storage; for payload enums,
+///                         this is the tag's integer type. Defaults to `int`
+///                         for integer enums and the smallest unsigned type
+///                         that holds the variant count for payload enums.
+/// @field isPayloadEnum    True if any variant carries a payload. Computed
+///                         by Sema during enum resolution.
+/// @field isIntegerEnum    True if all variants are integer-valued. Computed
+///                         by Sema during enum resolution.
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<EnumVariantAST*> variants;
-    PrimitiveTypeAST* backingType;
+    PrimitiveTypeAST*          backingType;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    /// The linker-level name of the enum's LLVM type. Enums lower to a
-    /// bare integer, so `mangledName` is used mainly for diagnostics and
-    /// for correlating the AST node with the emitted IR; the actual LLVM
-    /// type is `Types::enumType`'s result.
     InternedString mangledName;
-
-    /// True if any variant carries a payload type (`Variant(Type)` form).
-    /// Computed once by Sema during enum resolution.
     bool isPayloadEnum = false;
-
-    /// True if all variants are integer-valued (`Variant = N` form).
-    /// Computed once by Sema during enum resolution.
     bool isIntegerEnum = false;
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -574,88 +533,160 @@ struct EnumDeclAST : TypeDeclAST {
         , backingType(backing) {}
 };
 
-// ─── TraitFieldDeclAST ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TraitFieldDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a single field requirement in a trait declaration.
+/// @brief Represents a single `FIELD` clause inside a trait — a field requirement.
 /// 
-/// A trait is a pure **field contract** – a named set of fields (name, type,
-/// and optional const-ness) that a struct promises to contain. Traits have no
-/// methods, no behavior, no qualifiers, and no default values.
+/// A `FIELD` clause declares a field (name, type, optional const-ness) that
+/// any type satisfying the trait must declare with matching name and type.
+/// Traits never carry default values; a `FIELD` clause is a requirement, not
+/// a contribution.
 /// 
 /// @example
-///   trait Vector2 { x float, y float }
-///   trait Named { name string }
-///   trait Container<T> { value T, count int }
-///   trait ImmutableConfig { const maxRetries int, const timeout float }
-///   trait NullableContainer { value int?, fallback int? }  // nullable allowed
-///   trait ErrorHandler { result string!, fallback string! } // fallible allowed
+///   trait Vector2 { FIELD x float; FIELD y float; }
+///   trait Named { FIELD name string; }
+///   trait ImmutableConfig { FIELD const maxRetries int; FIELD const timeout float; }
 /// 
-/// ─── Trait Field Rules ──────────────────────────────────────────────────────
-/// 1. **Name and Type Only**: Trait fields declare name, type, and optional
-///    const-ness – no default values.
-/// 2. **Const Requirement**: If `isConst` is true, the implementing struct
-///    MUST declare this field as `const`.
-/// 3. **Type Restrictions**: 
-///    - If `isConst` is true, the field type MUST be definite (not nullable or fallible).
-///    - If `isConst` is false, the field type MAY be nullable (`T?`), fallible (`T!`), 
-///      or combined (`T?!`).
-/// 4. **Self-Reference**: Trait fields can reference the trait itself via its name.
+/// ─── Trait Field Rules ──────────────────────────────────────────────────
+/// 1. **Name, type, const-ness only**: No default values.
+/// 2. **Const requirement**: If `isConstField` is true, the implementing
+///    struct must declare the field as `const`.
+/// 3. **Type restrictions**: If `isConstField` is true, the field type must
+///    be definite (not nullable or fallible). If false, the field type may
+///    be nullable, fallible, or combined.
+/// 4. **Self-reference**: A `FIELD next Self?;` clause is legal and means
+///    "a nullable reference to the concrete type being satisfied." A
+///    non-nullable `FIELD next Self;` is a compile error (infinite size).
+///    See `TraitDeclAST` for the full self-reference rule.
 /// 
-/// @note Not a ValueDeclAST because trait fields are requirements, not
-///       actual values. The semantic pass uses them to verify that implementing
-///       structs declare all required fields.
+/// @note Not a `ValueDeclAST` because trait fields are requirements, not
+///       actual values. The semantic pass uses them to verify that satisfying
+///       types declare the required fields.
 struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    TypeAST* type;          // Required field type
-    const bool isConstField;      // True if implementing struct must declare as const
+    TypeAST* type;            // Required field type
+    const bool isConstField;  // True if the implementing type must declare as const
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitFieldDeclAST(InternedString n, TypeAST* t, bool isConstField)
         : DeclAST(ASTKind::TraitFieldDecl, n)
-        , type(t) 
+        , type(t)
         , isConstField(isConstField) {}
 
     bool isConst() const { return isConstField; }
 };
 
-// ─── TraitDeclAST ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TraitRequireDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a trait – a named set of fields that a struct promises to contain.
+/// @brief Represents a single `REQUIRE` clause inside a trait — an operation requirement.
+///
+/// A `REQUIRE` clause declares that any type satisfying the trait must
+/// provide an operation of a given kind and signature. The operation kind is
+/// named by an `OpKind` value (e.g., `BINARY_OP`, `CALL`), and the symbol is
+/// the operation's name (`+`, `toStr`, ...).
+///
+/// @example
+///   trait Numeric {
+///       REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
+///       REQUIRE BINARY_OP '-' (self Self, rhs Self) -> Self;
+///   }
+///   trait Stringable {
+///       REQUIRE CALL 'toStr' (self Self) -> string;
+///   }
+///
+/// ─── Semantic Rules ─────────────────────────────────────────────────────
+/// 1. **Only inside a trait**: A `REQUIRE` clause appears only in a `trait`
+///    body. Anywhere else is a parse error.
+/// 2. **No body**: A `REQUIRE` clause is a shape, not an implementation.
+/// 3. **Resolution**: `opKindName` is resolved by Sema against `OpKind`
+///    values declared in the core script. An unknown name is a compile
+///    error.
+///
+/// @field opKindName   The operation category identifier (`"BINARY_OP"`, `"CALL"`, ...).
+/// @field symbol       The operation's string symbol (`"+"`, `"toStr"`, ...).
+/// @field params       The required operation's parameter list.
+/// @field returnType   The required operation's return type.
+struct TraitRequireDeclAST : DeclAST {
+    static constexpr ASTKind staticKind = ASTKind::TraitRequireDecl;
+
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    InternedString  opKindName;
+    InternedString  symbol;
+    ArenaSpan<ParamAST*> params;
+    TypeAST*        returnType = nullptr;
+
+    TraitRequireDeclAST(InternedString opk, InternedString sym)
+        : DeclAST(ASTKind::TraitRequireDecl, InternedString())
+        , opKindName(opk), symbol(sym) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TraitDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Represents a trait — a named set of requirements that a type
+///        promises to satisfy.
 /// 
 /// @example
-///   trait Vector2 { x float, y float }
-///   trait Named { name string }
-///   trait Container<T> { value T, count int }
-///   trait ImmutableConfig { const maxRetries int, const timeout float }
+///   trait Vector2 { FIELD x float; FIELD y float; }
+///   trait Numeric {
+///       REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
+///       REQUIRE BINARY_OP '-' (self Self, rhs Self) -> Self;
+///   }
+///   trait Ord : Eq {
+///       REQUIRE BINARY_OP '<' (self Self, rhs Self) -> bool;
+///   }
 /// 
-/// Used by the semantic pass to:
-///   - Verify that a struct implementing a trait declares all required fields
-///   - Serve as constraints in generic parameter declarations (`<T : Trait>`)
-///   - Check field type and const-ness compatibility
+/// ─── One Construct, Two Clause Kinds ────────────────────────────────────
+/// A trait body may contain:
+///   - `FIELD name type;` clauses — field requirements.
+///   - `REQUIRE op_kind "symbol" (params) -> type;` clauses — operation
+///     requirements.
+///
+/// A trait with only `FIELD` clauses is struct-flavored: only types with
+/// fields can satisfy it. A trait with only `REQUIRE` clauses is
+/// operation-flavored: any type that provides the operations can satisfy
+/// it, including primitives. A trait may have both kinds.
 /// 
-/// ## Generic Traits
+/// ─── Trait Inheritance ──────────────────────────────────────────────────
+/// `trait X : A, B { ... }` declares that any type satisfying `X` must also
+/// satisfy `A` and `B`. Parent traits are checked first; a type that fails
+/// a parent cannot satisfy the child. The parents are checked in
+/// declaration order.
 /// 
-/// Traits can be generic. Generic arguments are resolved at the constraint site:
-///   `<T : Container<int>>` means T must implement Container with int.
+/// ─── Generic Traits ─────────────────────────────────────────────────────
+/// Traits may carry generic parameters. A constraint site uses a concrete
+/// instantiation: `<T : Container<int>>`. The compiler substitutes the
+/// arguments at the constraint site.
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// The semantic pass must enforce the following rules for trait declarations:
-/// 1. **Trait Field Name Uniqueness**: All field names within a trait must be
+/// ─── Self-Reference Rules ───────────────────────────────────────────────
+/// `Self` in a clause refers to the concrete type being satisfied. A
+/// `FIELD` clause may use `Self` in the field's type:
+///   - `FIELD next Self?;` — a nullable reference to the concrete type.
+///     Legal; the `?` provides the terminating case.
+///   - `FIELD next Self;` — a non-nullable self-reference. **Compile
+///     error**: infinite size.
+/// 
+/// ─── Semantic Analysis Notes ────────────────────────────────────────────
+/// 1. **Field name uniqueness**: All `FIELD` names within a trait must be
 ///    unique. Duplicate names with different types are a compile error.
-/// 2. **Generic Parameters**: All generic parameters must be used in at least
-///    one field type. Unused parameters are a compile error.
-/// 3. **No Trait Inheritance**: Traits do not inherit from other traits.
-/// 4. **No Default Values**: Traits define field requirements only.
+/// 2. **Generic parameters**: All generic parameters must be used in at least
+///    one clause.
+/// 3. **No default values**: Trait clauses declare requirements only.
 struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
-    ArenaSpan<NamedTypeAST*>        parentTraits;   // `trait X : A, B { ... }` parent constraints
-    ArenaSpan<TraitFieldDeclAST*>   fields;         // FIELD clauses
-    ArenaSpan<TraitRequireDeclAST*> requires;       // REQUIRE clauses
+    ArenaSpan<NamedTypeAST*>        parentTraits;  // `trait X : A, B { ... }`
+    ArenaSpan<TraitFieldDeclAST*>   fields;        // FIELD clauses
+    ArenaSpan<TraitRequireDeclAST*> requires;      // REQUIRE clauses
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitDeclAST(InternedString n,
@@ -670,119 +701,146 @@ struct TraitDeclAST : TypeDeclAST {
         , requires(reqs) {}
 };
 
-// ─── TraitRequireDeclAST ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// SatisfyDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a REQUIRE clause inside a trait — an operation requirement.
-///
-/// A REQUIRE clause specifies that any type satisfying this trait must
-/// provide an operation of a given kind (e.g., BINARY_OP "+", CALL "toStr").
-///
-/// @example
-///   trait Addable {
-///       REQUIRE BINARY_OP "+": (Self, Self) -> Self;
-///   }
-///
-/// @field opKindName   The operation category identifier ("BINARY_OP", "CALL", etc.)
-/// @field symbol       The operation's string symbol ("+", "toStr", etc.)
-/// @field params       The required operation's parameter list.
-/// @field returnType   The required operation's return type.
-struct TraitRequireDeclAST : DeclAST {
-    static constexpr ASTKind staticKind = ASTKind::TraitRequireDecl;
-
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    InternedString  opKindName;    // "BINARY_OP", "CALL", "UNARY_OP", etc.
-    InternedString  symbol;        // "+", "toStr", "-", etc.
-    ArenaSpan<ParamAST*> params;
-    TypeAST*        returnType = nullptr;
-
-    TraitRequireDeclAST(InternedString opk, InternedString sym)
-        : DeclAST(ASTKind::TraitRequireDecl, InternedString())
-        , opKindName(opk), symbol(sym) {}
-};
-
-// ─── SatisfyDeclAST ───────────────────────────────────────────────────────
-
-/// @brief Represents a `satisfy` block — provides a trait implementation for a type.
+/// @brief Represents a `satisfy` block — asserts that a type satisfies a trait.
 ///
 /// A `satisfy` block declares that `targetType` implements `traitName` by
-/// supplying a set of DEF declarations that fulfil the trait's requirements.
+/// supplying `DEF` declarations that fulfil the trait's `REQUIRE` clauses.
+/// Field conformance (for `FIELD` clauses) is checked implicitly against the/// target type's own field declarations; the block does not list fields.
 ///
 /// @example
-///   satisfy Addable for Vec2 {
-///       DEF BINARY_OP "+": (a Vec2, b Vec2) -> Vec2 { ... }
+///   satisfy Numeric for Vec2 {
+///       DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = { ... };
+///       DEF BINARY_OP '-' (a Vec2, b Vec2) -> Vec2 = { ... };
 ///   }
 ///
+///   satisfy Vector2 for Vec2 { }    -- empty block: fields checked implicitly
+///
+/// ─── Generic Satisfy ────────────────────────────────────────────────────
+/// A `satisfy` block may be generic, covering all instantiations of a
+/// generic trait in one block:
+///
+///   satisfy Container<T> for Box<T> { }
+///
+/// The parameter list `<T>` is shared between the trait application and the
+/// type. Every parameter that appears on either side must be listed.
+///
+/// ─── Semantic Rules ─────────────────────────────────────────────────────
+/// 1. **Missing member** (a `REQUIRE` clause with no matching `DEF`): compile
+///    error.
+/// 2. **Extra `DEF`** (a `DEF` in the block that the trait does not require):
+///    allowed. The block is both an assertion of conformance and a grouping
+///    of related declarations.
+/// 3. **Field conformance**: checked against the target type's own fields,
+///    not listed in the block.
+///
 /// @field traitName          The trait being satisfied.
-/// @field traitGenericArgs   Generic arguments to instantiate the trait (may be empty).
+/// @field traitGenericArgs   Generic arguments instantiating the trait, if any.
 /// @field genericParams      For generic satisfy: `satisfy Container<T> for Box<T>`.
 /// @field targetType         The `for Type` clause.
-/// @field defs               The DEF declarations that implement the requirements.
+/// @field defs               The `DEF` declarations fulfilling the trait's requirements.
 struct SatisfyDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::SatisfyDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     InternedString  traitName;
     ArenaSpan<TypeAST*> traitGenericArgs;
-    ArenaSpan<GenericParamDeclAST*> genericParams;  // for generic satisfy
-    TypeAST*        targetType = nullptr;           // the `for Type` clause
-    ArenaSpan<DefDeclAST*> defs;                    // the block body
+    ArenaSpan<GenericParamDeclAST*> genericParams;
+    TypeAST*        targetType = nullptr;
+    ArenaSpan<DefDeclAST*> defs;
 
     SatisfyDeclAST(InternedString tn)
         : DeclAST(ASTKind::SatisfyDecl, InternedString()), traitName(tn) {}
 };
 
-// ─── DefDeclAST ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// DefDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a DEF declaration — an operator or operation implementation.
+/// @brief Represents a `DEF` declaration — an operator or named-call fact.
 ///
-/// DEF declarations appear inside `satisfy` blocks and provide the concrete
-/// implementation for a trait's REQUIRE clauses. They map an operation kind
-/// and symbol to an implementation (a block body, identifier, or intrinsic).
+/// `DEF` declares that an operation exists for a given signature. It appears
+/// at the top level of a module or inside a `satisfy` block. The declaration
+/// names the operation kind, the symbol, the parameter list, the return
+/// type, and the implementation.
 ///
 /// @example
-///   DEF BINARY_OP "+": (a Vec2, b Vec2) -> Vec2 { Vec2 { x = a.x + b.x, y = a.y + b.y } }
-///   DEF CALL "toStr": (v Vec2) -> string = #builtin(vec2_to_str)
+///   DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = { ... };
+///   DEF CALL 'toStr' (v Vec2) -> string = #builtin(vec2_to_str);
+///   DEF BINARY_OP '!=' <T : Eq> (a T, b T) -> bool = { return not (a == b); };
 ///
-/// @field opKindName   The operation category ("BINARY_OP", "CALL", "UNARY_OP", etc.)
-/// @field symbol       The operation symbol ("+", "toStr", etc.)
-/// @field genericParams   Generic parameters for the implementation.
+/// ─── Implementation Forms ───────────────────────────────────────────────
+/// The `impl` expression is one of:
+///   - An `AnonFuncExprAST` whose signature is taken from the `DEF` header
+///     (a block body — the most common form).
+///   - An `IdentifierExprAST` referencing an existing function.
+///   - A `CallExprAST` to a `#host`, `#native`, or `#builtin` target.
+///
+/// The block form's signature is not repeated; the parser synthesizes the
+/// anonymous function's signature from `params` and `returnType`.
+///
+/// ─── Semantic Rules ─────────────────────────────────────────────────────
+/// 1. **Op-kind resolution**: `opKindName` resolves to an `OpKind` value at
+///    the DEF's declaration site. An unknown name is a compile error.
+/// 2. **Overload resolution**: Two `DEF`s with the same op kind, symbol, and
+///    operand types are a redeclaration error. Exact concrete matches beat
+///    generic matches; two matching generics are an ambiguity error.
+///
+/// @field opKindName   The operation category (`"BINARY_OP"`, `"CALL"`, ...).
+/// @field symbol       The operation's string symbol (`"+"`, `"toStr"`, ...).
+/// @field genericParams   Generic parameters for a generic DEF.
 /// @field params       The implementation's parameters.
 /// @field returnType   The implementation's return type.
-/// @field impl         The implementation body — an AnonFuncExprAST for a block body,
-///                     an IdentifierExprAST for a reference, or a CallExprAST for a
-///                     #builtin/#native/#host target.
+/// @field impl         The implementation — an `AnonFuncExprAST`, an
+///                     `IdentifierExprAST`, or a call to a host/native/builtin.
 struct DefDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::DefDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    InternedString  opKindName;    // "BINARY_OP", "CALL", "UNARY_OP", etc.
-    InternedString  symbol;        // "+", "toStr", etc.
+    InternedString  opKindName;
+    InternedString  symbol;
     ArenaSpan<GenericParamDeclAST*> genericParams;
     ArenaSpan<ParamAST*> params;
     TypeAST*        returnType = nullptr;
-    ExprAST*        impl = nullptr;  // AnonFuncExprAST, IdentifierExprAST, or #builtin call
+    ExprAST*        impl = nullptr;
 
     DefDeclAST(InternedString opk, InternedString sym)
         : DeclAST(ASTKind::DefDecl, InternedString())
         , opKindName(opk), symbol(sym) {}
 };
 
-// ─── HostTypeDeclAST ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// HostTypeDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief A `TYPE X = #host(...)` / `#native(...)` / `#builtin(...)` declaration.
+/// @brief A host-backed type declaration — `TYPE X = #host(...)` /
+///        `#native(...)` / `#builtin(...)`.
 ///
-/// These are host-backed type declarations that bind a Lucid type name to a
-/// runtime-provided type implementation. They may be generic.
+/// Binds a Lucid type name to a type whose implementation lives on the host
+/// (a C++ type registered with the engine), in the VM (`#native`), or in the
+/// compiler (`#builtin`). Host-backed types may be generic.
 ///
 /// @example
-///   TYPE Arena = #host(LucidArena)
+///   TYPE Map<K, V> = #host(LucidMap)
+///   TYPE Deferred<T> = #host(LucidDeferred)
 ///   TYPE Weak<T> = #host(LucidWeak)
 ///   TYPE Simd<T, N> = #builtin(simd_type)
-///   TYPE FILE = #native(FILE)
+///   TYPE Float4 = Simd<float, 4>       -- this is a TypeAliasDeclAST, not a host decl
+///
+/// ─── Semantic Rules ─────────────────────────────────────────────────────
+/// 1. **Core-script only for `#native`**: A user script using `#native` is a
+///    compile error.
+/// 2. **Target name resolution**: `targetName` is resolved by the compiler
+///    against the host registry (`#host`), VM opcode table (`#native`), or
+///    builtin registry (`#builtin`). An unknown name is a compile error.
 ///
 /// @field genericParams   Generic parameters (e.g., `T`, `N`).
-/// @field kind            Whether this is #host, #native, or #builtin.
-/// @field targetName      The identifier inside `#host(...)`, `#native(...)`, or `#builtin(...)`.
+/// @field kind            Whether this is `#host`, `#native`, or `#builtin`.
+/// @field targetName      The identifier inside `#host(...)`, `#native(...)`,
+///                        or `#builtin(...)`.
 enum class HostTypeKind { Host, Native, Builtin };
 
 struct HostTypeDeclAST : TypeDeclAST {
@@ -791,23 +849,33 @@ struct HostTypeDeclAST : TypeDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
     HostTypeKind    kind;
-    InternedString  targetName;  // the identifier inside #host(...) etc.
+    InternedString  targetName;
 
     HostTypeDeclAST(InternedString n, HostTypeKind k, InternedString t)
-        : TypeDeclAST(ASTKind::HostTypeDecl, n), kind(k), targetName(t) {}
+        : TypeDeclAST(ASTKind::HostTypeDecl, n)
+        , kind(k), targetName(t) {}
 };
 
-// ─── TypeAliasDeclAST ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TypeAliasDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief A `TYPE X = Y` type alias declaration.
+/// @brief A type alias — `TYPE X = Y`.
 ///
 /// Binds a new name `X` to an existing type expression `Y`. The alias may
-/// be generic: `TYPE Pair<A, B> = Tuple<A, B>`.
+/// be generic.
 ///
 /// @example
 ///   TYPE Int32 = int
-///   TYPE Pair<A, B> = Tuple<A, B>
 ///   TYPE StringMap<V> = Map<string, V>
+///   TYPE PlayerList = [*]Player
+///
+/// ─── Alias Transparency ─────────────────────────────────────────────────
+/// An alias is transparent: a value of type `Int32` is a value of type `int`,
+/// and vice versa. There is no wrapper, no conversion, and no distinct
+/// identity. Alias chains are followed until a terminal target is reached
+/// (a struct, enum, host type, or primitive). A cycle in the alias chain is
+/// a compile error.
 ///
 /// @field genericParams   Generic parameters for a generic alias.
 /// @field targetType      The RHS type expression.
@@ -816,40 +884,52 @@ struct TypeAliasDeclAST : TypeDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
-    TypeAST* targetType = nullptr;  // the RHS type expression
+    TypeAST* targetType = nullptr;
 
     TypeAliasDeclAST(InternedString n, TypeAST* t)
         : TypeDeclAST(ASTKind::TypeAliasDecl, n), targetType(t) {}
 };
 
-// ─── StaticFnDeclAST ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// StaticFnDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief A static member function declared inside a struct body.
 ///
 /// Static functions belong to the struct type, not to any instance. They are
-/// called via the `::` operator: `Vec2::zero()`. They have no implicit `self`
-/// parameter.
+/// called via `::`: `Vec2::zero()`. They have no implicit `self` parameter
+/// and no per-instance storage.
 ///
 /// @example
 ///   struct Vec2 {
-///       x float = 0.0,
-///       y float = 0.0,
+///       x float = 0.0;
+///       y float = 0.0;
 ///       static zero () -> Vec2 { Vec2 { x = 0.0, y = 0.0 } }
+///       static fromAngle (theta float) -> Vec2 { ... }
 ///   }
 ///
 ///   const origin Vec2 = Vec2::zero()
 ///
+/// ─── Semantic Rules ─────────────────────────────────────────────────────
+/// 1. **No receiver**: A static function has no implicit `self`. It cannot
+///    reference the struct's fields without an explicit parameter.
+/// 2. **Namespaced**: The function's name is scoped to the struct. It is
+///    accessed as `StructName::functionName`.
+/// 3. **No generics**: A static function does not carry its own generic
+///    parameters; it may use the struct's generic parameters.
+///
 /// @field params       The function's parameters (no implicit self).
 /// @field returnType   The return type.
-/// @field body         The implementation — an AnonFuncExprAST for a block body,
-///                     or any expression producing a value of the function type.
+/// @field body         The implementation — an `AnonFuncExprAST` for a block
+///                     body, or any expression producing a value of the
+///                     function type.
 struct StaticFnDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::StaticFnDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<ParamAST*> params;
     TypeAST* returnType = nullptr;
-    ExprAST* body = nullptr;  // AnonFuncExprAST for block body, or other expr
+    ExprAST* body = nullptr;
 
     StaticFnDeclAST(InternedString n)
         : DeclAST(ASTKind::StaticFnDecl, n) {}
