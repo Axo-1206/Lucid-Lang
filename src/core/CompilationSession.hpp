@@ -45,8 +45,6 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
-namespace lucid {
-
 struct CompilationSession {
     /// Canonical string storage. Declared first so it is constructed
     /// before the diagnostic engine, which takes its address.
@@ -54,7 +52,7 @@ struct CompilationSession {
 
     /// Collected diagnostics. Initialized with a pointer to this session's
     /// pool so interned-string payloads render with their actual text.
-    diag::DiagnosticEngine diagnostics{&pool};
+    lucid::diag::DiagnosticEngine diagnostics{&pool};
 
     /// Bump-allocated storage for the session's AST. Declared last; it has
     /// no dependencies on the other two.
@@ -67,5 +65,3 @@ struct CompilationSession {
     CompilationSession(CompilationSession&&)                 = delete;
     CompilationSession& operator=(CompilationSession&&)      = delete;
 };
-
-} // namespace lucid
