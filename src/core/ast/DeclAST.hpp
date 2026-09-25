@@ -812,6 +812,51 @@ struct DefDeclAST : DeclAST {
         , opKindName(opk), symbol(sym) {}
 };
 
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RecognizedHostKind — the small set of host-backed types whose behavior
+// the compiler hardcodes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Recognizes a host-backed type whose ownership or linearity
+///        behavior the compiler treats specially.
+///
+/// A `HostTypeDeclAST` whose `recognizedKind` is not `None` is one of the
+/// language's own runtime-backed types — `Deferred<T>` — declared by the
+/// core script. The compiler uses this field to decide, at each use site,
+/// whether the type participates in a special ownership or linearity rule.
+///
+/// ─── This is not a user extension point ───────────────────────────────────
+/// A user's custom `#host` type is always `None`. Its ownership behavior
+/// is expressed through the `#host` operations the user registers for it
+/// (copy, drop, and whatever else the type supports), not by adding to
+/// this enum. Adding a value here means adding compiler behavior — a new
+/// `ResourceKind` case, a new set of language rules — which is a change
+/// to the language, not a change to a host engine.
+///
+/// ─── Why Arena is not here ────────────────────────────────────────────────
+/// `Arena` was a boot-level type in an earlier draft. Under the current
+/// grammar it is not: the language has no raw pointers, and an arena's
+/// purpose was to hand out raw addresses into a caller-managed block.
+/// Without `*T`, an arena has no way to expose what it allocates. The
+/// type is gone, and with it the `ResourceKind::Arena` case.
+///
+/// If a memory-chunk type is wanted later, it can be designed against the
+/// current model (a host-backed `NamedTypeAST` with `#host` operations)
+/// and classified as `OwnedBuffer` or `None` depending on how its
+/// operations manage memory. That is a future language feature, not a
+/// slot in this enum.
+enum class RecognizedHostKind : uint8_t {
+    None,       ///< An ordinary host-backed type. Copy and drop follow
+                ///< the user's registered operations; the compiler
+                ///< treats it as any other value type.
+
+    Deferred,   ///< The core script's `Deferred<T>`. Linear: must be
+                ///< consumed by `await` or `cancel`; classified as
+                ///< `ResourceKind::Handle`; rejected from aggregates.
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HostTypeDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
@@ -850,6 +895,21 @@ struct HostTypeDeclAST : TypeDeclAST {
     ArenaSpan<GenericParamDeclAST*> genericParams;
     HostTypeKind    kind;
     InternedString  targetName;
+
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    /// @brief Set by Sema when it resolves this declaration as one of the
+    ///        core script's runtime-backed types.
+    ///
+    /// Only the core script's `Deferred<T>` gets a non-`None` value. Every
+    /// user-declared `#host` type — and every other core-script host type
+    /// (`Map`, `Weak`, `OpKind`, the primitives) — is `None`.
+    ///
+    /// The classifier `classifyResourceKind` reads this field to decide
+    /// whether the type participates in the language's ownership model
+    /// (`Deferred` → `ResourceKind::Handle`) or is an ordinary host type
+    /// whose resource behavior is whatever the user's `#host` operations
+    /// implement.
+    RecognizedHostKind recognizedKind = RecognizedHostKind::None;
 
     HostTypeDeclAST(InternedString n, HostTypeKind k, InternedString t)
         : TypeDeclAST(ASTKind::HostTypeDecl, n)
