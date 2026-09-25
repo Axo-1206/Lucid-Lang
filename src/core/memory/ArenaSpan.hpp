@@ -1,125 +1,85 @@
-/**
- * @file ArenaSpan.hpp
- * @brief A non-owning, arena-allocated contiguous view of elements (read‑only).
- *
- * ArenaSpan provides a lightweight, immutable view into a contiguous block of
- * arena-allocated memory. It replaces `std::vector` for storing child lists
- * in the AST, offering better cache locality and no per‑element heap overhead.
- *
- * ## Why ArenaSpan instead of std::vector?
- *
- * - **Memory locality**: All elements are stored in the same arena block,
- *   improving cache behaviour during AST traversal.
- * - **No per‑vector heap allocation**: `std::vector` allocates its own
- *   buffer on the heap, breaking arena contiguity.
- * - **Trivial destructor**: No need to destruct each element – the arena
- *   reclaims everything at once.
- * - **Immutability**: Once built, the span is read‑only, preventing
- *   accidental modification of AST data after construction.
- *
- * ## Usage Example
- *
- * @code
- *   ASTArena arena;
- *   auto builder = arena.makeBuilder<ExprAST*>();
- *   builder.push_back(parseExpr());
- *   builder.push_back(parseExpr());
- *   ArenaSpan<ExprAST*> elements = builder.build();
- *
- *   for (ExprAST*& expr : elements) {
- *       // read‑only access
- *   }
- * @endcode
- *
- * @tparam T The type of elements stored in the span. Typically a pointer
- *           type (e.g., `ExprAST*`, `ParamAST*`) or a trivial value type.
- *
- * @note This class is intentionally minimal – it provides no modifying
- *       operations. Use `ASTArena::SpanBuilder` to build spans incrementally
- *       during parsing.
- */
+/// @file ArenaSpan.hpp
+/// @brief A non-owning, const view of a contiguous run of elements.
+///
+/// ArenaSpan replaces std::vector for storing child lists in the AST. It
+/// holds a pointer and a count; it owns nothing, allocates nothing, and
+/// has a trivial destructor.
+///
+/// ─── Why not std::vector ──────────────────────────────────────────────────
+///   • Locality. All elements live in the same arena block, so a walk of
+///     a node's children is a walk of contiguous memory.
+///   • No per-container allocation. A std::vector allocates its own
+///     buffer, breaking the arena's contiguity.
+///   • Trivial destruction. The arena reclaims everything at once; the
+///     span does not destruct what it views.
+///   • Immutability. A span is const once built. Nothing downstream of
+///     the parser can mutate a node's children.
+///
+/// ─── Building ─────────────────────────────────────────────────────────────
+/// Spans are built through ASTArena::SpanBuilder, which accumulates
+/// elements in a temporary std::vector and, on `build()`, copies them
+/// into an arena block and returns a span over it. A span can also be
+/// constructed directly from an existing (pointer, size) pair, which is
+/// what the builder does internally and what a caller with an existing
+/// arena-allocated buffer does.
+///
+/// ─── Element type ─────────────────────────────────────────────────────────
+/// The element type is usually a pointer (`ExprAST*`, `ParamAST*`), but
+/// nothing in this class requires that. A span of value types works as
+/// long as the elements are constructible and copyable.
+
 #pragma once
+
 #include <cstddef>
+
+namespace lucid {
 
 template <typename T>
 class ArenaSpan {
-    const T* data_ = nullptr;   ///< Pointer to the first element (read‑only)
-    size_t size_ = 0;           ///< Number of elements in the span
+    const T* data_ = nullptr;
+    size_t   size_ = 0;
 
 public:
-    // ─────────────────────────────────────────────────────────────────────────
-    // Constructors
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─── Construction ─────────────────────────────────────────────────
 
-    /// Default constructor – creates an empty span.
     ArenaSpan() = default;
 
-    /**
-     * @brief Construct a span from a pointer and a size.
-     * @param data Pointer to the first element (must be valid for at least `size` elements).
-     * @param size Number of elements.
-     */
-    ArenaSpan(const T* data, size_t size) : data_(data), size_(size) {}
+    ArenaSpan(const T* data, size_t size) noexcept
+        : data_(data), size_(size) {}
 
-    /**
-     * @brief Construct a span from a mutable pointer (converts to const).
-     * @param data Mutable pointer to the first element.
-     * @param size Number of elements.
-     */
-    ArenaSpan(T* data, size_t size) : data_(data), size_(size) {}
+    ArenaSpan(T* data, size_t size) noexcept
+        : data_(data), size_(size) {}
 
-    // Copy and move are defaulted – trivial because we hold only a pointer and size.
-    ArenaSpan(const ArenaSpan&) = default;
+    ArenaSpan(const ArenaSpan&)            = default;
     ArenaSpan& operator=(const ArenaSpan&) = default;
-    ArenaSpan(ArenaSpan&&) = default;
-    ArenaSpan& operator=(ArenaSpan&&) = default;
+    ArenaSpan(ArenaSpan&&)                 = default;
+    ArenaSpan& operator=(ArenaSpan&&)      = default;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Accessors
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─── Size ─────────────────────────────────────────────────────────
 
-    /// Returns a const pointer to the underlying data.
-    const T* data() const { return data_; }
+    const T* data() const noexcept { return data_; }
+    size_t   size() const noexcept { return size_; }
+    bool     empty() const noexcept { return size_ == 0; }
 
-    /// Returns the number of elements in the span.
-    size_t size() const { return size_; }
+    // ─── Element access ───────────────────────────────────────────────
 
-    /// Returns true if the span is empty.
-    bool empty() const { return size_ == 0; }
+    /// Element access. No bounds check; the caller is responsible.
+    const T& operator[](size_t idx) const noexcept { return data_[idx]; }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Element access (read‑only)
-    // ─────────────────────────────────────────────────────────────────────────
+    /// First element. Undefined if empty.
+    const T& front() const noexcept { return data_[0]; }
 
-    /// Const element access (no bounds checking).
-    const T& operator[](size_t idx) const { return data_[idx]; }
+    /// Last element. Undefined if empty.
+    const T& back() const noexcept { return data_[size_ - 1]; }
 
-    /// Const reference to the first element (undefined if empty).
-    const T& front() const { return data_[0]; }
+    // ─── Iteration ────────────────────────────────────────────────────
 
-    /// Const reference to the last element (undefined if empty).
-    const T& back() const { return data_[size_ - 1]; }
+    const T* begin() const noexcept { return data_; }
+    const T* end()   const noexcept { return data_ + size_; }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Iterators (const only)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─── Utility ──────────────────────────────────────────────────────
 
-    /// Const iterator to the beginning.
-    const T* begin() const { return data_; }
-
-    /// Const iterator to the end.
-    const T* end() const { return data_ + size_; }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Utility methods
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @brief Checks if the span contains a value equal to `value`.
-     * @param value The value to search for.
-     * @return true if found, false otherwise.
-     * @note Linear search – use sparingly.
-     */
+    /// Linear search for a value. Use sparingly.
     bool contains(const T& value) const {
         for (size_t i = 0; i < size_; ++i) {
             if (data_[i] == value) return true;
@@ -127,33 +87,23 @@ public:
         return false;
     }
 
-    /**
-     * @brief Creates a subspan starting at `offset` with `count` elements.
-     * @param offset Starting index (must be <= size()).
-     * @param count Number of elements (clamped to the end of the span).
-     * @return A new ArenaSpan covering the subrange.
-     */
-    ArenaSpan<T> subspan(size_t offset, size_t count) const {
+    /// A sub-span starting at `offset`, up to `count` elements.
+    /// `count` is clamped to the end of the span.
+    ArenaSpan<T> subspan(size_t offset, size_t count) const noexcept {
         if (offset >= size_) return {};
         if (offset + count > size_) count = size_ - offset;
-        return ArenaSpan<T>(data_ + offset, count);
+        return ArenaSpan<T>{data_ + offset, count};
     }
 
-    /**
-     * @brief Creates a subspan from `offset` to the end.
-     * @param offset Starting index (must be <= size()).
-     * @return A new ArenaSpan covering the range [offset, size()).
-     */
-    ArenaSpan<T> slice(size_t offset) const {
+    /// A sub-span from `offset` to the end.
+    ArenaSpan<T> slice(size_t offset) const noexcept {
         if (offset >= size_) return {};
-        return ArenaSpan<T>(data_ + offset, size_ - offset);
+        return ArenaSpan<T>{data_ + offset, size_ - offset};
     }
 };
 
-/**
- * @brief Deduction guide for creating an ArenaSpan from a pointer and size.
- *
- * Allows the compiler to deduce `T` from both mutable and const pointers.
- */
+/// Deduction guide: `ArenaSpan{ptr, n}` deduces T from the pointer type.
 template <typename T>
 ArenaSpan(const T*, size_t) -> ArenaSpan<T>;
+
+} // namespace lucid

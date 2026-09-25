@@ -1,67 +1,76 @@
+/// @file InternedString.hpp
+/// @brief A 32-bit handle to a string owned by a StringPool.
+///
+/// InternedString replaces std::string for every name, identifier, and
+/// string literal in the AST. Instead of duplicating "Vec2" in every node
+/// that mentions it, every occurrence holds a 4-byte index into a pool that
+/// owns one canonical copy.
+///
+/// ─── Why this exists ──────────────────────────────────────────────────────
+///   • Memory. A std::string is 32+ bytes. This is 4. For the most common
+///     fields in the AST (names, type names, field names), that is an 8x
+///     reduction.
+///   • Comparison. `a == b` is one integer comparison, not a string
+///     comparison.
+///   • Hashing. Trivial: hash the uint32_t.
+///   • Arena compatibility. No destructor, no heap allocation. Safe to
+///     store inside arena-allocated AST nodes with no bookkeeping.
+///
+/// ─── ID 0 is reserved ─────────────────────────────────────────────────────
+/// A default-constructed InternedString has id 0, which means "empty or
+/// invalid". A StringPool never returns ID 0 for a non-empty string.
+/// `isValid()` is true for any non-zero ID.
+///
+/// ─── No text access ───────────────────────────────────────────────────────
+/// There is deliberately no method that recovers the string. Recovering
+/// text requires a StringPool&, and requiring the caller to name it makes
+/// the dependency visible at every call site that needs display text. A
+/// method that reached a global pool would hide that dependency and let
+/// text be recovered from a pool that is not the one that interned the ID.
+///
+/// ─── Usage ────────────────────────────────────────────────────────────────
+///   • Parser: `pool.intern(tokenText)` on every identifier, keyword, and
+///     string literal, and store the result in the AST.
+///   • Sema / bytecode compiler: `pool.lookupView(id)` when you need text.
+///   • Comparison: `==`, which compares IDs.
+
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <functional> 
+#include <functional>
 
-/**
- * @brief A lightweight, 32-bit identifier for an interned string.
- *
- * InternedString replaces `std::string` for all names, identifiers, and string
- * literals in the AST. Instead of storing duplicate copies of "Vec2" in every
- * node that references it, every occurrence shares a single canonical copy
- * owned by a StringPool. This identifier is just an index into that pool.
- *
- * ## Why this exists
- *
- * - **Memory**: a `std::string` is 32+ bytes. This is 4 bytes — an 8x reduction
- *   for the most common fields in the AST (names, type names, field names).
- * - **Comparisons**: `a == b` is a single integer comparison, not a string
- *   comparison. Symbol table lookups, pattern matching, and type equality all
- *   become faster.
- * - **Hashing**: trivial — just hash the `uint32_t`. No string hashing needed.
- * - **Arena compatibility**: no destructor, no heap allocation — safe to use
- *   inside arena-allocated AST nodes without leaking memory.
- *
- * ## ID 0 convention
- *
- * ID 0 is reserved for the empty / invalid string. A default-constructed
- * InternedString has id=0. `isValid()` returns true for any non-zero ID.
- * The StringPool never returns ID 0 for a non-empty string.
- *
- * ## Usage
- *
- * - **Parser**: call `pool.intern(tokenText)` on every identifier token and
- *   store the result in AST nodes.
- * - **Semantic pass / codegen**: use `pool.lookup(id)` to recover the
- *   `std::string_view` when you need display text or LLVM IR names.
- * - **Comparison**: just use `==` — it compares the ID.
- *
- * @note InternedString intentionally has no `str()` method. This forces every
- *       subsystem to explicitly accept a StringPool&, making the dependency
- *       visible and avoiding hidden global state.
- */
+namespace lucid {
+
 struct InternedString {
     uint32_t id = 0;
 
     InternedString() = default;
     explicit InternedString(uint32_t id) : id(id) {}
 
-    bool operator==(InternedString other) const { return id == other.id; }
-    bool operator!=(InternedString other) const { return id != other.id; }
-    bool operator<(InternedString other) const { return id < other.id; }
+    bool operator==(InternedString o) const noexcept { return id == o.id; }
+    bool operator!=(InternedString o) const noexcept { return id != o.id; }
+    bool operator<(InternedString o)  const noexcept { return id < o.id; }
 
-    /** True for any string that was actually interned (id != 0). */
-    bool isValid() const { return id != 0; }
+    /// True for any string that was actually interned.
+    bool isValid() const noexcept { return id != 0; }
 
-    /** True if this is an empty string (id == 0). */
-    bool isEmpty() const { return id == 0; }
+    /// True if this is the empty / invalid handle.
+    bool isEmpty() const noexcept { return id == 0; }
 };
 
-// Specialize std::hash for InternedString so it can be used in unordered_map.
+} // namespace lucid
+
+// ─── std::hash ──────────────────────────────────────────────────────────────
+//
+// Specializing std::hash for a user type is legal regardless of the type's
+// namespace. Defined here, in the header, so any translation unit that
+// includes InternedString.hpp can use it in an unordered_map.
+
 namespace std {
     template <>
-    struct hash<InternedString> {
-        size_t operator()(const InternedString& s) const noexcept {
+    struct hash<lucid::InternedString> {
+        size_t operator()(const lucid::InternedString& s) const noexcept {
             return hash<uint32_t>{}(s.id);
         }
     };

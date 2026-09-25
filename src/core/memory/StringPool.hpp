@@ -1,153 +1,113 @@
+/// @file StringPool.hpp
+/// @brief Owns all interned string data for a compilation session.
+///
+/// A StringPool maps std::string_view inputs to stable InternedString
+/// handles. It is the canonical store for every identifier, keyword, and
+/// string literal seen during a compilation. The pool owns the bytes; the
+/// handles are indices into the pool.
+///
+/// ─── Ownership ────────────────────────────────────────────────────────────
+/// The pool is not a singleton. It is a value that a CompilationSession
+/// owns, alongside the diagnostic engine and the AST arena. The compiler
+/// pipeline takes a reference to the session, and every subsystem that
+/// needs to intern or look up a string gets the pool through that
+/// reference. Two compilations in one process get two pools and do not
+/// share string identity.
+///
+/// This matters for the LSP and for hot reload: each analysis constructs
+/// a fresh session and destroys it when the analysis is done. A singleton
+/// would keep strings alive across analyses and would let an ID from one
+/// program be valid in another, which is a correctness hazard.
+///
+/// ─── Single-threaded, on purpose ──────────────────────────────────────────
+/// Like the diagnostic engine, the pool is not thread-safe. The compiler
+/// pipeline is strictly sequential, and each session is confined to one
+/// thread. A future stage that wants to intern from a worker would queue
+/// the work and intern on the session's thread.
+///
+/// ─── The block invariant ──────────────────────────────────────────────────
+/// Every std::string_view the pool hands out, and every key in the
+/// intern map, points into one of the pool's own bump-allocated blocks —
+/// never into a caller's buffer. `intern()` copies the input bytes into a
+/// block before storing the view. A caller may pass a temporary, a view
+/// into a stack buffer, or a view into another pool; none of these
+/// dangle, because the pool never stores the caller's pointer.
+
 #pragma once
 
 #include "InternedString.hpp"
-#include <string_view>
-#include <vector>
-#include <unordered_map>
+
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
-/**
- * @brief Owns all interned string data for a compilation session.
- *
- * StringPool is the canonical store for every identifier, keyword, and string
- * literal seen during parsing. It maps arbitrary `std::string_view` inputs
- * to stable `InternedString` IDs (thin 32-bit handles) that can be copied
- * cheaply into AST nodes.
- *
- * @architectural_note Singleton Design
- *   StringPool is implemented as a singleton with static `instance()` and
- *   `initialize()` methods. This eliminates the need to pass StringPool
- *   references through every function in the diagnostic system and other
- *   subsystems that need string lookup capabilities.
- *
- *   The singleton is initialized once at program startup with the real pool,
- *   and can be re-initialized for testing with a fresh pool.
- *
- * @architectural_note Single-threaded, on purpose
- *   Like the diagnostic system, StringPool is not thread-safe by design.
- *   The compiler pipeline is strictly sequential, so this is deliberate.
- */
+namespace lucid {
+
 class StringPool {
 public:
-    // ─── Singleton Access ────────────────────────────────────────────────
-
-    /**
-     * @brief Get the singleton instance.
-     * 
-     * Must be initialized with `initialize()` before first use.
-     * 
-     * @return StringPool& Reference to the singleton instance.
-     */
-    static StringPool& instance() {
-        static StringPool pool;
-        return pool;
-    }
-
-    /**
-     * @brief Initialize the singleton with a new pool instance.
-     * 
-     * This is called once at program startup. For testing, it can be
-     * called multiple times to reset the pool between test runs.
-     * 
-     * @return StringPool& Reference to the initialized pool.
-     */
-    static StringPool& initialize() {
-        // Reset the static pool by reusing the existing instance
-        // and clearing its state.
-        StringPool& pool = instance();
-        pool.clear();
-        return pool;
-    }
-
-    // ─── Instance Methods ─────────────────────────────────────────────────
-
     StringPool();
     ~StringPool() = default;
 
-    // Disallow copy/move to ensure stable references
-    StringPool(const StringPool&) = delete;
+    // A pool holds std::string_views into its own blocks. Copying or
+    // moving would leave those views pointing at the old blocks.
+    StringPool(const StringPool&)            = delete;
     StringPool& operator=(const StringPool&) = delete;
+    StringPool(StringPool&&)                 = delete;
+    StringPool& operator=(StringPool&&)      = delete;
 
-    /**
-     * @brief Intern a string, returning a stable ID.
-     * 
-     * - Empty string → ID 0
-     * - Already interned → existing ID
-     * - New string → allocated, given the next sequential ID
-     */
+    /// Intern `s` and return a stable handle.
+    ///
+    ///   • Empty input → ID 0.
+    ///   • Already interned → the existing handle.
+    ///   • New input → copied into a pool block, given the next ID.
+    ///
+    /// The input is copied before any view of it is stored, so the caller
+    /// may pass a temporary or a view into memory that will not outlive
+    /// the call.
     InternedString intern(std::string_view s);
 
-    /**
-     * @brief Look up an interned string by ID.
-     * 
-     * @param s The interned string ID.
-     * @return std::string The string data (allocated copy).
-     * 
-     * @note Returns empty string for ID 0 or invalid IDs.
-     */
+    /// Recover the string for a handle, as a std::string.
+    ///
+    /// Allocates. Use `lookupView` when a view will do — most call sites
+    /// want a view, and only a final formatting step wants the copy.
     std::string lookup(InternedString s) const;
 
-    /**
-     * @brief Look up an interned string as a view.
-     * 
-     * This is useful for internal operations that don't need an allocation.
-     * Most callers should use `lookup()` which returns a std::string.
-     * 
-     * @param s The interned string ID.
-     * @return std::string_view The string view (valid as long as the pool lives).
-     */
+    /// Recover the string for a handle, as a std::string_view.
+    ///
+    /// The view is valid for the lifetime of the pool. This is the
+    /// preferred accessor for every caller that does not need to
+    /// outlive the pool.
     std::string_view lookupView(InternedString s) const;
 
-    /**
-     * @brief Clear all interned strings.
-     * 
-     * For testing only. Resets the pool to its initial state.
-     */
-    void clear();
+    /// The number of distinct strings interned, including the empty
+    /// string at ID 0. Useful for diagnostics and tests.
+    size_t size() const noexcept { return strings_.size(); }
+
+    /// True if `s` names a string this pool has interned.
+    ///
+    /// This is a bounds check, not a content check: any ID the pool
+    /// previously returned is valid here, whether or not the ID is still
+    /// referenced by any AST node.
+    bool contains(InternedString s) const noexcept {
+        return s.id < strings_.size();
+    }
 
 private:
-    // ─── Internal ────────────────────────────────────────────────────────
-
+    /// Copy `s` into a bump-allocated block and return a view into it.
     std::string_view allocateString(std::string_view s);
 
-    // ─── Members ─────────────────────────────────────────────────────────
+    std::unordered_map<std::string_view, uint32_t> internMap_;
+    std::vector<std::string_view>                  strings_;  // ID → text
 
-    std::unordered_map<std::string_view, uint32_t> internMap;
-    std::vector<std::string_view> strings; // Maps ID -> string_view
-
-    // Bump allocator for string data
-    std::vector<std::unique_ptr<char[]>> blocks;
-    char* currentBlock = nullptr;
-    size_t currentOffset = 0;
-    static constexpr size_t BLOCK_SIZE = 64 * 1024; // 64 KB blocks
+    // Bump allocator for the string bytes. Blocks are never freed until
+    // the pool dies; a view into a block is valid for the pool's lifetime.
+    std::vector<std::unique_ptr<char[]>> blocks_;
+    char*  currentBlock_  = nullptr;
+    size_t currentOffset_ = 0;
+    static constexpr size_t kBlockSize = 64 * 1024;  // 64 KiB
 };
 
-// ─── Convenience Global Functions ────────────────────────────────────────
-
-/**
- * @brief Convenience function: intern a string.
- * 
- * Equivalent to `StringPool::instance().intern(s)`.
- */
-inline InternedString internString(std::string_view s) {
-    return StringPool::instance().intern(s);
-}
-
-/**
- * @brief Convenience function: lookup an interned string.
- * 
- * Equivalent to `StringPool::instance().lookup(id)`.
- */
-inline std::string lookupString(InternedString id) {
-    return StringPool::instance().lookup(id);
-}
-
-/**
- * @brief Convenience function: lookup an interned string as a view.
- * 
- * Equivalent to `StringPool::instance().lookupView(id)`.
- */
-inline std::string_view lookupStringView(InternedString id) {
-    return StringPool::instance().lookupView(id);
-}
+} // namespace lucid
