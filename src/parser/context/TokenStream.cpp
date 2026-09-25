@@ -3,26 +3,40 @@
 
 #include "TokenStream.hpp"
 
-namespace parser {
+#include <utility>
 
-// ─── Static Sentinel ──────────────────────────────────────────────────────
+namespace lucid::parser {
 
-const Token TokenStream::EOF_TOKEN_SENTINEL = 
-    Token{TokenType::EOF_TOKEN, "EOF", 0, 0};
+// ─────────────────────────────────────────────────────────────────────────────
+// Sentinel
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── Construction ───────────────────────────────────────────────────────
+// The sentinel is returned by reference when the stream is exhausted. Its
+// location is the default-constructed SourceLocation (value 0), which
+// SourceLocation reports as "unknown" — a caller that formats a diagnostic
+// against it gets "<unknown location>". Its value is empty; a caller that
+// wants to name end-of-input checks `isEof()` or `peekType()`.
+const Token TokenStream::EOF_TOKEN_SENTINEL =
+    Token{TokenType::EOF_TOKEN, std::string{}, SourceLocation{}};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Construction
+// ─────────────────────────────────────────────────────────────────────────────
 
 TokenStream::TokenStream(std::vector<Token> tokens)
     : tokens_(std::move(tokens)) {}
 
-// ─── Token Consumption ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Consumption
+// ─────────────────────────────────────────────────────────────────────────────
 
 const Token& TokenStream::peek() {
-    // Normalize pos_ as a side effect of reading, not just consume() - otherwise
-    // pos_ can rest on a comment (at file start, or after a lookahead setPos()
-    // restore) and the *next* raw consume() call eats that comment instead of
-    // the token peek()/check() just reported.
+    // Normalize pos_ as a side effect of reading, not just of consume().
+    // Otherwise pos_ can rest on a doc-comment (at file start, or after a
+    // lookahead setPos() restore), and the next raw consume() would eat
+    // that comment instead of the token peek() just reported.
     pos_ = skipCommentsFrom(pos_);
+
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
@@ -31,11 +45,17 @@ const Token& TokenStream::peek() {
 
 Token TokenStream::consume() {
     pos_ = skipCommentsFrom(pos_);
+
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
-    Token result = tokens_[pos_];
-    lastConsumedLoc_ = SourceLocation(result.line, result.column);
+
+    // Move the payload out of the vector entry. The vector entry's value
+    // becomes empty; only the returned Token holds it. This avoids the
+    // per-token std::string copy that returning by value would otherwise
+    // incur.
+    Token result = std::move(tokens_[pos_]);
+    lastConsumedLoc_ = result.location;
     pos_++;
     pos_ = skipCommentsFrom(pos_);
     return result;
@@ -55,22 +75,9 @@ bool TokenStream::match(TokenType type) {
 
 bool TokenStream::isAtEnd() {
     pos_ = skipCommentsFrom(pos_);
-    return pos_ >= tokens_.size() || tokens_[pos_].type == TokenType::EOF_TOKEN;
+    return pos_ >= tokens_.size()
+        || tokens_[pos_].type == TokenType::EOF_TOKEN;
 }
-
-SourceLocation TokenStream::currentLoc() const {
-    size_t p = skipCommentsFrom(pos_);
-    if (p < tokens_.size()) {
-        return SourceLocation(tokens_[p].line, tokens_[p].column);
-    }
-    return SourceLocation(1, 1);
-}
-
-SourceLocation TokenStream::previousLoc() const {
-    return lastConsumedLoc_;
-}
-
-// ─── Trailing Token Consumption ────────────────────────────────────────
 
 int TokenStream::consumeTrailing(TokenType type) {
     int count = 0;
@@ -81,66 +88,62 @@ int TokenStream::consumeTrailing(TokenType type) {
     return count;
 }
 
-// ─── Lookahead ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Location
+// ─────────────────────────────────────────────────────────────────────────────
+
+SourceLocation TokenStream::currentLoc() const {
+    const size_t p = skipCommentsFrom(pos_);
+    if (p < tokens_.size()) {
+        return tokens_[p].location;
+    }
+    // Start of file. This gives a sensible location for a diagnostic
+    // against an exhausted stream.
+    return SourceLocation{1, 1};
+}
+
+SourceLocation TokenStream::previousLoc() const {
+    return lastConsumedLoc_;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lookahead
+// ─────────────────────────────────────────────────────────────────────────────
 
 TokenType TokenStream::peekNextType() {
-    size_t next = skipCommentsFrom(pos_ + 1);
+    const size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return TokenType::EOF_TOKEN;
     return tokens_[next].type;
 }
 
 const Token& TokenStream::peekNext() {
-    size_t next = skipCommentsFrom(pos_ + 1);
+    const size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     return tokens_[next];
 }
 
 const Token& TokenStream::peekAt(size_t offset) {
-    size_t idx = pos_ + offset;
-    if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
+    size_t idx = pos_;
+    for (size_t i = 0; i < offset; ++i) {
+        idx = skipCommentsFrom(idx);
+        if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
+        idx++;
+    }
     idx = skipCommentsFrom(idx);
     if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     return tokens_[idx];
 }
 
-bool TokenStream::isPrimitiveTypeToken(TokenType type) const {
-    switch (type) {
-        case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
-            return true;
-        default:
-            return false;
-    }
-}
-
-// ─── Position Management ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Comment skipping
+// ─────────────────────────────────────────────────────────────────────────────
 
 size_t TokenStream::skipCommentsFrom(size_t start) const {
     while (start < tokens_.size()) {
-        TokenType type = tokens_[start].type;
-        if (type == TokenType::LINE_COMMENT || 
-            type == TokenType::DOC_COMMENT ||
-            type == TokenType::BLOCK_COMMENT) {
+        const TokenType type = tokens_[start].type;
+        // Only DOC_COMMENT survives to the stream. Line and block
+        // comments are dropped by the lexer and never appear here.
+        if (type == TokenType::DOC_COMMENT) {
             start++;
         } else {
             break;
@@ -149,4 +152,4 @@ size_t TokenStream::skipCommentsFrom(size_t start) const {
     return start;
 }
 
-} // namespace parser
+} // namespace lucid::parser
