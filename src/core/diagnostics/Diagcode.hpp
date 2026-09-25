@@ -1,32 +1,71 @@
 /**
  * @file DiagCode.hpp
- * @brief The diagnostic code space - severity levels and error/warning codes.
+ * @brief The diagnostic code space - severity levels, categories, and codes.
  *
  * Split out of Diagnostic.hpp so this data can be depended on without pulling
  * in DiagnosticEngine (which needs BaseAST, StringPool, and <ostream>).
- * DiagCode is plain, state-free data - a `RuntimeErrorKind` (see
- * codegen/support/RuntimeError.hpp) can map to a DiagCode and embed its
- * numeric value into a compiled program's panic message without needing
- * DiagnosticEngine, StringPool, or any other part of the compiler's own
- * process to be alive - which matters for AOT-compiled binaries that run
- * standalone, long after the compiler that produced them has exited.
+ * DiagCode is plain, state-free data: a runtime panic (a value the interpreter
+ * carries in its diagnostic slot) can carry a DiagCode and embed its numeric
+ * value without needing the compiler's DiagnosticEngine, StringPool, or any
+ * other part of the compiler's own process to be alive.
  *
- * @design_decision Code ranges
- *   1000-1999: Lexical
- *   2000-2999: Syntax
- *   3000-3999: Semantic - Name Resolution
- *   4000-4999: Semantic - Type Checking
- *   5000-5999: Semantic - Generics/Traits/FFI
- *   6000-6999: Semantic - Other
- *   7000-7999: Backend
- *   8000-8999: Warnings (cross-cutting)
+ * ─── Design: codes describe WHAT, not WHEN ────────────────────────────────
+ * A code names a *concept*, not a pipeline stage. "Division by zero" is the
+ * same code whether it is caught at compile time by constant folding, or at
+ * runtime by the interpreter. "Unconsumed Deferred<T>" is the same code
+ * whether it is reported by Sema on a source file or by an LSP diagnostic
+ * on a buffer. The band a code lives in groups concepts that belong
+ * together, and the bands are ordered so a reader can infer the phase a
+ * code is most likely emitted from, but no code is *defined* by its phase.
+ *
+ * ─── Design: the code space reflects the base product ─────────────────────
+ * Lucid is a bytecode-interpreted embedded scripting language. There is no
+ * LLVM, no linker, no object files, no AOT compiler in the base product.
+ * The code space therefore has no "linker" band and no "IR" band. What a
+ * systems-language diagnostic space would spend on ABI mismatch and library
+ * resolution, Lucid spends on host-registry resolution and bytecode-format
+ * validation.
+ *
+ * ─── Categories and severity ──────────────────────────────────────────────
+ * The numeric ranges below are the contract. Severity is a pure function of
+ * the code's range (see severityFromCode): 8000+ is a warning, everything
+ * else is an error. Category is a pure function of the code's range (see
+ * categoryFromCode).
+ *
+ *   1000-1999  Lexical        - lexer-level errors
+ *   2000-2999  Syntax         - parser-level errors
+ *   3000-3999  Name           - name resolution: undefined, redeclared, etc.
+ *   4000-4499  Type           - type system: mismatch, arity, nullability
+ *   4500-4699  Value          - values and numerics: div-by-zero, overflow
+ *   4700-4799  Mutability     - const/let violations, non-lvalue assignment
+ *   4800-4899  Sentinel       - nil/err/narrowing: unconsumed, invalid check
+ *   5000-5199  Host           - #host / #native / #builtin registration
+ *   5200-5299  Concurrency    - async/spawn/start/await/cancel, Deferred<T>
+ *   5300-5399  Generics       - generic arity, constraints, instantiation
+ *   5400-5499  Traits         - trait conformance, missing/extra members
+ *   5500-5599  Attributes     - attribute placement, args, unknown attribute
+ *   5600-5799  Memory         - linear values, allocation, runtime panics
+ *   6000-6999  Bytecode       - bytecode format, module loading, serialization
+ *   8000-8999  Warnings       - cross-cutting warnings (see sub-bands below)
+ *
+ * Warnings are further subdivided so "which phase emits this" is visible
+ * from the number:
+ *   8000-8099  Warnings - general (unreachable, unused, shadowed)
+ *   8100-8199  Warnings - types (redundant checks, ineffective const)
+ *   8200-8299  Warnings - concurrency (unawaited handle, spawn discard)
+ *   8300-8399  Warnings - host (foreign-body, inline-foreign)
+ *   8400-8499  Warnings - attributes (deprecated, unknown placement)
  */
 
 #pragma once
 
 #include <cstdint>
 
-// ─── Severity ──────────────────────────────────────────────────────────────
+namespace lucid::diag {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Severity
+// ─────────────────────────────────────────────────────────────────────────────
 
 enum class Severity : uint8_t {
     Hint    = 0,
@@ -36,7 +75,7 @@ enum class Severity : uint8_t {
     Fatal   = 4,
 };
 
-inline const char* severityName(Severity s) {
+inline const char* severityName(Severity s) noexcept {
     switch (s) {
         case Severity::Hint:    return "HINT";
         case Severity::Note:    return "NOTE";
@@ -47,382 +86,451 @@ inline const char* severityName(Severity s) {
     return "UNKNOWN";
 }
 
-// ─── Diagnostic Codes ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Category
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Unique diagnostic codes with clear category prefixes.
-///
-/// @design_decision Error codes represent WHAT the error is, not WHEN it occurs.
-///   - A division by zero is a division by zero whether at compile-time or runtime
-///   - A type mismatch is a type mismatch whether in const eval or normal code
-///   - This eliminates duplicate codes and enables unified error handling
-///
-///   This applies across the compile-time/runtime boundary too: a handful of
-///   codes below (see the "Added for RuntimeErrorKind" comments) exist purely
-///   so a *runtime* panic (RuntimeErrorKind, emitted by CodeGenPanic.cpp) can
-///   carry the same code space as a compile-time diagnostic, even when no
-///   compile-time diagnostic naturally produces that code today.
-///
-/// @design_decision Code Ranges by Semantic Category
-///   1000-1999: Lexical Errors
-///   2000-2999: Syntax Errors  
-///   3000-3999: Name Resolution
-///   4000-4999: Type & Value Errors (compile-time + runtime)
-///   5000-5499: FFI/Foreign Errors (compile-time + runtime)
-///   5500-5999: Control Flow & Concurrency
-///   6000-6499: Generics & Traits
-///   6500-6999: Memory & Ownership
-///   7000-7999: Backend & Linking (truly phase-specific)
-///   8000-8999: Warnings (cross-cutting)
-enum class DiagCode : uint32_t {
-    // ──────────────────────────────────────────────────────────────────────────
-    // LEXICAL ERRORS (1000-1999)
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Lex_InvalidCharacter         = 1001,
-    Lex_UnterminatedString       = 1002,
-    Lex_UnterminatedRawString    = 1003,
-    Lex_UnterminatedBlockComment = 1004,
-    Lex_UnknownCharacter         = 1005,
-    Lex_InvalidEscapeSequence    = 1006,
-    Lex_InvalidNumberLiteral     = 1007,
-    Lex_UnterminatedCharLiteral  = 1008,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // SYNTAX ERRORS (2000-2999)
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Syntax_ExpectedIdentifier               = 2001,
-    Syntax_ExpectedType                     = 2002,
-    Syntax_ExpectedToken                    = 2003,
-    Syntax_UnexpectedToken                  = 2004,
-    Syntax_ExpectedExpression               = 2005,
-    Syntax_ExpectedBlock                    = 2006,
-    Syntax_MultipleDefaults                 = 2007,
-    Syntax_EmptyGroup                       = 2008,
-    Syntax_ExpectedPipelineSeed             = 2009,
-    Syntax_ExpectedModulePath               = 2010,
-    Syntax_ExpectedAttributeLiteral         = 2011,
-    Syntax_ExpectedSwitchSubject            = 2012,
-    Syntax_ExpectedCaseValue                = 2013,
-    Syntax_ExpectedForBinding               = 2014,
-    Syntax_ExpectedRangeBound               = 2015,
-    Syntax_InvalidAttributeTarget           = 2016,
-    Syntax_MissingAttributeArgs             = 2017,
-    Syntax_TrailingComma                    = 2018,
-    Syntax_ExpectedLiteral                  = 2019,
-    Syntax_UnexpectedColonAfterField        = 2020,
-    Syntax_AnonymousFunctionAtDeclaration   = 2021,
-    Syntax_IncompleteDeclaration            = 2022,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // NAME RESOLUTION ERRORS (3000-3999)
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Sem_UndefinedValue            = 3001,
-    Sem_UndefinedType             = 3002,
-    Sem_NotCallable               = 3003,
-    Sem_Redeclaration             = 3004,
-    Sem_UndefinedModule           = 3005,
-    Sem_UndefinedMember           = 3006,
-    Sem_GenericParamUnused        = 3007,
-    Sem_TraitNotFound             = 3008,
-    Sem_NotATrait                 = 3009,
-    Sem_FieldNotFound             = 3010,
-    Sem_GenericParamRedeclaration = 3011,
-    Sem_ImportAliasRedeclaration  = 3012,
-    Sem_ModuleNotAnalyzed         = 3013,
-    Sem_AmbiguousName             = 3014,
-    Sem_PrivateMember             = 3015,
-    Sem_ModuleCycle               = 3016,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // TYPE & VALUE ERRORS (4000-4999)
-    // These apply to BOTH compile-time and runtime evaluation.
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    // Type System (4000-4099)
-    Sem_TypeMismatch             = 4001,
-    Sem_ArgCountMismatch         = 4002,
-    Sem_MissingInitializer       = 4003,
-    Sem_ConstNullable            = 4004,
-    Sem_MissingReturn            = 4005,
-    Sem_DuplicateValue           = 4006,
-    Sem_UnknownIntrinsic         = 4007,
-    Sem_InvalidSwitchType        = 4009,
-    Sem_MissingCase              = 4010,
-    Sem_PipelineMismatch         = 4011,
-    Sem_CompositionMismatch      = 4012,
-    Sem_RefInStruct              = 4013,
-    Sem_IllegalNilErr            = 4014,
-    Sem_InvalidGenericArg        = 4015,
-    Sem_UnknownType              = 4016,
-    Sem_InvalidArrayElement      = 4017,
-    Sem_RefInArray               = 4018,
-    Sem_FunctionNullable         = 4019,
-    Sem_ArrayNullable            = 4020,
-    Sem_RefToTrait               = 4021,
-    Sem_InvalidPointerTarget     = 4022,
-    Sem_InvalidParamType         = 4023,
-    Sem_InvalidReturnType        = 4024,
-    Sem_ReturnRef                = 4025,
-    Sem_TraitInvalidContext      = 4026,
-    Sem_GenericParamNotCallable  = 4027,
-    Sem_SelfReferentialInit      = 4028,
-    Sem_InvalidAssignment        = 4029,
-    Sem_InvalidUnary             = 4030,
-    Sem_InvalidBinary            = 4031,
-    Sem_InvalidRange             = 4032,
-    Sem_FuncShapeMismatch        = 4033,  // fn/cls shape doesn't match body's captures
-
-    // Added for RuntimeErrorKind - runtime array/slice checks with no prior
-    // compile-time code (a literal-index compile-time OOB check would reuse
-    // one of these too, since "index out of bounds" is the same error at
-    // either time - see the design decision above).
-    Sem_ArrayIndexOutOfBounds    = 4034,
-    Sem_SliceBoundsOutOfRange    = 4035,
-    Sem_NegativeArraySize        = 4036,
-    
-    // Arithmetic & Numeric Errors (shared with runtime)
-    Sem_DivisionByZero           = 4101,  // Division or modulo by zero
-    Sem_IntegerOverflow          = 4102,  // Integer overflow
-    Sem_InvalidShift             = 4103,  // Invalid shift operation
-    Sem_NegativeShift            = 4104,  // Negative shift amount
-    Sem_InvalidCast              = 4105,  // Invalid type cast/conversion
-    Sem_CircularDependency       = 4106,  // Circular dependency (const or otherwise)
-    Sem_InvalidBitwiseOp         = 4107,  // Bitwise op on non-integer
-    Sem_InvalidLogicalOp         = 4108,  // Logical op on non-bool
-    Sem_NumericOverflow          = 4109,  // General numeric overflow
-    Sem_InvalidIterator          = 4110,  // Invalid for-loop iterator
-    
-    // Assignment & Mutability (4200-4299)
-    Sem_ConstAssignment          = 4200,  // Assigning to const variable
-    Sem_ReadOnlyField            = 4201,  // Assigning to const struct field
-    Sem_ModuleReadOnly           = 4202,  // Assigning to module member
-    Sem_NonLValueAssignment      = 4203,  // Assignment to non-lvalue
-    Sem_ConstParamAssignment     = 4204,  // Assigning to const parameter
-    Sem_MissingFuncBody          = 4205,  // The function was initialized with missing body
-    
-    // Fallible/Nullable Errors (4300-4399)
-    Sem_UnhandledNil             = 4300,  // Nil not handled
-    Sem_UnhandledErr             = 4301,  // Err not handled
-    Sem_InvalidNilCheck          = 4302,  // Nil check on non-nullable
-    Sem_InvalidErrCheck          = 4303,  // Err check on non-fallible
-    Sem_NilInConst               = 4304,  // Nil not allowed in const context
-    Sem_ErrInConst               = 4305,  // Err not allowed in const context
-
-
-    // Arena & Built-in Types (4400-4499)
-    Sem_ConstRequired             = 4400,  // const required for Arena binding
-    Sem_InvalidArenaInit          = 4401,  // Invalid Arena initializer
-    Sem_InvalidArenaAccess        = 4402,  // Invalid Arena access (wrong form)
-    Sem_UnknownMethod             = 4403,  // Unknown method on builtin type
-    Sem_ArenaMethodArgCount       = 4404,  // Wrong argument count for Arena method
-    Sem_ArenaMethodGenericArg     = 4405,  // Missing or extra generic argument for Arena method
-    Sem_ArenaMethodStatic         = 4406,  // Static/instance method mismatch
-    Sem_ArenaMethodNotFound       = 4407,  // Arena method not found
-    Sem_ArenaInvalidLHS           = 4408,  // Invalid LHS for Arena access
-    Sem_ArenaNotConst             = 4409,  // Arena binding not const
-    Sem_ArenaDescriptorLiteral    = 4410,  // ArenaDescriptor cannot be constructed via literal
-    Sem_ArenaDescriptorNotFound   = 4411,  // ArenaDescriptor type not found
-    Sem_ArenaAllocNoGenericArg    = 4412,  // arena::alloc<T> missing type argument
-    Sem_ArenaSpaceNoGenericArg    = 4413,  // arena::space<T> missing type argument
-    Sem_ArenaCanFitNoGenericArg   = 4414,  // arena::canFit<T> missing type argument
-    Sem_ArenaCannotFit            = 4415,  // Not enough capacity in arena
-    Sem_ArenaEmptyCapacity        = 4416,  // Arena::create(0) is invalid
-    Sem_ArenaCapacityOverflow     = 4417,  // Requested allocation exceeds arena capacity
-    Sem_ArenaInvalidInit          = 4418,  // Invalid initial value for the arena
-
-    // Built-in Types (4450-4499)
-    Sem_BuiltinTypeMisuse         = 4450,  // Built-in type used incorrectly
-    Sem_BuiltinTypeNotConstructible = 4451,  // Built-in type cannot be constructed
-    Sem_BuiltinTypeNoUserDef      = 4452,  // Built-in type cannot be redefined by user
-    Sem_BuiltinFieldNotFound      = 4453,  // Field not found on built-in type
-    Sem_BuiltinMethodNotFound     = 4454,  // Method not found on built-in type
-    Sem_BuiltinTypeMismatch       = 4455,  // Expected built-in type, got something else
-    Sem_InvalidSimdElementType    = 4456,  // Simd element type must be numeric primitive
-    Sem_InvalidSimdLaneCount      = 4457,  // Simd lane count must be > 0
-    Sem_SimdNoGenericArgs         = 4458,  // Simd requires generic arguments <T, N>
-    Sem_ArenaNoGenericArgs        = 4459,  // Arena does not take generic arguments
-    Sem_ArenaDescriptorNoGenericArgs = 4460,  // ArenaDescriptor does not take generic arguments
-    
-    // ──────────────────────────────────────────────────────────────────────────
-    // FFI/FOREIGN ERRORS (5000-5499)
-    // These can happen at compile-time OR runtime.
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Ffi_UnknownSymbol        = 5001,  // Symbol not found (link-time error)
-    Ffi_SymbolMismatch       = 5002,  // Symbol type/signature mismatch
-    Ffi_ABIIncompatible      = 5003,  // ABI/calling convention mismatch
-    Ffi_InvalidPointer       = 5004,  // Invalid pointer usage (e.g., &T vs *T)
-    Ffi_InvalidForeign       = 5005,  // Invalid @[foreign] declaration
-    Ffi_ConstContext         = 5006,  // Foreign call in const context (can't eval)
-    Ffi_TypeNotFFI           = 5007,  // Type can't be passed to FFI
-    Ffi_UnsafeReturn         = 5008,  // Returning pointer to stack memory
-    Ffi_LibraryNotFound      = 5009,  // Library not found at link time
-    Ffi_SymbolNotFound       = 5010,  // Symbol not found in library
-    Ffi_InvalidABIAttribute  = 5011,  // Invalid ABI attribute value
-    Ffi_MissingLibrary       = 5012,  // Missing library specification
-    Ffi_UnsupportedType      = 5013,  // Type not supported by FFI
-    Ffi_InvalidParamPassing  = 5014,  // Invalid parameter passing mode
-    Ffi_VariadicMismatch     = 5015,  // Variadic argument mismatch
-    Ffi_ReturnMismatch       = 5016,  // Return type mismatch with C
-    Ffi_SizeMismatch         = 5017,  // Size mismatch for struct/union
-    // Added for RuntimeErrorKind::ForeignCallFailed - the call itself
-    // failing at runtime, distinct from Ffi_SymbolNotFound (couldn't even
-    // find the symbol) and the compile-time signature/ABI checks above.
-    Ffi_CallFailed           = 5018,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // CONTROL FLOW & CONCURRENCY ERRORS (5500-5999)
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Sem_InvalidBreak          = 5501,  // Break outside loop
-    Sem_InvalidContinue       = 5502,  // Continue outside loop
-    Sem_UnawaitedAsync        = 5503,  // Async never awaited (warning)
-    Sem_UnjoinedSpawn         = 5504,  // Spawn never joined (warning)
-    Sem_AsyncOutsideFunction  = 5505,  // Async outside function body
-    Sem_SpawnOutsideFunction  = 5506,  // Spawn outside function body
-    Sem_AwaitOutsideFunction  = 5507,  // Await outside function body
-    Sem_JoinOutsideFunction   = 5508,  // Join outside function body
-    Sem_AwaitNonAsync         = 5509,  // Await on non-async value
-    Sem_JoinNonSpawn          = 5510,  // Join on non-spawn value
-    Sem_DoubleAwait           = 5511,  // Awaiting already awaited value
-    Sem_DoubleJoin            = 5512,  // Joining already joined value
-    Sem_ReturnInAsync         = 5513,  // Return in async context
-    Sem_ReturnInSpawn         = 5514,  // Return in spawn context
-    Sem_SwitchExhaustive      = 5515,  // Switch not exhaustive
-    Sem_DefaultNotLast        = 5516,  // Default clause not last
-    Sem_DuplicateCase         = 5517,  // Duplicate case value
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // GENERICS & TRAITS ERRORS (6000-6499)
-    // ──────────────────────────────────────────────────────────────────────────
-
-    Sem_GenericArityMismatch   = 6001,
-    Sem_GenericConstraint      = 6002,
-    Sem_TraitImplementation    = 6003,
-    Sem_TraitConflict          = 6004,
-    Sem_ForeignInvalid         = 6005,
-    Sem_ForeignABI             = 6006,
-    Sem_AttributeInvalid       = 6007,
-    Sem_AttributeArgCount      = 6008,
-    Sem_UnknownAttribute       = 6009,
-    Sem_GenericParamRequired   = 6010,
-    Sem_GenericParamInference  = 6011,
-    Sem_GenericInstantiate     = 6012,
-    Sem_TraitFieldMissing      = 6013,
-    Sem_TraitFieldTypeMismatch = 6014,
-    Sem_TraitConstMismatch     = 6015,
-    Sem_TraitDuplicate         = 6016,
-    Sem_GenericCycle           = 6017,
-    Sem_AttributeArgValue      = 6018,
-    Sem_AttributeDuplicate     = 6019, // Duplicate attribute on same declaration
-    Sem_AttributeNotApplicable = 6020, // attribute doesn't apply to this declaration
-    Sem_TypeErasedGenericReflection = 6021,  // #sizeof/#alignof/#tostr on type-erased generic
-    Sem_TypeErasedGenericAlloc      = 6022,  // #alloc/arena::alloc on type-erased generic
-    Sem_TypeErasedGenericSimd       = 6023,  // Simd<T,N> with type-erased T
-    Sem_TypeErasedGenericBitcast    = 6024,  // #bitcast on type-erased generic
-    Sem_TypeErasedNestedMismatch    = 6025,  // Type-erased container with specialized inner type
-    Sem_GenericRequiresConst   = 6026, // Generic function declared with 'let'
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // MEMORY & OWNERSHIP ERRORS (6500-6999)
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Sem_InvalidRef            = 6501,  // Invalid reference
-    Sem_RefEscape             = 6502,  // Reference escapes scope
-    Sem_UseAfterFree          = 6503,  // Use after free
-    Sem_DoubleFree            = 6504,  // Double free
-    Sem_InvalidPtr            = 6505,  // Invalid pointer operation
-    Sem_PtrArithmetic         = 6506,  // Invalid pointer arithmetic
-    Sem_PtrDeref              = 6507,  // Invalid pointer dereference
-    Sem_RefToStack            = 6508,  // Reference to stack-allocated data
-    Sem_MoveAfterUse          = 6509,  // Move after use
-    Sem_UninitVariable        = 6510,  // Uninitialized variable
-    Sem_InvalidCapture        = 6511,  // Can't capture borrowed type in closure
-    // Added for RuntimeErrorKind values with no prior compile-time code.
-    Sem_DanglingPointer        = 6512,  // Dereferencing a dangling pointer
-    Sem_FreeNullPointer        = 6513,  // #free called on a null pointer
-    Sem_AllocationFailed       = 6514,  // Runtime memory allocation failed
-    Sem_ArenaAllocationFailed  = 6515,  // Runtime arena allocation failed
-    Sem_ArenaInvalidDescriptor = 6516,  // Invalid arena descriptor used at runtime
-    Sem_ArenaOutOfCapacity     = 6517,  // Arena out of remaining capacity
-    Sem_TagMismatch            = 6518,  // Tagged slot tag mismatch
-    Sem_RuntimePanic           = 6519,  // Generic/uncategorized runtime panic
-    Sem_AssertionFailed        = 6520,  // #assert failed at runtime
-    Sem_UnsupportedOperation   = 6521,  // Unsupported operation at runtime
-    Sem_Unreachable            = 6422,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // BACKEND & LINKING ERRORS (7000-7999)
-    // These are truly phase-specific - only happen during codegen/linking.
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Backend_LinkerError       = 7001,
-    Backend_CodegenError      = 7002,
-    Backend_TargetUnsupported = 7003,
-    Backend_OutOfMemory       = 7004,
-    Backend_InvalidIR         = 7005,
-    Backend_OptimizerError    = 7006,
-    Backend_ObjectWriteError  = 7007,
-    Backend_AsmError          = 7008,
-    Backend_RelocationError   = 7009,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // WARNINGS (8000-8999)
-    // Cross-cutting - all phases can emit these.
-    // ──────────────────────────────────────────────────────────────────────────
-    
-    Warn_UnreachableCode   = 8001,
-    Warn_UnusedVariable    = 8002,
-    Warn_UnusedParameter   = 8003,
-    Warn_UnusedFunction    = 8004,
-    Warn_Deprecated        = 8005,
-    Warn_UnawaitedAsync    = 8006,
-    Warn_UnjoinedSpawn     = 8007,
-    Warn_UnreachableCase   = 8008,
-    Warn_DiscardedResult   = 8009,
-    Warn_RedundantNilCheck = 8010,
-    Warn_ShadowedName      = 8011,
-    Warn_UnusedImport      = 8012,
-    Warn_UnusedType        = 8013,
-    Warn_UnusedField       = 8014,
-    Warn_IneffectiveConst  = 8015,  // Const doesn't help optimization
-    Warn_PotentialOverflow = 8016,  // Potential integer overflow
-    Warn_Fallthrough       = 8017,  // Missing case in switch
-    Warn_UnsafeFFI         = 8018,  // Unsafe FFI usage
-    Warn_ForeignBody       = 8019,  // Foreign function has a body
-    Warn_ForeignInline     = 8020,  // Cannot inline foreign function
-    Warn_ArenaSmallCapacity = 8021,
+enum class DiagCategory : uint8_t {
+    Lexical,
+    Syntax,
+    Name,
+    Type,
+    Value,
+    Mutability,
+    Sentinel,
+    Host,
+    Concurrency,
+    Generics,
+    Traits,
+    Attributes,
+    Memory,
+    Bytecode,
+    Warning,
+    Internal,   // reserved for codes outside the user-facing space (code 0)
+    Unknown,
 };
 
-
-// ─── Helpers ─────────────────────────────────────────────────────────────
-
-/// Get the category name from an error code.
-inline const char* categoryName(DiagCode code) {
-    uint32_t raw = static_cast<uint32_t>(code);
-    if (raw >= 1000 && raw < 2000) return "Lexical";
-    if (raw >= 2000 && raw < 3000) return "Syntax";
-    if (raw >= 3000 && raw < 7000) return "Semantic";
-    if (raw >= 7000 && raw < 8000) return "Backend";
-    if (raw >= 8000 && raw < 9000) return "Warning";
+inline const char* categoryName(DiagCategory c) noexcept {
+    switch (c) {
+        case DiagCategory::Lexical:     return "Lexical";
+        case DiagCategory::Syntax:      return "Syntax";
+        case DiagCategory::Name:        return "Name";
+        case DiagCategory::Type:        return "Type";
+        case DiagCategory::Value:       return "Value";
+        case DiagCategory::Mutability:  return "Mutability";
+        case DiagCategory::Sentinel:    return "Sentinel";
+        case DiagCategory::Host:        return "Host";
+        case DiagCategory::Concurrency: return "Concurrency";
+        case DiagCategory::Generics:    return "Generics";
+        case DiagCategory::Traits:      return "Traits";
+        case DiagCategory::Attributes:  return "Attributes";
+        case DiagCategory::Memory:      return "Memory";
+        case DiagCategory::Bytecode:    return "Bytecode";
+        case DiagCategory::Warning:     return "Warning";
+        case DiagCategory::Internal:    return "Internal";
+        case DiagCategory::Unknown:     return "Unknown";
+    }
     return "Unknown";
 }
 
-/// Get the severity from an error code.
-inline Severity severityFromCode(DiagCode code) {
-    uint32_t raw = static_cast<uint32_t>(code);
-    if (raw >= 8000) return Severity::Warning;
-    return Severity::Error;
+// ─────────────────────────────────────────────────────────────────────────────
+// DiagCode
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Unique diagnostic codes.
+///
+/// @note Code 0 is reserved for free-text notes and hints that have no
+///       diagnostic identity of their own. It is not a member of the enum.
+enum class DiagCode : uint32_t {
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // LEXICAL (1000-1999)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Lex_InvalidCharacter         = 1001,
+    Lex_UnknownCharacter         = 1002,
+    Lex_UnterminatedString       = 1003,
+    Lex_UnterminatedRawString    = 1004,
+    Lex_UnterminatedCharLiteral  = 1005,
+    Lex_UnterminatedBlockComment = 1006,
+    Lex_InvalidEscapeSequence    = 1007,
+    Lex_InvalidNumberLiteral     = 1008,
+    Lex_InvalidRadixLiteral      = 1009,  // 0x/0b/0o with no digits, bad digit
+    Lex_InterpolationInRawString = 1010,  // \(...) in a """...""" literal
+    Lex_NewlineInString          = 1011,  // literal newline in a "..." literal
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SYNTAX (2000-2999)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // General
+    Syntax_ExpectedIdentifier   = 2001,
+    Syntax_ExpectedType         = 2002,
+    Syntax_ExpectedExpression   = 2003,
+    Syntax_ExpectedToken        = 2004,
+    Syntax_UnexpectedToken      = 2005,
+    Syntax_ExpectedLiteral      = 2006,
+    Syntax_ExpectedBlock        = 2007,
+    Syntax_ExpectedModulePath   = 2008,
+    Syntax_IncompleteDeclaration = 2009,
+
+    // Declarations and targets
+    Syntax_ExpectedDeclTarget       = 2010,  // '=' with no target
+    Syntax_InvalidTargetShape       = 2011,  // target is not #host/#native/#builtin/ident/expr/block
+    Syntax_AnonymousFunctionInDecl  = 2012,  // bare `(x int) -> ...` where a declaration is expected
+    Syntax_MissingBody              = 2013,  // FN/const with no '=' target
+
+    // Function types
+    Syntax_MissingFuncShapeMarker   = 2014,  // group with no fn/cls marker
+    Syntax_ExpectedFuncGroup        = 2015,  // after fn/cls, no '('
+
+    // Type syntax
+    Syntax_InvalidNullableOrder     = 2016,  // `!?` instead of `?!`
+    Syntax_ExpectedTypeSuffix       = 2017,  // trailing `?`/`!` with no type
+    Syntax_InvalidArraySize         = 2018,  // `[x]` where x is not `*`, `_`, or int
+
+    // Statements and control flow
+    Syntax_ExpectedSwitchSubject    = 2019,
+    Syntax_ExpectedCaseValue        = 2020,
+    Syntax_MultipleDefaults         = 2021,
+    Syntax_ExpectedForBinding       = 2022,  // collection for-loop with one binding
+    Syntax_ExpectedRangeBound       = 2023,
+    Syntax_TrailingComma            = 2024,
+    Syntax_UnexpectedColon          = 2025,  // ':' in a place that does not take one
+
+    // Attributes
+    Syntax_ExpectedAttributeLiteral = 2026,
+    Syntax_MissingAttributeArgs     = 2027,
+    Syntax_InvalidAttributeTarget   = 2028,
+
+    // Expressions
+    Syntax_ExpectedPipelineSeed     = 2029,
+    Syntax_ExpectedPipelineStep     = 2030,
+    Syntax_EmptyGroup               = 2031,  // `()` used as a value with no context
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // NAME RESOLUTION (3000-3999)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Values and types
+    Name_UndefinedValue             = 3001,
+    Name_UndefinedType              = 3002,
+    Name_UndefinedModule            = 3003,
+    Name_UndefinedMember            = 3004,
+    Name_NotCallable                = 3005,
+    Name_NotAType                   = 3006,
+    Name_NotATrait                  = 3007,
+    Name_FieldNotFound              = 3008,
+    Name_MethodNotFound             = 3009,
+    Name_PrivateMember              = 3010,
+
+    // Declaration collisions
+    Name_Redeclaration              = 3011,
+    Name_GenericParamRedeclaration  = 3012,
+    Name_ImportAliasRedeclaration   = 3013,
+    Name_DuplicateValue             = 3014,  // two enum variants, etc.
+    Name_AmbiguousName              = 3015,  // overload-resolution ambiguity
+    Name_GenericParamUnused         = 3016,
+
+    // Modules
+    Name_ModuleCycle                = 3017,
+    Name_ModuleNotAnalyzed          = 3018,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TYPES (4000-4499)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Type_Mismatch                   = 4001,
+    Type_ArgCountMismatch           = 4002,  // call-site arity
+    Type_MissingInitializer         = 4003,
+    Type_MissingReturn              = 4004,  // not all paths return
+    Type_ReturnMismatch             = 4005,
+    Type_InvalidAssignment          = 4006,
+    Type_InvalidUnary               = 4007,
+    Type_InvalidBinary              = 4008,
+    Type_InvalidRange               = 4009,
+    Type_InvalidArrayElement        = 4010,
+    Type_InvalidParamType           = 4011,
+    Type_InvalidReturnType          = 4012,
+    Type_InvalidPointerTarget       = 4013,
+    Type_UnknownType                = 4014,
+    Type_InvalidGenericArg          = 4015,
+    Type_UnknownIntrinsic           = 4016,  // #builtin name not in the registry
+
+    // Function types
+    Type_FunctionShapeMismatch      = 4020,  // body captures, declared 'fn'
+    Type_FunctionNullable           = 4021,  // `?`/`!` on a function type
+    Type_FunctionCurryMismatch      = 4022,  // wrong number of curry stages
+
+    // Sentinels on types
+    Type_ArrayNullable              = 4030,  // `?` on an array type, not element
+    Type_ConstNullable              = 4031,  // `const` field of nullable type
+    Type_SelfReferentialInit        = 4032,  // non-nullable recursive field
+
+    // Switch/match
+    Type_InvalidSwitchType          = 4040,  // float/struct/array subject
+    Type_MissingCase                = 4041,  // non-exhaustive enum switch
+    Type_DuplicateCase              = 4042,
+    Type_DefaultNotLast             = 4043,
+
+    // Pipeline
+    Type_PipelineMismatch           = 4050,
+    Type_CompositionMismatch        = 4051,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // VALUES AND NUMERICS (4500-4699)
+    // These apply at both compile time (const-eval) and runtime.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Value_DivisionByZero            = 4501,
+    Value_ModuloByZero              = 4502,
+    Value_IntegerOverflow           = 4503,
+    Value_NumericOverflow           = 4504,  // floats, general
+    Value_InvalidCast               = 4505,
+    Value_InvalidShift              = 4506,  // shift by >= bit width, negative
+    Value_InvalidBitwiseOp          = 4507,  // bitwise on non-integer
+    Value_InvalidLogicalOp          = 4508,  // `and`/`or` on non-truthy-able
+    Value_InvalidIterator           = 4509,  // for-loop over non-iterable
+    Value_CircularDependency        = 4510,  // const-eval cycle
+    Value_NilInConst                = 4511,  // nil where const expected
+    Value_ErrInConst                = 4512,  // err where const expected
+    Value_ArrayIndexOutOfBounds     = 4513,
+    Value_SliceBoundsOutOfRange     = 4514,
+    Value_NegativeArraySize         = 4515,
+    Value_StringIndexOutOfBounds    = 4516,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MUTABILITY (4700-4799)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Mut_ConstAssignment             = 4701,  // assign to `const` binding
+    Mut_ReadOnlyField               = 4702,  // assign to `const` field
+    Mut_ConstParamAssignment        = 4703,  // assign to `const` param
+    Mut_ModuleReadOnly              = 4704,  // assign to module-level `const`
+    Mut_NonLValueAssignment         = 4705,  // assign to a non-lvalue
+    Mut_LoopBindingAssignment       = 4706,  // assign to a for-loop binding
+    Mut_AssignToVariant             = 4707,  // `Direction.North = ...`
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SENTINELS AND NARROWING (4800-4899)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Sent_UnhandledNil               = 4801,  // `T?` used as `T`
+    Sent_UnhandledErr               = 4802,  // `T!` used as `T`
+    Sent_UnhandledBoth              = 4803,  // `T?!` used as `T`
+    Sent_InvalidNilCheck            = 4804,  // `== nil` on non-nullable
+    Sent_InvalidErrCheck            = 4805,  // `== err` on non-fallible
+    Sent_IllegalNilErr              = 4806,  // `nil`/`err` where not allowed
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HOST REGISTRY (5000-5199)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Host_SymbolNotRegistered        = 5001,  // #host(name): not in registry
+    Host_SymbolSignatureMismatch    = 5002,  // declared vs registered
+    Host_KindMismatch               = 5003,  // #host used for a #native name
+    Host_NativeInUserScript         = 5004,  // #native only in core scripts
+    Host_BuiltinInUserScript        = 5005,  // #builtin only in core scripts
+    Host_TypeNotRegistered          = 5006,  // TYPE X = #host(T): not registered
+    Host_TypeSignatureMismatch      = 5007,  // TYPE X = #host(T): layout mismatch
+    Host_HostOnlyCalledFromLucid    = 5008,  // @[host_only] function called
+    Host_MissingRegistration        = 5009,  // registry entry absent at load time
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CONCURRENCY (5200-5299)
+    // The Deferred<T> linear-value rules and the async call forms.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Conc_AsyncBareCall              = 5201,  // async f() called without spawn/start/await
+    Conc_SpawnNonAsync              = 5202,
+    Conc_StartNonAsync              = 5203,
+    Conc_AwaitNonDeferred           = 5204,
+    Conc_CancelNonDeferred          = 5205,
+    Conc_UnconsumedDeferred         = 5206,  // live Deferred<T> at scope exit
+    Conc_DoubleConsume              = 5207,  // second await, or await after cancel
+    Conc_DeferredInField            = 5208,  // Deferred<T> stored in a struct/array
+    Conc_DeferredCaptured           = 5209,  // Deferred<T> captured by a closure
+    Conc_DeferredEscapes             = 5210,  // returned from its scope
+    Conc_AwaitOutsideAsync          = 5211,  // await at top level or in non-async fn
+    Conc_SpawnOutsideFunction       = 5212,
+    Conc_StartOutsideFunction       = 5213,
+    Conc_AwaitAllEmpty              = 5214,  // `await all()` with no targets
+    Conc_AwaitAnyEmpty              = 5215,  // `await any()` with no targets
+    Conc_CancelOfResolved           = 5216,  // cancel after the fiber has completed (warning-as-error?)
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GENERICS (5300-5399)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Gen_ArityMismatch               = 5301,  // wrong number of type args
+    Gen_ConstraintUnsatisfied       = 5302,  // T does not satisfy C
+    Gen_ParamRequired               = 5303,  // bare generic name where a value is needed
+    Gen_CannotInfer                 = 5304,  // (reserved: no inference in the language)
+    Gen_InstantiationFailed         = 5305,
+    Gen_Cycle                       = 5306,
+    Gen_RequiresConst               = 5307,  // `let`-bound generic function
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TRAITS (5400-5499)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Trait_NotSatisfied              = 5401,  // constraint site, no satisfy block
+    Trait_MissingMember             = 5402,  // REQUIRE clause with no DEF
+    Trait_FieldMissing              = 5403,  // FIELD clause with no matching field
+    Trait_FieldTypeMismatch         = 5404,
+    Trait_ConstMismatch             = 5405,  // trait requires const, field is let
+    Trait_Duplicate                 = 5406,  // two satisfy blocks for the same pair
+    Trait_ParentUnsatisfied         = 5407,  // `trait X : A` where type fails A
+    Trait_SelfReferenceNonNullable  = 5408,  // `FIELD next Self;` (no `?`)
+    Trait_NotATrait                 = 5409,  // name does not resolve to a trait
+    Trait_ConstraintNotATrait       = 5410,  // `<T : NotATrait>`
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ATTRIBUTES (5500-5599)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Attr_Unknown                    = 5501,
+    Attr_InvalidArgCount            = 5502,
+    Attr_InvalidArgValue            = 5503,
+    Attr_Duplicate                  = 5504,  // same attribute twice
+    Attr_NotApplicable              = 5505,  // @[inline] on a struct
+    Attr_ExportInLocalScope         = 5506,  // @[export] inside a block
+    Attr_ExportOnNonTopLevel        = 5507,  // @[export] on a non-declaration
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MEMORY AND RUNTIME PANICS (5600-5799)
+    // Linear values, allocation, and interpreter-level failures.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Mem_InvalidRef                  = 5601,  // malformed reference at runtime
+    Mem_DanglingPointer             = 5602,  // dereference of a dangling pointer
+    Mem_UseAfterFree                = 5603,
+    Mem_DoubleFree                  = 5604,
+    Mem_FreeNullPointer             = 5605,  // #free(nil)
+    Mem_AllocationFailed            = 5606,
+    Mem_UninitVariable              = 5607,
+    Mem_TagMismatch                 = 5608,  // payload-enum tag mismatch
+    Mem_InvalidPtr                  = 5609,
+    Mem_PtrArithmetic               = 5610,
+    Mem_PtrDeref                    = 5611,
+    Mem_InvalidCapture              = 5612,  // cannot capture borrowed value
+
+    // Generic interpreter panics
+    Panic_Generic                   = 5701,  // #builtin(panic_str) / error(msg)
+    Panic_AssertionFailed           = 5702,  // #assert at runtime
+    Panic_Unreachable               = 5703,  // #builtin(unreachable)
+    Panic_UnsupportedOperation      = 5704,  // opcode not implemented for type
+    Panic_StackOverflow             = 5705,  // interpreter recursion limit
+    Panic_HostCallFailed            = 5706,  // a #host function returned failure
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BYTECODE AND MODULE LOADING (6000-6999)
+    // Bytecode-format validation, .lucb loading, serialization.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    Bc_FormatVersionMismatch        = 6001,  // .lucb produced by an incompatible version
+    Bc_BadMagic                     = 6002,  // not a .lucb file
+    Bc_Truncated                    = 6003,  // file ends mid-structure
+    Bc_UnknownOpcode                = 6004,  // opcode not in this interpreter's set
+    Bc_InvalidConstantRef           = 6005,  // instruction references a missing constant
+    Bc_InvalidSlotRef               = 6006,  // instruction references an out-of-frame slot
+    Bc_InvalidHostSymbolRef         = 6007,  // instruction references an unregistered symbol
+    Bc_InvalidModuleIndex           = 6008,
+    Bc_InvalidFunctionIndex         = 6009,
+    Bc_HostSymbolUnresolved         = 6010,  // host symbol in the module not in the registry
+    Bc_SerializationFailed          = 6011,  // writer error
+    Bc_DeserializationFailed        = 6012,  // reader error (not covered above)
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WARNINGS (8000-8999)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // General (8000-8099)
+    Warn_UnreachableCode            = 8001,
+    Warn_UnusedVariable             = 8002,
+    Warn_UnusedParameter            = 8003,
+    Warn_UnusedFunction             = 8004,
+    Warn_UnusedType                 = 8005,
+    Warn_UnusedField                = 8006,
+    Warn_UnusedImport               = 8007,
+    Warn_ShadowedName               = 8008,
+    Warn_DiscardedResult            = 8009,
+    Warn_TrivialCondition           = 8010,  // `if x` where x is always true
+    Warn_RedundantNilCheck          = 8011,
+    Warn_PotentialOverflow          = 8012,
+    Warn_IneffectiveConst           = 8013,  // const does not help optimization
+
+    // Types (8100-8199)
+    Warn_RedundantCast              = 8101,
+    Warn_ImplicitFnToCls            = 8102,  // fn coerced to cls at a call site
+    Warn_UnnecessaryCls             = 8103,  // cls declared, body never captures
+
+    // Concurrency (8200-8299)
+    Warn_UnawaitedHandle            = 8201,  // Deferred<T> declared, later awaited
+    Warn_UnnecessaryAsync           = 8202,  // async function never awaits
+    Warn_SpawnDiscard               = 8203,  // spawn's result silently dropped
+    Warn_CancelOfCompleted          = 8204,  // cancel on an already-completed fiber
+
+    // Host (8300-8399)
+    Warn_ForeignBody                = 8301,  // #host declaration with a Lucid body
+    Warn_InlineForeign              = 8302,  // @[inline] on a #host-bound function
+    Warn_HostTypeOpaqueField        = 8303,  // non-opaque field on a #host-backed type
+
+    // Attributes (8400-8499)
+    Warn_Deprecated                 = 8401,  // @[deprecated] use site
+    Warn_DuplicateAttribute         = 8402,  // attribute applied twice, second ignored
+    Warn_UnknownAttributeArg        = 8403,  // attribute with unexpected arg
+    Warn_CommentStyle               = 8404,  // doc-comment form mismatch
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Range checks and derived properties
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The numeric value of a code.
+inline constexpr uint32_t raw(DiagCode c) noexcept {
+    return static_cast<uint32_t>(c);
 }
 
-/// Check if a code is a warning.
-inline bool isWarningCode(DiagCode code) {
-    return static_cast<uint32_t>(code) >= 8000;
+/// @brief The category a code belongs to.
+///
+/// Pure function of the code's range. Code 0 is Internal (free-text note).
+inline constexpr DiagCategory categoryFromCode(DiagCode c) noexcept {
+    const uint32_t v = raw(c);
+    if (v == 0)          return DiagCategory::Internal;
+    if (v < 2000)        return DiagCategory::Lexical;
+    if (v < 3000)        return DiagCategory::Syntax;
+    if (v < 4000)        return DiagCategory::Name;
+    if (v < 4500)        return DiagCategory::Type;
+    if (v < 4700)        return DiagCategory::Value;
+    if (v < 4800)        return DiagCategory::Mutability;
+    if (v < 5000)        return DiagCategory::Sentinel;
+    if (v < 5200)        return DiagCategory::Host;
+    if (v < 5300)        return DiagCategory::Concurrency;
+    if (v < 5400)        return DiagCategory::Generics;
+    if (v < 5500)        return DiagCategory::Traits;
+    if (v < 5600)        return DiagCategory::Attributes;
+    if (v < 6000)        return DiagCategory::Memory;
+    if (v < 7000)        return DiagCategory::Bytecode;
+    if (v < 9000)        return DiagCategory::Warning;
+    return DiagCategory::Unknown;
 }
 
-/// Check if a code is an error.
-inline bool isErrorCode(DiagCode code) {
-    return !isWarningCode(code);
+/// @brief The severity a code implies.
+///
+/// The warning band is the only band that is not an error. `Fatal` is a
+/// property a caller can promote an error to at the point of reporting; it
+/// is not encoded in the code itself.
+inline constexpr Severity severityFromCode(DiagCode c) noexcept {
+    return raw(c) >= 8000 ? Severity::Warning : Severity::Error;
 }
+
+inline constexpr bool isWarningCode(DiagCode c) noexcept {
+    return raw(c) >= 8000 && raw(c) < 9000;
+}
+
+inline constexpr bool isErrorCode(DiagCode c) noexcept {
+    return !isWarningCode(c) && raw(c) != 0;
+}
+
+} // namespace lucid::diag

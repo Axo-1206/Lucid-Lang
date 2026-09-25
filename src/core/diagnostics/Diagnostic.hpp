@@ -1,338 +1,340 @@
 /**
  * @file Diagnostic.hpp
- * @brief Unified diagnostic system - single header for all diagnostic functionality.
+ * @brief The diagnostic engine: collection, query, and formatting.
  *
- * @design_decision Simple and flexible
- *   - Error codes are unique identifiers with clear purposes
- *   - Messages are built at call site for maximum flexibility
- *   - Code range determines category and severity
- *   - Single context tracks all diagnostics
+ * ─── Design: engine is session-scoped, not a singleton ────────────────────
+ * A DiagnosticEngine is created by whoever runs a compilation — the CLI, the
+ * LSP server, a test — and passed by reference to every stage that can
+ * report. It is not global state. Two compilations running in the same
+ * process (the LSP server handles many) get two engines and their
+ * diagnostics do not mix.
  *
- * @design_decision No code-to-message mapping
- *   - Messages are built directly at call site using variadic templates
- *   - This eliminates the need for template strings and message files
- *   - Makes error messages more readable and maintainable
+ * ─── Design: messages are built at the call site ──────────────────────────
+ * There is no code-to-message table. A diagnostic's text is assembled from
+ * the variadic arguments passed to `error`/`warning`/`note`/`hint`. This
+ * keeps the message next to the condition that produced it, and it lets the
+ * caller include whatever context it has (a name, a type, a count) without
+ * a formatting language in between.
  *
- * @design_decision Code ranges
- *   1000-1999: Lexical
- *   2000-2999: Syntax
- *   3000-3999: Semantic - Name Resolution
- *   4000-4999: Semantic - Type Checking
- *   5000-5999: Semantic - Generics/Traits/FFI
- *   6000-6999: Semantic - Other
- *   7000-7999: Backend
- *   8000-8999: Warnings (cross-cutting)
+ * ─── Design: no AST dependency in this header ─────────────────────────────
+ * The AST-aware overloads (`error(code, BaseAST*, args...)`) are templates
+ * that forward to a `.cpp` helper. This header does not include BaseAST.hpp.
+ * Every translation unit in the frontend includes Diagnostic.hpp, and the
+ * AST header tree is large; keeping it out of this header is the difference
+ * between a fast incremental build and a slow one.
+ *
+ * ─── Design: free-text notes and hints ────────────────────────────────────
+ * A note or hint has no diagnostic identity of its own — it is context for
+ * an error or warning. It is reported with `note`/`hint`, which take no
+ * DiagCode, and is stored with code 0. The formatting code emits no code
+ * prefix for code 0.
+ *
+ * ─── Severity, DiagCode, and the code space ───────────────────────────────
+ * Those live in DiagCode.hpp, which is independent of this header. A
+ * subsystem that only needs the code space — a runtime panic that carries a
+ * DiagCode, a serialized error that names its code — includes DiagCode.hpp
+ * and nothing else.
  */
 
 #pragma once
 
 #include "core/SourceLocation.hpp"
-#include "core/ast/BaseAST.hpp"
-#include "core/memory/InternedString.hpp"
-#include "core/memory/StringPool.hpp"
 #include "core/diagnostics/DiagCode.hpp"
+#include "core/memory/InternedString.hpp"
 
-#include <iostream>
-#include <vector>
-#include <string>
-#include <sstream>
-#include <iomanip>
+#include <cstdint>
 #include <ostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
-// ─── Severity and DiagCode ─────────────────────────────────────────────────
-//
-// Severity, DiagCode, and the pure helpers (categoryName, severityFromCode,
-// isWarningCode, isErrorCode, severityName) now live in DiagCode.hpp
-// (included above). They moved out of this file so that code needing just
-// the code space - notably codegen/support/RuntimeError.hpp, which maps
-// RuntimeErrorKind to a DiagCode so a runtime panic can embed the same code
-// a compile-time diagnostic would use - doesn't have to pull in
-// DiagnosticEngine's StringPool/BaseAST/<ostream> dependencies to get it.
+// Forward declaration: the AST-aware overloads need the pointer type, not
+// the definition. The actual `node->loc` dereference lives in Diagnostic.cpp.
+struct BaseAST;
 
-// ─── Diagnostic ──────────────────────────────────────────────────────────
+class StringPool;   // forward declaration; DiagnosticEngine holds a pointer
 
+namespace lucid::diag {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diagnostic
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief One collected diagnostic.
+///
+/// A diagnostic is a value: severity, code, location, message, and the file
+/// it belongs to. It is not a live object — once added to the engine, it is
+/// immutable and can be copied, stored, or serialized.
 struct Diagnostic {
-    Severity severity;
-    DiagCode code;
-    SourceLocation location;
-    std::string message;
-    InternedString file;   // Which file this diagnostic belongs to. May be
-                            // invalid (isValid() == false) for diagnostics
-                            // raised outside any file's parse (e.g. driver-
-                            // level errors) - callers should treat that as
-                            // "unknown file", not crash.
+    Severity        severity;
+    DiagCode        code;          // code 0 for free-text notes and hints
+    SourceLocation  location;
+    std::string     message;
+    InternedString  file;          // may be invalid (see note below)
 
-    std::string category() const {
-        return categoryName(code);
+    /// The category of this diagnostic, derived from its code.
+    /// Returns `DiagCategory::Internal` for code 0.
+    DiagCategory category() const noexcept {
+        return categoryFromCode(code);
+    }
+
+    /// True if this is a free-text note or hint with no diagnostic identity.
+    bool isFreeText() const noexcept {
+        return raw(code) == 0;
+    }
+
+    /// True if this diagnostic is an error or fatal.
+    bool isError() const noexcept {
+        return severity == Severity::Error || severity == Severity::Fatal;
+    }
+
+    /// True if this diagnostic is a warning.
+    bool isWarning() const noexcept {
+        return severity == Severity::Warning;
     }
 };
 
-// ─── Diagnostic Engine ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// DiagnosticEngine
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Simple diagnostic engine - stores and tracks all diagnostics.
+/// @brief Collects, queries, and formats diagnostics.
 ///
-/// Usage:
-///   DiagnosticEngine ctx;
-///   ctx.error(ErrorCode::SemUndefinedValue, node, "undefined variable '", name, "'");
-///   ctx.warning(ErrorCode::WarnUnusedVariable, node, "unused variable '", name, "'");
-///   ctx.note(node, "consider using '_' to ignore");
+/// The engine owns the diagnostics it has collected. It is not thread-safe:
+/// the compiler pipeline is sequential, and the LSP runs one engine per
+/// in-flight analysis. If a future stage wants to report from a worker
+/// thread, it queues the message and reports on the main thread.
 ///
-///   if (ctx.canContinue()) { ... }
-///   ctx.dump(std::cerr);
+/// ─── String pool ──────────────────────────────────────────────────────────
+/// The engine holds an optional pointer to the session's StringPool, used
+/// only by `toString(InternedString)`. If the pointer is null, an interned
+/// string formats as `<interned:N>` rather than crashing — a diagnostic
+/// raised before the pool is set up (a driver-level error) still formats.
+///
+/// ─── Current file ─────────────────────────────────────────────────────────
+/// The engine tracks the "current file" as a convenience for callers that
+/// report against a `SourceLocation` and do not want to pass the file
+/// explicitly. `parse()` sets it on entry to a file and restores the
+/// previous value on exit. A diagnostic added while no file is set has an
+/// invalid `file` field; callers should render that as "unknown file".
 class DiagnosticEngine {
 public:
-    // ─── Current File Tracking ───────────────────────────────────────
+    DiagnosticEngine() = default;
+
+    explicit DiagnosticEngine(StringPool* pool)
+        : m_pool(pool) {}
+
+    // ─── String pool ────────────────────────────────────────────────────
+
+    StringPool* stringPool() const noexcept { return m_pool; }
+    void setStringPool(StringPool* pool) noexcept { m_pool = pool; }
+
+    // ─── Current file ───────────────────────────────────────────────────
+
+    InternedString currentFile() const noexcept { return m_currentFile; }
+    void setCurrentFile(InternedString f) noexcept { m_currentFile = f; }
+
+    // ─── Report: AST-anchored ───────────────────────────────────────────
     //
-    // A single DiagnosticEngine is shared across every file in a program
-    // (parse() recurses into imports against the same ParserContext), so
-    // without this every diagnostic collapses to "line N, column M" with
-    // no way to say which file that even refers to once more than one
-    // file is involved. Callers (parse()) set this on entry to a file and
-    // must restore the previous value on exit - see ScopedDiagnosticFile
-    // in ParserContext.hpp, which does this automatically for recursive
-    // imports the same way ScopedFileContext already does for the
-    // syntactic context stack.
+    // These overloads take a `BaseAST*` and use its location. The location
+    // lookup is a non-template helper defined in Diagnostic.cpp, so this
+    // header does not include BaseAST.hpp.
 
-    InternedString currentFile() const { return m_currentFile; }
-    void setCurrentFile(InternedString f) { m_currentFile = f; }
-
-    // ─── Report Functions ──────────────────────────────────────────────
-
-    /// Report an error with a diagnostic code.
-    template<typename... Args>
+    template <typename... Args>
     void error(DiagCode code, BaseAST* node, Args&&... args) {
         add(severityFromCode(code), code,
-            node ? node->loc : SourceLocation{},
+            node ? locationOf(node) : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
 
-    /// Report a warning with a diagnostic code.
-    template<typename... Args>
+    template <typename... Args>
     void warning(DiagCode code, BaseAST* node, Args&&... args) {
         add(Severity::Warning, code,
-            node ? node->loc : SourceLocation{},
+            node ? locationOf(node) : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
 
-    /// Report a free-text note.
-    template<typename... Args>
+    template <typename... Args>
     void note(BaseAST* node, Args&&... args) {
         add(Severity::Note, DiagCode(0),
-            node ? node->loc : SourceLocation{},
+            node ? locationOf(node) : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
 
-    /// Report a free-text hint.
-    template<typename... Args>
+    template <typename... Args>
     void hint(BaseAST* node, Args&&... args) {
         add(Severity::Hint, DiagCode(0),
-            node ? node->loc : SourceLocation{},
+            node ? locationOf(node) : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
 
-    // ─── Convenience overloads with explicit location ─────────────────
+    // ─── Report: location-anchored ──────────────────────────────────────
+    //
+    // These take an explicit SourceLocation, for callers that do not have
+    // an AST node (the lexer, driver-level errors, the LSP).
 
-    template<typename... Args>
+    template <typename... Args>
     void errorAt(DiagCode code, const SourceLocation& loc, Args&&... args) {
         add(severityFromCode(code), code, loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
-    template<typename... Args>
+    template <typename... Args>
     void warningAt(DiagCode code, const SourceLocation& loc, Args&&... args) {
         add(Severity::Warning, code, loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
-    template<typename... Args>
+    template <typename... Args>
     void noteAt(const SourceLocation& loc, Args&&... args) {
         add(Severity::Note, DiagCode(0), loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
-    // ─── Query Functions ───────────────────────────────────────────────
-
-    /// Check if there are any errors.
-    bool hasErrors() const {
-        for (const auto& d : m_diagnostics) {
-            if (d.severity == Severity::Error || d.severity == Severity::Fatal) {
-                return true;
-            }
-        }
-        return false;
+    template <typename... Args>
+    void hintAt(const SourceLocation& loc, Args&&... args) {
+        add(Severity::Hint, DiagCode(0), loc,
+            buildMessage(std::forward<Args>(args)...));
     }
 
-    /// Check if there are any warnings.
-    bool hasWarnings() const {
-        for (const auto& d : m_diagnostics) {
-            if (d.severity == Severity::Warning) {
-                return true;
-            }
-        }
-        return false;
+    // ─── Report: fatal ──────────────────────────────────────────────────
+    //
+    // A fatal diagnostic is an error the compiler cannot recover from at
+    // the current stage. The engine records it like any error; the caller
+    // is responsible for stopping the pipeline. The severity is stored
+    // explicitly because the code cannot distinguish error from fatal.
+
+    template <typename... Args>
+    void fatalAt(DiagCode code, const SourceLocation& loc, Args&&... args) {
+        add(Severity::Fatal, code, loc,
+            buildMessage(std::forward<Args>(args)...));
     }
 
-    /// Get the total number of errors.
-    int errorCount() const {
-        int count = 0;
-        for (const auto& d : m_diagnostics) {
-            if (d.severity == Severity::Error || d.severity == Severity::Fatal) {
-                ++count;
-            }
-        }
-        return count;
-    }
+    // ─── Query ──────────────────────────────────────────────────────────
 
-    /// Get the total number of warnings.
-    int warningCount() const {
-        int count = 0;
-        for (const auto& d : m_diagnostics) {
-            if (d.severity == Severity::Warning) {
-                ++count;
-            }
-        }
-        return count;
-    }
+    /// True if any diagnostic is an error or fatal.
+    bool hasErrors() const noexcept;
 
-    /// Get the total number of all diagnostics.
-    int totalCount() const {
+    /// True if any diagnostic is a warning.
+    bool hasWarnings() const noexcept;
+
+    /// Number of error and fatal diagnostics.
+    int errorCount() const noexcept;
+
+    /// Number of warnings.
+    int warningCount() const noexcept;
+
+    /// Number of all diagnostics.
+    int totalCount() const noexcept {
         return static_cast<int>(m_diagnostics.size());
     }
 
-    /// Check if we can continue (error count < maxErrors).
-    bool canContinue(int maxErrors = 100) const {
+    /// True if the error count is below the pipeline's abort threshold.
+    bool canContinue(int maxErrors = 100) const noexcept {
         return errorCount() < maxErrors;
     }
 
-    /// Get all diagnostics.
-    const std::vector<Diagnostic>& all() const { return m_diagnostics; }
-
-    /// Clear all diagnostics.
-    void clear() { m_diagnostics.clear(); }
-
-    // ─── Formatting ────────────────────────────────────────────────────
-
-    /// Dump all diagnostics to an output stream.
-    void dump(std::ostream& os = std::cerr) const {
-        for (const auto& d : m_diagnostics) {
-            os << formatOneLine(d) << "\n";
-        }
-        if (hasErrors() || hasWarnings()) {
-            os << "\n" << errorCount() << " error(s), "
-               << warningCount() << " warning(s)\n";
-        }
+    /// All collected diagnostics, in the order they were reported.
+    const std::vector<Diagnostic>& all() const noexcept {
+        return m_diagnostics;
     }
 
-    /// Format a single diagnostic as one line.
-    std::string formatOneLine(const Diagnostic& d) const {
-        std::ostringstream oss;
-        oss << "[" << severityName(d.severity) << "] ";
+    /// True if no diagnostics have been reported.
+    bool empty() const noexcept { return m_diagnostics.empty(); }
 
-        // Format code if it's not a free-text note/hint
-        if (d.code != DiagCode(0)) {
-            uint32_t raw = static_cast<uint32_t>(d.code);
-            char prefix = isWarningCode(d.code) ? 'W' : 'E';
-            oss << prefix << std::setfill('0') << std::setw(4) << raw << ": ";
-        }
+    /// Remove all collected diagnostics. The current file and string pool
+    /// are left unchanged.
+    void clear() noexcept { m_diagnostics.clear(); }
 
-        oss << d.message;
+    // ─── Formatting ─────────────────────────────────────────────────────
 
-        if (d.location.isKnown()) {
-            oss << " at " << d.location.line() << ":" << d.location.column();
-        }
+    /// Write every diagnostic to `os`, one per line, followed by a summary
+    /// line if any were reported. Not colored.
+    void dump(std::ostream& os) const;
 
-        return oss.str();
-    }
+    /// Write every diagnostic to `os` with ANSI color. The summary line is
+    /// colored red if there are errors, yellow otherwise.
+    void dumpWithColor(std::ostream& os) const;
 
-    /// Format a diagnostic with ANSI colors.
-    std::string formatOneLineWithColor(const Diagnostic& d) const {
-        const char* reset = "\033[0m";
-        const char* color;
+    /// Format one diagnostic as a single line without color.
+    ///
+    ///   [ERROR]   E4001: type mismatch at 12:5
+    ///   [WARNING] W8002: unused variable 'x' at 3:9
+    ///   [NOTE]    consider using '_' at 3:9
+    std::string formatOneLine(const Diagnostic& d) const;
 
-        switch (d.severity) {
-            case Severity::Fatal:
-            case Severity::Error:   color = "\033[31m"; break;  // Red
-            case Severity::Warning: color = "\033[33m"; break;  // Yellow
-            case Severity::Note:    color = "\033[36m"; break;  // Cyan
-            case Severity::Hint:    color = "\033[90m"; break;  // Gray
-            default:                color = reset; break;
-        }
-
-        return std::string(color) + formatOneLine(d) + reset;
-    }
-
-    /// Dump with colors.
-    void dumpWithColor(std::ostream& os = std::cerr) const {
-        for (const auto& d : m_diagnostics) {
-            os << formatOneLineWithColor(d) << "\n";
-        }
-        if (hasErrors() || hasWarnings()) {
-            const char* color = hasErrors() ? "\033[31m" : "\033[33m";
-            const char* reset = "\033[0m";
-            os << "\n" << color << errorCount() << " error(s), "
-               << warningCount() << " warning(s)" << reset << "\n";
-        }
-    }
+    /// Format one diagnostic as a single line with ANSI color.
+    std::string formatOneLineWithColor(const Diagnostic& d) const;
 
 private:
     std::vector<Diagnostic> m_diagnostics;
-    InternedString m_currentFile;
+    InternedString          m_currentFile;
+    StringPool*             m_pool = nullptr;
 
-    void add(Severity sev, DiagCode code, const SourceLocation& loc, std::string msg) {
-        m_diagnostics.push_back({sev, code, loc, std::move(msg), m_currentFile});
+    void add(Severity sev, DiagCode code,
+             const SourceLocation& loc, std::string msg) {
+        m_diagnostics.push_back(
+            Diagnostic{sev, code, loc, std::move(msg), m_currentFile});
     }
 
-    // ─── Message Building ──────────────────────────────────────────────
+    // ─── Message building ───────────────────────────────────────────────
 
-    template<typename T>
-    std::string toString(const T& value) {
-        std::ostringstream oss;
-        oss << value;
-        return oss.str();
-    }
+    // Every argument is stringified through `toString`, concatenated, and
+    // returned. Overloads below cover the types the compiler actually
+    // reports: interned strings, C strings, std::string, string_view,
+    // booleans, the integer widths in use, floating point, and pointers.
+    //
+    // A `toString` template that uses `operator<<` handles anything else
+    // (a custom type a caller wants to embed by reference).
 
-    std::string toString(InternedString s) {
-        return StringPool::instance().lookup(s);
-    }
+    std::string toString(InternedString s) const;
+    std::string toString(const char* s) const { return s ? std::string(s) : "null"; }
+    std::string toString(std::string_view s) const { return std::string(s); }
+    std::string toString(const std::string& s) const { return s; }
+    std::string toString(bool b) const { return b ? "true" : "false"; }
+    std::string toString(char c) const { return std::string(1, c); }
 
-    std::string toString(const char* s) {
-        return std::string(s);
-    }
+    std::string toString(int32_t v) const { return std::to_string(v); }
+    std::string toString(uint32_t v) const { return std::to_string(v); }
+    std::string toString(int64_t v) const { return std::to_string(v); }
+    std::string toString(uint64_t v) const { return std::to_string(v); }
+    std::string toString(double v) const { return std::to_string(v); }
 
-    std::string toString(const std::string& s) {
-        return s;
-    }
-
-    std::string toString(bool b) {
-        return b ? "true" : "false";
-    }
-
-    std::string toString(int v) {
-        return std::to_string(v);
-    }
-
-    std::string toString(size_t v) {
-        return std::to_string(v);
-    }
-
-    std::string toString(double v) {
-        return std::to_string(v);
-    }
-
-    template<typename T>
-    std::string toString(const T* ptr) {
+    template <typename T>
+    std::string toString(const T* ptr) const {
         if (!ptr) return "null";
         std::ostringstream oss;
         oss << ptr;
         return oss.str();
     }
 
-    template<typename T, typename... Rest>
-    std::string buildMessage(const T& first, Rest&&... rest) {
-        return toString(first) + buildMessage(std::forward<Rest>(rest)...);
+    template <typename T>
+    std::string toString(const T& value) const {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
     }
 
-    std::string buildMessage() {
-        return "";
+    template <typename First, typename... Rest>
+    std::string buildMessage(First&& first, Rest&&... rest) const {
+        return toString(std::forward<First>(first))
+             + buildMessage(std::forward<Rest>(rest)...);
     }
+
+    std::string buildMessage() const { return {}; }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Location helper (declared here, defined in Diagnostic.cpp)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The source location of an AST node.
+///
+/// Defined in Diagnostic.cpp so this header does not include BaseAST.hpp.
+/// `node` must be non-null; callers use `node ? locationOf(node) :
+/// SourceLocation{}`.
+SourceLocation locationOf(const BaseAST* node) noexcept;
+
+} // namespace lucid::diag
