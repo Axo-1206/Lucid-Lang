@@ -1,7 +1,5 @@
 # Lucid Grammar
 
-## Version 0.1 — Draft
-
 ---
 
 ## Table of Contents
@@ -82,10 +80,12 @@
 - [Array Operations](#array-operations)
 - [String Operations](#string-operations)
 - [Math Operations](#math-operations)
+- [SIMD Types and Operations](#simd-types-and-operations)
 - [`Weak<T>` and Cycle Handling](#weakt-and-cycle-handling)
 - [`Deferred<T>` and Concurrency Support](#deferredt-and-concurrency-support)
 - [`core.fn` — Function Composition](#corefn-function-composition)
 - [`core.io` — Console and File I/O](#coreio-console-and-file-io)
+- [`scope_exit`](#scope_exit)
 
 **Part IX — Interop and Directives**
 - [The Foreign Function Interface](#the-foreign-function-interface)
@@ -173,7 +173,7 @@ Source files are UTF-8. A file is a sequence of declarations, with optional comm
 **Content markers.**
 
 ```
-struct  enum  fn  cls  as  Self
+struct  enum  fn  as  Self
 ```
 
 **Statement keywords.**
@@ -262,7 +262,7 @@ Some tokens have context-dependent forms:
 - `?` and `!` are postfix type suffixes in type position (`T?`, `T!`). In expression position, `!` is the argument-pack marker inside a pipeline step (see [Program Structure](#program-structure)); `?` does not appear in expression position.
 - `..` is the range operator. The exclusive form `..<` is lexed as `..` followed by `<` and parsed as a single range operator.
 - `::` is module-qualified access; `.` is struct field access.
-- `@` and `#` are deliberately not interchangeable, even though both precede a bracketed or parenthesized name. `@[...]` is always *metadata about* a declaration that already has its own identity — `@[export]`, `@[deprecated]`, `@[foreign("C")]` — and never appears as a value in its own right. `#host(...)`, `#native(...)`, `#builtin(...)`, and the bare `#hostFn` marker are always the value filling a target slot — the implementation itself, resolved directly by the compiler/VM rather than through `DEF`'s overload table. A reader can tell which is meant from the sigil alone, without knowing what follows it.
+- `@` and `#` are deliberately not interchangeable, even though both precede a bracketed or parenthesized name. `@[...]` is always *metadata about* a declaration that already has its own identity — `@[export]`, `@[deprecated]`, `@[inline]` — and never appears as a value in its own right. `#host(...)`, `#native(...)`, `#builtin(...)`, and the bare `#hostFn` marker are always the value filling a target slot — the implementation itself, resolved directly by the compiler/VM rather than through `DEF`'s overload table. A reader can tell which is meant from the sigil alone, without knowing what follows it.
 
 ### Whitespace and separators
 
@@ -292,7 +292,7 @@ module_path    ::= IDENTIFIER { '.' IDENTIFIER }
 The top level of a file contains only declarations. There are no top-level statements; there is no implicit script-level execution. Every program has exactly one entry point, declared with the `@[export]` attribute:
 
 ```lucid
-@[export] const main (args [*]string) -> int = {
+@[export] const main fn(args [*]string) -> int = {
     return 0;
 };
 ```
@@ -326,7 +326,7 @@ An attribute list precedes the declaration it modifies. At the top level, it pre
 Minimal program:
 
 ```lucid
-@[export] const main (args [*]string) -> int = {
+@[export] const main fn(args [*]string) -> int = {
     return 0;
 };
 ```
@@ -334,15 +334,14 @@ Minimal program:
 Program with imports and a helper:
 
 ```lucid
-import core.io as io
 import core.math as math
 
-const double fn (x int) -> int = {
+const double fn(x int) -> int = {
     return x * 2;
 };
 
-@[export] const main (args [*]string) -> int = {
-    io::println("doubled: " ++ toStr(double(21)));
+@[export] const main fn(args [*]string) -> int = {
+    println("doubled: " ++ toStr(double(21)));
     return 0;
 };
 ```
@@ -355,11 +354,11 @@ struct Vec2 {
     y float;
 }
 
-DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = {
+DEF BINARY_OP '+' fn(a Vec2, b Vec2) -> Vec2 = {
     return Vec2 { x = a.x + b.x, y = a.y + b.y };
 };
 
-@[export] const main (args [*]string) -> int = {
+@[export] const main fn(args [*]string) -> int = {
     let v Vec2 = Vec2 { x = 1.0, y = 2.0 } + Vec2 { x = 3.0, y = 4.0 };
     println(toStr(v));
     return 0;
@@ -530,7 +529,7 @@ param      ::= [ 'const' ] IDENTIFIER [ '...' ] type
 
 The keywords are conventions, not hard rules — the parser accepts any keyword with any target, and the compiler rejects mismatches with a clear diagnostic.
 
-- **`FN`** for declarations whose implementation lives on the C++ side or in the VM: `FN map_new<K, V> () -> Map<K, V> = #host(map_new);`
+- **`FN`** for declarations whose implementation lives on the C++ side or in the VM: `FN map_new<K, V> fn() -> Map<K, V> = #host(map_new);`
 - **`const`** for immutable bindings: `const pi float = 3.14159;` and `const double (x int) -> int = { return x * 2; };`
 - **`let`** for mutable bindings: `let counter int = 0;`
 
@@ -538,9 +537,9 @@ The distinction is only about reassignability and the conventional target. A `co
 
 ### Signatures
 
-A signature is a parameter list and a return type. The return type may be omitted for declarations that produce no value (`@[foreign("C")] FN glClear (mask uint32) = #host(glClear);` — the return type defaults to `unit`).
+A signature is a parameter list and a return type. The return type may be omitted for declarations that produce no value (`FN glClear (mask uint32) = #host(glClear);` — the return type defaults to `unit`).
 
-Function-typed bindings (`let f fn (int) -> int = ...`) use the full function-type grammar from [Array and Sequence Types](#array-and-sequence-types) for their signature. The `fn`/`cls` markers are written in the signature; they are not implied by the `let`/`const` keyword.
+Function-typed bindings (`let f fn(int) -> int = ...`) use the full function-type grammar from [Array and Sequence Types](#array-and-sequence-types) for their signature. The `fn`/`cls` markers are written in the signature; they are not implied by the `let`/`const` keyword.
 
 ### Parameters
 
@@ -550,13 +549,13 @@ A parameter is a name, a type, and two optional modifiers:
 - **`...`** between the name and the type — a variadic parameter. Collects zero or more trailing arguments into a `[*]T`.
 
 ```lucid
-const sum fn (nums ...int) -> int = {
+const sum fn(nums ...int) -> int = {
     let total int = 0;
     for _, n int in nums { total = total + n; }
     return total;
 };
 
-const describe fn (const v Vec2) -> string = {
+const describe fn(const v Vec2) -> string = {
     return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")";
 };
 ```
@@ -568,25 +567,25 @@ A variadic parameter must be the last parameter in its group. A parameter withou
 A declaration's parameter list may be written as multiple groups separated by `->`:
 
 ```lucid
-const add fn (a int) -> fn (b int) -> int = {
-    return (b int) -> int { return a + b; };
+const add fn(a int) -> fn(int) -> int = {
+    return fn(b int) -> int { return a + b; };
 };
 ```
 
 The leading group introduces the declaration's parameters. Subsequent groups describe the return type, which is itself a function type. Each subsequent group's parameters are introduced by the nested function literal in the body.
 
-Adjacent groups (`fn (a int) fn (b int) -> int`) are desugared to arrow-separated groups by the parser. The two spellings produce the same AST.
+Adjacent groups (`fn(a int) fn(b int) -> int`) are desugared to arrow-separated groups by the parser. The two spellings produce the same AST.
 
 ### Generic declarations
 
 A declaration with a non-empty `generic_params` list is generic:
 
 ```lucid
-const identity<T> fn (v T) -> T = { return v; };
+const identity<T> fn(v T) -> T = { return v; };
 TYPE Box<T> = struct { value T; };
 ```
 
-**A generic function must be `const`.** A `let`-bound generic function is a Sema error:
+**A generic function must be `const`.** A `let`-bound generic function is a Semantic error:
 
 ```
 error: a generic function must be declared 'const'
@@ -600,7 +599,7 @@ The reasoning: `let` asks for a reassignability capability, but no expression fo
 
 A generic `TYPE` declares a type family. `TYPE Box<T> = struct { value T; }` declares `Box` as a family, and `Box<int>`, `Box<string>` are members.
 
-A generic `FN` or `const` declares a function family. `const identity<T> fn (v T) -> T = { ... }` declares `identity` as a family, and `identity<int>`, `identity<string>` are members.
+A generic `FN` or `const` declares a function family. `const identity<T> fn(v T) -> T = { ... }` declares `identity` as a family, and `identity<int>`, `identity<string>` are members.
 
 A bare family name is not a value. `identity` names a family; `identity<int>` names a member, which is a value. This is enforced by Sema ([Function Types](#function-types)).
 
@@ -631,7 +630,7 @@ FN write (s string) = #host(host_write);
 Lucid function:
 
 ```lucid
-const double fn (x int) -> int = {
+const double fn(x int) -> int = {
     return x * 2;
 };
 ```
@@ -653,19 +652,19 @@ counter = counter + 1;
 Function-typed binding:
 
 ```lucid
-const apply fn (f fn (int) -> int, x int) -> int = {
+const apply fn(f fn(int) -> int, x int) -> int = {
     return f(x);
 };
 
-let square fn (int) -> int = (x int) -> int { return x * x; };
+let square fn(int) -> int = fn(x int) -> int { return x * x; };
 ```
 
 Curried:
 
 ```lucid
-const clamp fn (lo int) -> fn (hi int) -> fn (v int) -> int = {
-    return (hi int) -> fn (v int) -> int {
-        return (v int) -> int {
+const clamp fn(lo int) -> fn(int) -> fn(int) -> int = {
+    return fn(hi int) -> fn(int) -> int {
+        return fn(v int) -> int {
             if v < lo { return lo; }
             if v > hi { return hi; }
             return v;
@@ -677,7 +676,7 @@ const clamp fn (lo int) -> fn (hi int) -> fn (v int) -> int = {
 Generic:
 
 ```lucid
-const first<T> fn (items [_]T) -> T? = {
+const first<T> fn(items [_]T) -> T? = {
     if items.length == 0 { return nil; }
     return items[0];
 };
@@ -726,10 +725,10 @@ A trait body is a sequence of clauses. Each clause begins with `FIELD` or `REQUI
 
 ```lucid
 trait Numeric {
-    REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
-    REQUIRE BINARY_OP '-' (self Self, rhs Self) -> Self;
-    REQUIRE BINARY_OP '*' (self Self, rhs Self) -> Self;
-    REQUIRE BINARY_OP '/' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '+' fn(self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '-' fn(self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '*' fn(self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '/' fn(self Self, rhs Self) -> Self;
 }
 
 trait Vector2 {
@@ -740,8 +739,8 @@ trait Vector2 {
 trait Vector2Arithmetic {
     FIELD x float;
     FIELD y float;
-    REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
-    REQUIRE BINARY_OP '*' (self Self, s float) -> Self;
+    REQUIRE BINARY_OP '+' fn(self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '*' fn(self Self, s float) -> Self;
 }
 ```
 
@@ -753,7 +752,7 @@ A trait may list parent traits after a colon:
 
 ```lucid
 trait Ord : Eq {
-    REQUIRE BINARY_OP '<' (self Self, rhs Self) -> bool;
+    REQUIRE BINARY_OP '<' fn(self Self, rhs Self) -> bool;
 }
 ```
 
@@ -772,7 +771,7 @@ trait Container<T> {
 }
 
 trait Convertible<From, To> {
-    REQUIRE CALL 'to' (self Self, v From) -> To;
+    REQUIRE CALL 'to' fn(self Self, v From) -> To;
 }
 ```
 
@@ -784,10 +783,10 @@ A `satisfy` block asserts that a specific type satisfies a specific trait:
 
 ```lucid
 satisfy Numeric for Vec2 {
-    DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x + b.x, y = a.y + b.y }; };
-    DEF BINARY_OP '-' (a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x - b.x, y = a.y - b.y }; };
-    DEF BINARY_OP '*' (a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x * b.x, y = a.y * b.y }; };
-    DEF BINARY_OP '/' (a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x / b.x, y = a.y / b.y }; };
+    DEF BINARY_OP '+' fn(a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x + b.x, y = a.y + b.y }; };
+    DEF BINARY_OP '-' fn(a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x - b.x, y = a.y - b.y }; };
+    DEF BINARY_OP '*' fn(a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x * b.x, y = a.y * b.y }; };
+    DEF BINARY_OP '/' fn(a Vec2, b Vec2) -> Vec2 = { return Vec2 { x = a.x / b.x, y = a.y / b.y }; };
 }
 ```
 
@@ -811,7 +810,7 @@ An empty block is legal for a field-only trait. The compiler verifies that the s
 
 ```
 error: 'satisfy Numeric for Vec2' does not provide a definition for
-       BINARY_OP '/' (a Vec2, b Vec2) -> Vec2
+       BINARY_OP '/' fn(a Vec2, b Vec2) -> Vec2
    = note: 'Numeric' requires this operation; the satisfy block
      must provide it
 ```
@@ -864,6 +863,8 @@ error: non-nullable self-reference creates infinite size
 
 The rule is the same as for struct fields: a type cannot contain itself inline. The nullable form is legal and lowers to a pointer.
 
+A `FIELD` clause only ever declares a value-typed requirement — there is no `FIELD next &Self;` form — so the reference-field case from [Recursive fields](#recursive-fields) (unsatisfiable initialization) never arises for a trait. Only the value-field, infinite-size reason applies here.
+
 ### Trait conformance checking order
 
 Conformance is checked in a pre-pass over every module reachable from `main`, before any constraint sites are verified. The order is:
@@ -881,13 +882,13 @@ Operation-only trait satisfied by a primitive:
 
 ```lucid
 trait Numeric {
-    REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
-    REQUIRE BINARY_OP '-' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '+' fn(self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '-' fn(self Self, rhs Self) -> Self;
 }
 
 satisfy Numeric for int {
-    DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-    DEF BINARY_OP '-' (a int, b int) -> int = #native(sub_i32);
+    DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);
+    DEF BINARY_OP '-' fn(a int, b int) -> int = #native(sub_i32);
 }
 ```
 
@@ -917,7 +918,7 @@ struct Box<T> { value T; count uint; }
 
 satisfy Container<T> for Box<T> { }
 
-const first<T> fn (c Container<T>) -> T? = {
+const first<T> fn(c Container<T>) -> T? = {
     if c.count == 0 { return nil; }
     return c.value;
 };
@@ -967,12 +968,12 @@ The set of valid op kinds is open in principle — a core script can call `regis
 The string literal after the op kind names the specific operation:
 
 ```lucid
-DEF BINARY_OP '+' (...)
-DEF BINARY_OP '==' (...)
-DEF UNARY_OP  'not' (...)
+DEF BINARY_OP '+' fn(...)
+DEF BINARY_OP '==' fn(...)
+DEF UNARY_OP  'not' fn(...)
 DEF INDEX_GET (...)
 DEF INDEX_SET (...)
-DEF CALL 'toStr' (...)
+DEF CALL 'toStr' fn(...)
 ```
 
 For `BINARY_OP` and `UNARY_OP`, the symbol is the operator's spelling. For `INDEX_GET` and `INDEX_SET`, there is no symbol — the operation is implicit in the op kind, and the string is empty or omitted. For `CALL`, the symbol is a name: `CALL 'toStr'` declares a named-call operation, dispatched by name.
@@ -992,7 +993,7 @@ The implementation slot accepts:
 **`block`** — the operation has a Lucid body. The block's signature is taken from the `DEF` header; the parser synthesizes the anonymous function's signature and does not require it to be repeated.
 
 ```lucid
-DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = {
+DEF BINARY_OP '+' fn(a Vec2, b Vec2) -> Vec2 = {
     return Vec2 { x = a.x + b.x, y = a.y + b.y };
 };
 ```
@@ -1004,7 +1005,7 @@ The block is desugared to an `AnonFuncExprAST` whose parameter list is copied fr
 A `DEF` may be generic:
 
 ```lucid
-DEF BINARY_OP '!=' <T : Eq> (a T, b T) -> bool = {
+DEF BINARY_OP '!=' <T : Eq> fn(a T, b T) -> bool = {
     return not (a == b);
 };
 ```
@@ -1020,7 +1021,7 @@ struct Money { cents int; }
 
 -- fact: Money + Money is defined, but Money does not formally satisfy
 -- any trait that requires '+'
-DEF BINARY_OP '+' (a Money, b Money) -> Money = {
+DEF BINARY_OP '+' fn(a Money, b Money) -> Money = {
     return Money { cents = a.cents + b.cents };
 };
 ```
@@ -1061,9 +1062,9 @@ m["bob"] = 20;
 The `CALL` op kind declares a named-call operation. Its first parameter is the receiver, and its remaining parameters are the call's arguments:
 
 ```lucid
-DEF CALL 'toStr' (v int) -> string = #builtin(int_to_str);
-DEF CALL 'toStr' (v string) -> string = { return v; };
-DEF CALL 'toStr' (v Vec2) -> string = { return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")"; };
+DEF CALL 'toStr' fn(v int) -> string = #builtin(int_to_str);
+DEF CALL 'toStr' fn(v string) -> string = { return v; };
+DEF CALL 'toStr' fn(v Vec2) -> string = { return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")"; };
 ```
 
 A call like `toStr(42)` resolves through the `CALL` table, keyed on the argument's type.
@@ -1075,7 +1076,7 @@ A call like `toStr(42)` resolves through the `CALL` table, keyed on the argument
 Concrete binary operator:
 
 ```lucid
-DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = {
+DEF BINARY_OP '+' fn(a Vec2, b Vec2) -> Vec2 = {
     return Vec2 { x = a.x + b.x, y = a.y + b.y };
 };
 ```
@@ -1083,7 +1084,7 @@ DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = {
 Generic derived operator:
 
 ```lucid
-DEF BINARY_OP '!=' <T : Eq> (a T, b T) -> bool = {
+DEF BINARY_OP '!=' <T : Eq> fn(a T, b T) -> bool = {
     return not (a == b);
 };
 ```
@@ -1105,11 +1106,11 @@ DEF INDEX_SET (g &Grid, i uint, v float) = {
 Named call:
 
 ```lucid
-DEF CALL 'describe' (v int) -> string = {
+DEF CALL 'describe' fn(v int) -> string = {
     return "int: " ++ toStr(v);
 };
 
-DEF CALL 'describe' (v string) -> string = {
+DEF CALL 'describe' fn(v string) -> string = {
     return "string: " ++ v;
 };
 ```
@@ -1159,17 +1160,17 @@ The primitive set is a starting catalog, not a closed list. A future core script
 Each primitive's operations are declared as `DEF`s in the core script. For `int`:
 
 ```lucid
-DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-DEF BINARY_OP '-' (a int, b int) -> int = #native(sub_i32);
-DEF BINARY_OP '*' (a int, b int) -> int = #native(mul_i32);
-DEF BINARY_OP '/' (a int, b int) -> int = #native(div_i32);
-DEF BINARY_OP '%' (a int, b int) -> int = #native(rem_i32);
-DEF BINARY_OP '==' (a int, b int) -> bool = #native(eq_i32);
-DEF BINARY_OP '!=' (a int, b int) -> bool = #native(ne_i32);
-DEF BINARY_OP '<' (a int, b int) -> bool = #native(lt_i32);
-DEF BINARY_OP '<=' (a int, b int) -> bool = #native(le_i32);
-DEF BINARY_OP '>' (a int, b int) -> bool = #native(gt_i32);
-DEF BINARY_OP '>=' (a int, b int) -> bool = #native(ge_i32);
+DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);
+DEF BINARY_OP '-' fn(a int, b int) -> int = #native(sub_i32);
+DEF BINARY_OP '*' fn(a int, b int) -> int = #native(mul_i32);
+DEF BINARY_OP '/' fn(a int, b int) -> int = #native(div_i32);
+DEF BINARY_OP '%' fn(a int, b int) -> int = #native(rem_i32);
+DEF BINARY_OP '==' fn(a int, b int) -> bool = #native(eq_i32);
+DEF BINARY_OP '!=' fn(a int, b int) -> bool = #native(ne_i32);
+DEF BINARY_OP '<' fn(a int, b int) -> bool = #native(lt_i32);
+DEF BINARY_OP '<=' fn(a int, b int) -> bool = #native(le_i32);
+DEF BINARY_OP '>' fn(a int, b int) -> bool = #native(gt_i32);
+DEF BINARY_OP '>=' fn(a int, b int) -> bool = #native(ge_i32);
 ```
 
 The same set exists for each numeric type. `bool` has the logical operators; `string` has concatenation and comparison; `char` has comparison and conversion.
@@ -1239,7 +1240,7 @@ A field default is an expression evaluated when a literal omits the field. The d
 
 ```lucid
 struct Logger {
-    sink cls (string) -> unit = { return (msg string) -> unit { write(msg); }; };
+    sink fn(string) -> unit = { return fn(msg string) -> unit { write(msg); }; };
 }
 ```
 
@@ -1253,7 +1254,7 @@ A function-typed field's block default may reference the struct's own fields unq
 struct Point {
     x float;
     y float;
-    const describe fn () -> string = {
+    const describe fn() -> string = {
         return "(" ++ toStr(x) ++ ", " ++ toStr(y) ++ ")";
     };
 }
@@ -1264,7 +1265,7 @@ Here `x` and `y` resolve to `Point`'s own fields. The compiler synthesizes an im
 An external override of a block-default field must declare `self` explicitly:
 
 ```lucid
-const customDescribe fn (self &Point) -> string = {
+const customDescribe fn(self &Point) -> string = {
     return "custom point";
 };
 
@@ -1336,16 +1337,16 @@ The traits are checked at the struct's declaration. Field-only traits are checke
 
 ### Recursive fields
 
-A struct field whose type, after substitution, recursively contains the struct must be written with `?`:
+A struct field whose type, after substitution, recursively contains the struct must be written with `?` — for one of two different reasons, depending on whether the field is a value field or a reference field.
+
+**A recursive value field is infinite size.** `next Node` would make `Node`'s own layout contain another whole `Node` inline, recursively, forever:
 
 ```lucid
 struct Node {
     value int;
-    next  Node?;
+    next  Node?;    -- OK: `?` breaks the recursion by lowering to a pointer
 }
 ```
-
-The `?` is what makes the field nullable, and it is also what tells the compiler to lower the field as a pointer. A non-nullable self-referential field is a compile error:
 
 ```
 error: non-nullable self-reference creates infinite size
@@ -1357,7 +1358,28 @@ error: non-nullable self-reference creates infinite size
    = help: add '?' to make the field nullable: next Node?;
 ```
 
-A self-referential field that is part of a larger recursive structure is detected the same way: the compiler walks the field's type after substitution and rejects any path that returns to the struct without a `?` in between.
+**A recursive reference field is unsatisfiable initialization.** `next &Node` is always exactly one pointer, regardless of what it refers to, so it is never infinite size — but a non-nullable `&Node` field still cannot be initialized for whichever `Node` is constructed first, since there is no earlier `Node` yet for it to reference:
+
+```lucid
+struct Node {
+    value int;
+    next  &Node?;    -- OK: `?` provides nil as the base case
+}
+```
+
+```
+error: non-nullable recursive reference cannot be initialized
+   --> main.luc:2:11
+    |
+  2 |     next &Node;
+    |          ^^^^^
+    |
+   = help: every Node needs a valid next Node to point to, including the
+     first one constructed — add '?' so the base case can be nil:
+     next &Node?;
+```
+
+Both cases are detected the same way: the compiler walks the field's type after substitution and rejects any path that returns to the struct without a `?` in between, whether that path passes through a value field or a reference field.
 
 ### Struct literals
 
@@ -1540,7 +1562,7 @@ type_arg       ::= type | INT_LIT
 A generic function:
 
 ```lucid
-const identity<T> fn (v T) -> T = {
+const identity<T> fn(v T) -> T = {
     return v;
 };
 ```
@@ -1588,7 +1610,7 @@ There is no type inference. Every type argument is written at the use site.
 A parameter may be constrained to one or more traits:
 
 ```lucid
-const magnitude<T : Vector2> fn (v T) -> float = {
+const magnitude<T : Vector2> fn(v T) -> float = {
     return sqrt(v.x * v.x + v.y * v.y);
 };
 ```
@@ -1598,7 +1620,7 @@ Inside the function body, the fields and operations the trait requires are avail
 Multiple constraints on one parameter are joined with `+`:
 
 ```lucid
-const describeEntity<T : Vector2 + Named> fn (v T) -> string = {
+const describeEntity<T : Vector2 + Named> fn(v T) -> string = {
     return v.name ++ " at (" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")";
 };
 ```
@@ -1606,7 +1628,7 @@ const describeEntity<T : Vector2 + Named> fn (v T) -> string = {
 Multiple parameters are separated with `,`:
 
 ```lucid
-const distanceBetween<T : Vector2, U : Vector2> fn (a T, b U) -> float = {
+const distanceBetween<T : Vector2, U : Vector2> fn(a T, b U) -> float = {
     let dx float = a.x - b.x;
     let dy float = a.y - b.y;
     return sqrt(dx * dx + dy * dy);
@@ -1624,10 +1646,10 @@ There is no type erasure, no tagged-slot representation, and no runtime dispatch
 A bare generic name is a family, not a value:
 
 ```lucid
-const identity<T> fn (v T) -> T = { return v; };
+const identity<T> fn(v T) -> T = { return v; };
 
-let f fn (int) -> int = identity;       -- error: 'identity' is a family
-let g fn (int) -> int = identity<int>;  -- OK: a specialization
+let f fn(int) -> int = identity;       -- error: 'identity' is a family
+let g fn(int) -> int = identity<int>;  -- OK: a specialization
 ```
 
 The error:
@@ -1671,7 +1693,7 @@ trait Container<T> {
     FIELD count uint;
 }
 
-const first<T, C : Container<T>> fn (c C) -> T? = {
+const first<T, C : Container<T>> fn(c C) -> T? = {
     if c.count == 0 { return nil; }
     return c.value;
 };
@@ -1689,7 +1711,7 @@ The compiler inserts two `satisfy` blocks automatically:
 `StructType` and `EnumType` are compiler-provided traits with no clauses. They are used by the standard library's `toStr` fallback ([`toStr`](#tostr)). User code may use them as constraints:
 
 ```lucid
-const describe<T : StructType> fn (v T) -> string = {
+const describe<T : StructType> fn(v T) -> string = {
     return type_name<T>();
 };
 ```
@@ -1704,7 +1726,7 @@ A function type describes the shape of a callable value. The `fn` and `cls` mark
 
 ```
 func_type ::= stage { '->' stage } [ '->' type ]
-stage     ::= ( 'fn' | 'cls' ) group
+stage     ::= stage ::= 'fn' group
 group     ::= '(' [ type_list ] ')'
 type_list ::= type { ',' type } [ ',' '...' type ]
 ```
@@ -1725,10 +1747,10 @@ type_list ::= type { ',' type } [ ',' '...' type ]
 Every stage in a function type carries its own marker:
 
 ```lucid
-fn (int) -> int                         -- one stage, marker fn
-cls (int) -> bool                       -- one stage, marker cls
-fn (a int) -> cls (b int) -> int        -- two stages, first fn, then cls
-fn (a int) fn (b int) -> int            -- two stages, both fn
+fn(int) -> int                       -- one stage, marker fn
+fn(int) -> bool                      -- one stage, marker cls
+fn(a int) -> fn(int) -> int        -- two stages, first fn, then cls
+fn(a int) fn(b int) -> int           -- two stages, both fn
 ```
 
 The markers are per-stage. A missing marker is a parse error:
@@ -1760,13 +1782,13 @@ The error in row 2 names the stage and the captured variable:
 error: function declared 'fn' but its body captures 'n'
    --> main.luc:4:20
     |
-  4 |     return (b int) -> int { return a + n; };
+  4 |     return fn(b int) -> int { return a + n; };
     |            ^^^^^^^^^^
     |
    = note: a stage marked 'fn' is a bare function pointer and cannot
      carry captured state
    = help: change 'fn' to 'cls' at the enclosing stage:
-     fn (a int) -> cls (b int) -> int
+     fn(a int) -> fn(int) -> int
 ```
 
 When the initializer is any other expression (an identifier, a call), Sema does not infer a shape. It checks the initializer's type for assignability to the declared type, and applies the `fn → cls` coercion if applicable.
@@ -1776,9 +1798,9 @@ When the initializer is any other expression (an identifier, a call), Sema does 
 A `fn` value can be used where a `cls` value is expected:
 
 ```lucid
-const add fn (a int, b int) -> int = { return a + b; };
+const add fn(a int, b int) -> int = { return a + b; };
 
-let c cls (int) -> int = add;    -- OK: fn coerced to cls
+let c fn(int) -> int = add;    -- OK: fn coerced to cls
 ```
 
 The compiler wraps the `fn` with a null environment. The wrapped value is a `cls` whose environment pointer is null; calling it does not touch the environment.
@@ -1786,42 +1808,68 @@ The compiler wraps the `fn` with a null environment. The wrapped value is a `cls
 The reverse — using a `cls` where a `fn` is expected — is never allowed:
 
 ```lucid
-let f fn (int) -> int = someClosure;    -- ERROR: cannot unwrap a cls
+let f fn(int) -> int = someClosure;    -- ERROR: cannot unwrap a cls
 ```
 
 The `fn → cls` coercion is the only implicit conversion in the language.
 
 ### Anonymous function literals
 
-A function literal's leading group carries no marker:
+Every function literal begins with an explicit `fn` or `cls` marker on its leading group:
 
 ```lucid
-let f = (x int) -> int { return x * 2; };
+let f = fn(x int) -> int { return x * 2; };
 ```
 
-The literal's shape is inferred from whether its body captures anything. A literal with no captures is `fn`; a literal with captures is `cls`. Sema computes this and checks it against the declared type at the binding site.
+The marker is mandatory, not inferred — a bare `(x int) -> int { ... }` without a leading `fn` or `cls` is a parse error. The declared shape is checked against the binding site: a `fn`-marked literal must not capture, and a `cls`-marked literal may capture freely. See [The four-cell shape table](#the-four-cell-shape-table).
 
-Subsequent stages in a curried literal carry markers:
+Subsequent stages in a curried literal also carry explicit markers:
 
 ```lucid
-let makeAdder = (n int) -> cls (int) -> int {
-    return (b int) -> int { return n + b; };
+let makeAdder = fn(n int) -> fn(int) -> int {
+    return fn(b int) -> int { return n + b; };
 };
 ```
 
-The literal's leading group `(n int)` has no marker. The inner `cls (int) -> int` stage is a type position and carries its marker.
+The leading group `fn(n int)` is the named parameter list for this literal. The inner `fn(int) -> int` return type is a function type — each of its stages requires an explicit `fn`/`cls` marker too.
 
 ### Curried function types
 
-A curried function type is a chain of stages:
+A curried function type is a chain of stages separated by `->`:
 
 ```lucid
-fn (a int) -> cls (b int) -> int
+fn(a int) -> fn(int) -> int
 ```
 
-This is a two-stage function. The first stage takes `a int` and returns a `cls (b int) -> int`. The recursion terminates at a non-function return type.
+This is a two-stage function. The first stage takes `a int` and returns a `fn(b int) -> int`. The recursion terminates at a non-function return type.
 
-The two spellings — adjacent stages (`fn (a int) fn (b int) -> int`) and arrow-separated stages (`fn (a int) -> fn (b int) -> int`) — parse to the same recursive `FuncTypeAST`. The parser desugars adjacency.
+#### Adjacency desugaring in the leading cluster
+
+In a **declaration header** (the leading cluster, before the first `->`), adjacent groups are desugared by the parser into nested function wrappers. The body belongs to the innermost group:
+
+**What the user writes:**
+```lucid
+const add fn(a int) fn(b int) -> int = {
+    return a + b;
+};
+```
+
+**What the compiler generates internally:**
+```lucid
+const add fn(a int) -> fn(int) -> int = {
+    return fn(b int) -> int {
+        return a + b;
+    };
+};
+```
+
+Adjacency is only legal in the **leading cluster** (before the first `->`). After the first `->`, every stage must be separated by an explicit `->`. In a bare `func_type` (e.g., a struct field or variable type), adjacency is never allowed — only explicit arrows:
+
+| Position                            | Syntax                       | Allowed?      |
+| ----------------------------------- | ---------------------------- | ------------- |
+| Leading cluster (before first `->`) | `fn(a int) fn(b int)`        | ✅ desugared   |
+| After first `->`                    | `-> fn(int) fn(string)`      | ❌ parse error |
+| Bare `func_type` anywhere           | `fn(int) fn(string) -> bool` | ❌ parse error |
 
 ### Function-typed values in containers
 
@@ -1829,10 +1877,10 @@ A function type can appear anywhere a type can: as a struct field, an array elem
 
 ```lucid
 struct Handler {
-    cb cls (int) -> unit;
+    cb fn(int) -> unit;
 }
 
-let callbacks [*]fn (int) -> int = [double, triple];
+let callbacks [*]fn(int) -> int = [double, triple];
 ```
 
 The `fn`/`cls` markers are part of the type and are checked at every position.
@@ -1843,7 +1891,7 @@ A struct field declared with a function type follows the same shape rules:
 
 ```lucid
 struct Sorter {
-    compare fn (int, int) -> int;
+    compare fn(int, int) -> int;
 }
 ```
 
@@ -1851,12 +1899,12 @@ The field's declared type says `fn`. Any assignment to it must be a `fn` (or coe
 
 ```lucid
 let s Sorter = Sorter {
-    compare = (a int, b int) -> int { return a - b; },    -- OK: no captures
+    compare = fn(a int, b int) -> int { return a - b; },    -- OK: fn, no captures
 };
 
 let threshold int = 5;
 let s2 Sorter = Sorter {
-    compare = (a int, b int) -> int { return a - b + threshold; },    -- ERROR: captures
+    compare = fn(a int, b int) -> int { return a - b + threshold; },    -- ERROR: fn literal captures 'threshold'
 };
 ```
 
@@ -1867,10 +1915,10 @@ The fix is to declare the field `cls` if it needs to accept capturing closures.
 A function value is called with `()`:
 
 ```lucid
-let f fn (int) -> int = double;
+let f fn(int) -> int = double;
 let y int = f(5);
 
-let c cls (int) -> int = makeAdder(3);
+let c fn(int) -> int = makeAdder(3);
 let z int = c(7);
 ```
 
@@ -1909,13 +1957,13 @@ b[0] = 99;           -- a[0] is still 1
 Array operations are declared in the core script:
 
 ```lucid
-FN array_len<T>    (a [_]T)            -> uint   = #builtin(array_len)
-FN array_push<T>   (a &[*]T, v T)      = #builtin(array_push)
-FN array_pop<T>    (a &[*]T)           -> T?     = #builtin(array_pop)
-FN array_insert<T> (a &[*]T, i uint, v T) = #builtin(array_insert)
-FN array_remove<T> (a &[*]T, i uint)   = #builtin(array_remove)
-FN array_resize<T> (a &[*]T, n uint)   = #builtin(array_resize)
-FN array_clear<T>  (a &[*]T)           = #builtin(array_clear)
+FN array_len<T>    fn(a [_]T)            -> uint   = #builtin(array_len)
+FN array_push<T>   fn(a &[*]T, v T)      = #builtin(array_push)
+FN array_pop<T>    fn(a &[*]T)           -> T?     = #builtin(array_pop)
+FN array_insert<T> fn(a &[*]T, i uint, v T) = #builtin(array_insert)
+FN array_remove<T> fn(a &[*]T, i uint)   = #builtin(array_remove)
+FN array_resize<T> fn(a &[*]T, n uint)   = #builtin(array_resize)
+FN array_clear<T>  fn(a &[*]T)           = #builtin(array_clear)
 ```
 
 ### Slices
@@ -1983,7 +2031,7 @@ let b [3]int = a;    -- deep copy
 A fixed array can be passed where a slice is expected:
 
 ```lucid
-const sum fn (xs [_]int) -> int = { ... };
+const sum fn(xs [_]int) -> int = { ... };
 let arr [5]int = [1, 2, 3, 4, 5];
 sum(arr);    -- OK: fixed array coerces to slice
 ```
@@ -2132,8 +2180,8 @@ if let r &Player = upgrade(w) {
 The three operations:
 
 ```lucid
-FN weak<T>    (v &T)      -> Weak<T> = #builtin(weak)
-FN upgrade<T> (w Weak<T>) -> &T?     = #builtin(upgrade)
+FN weak<T> fn(v &T)      -> Weak<T> = #builtin(weak)
+FN upgrade<T> fn(w Weak<T>) -> &T?     = #builtin(upgrade)
 ```
 
 `weak(v)` constructs a weak reference from a strong one. `upgrade(w)` returns a strong reference if the referent is still alive, or `nil` if it has been freed.
@@ -2191,24 +2239,17 @@ The warning is best-effort. Many cycles cannot be detected statically; the user 
 
 ### Cyclic structures and self-reference
 
-A struct field whose type recursively contains the struct must be nullable (`?`). The `?` lowers the field to a pointer, which breaks the recursion. This applies to references as well:
+A struct field whose type, after substitution, recursively contains the enclosing struct must be nullable (`?`) — whether the field is a value field or a reference field, and for one of two different reasons: a recursive **value** field is infinite size; a recursive **reference** field is unsatisfiable initialization, since there is no earlier instance for the very first construction to point to. Both cases, and their diagnostics, are covered in [Recursive fields](#recursive-fields):
 
 ```lucid
 struct Node {
     value int;
-    next  &Node?;    -- OK: reference is a pointer, nullable
+    next  &Node?;    -- OK: a reference field, nullable for the
+                       -- initialization reason, not the size reason
 }
 ```
 
-A non-nullable reference to the struct is still infinite size, because the reference's slot in the struct is one pointer, but the referent is the struct... wait. Actually a `&Node` is one pointer regardless of the referent's size. So `next &Node` (non-nullable) is legal — the field is a pointer, and the referent is elsewhere.
-
-Hmm, let me reconsider. The self-reference rule was about the *inline* case. `next Node` (non-nullable, no reference) means the field's storage is a `Node` inside the struct, which is infinite. `next &Node` means the field's storage is a pointer to a `Node`, which is one word regardless of the referent's size. So `next &Node` is legal.
-
-But wait — for a value field `next Node?`, the `?` is what makes the storage a pointer rather than inline. For a reference field `next &Node`, the `&` already makes it a pointer. So `next &Node` should be legal, and `next &Node?` should also be legal (nullable pointer).
-
-Let me correct the earlier rule: the self-reference rule applies to *value* fields, not reference fields. A `&Node` field is a pointer; it is never infinite size. The rule should be stated for `T` fields, and reference fields are always fine.
-
-I'll update [Recursive fields](#recursive-fields) to say this. For now, note that this section's example uses `next &Node?` and that's legal.
+This is a different rule from the reference-cycle leak covered in [Cycles](#cycles), just above. That section is about a **runtime** cycle of strong references keeping each other alive, after both fields are already legally declared as non-nullable reference types. This rule is about whether the **field's declared type** is even constructible in the first place — checked once, at the struct's own declaration, before any value of the type exists.
 
 ---
 
@@ -2308,6 +2349,8 @@ if x == nil or x == err { return; }
 -- x is T here
 ```
 
+Narrowing also follows truthiness ([Truthiness](#truthiness)) directly, without an explicit comparison: `if x { ... }` where `x: T?` narrows `x` to `T` inside the block, exactly as `if x != nil { ... }` does. The same holds for `while x { ... }`.
+
 ### Forbidden operations on an un-narrowed value
 
 An un-narrowed `T?`, `T!`, or `T?!` value cannot be used as a `T`:
@@ -2382,7 +2425,7 @@ while let x int = upgrade(w) {
 
 ```lucid
 trait Stringable {
-    REQUIRE CALL 'toStr' (self Self) -> string;
+    REQUIRE CALL 'toStr' fn(self Self) -> string;
 }
 ```
 
@@ -2390,7 +2433,7 @@ A type satisfies `Stringable` by declaring a `DEF CALL 'toStr'` for itself, most
 
 ```lucid
 satisfy Stringable for Vec2 {
-    DEF CALL 'toStr' (v Vec2) -> string = {
+    DEF CALL 'toStr' fn(v Vec2) -> string = {
         return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")";
     };
 }
@@ -2457,7 +2500,7 @@ A statement that ends with an expression takes a `;`:
 
 A declaration that ends with a `block` value still requires `;`:
 
-- `const f fn (int) -> int = { return 0; };` — the `}` closes the block value, not the statement; the `;` terminates the declaration.
+- `const f fn(int) -> int = { return 0; };` — the `}` closes the block value, not the statement; the `;` terminates the declaration.
 
 The rule: **the exemption is for statements whose outermost construct is one of the block-terminated forms**, not for any statement that happens to end with `}`.
 
@@ -2466,9 +2509,9 @@ The rule: **the exemption is for statements whose outermost construct is one of 
 `const`, `let`, `FN`, `TYPE`, `trait`, `satisfy`, and `DEF` may all appear inside a block:
 
 ```lucid
-const compute fn () -> int = {
+const compute fn() -> int = {
     struct Local { x int; y int; }
-    const add fn (a int, b int) -> int = { return a + b; };
+    const add fn(a int, b int) -> int = { return a + b; };
     let p Local = Local { x = 1, y = 2 };
     return add(p.x, p.y);
 };
@@ -2477,9 +2520,9 @@ const compute fn () -> int = {
 A local declaration is visible from its declaration point to the end of the enclosing block. A local type is visible to nested closures declared after it in the same block:
 
 ```lucid
-const f fn () -> fn () -> Direction {
+const f fn() -> fn() -> Direction = {
     enum Direction { North = 0; East = 1; }
-    return () -> Direction {
+    return fn() -> Direction {
         return Direction.North;
     };
 };
@@ -2488,7 +2531,7 @@ const f fn () -> fn () -> Direction {
 A local type may not appear in the header of the function that declares it:
 
 ```lucid
-const f fn () -> Direction {    -- ERROR: Direction not yet in scope
+const f fn() -> Direction {    -- ERROR: Direction not yet in scope
     enum Direction { North = 0; East = 1; }
     return Direction.North;
 };
@@ -2525,7 +2568,7 @@ let x int = 2;    -- ERROR: 'x' already declared in this scope
 A `return` statement exits the enclosing function:
 
 ```lucid
-const f fn (x int) -> int = {
+const f fn(x int) -> int = {
     if x < 0 { return 0; }
     return x * 2;
 };
@@ -2536,7 +2579,7 @@ The returned value's type must match the function's declared return type. A `ret
 A function that returns a value must return on every path:
 
 ```lucid
-const f fn (x int) -> int = {
+const f fn(x int) -> int = {
     if x < 0 { return 0; }
     -- ERROR: not all paths return a value
 };
@@ -2601,7 +2644,7 @@ if x > 0 {
 }
 ```
 
-The condition must be `bool`. There is no truthiness coercion; `if x` where `x` is an `int` is a compile error.
+`if`/`while` conditions use the truthiness rule ([Truthiness](#truthiness)): a concrete non-nullable, non-fallible operand (like `bool`, or any ordinary value) folds to `true` at compile time; a `T?`/`T!`/`T?!` operand is a runtime sentinel check instead of a type error. `if x` where `x` is a plain `int` is legal — it is always true, and the compiler may warn that the condition is trivial, but it is not a compile error the way it would be if truthiness were unsupported.
 
 ### Narrowing
 
@@ -3216,9 +3259,9 @@ If the name resolves to a struct field and `self` is in scope (inside a block-bo
 A specialization reference is a value:
 
 ```lucid
-const identity<T> fn (v T) -> T = { return v; };
+const identity<T> fn(v T) -> T = { return v; };
 
-let f fn (int) -> int = identity<int>;    -- OK: specialization reference
+let f fn(int) -> int = identity<int>;    -- OK: specialization reference
 ```
 
 The reference is used where a function value of the specialization's type is expected. It is not a call; the value is the function itself, not its result.
@@ -3454,7 +3497,7 @@ A module access reads a name exported from another module:
 ```lucid
 math::sqrt
 math::PI
-io::println
+println
 ```
 
 The left-hand side is the module's name (the file's path relative to the package root, with dots). The right-hand side is a name exported by that module.
@@ -3463,7 +3506,7 @@ The left-hand side is the module's name (the file's path relative to the package
 
 ```lucid
 math::sqrt(2.0)
-io::println("hello")
+println("hello")
 ```
 
 A module-qualified call resolves the member against the module's export table and dispatches through the `CALL` table if the member is a `DEF CALL`.
@@ -3513,10 +3556,10 @@ The left-hand side of `::` is either a module name or a struct name. The parser 
 A module name may contain dots for subdirectories:
 
 ```lucid
-core::io::println
+core::println
 ```
 
-The path `core.io` names the module; the access chain `core::io::println` reads `println` from that module. The parser treats `core::io` as a single module name and `println` as the member.
+The path `core.io` names the module; the access chain `core::println` reads `println` from that module. The parser treats `core::io` as a single module name and `println` as the member.
 
 ---
 
@@ -3555,7 +3598,7 @@ For a `CALL` op-name, the compiler resolves the call through the `CALL` table, k
 The arguments must match the callee's declared parameters in number and type. There is no implicit conversion other than the `fn → cls` coercion.
 
 ```lucid
-const add fn (a int, b int) -> int = { return a + b; };
+const add fn(a int, b int) -> int = { return a + b; };
 add(1, 2);              -- OK
 add(1);                 -- ERROR: missing argument
 add(1, 2, 3);           -- ERROR: too many arguments
@@ -3567,7 +3610,7 @@ add(1.0, 2.0);          -- ERROR: float where int expected
 A curried function is called with multiple argument groups:
 
 ```lucid
-const clamp fn (lo int) fn (hi int) fn (v int) -> int = { ... };
+const clamp fn(lo int) fn(hi int) fn(v int) -> int = { ... };
 clamp(0)(100)(42);
 ```
 
@@ -3576,7 +3619,7 @@ Each call returns a function value that takes the next group. The final call ret
 A partially-applied value is a first-class function:
 
 ```lucid
-const clamp0to100 fn (v int) -> int = clamp(0)(100);
+const clamp0to100 fn(v int) -> int = clamp(0)(100);
 clamp0to100(42);    -- 42
 ```
 
@@ -3585,7 +3628,7 @@ clamp0to100(42);    -- 42
 A module-qualified name is called with `()`:
 
 ```lucid
-io::println("hello")
+println("hello")
 math::sqrt(2.0)
 ```
 
@@ -3596,10 +3639,10 @@ See [Module Access](#module-access) for module access resolution.
 A function-typed value is called with `()`:
 
 ```lucid
-let f fn (int) -> int = double;
+let f fn(int) -> int = double;
 f(5);                      -- direct call
 
-let c cls (int) -> int = makeAdder(3);
+let c fn(int) -> int = makeAdder(3);
 c(7);                      -- closure call
 
 obj.callback(42);          -- call through a struct field
@@ -3635,7 +3678,7 @@ binary_op   ::= '+' | '-' | '*' | '/' | '%' | '**'
 
 A binary expression `a op b` resolves through the `BINARY_OP` table:
 
-- The compiler looks up `DEF BINARY_OP 'op' (a_type, b_type) -> result_type`.
+- The compiler looks up `DEF BINARY_OP 'op' fn(a_type, b_type) -> result_type`.
 - The exact-match `DEF` is preferred over a generic `DEF`.
 - If no `DEF` matches, the expression is a compile error.
 
@@ -3676,14 +3719,19 @@ The short-circuit is part of the operator's semantics, not a `DEF`; it is fixed.
 
 ### Truthiness
 
-`and`, `or`, and `not` accept values of any type and coerce them to truth:
+`and`, `or`, `not`, and any condition position (`if`, `while`) accept values of any type and resolve them to a truth value by the table below:
 
-- Non-nullable, non-fallible value: always true.
-- `T?`: true unless `nil`.
-- `T!`: true unless `err`.
-- `T?!`: true unless `nil` or `err`.
+| Operand type                        | Truth value             | Decided      |
+| ----------------------------------- | ----------------------- | ------------ |
+| Concrete non-nullable, non-fallible | Always true             | Compile time |
+| `bool`                              | Its value               | Runtime      |
+| `T?`                                | False if `nil`          | Runtime      |
+| `T!`                                | False if `err`          | Runtime      |
+| `T?!`                               | False if `nil` or `err` | Runtime      |
 
-The result is always `bool`. The coercion is a runtime check for the nullable/fallible cases and a compile-time constant for the non-nullable case.
+The result is always `bool`. `and`/`or`/`not` fold to a constant when every operand is a compile-time constant; otherwise, sentinel-carrying operands (`T?`/`T!`/`T?!`) are checked at runtime, and non-sentinel operands contribute a compile-time-known `true` without a runtime check.
+
+`if x` on a `x: T?` narrows `x` to `T` inside the block, the same as `if x != nil` — see [Narrowing](#narrowing).
 
 See [Nullable, Fallible, and Combined Types](#nullable-fallible-and-combined-types) for the narrowing rules that interact with truthiness.
 
@@ -3813,7 +3861,7 @@ The `!` is mandatory for the second form. `f(args)` without `!` is not a valid p
 The upstream value fills the first unfilled parameter of the step function:
 
 ```lucid
-const add fn (a int, b int) -> int = { return a + b; };
+const add fn(a int, b int) -> int = { return a + b; };
 
 5 |> add(3)!;    -- a := 5 (injected), b := 3 (explicit) → 8
 ```
@@ -3821,8 +3869,8 @@ const add fn (a int, b int) -> int = { return a + b; };
 For a curried function, the upstream value fills the next unfilled group:
 
 ```lucid
-const clamp fn (lo int) fn (hi int) fn (v int) -> int = { ... };
-const clamp0to100 fn (v int) -> int = clamp(0)(100);
+const clamp fn(lo int) fn(hi int) fn(v int) -> int = { ... };
+const clamp0to100 fn(v int) -> int = clamp(0)(100);
 
 42 |> clamp0to100;    -- → 42
 150 |> clamp0to100;   -- → 100
@@ -3833,7 +3881,7 @@ const clamp0to100 fn (v int) -> int = clamp(0)(100);
 A function literal is a valid step:
 
 ```lucid
-5 |> (x int) -> int { return x * 2; };    -- → 10
+5 |> fn(x int) -> int { return x * 2; };    -- → 10
 ```
 
 ### Chained pipelines
@@ -3844,7 +3892,7 @@ A pipeline may have many steps:
 const result string =
     42
     |> toStr
-    |> (s string) -> string { return "value: " ++ s; };
+    |> fn(s string) -> string { return "value: " ++ s; };
 ```
 
 Each `|>` extends the pipeline to the right.
@@ -3867,8 +3915,8 @@ error: pipeline step expects 'int' but upstream value is 'string'
 ## Function Literals
 
 ```
-func_literal ::= group { '->' unnamed_stage } '->' type block
-group        ::= '(' [ param_list ] ')'
+func_literal  ::= ( 'fn' | 'cls' ) named_group { '->' unnamed_stage } '->' type block
+named_group   ::= '(' [ param_list ] ')'
 unnamed_stage ::= ( 'fn' | 'cls' ) unnamed_group
 unnamed_group ::= '(' [ type_list ] ')'
 ```
@@ -3876,27 +3924,27 @@ unnamed_group ::= '(' [ type_list ] ')'
 A function literal is an anonymous function value:
 
 ```lucid
-(x int) -> int { return x * 2; }
-(a int, b int) -> int { return a + b; }
-() -> unit { println("hello"); }
+fn(x int) -> int { return x * 2; }
+fn(a int, b int) -> int { return a + b; }
+fn() -> unit { println("hello"); }
 ```
 
-The leading group's parameters are named. Subsequent stages are type positions (no names) and carry `fn`/`cls` markers:
+Every literal begins with an explicit `fn` or `cls` marker. The marker is not inferred — it must be written. Subsequent stages each carry their own `fn`/`cls` marker as well:
 
 ```lucid
-(n int) -> cls (int) -> int {
-    return (b int) -> int { return n + b; };
+fn(n int) -> fn(int) -> int {
+    return fn(b int) -> int { return n + b; };
 }
 ```
 
-### Shape inference
+### Shape checking
 
-A function literal's shape is inferred from whether its body captures anything:
+A function literal's declared shape must be compatible with what its body actually does:
 
-- No captures → `fn`.
-- Captures → `cls`.
+- A literal marked `fn` must not capture any variable from the enclosing scope.
+- A literal marked `cls` may capture freely; its environment is heap-allocated and refcounted.
 
-The inferred shape is checked against the declared type at the binding site. See [The four-cell shape table](#the-four-cell-shape-table) for the four-cell table.
+A `cls`-marked literal whose body captures nothing is legal (`cls` subsumes `fn`). A `fn`-marked literal whose body captures anything is a compile error, naming the captured variable. See [The four-cell shape table](#the-four-cell-shape-table).
 
 ### Capture
 
@@ -3908,9 +3956,9 @@ A function literal captures variables from the enclosing scope:
 The determination is per-variable, not per-literal.
 
 ```lucid
-let f fn (n int) -> cls () -> int {
+let f fn(n int) -> fn() -> int = {
     let x int = 0;
-    return () -> int {
+    return fn() -> int {
         x = x + n;    -- x captured by reference, n captured by value
         return x;
     };
@@ -3919,41 +3967,42 @@ let f fn (n int) -> cls () -> int {
 
 ### What can be captured
 
-Any value can be captured: primitives, structs, arrays, references, closures, `Deferred<T>`, etc. — with one exception.
+Any value can be captured: primitives, structs, arrays, references, closures, etc. — with one exception.
 
-`Deferred<T>` and `Thread<T>` cannot be captured. They are linear values; capturing them would allow two holders of the same pending operation. The rule is enforced at the capture site.
+`Deferred<T>` cannot be captured. It is a linear value ([`Deferred<T>` — Linear Value Rules](#deferredt-linear-value-rules), rule 6); capturing it would allow two holders of the same pending operation, and would put it out of reach of the flow-sensitive consumption check. The rule is enforced at the capture site.
 
 ### Nested literals
 
 A literal may contain another literal:
 
 ```lucid
-let makeCounter = () -> cls () -> int {
+let makeCounter fn() -> fn() -> int = {
     let n int = 0;
-    return () -> int {
+    return fn() -> int {
         n = n + 1;
         return n;
     };
 };
 ```
 
-The inner literal captures `n` from the outer literal's body. The outer literal's shape is `fn` if it captures nothing from *its* enclosing scope; the inner literal's shape is `cls` because it captures `n`.
+The inner literal captures `n` from the outer literal's body. The outer literal is marked `fn` because it captures nothing from *its* enclosing scope; the inner literal is marked `cls` because it captures `n`.
 
 ### Literals as arguments and returns
 
 A literal may be passed to a function:
 
 ```lucid
-apply((x int) -> int { return x * 2; }, 5);
+apply(fn(x int) -> int { return x * 2; }, 5);
 ```
 
 Or returned from a function:
 
 ```lucid
-const makeDoubler fn () -> fn (int) -> int = {
-    return (x int) -> int { return x * 2; };
+const makeDoubler fn() -> fn(int) -> int = {
+    return fn(x int) -> int { return x * 2; };
 };
 ```
+
 
 ---
 
@@ -4047,8 +4096,8 @@ The lookup prefers the most specific match:
 A concrete `DEF` shadows a generic `DEF` for the same operation and symbol when the operand types match exactly:
 
 ```lucid
-DEF BINARY_OP '==' <T : Eq> (a T, b T) -> bool = { ... };
-DEF BINARY_OP '==' (a Vec2, b Vec2) -> bool = { ... };
+DEF BINARY_OP '==' <T : Eq> fn(a T, b T) -> bool = { ... };
+DEF BINARY_OP '==' fn(a Vec2, b Vec2) -> bool = { ... };
 
 let v Vec2 = ...;
 let b bool = v == w;    -- uses the concrete Vec2 DEF
@@ -4061,8 +4110,8 @@ The generic `DEF` is still available for other types; the concrete one wins only
 If two generic `DEF`s both match a query and neither is more specific, it is an ambiguity error:
 
 ```lucid
-DEF CALL 'describe' <T : Numeric> (v T) -> string = { ... };
-DEF CALL 'describe' <T : Stringable> (v T) -> string = { ... };
+DEF CALL 'describe' <T : Numeric> fn(v T) -> string = { ... };
+DEF CALL 'describe' <T : Stringable> fn(v T) -> string = { ... };
 
 -- if SomeType satisfies both Numeric and Stringable:
 describe(someValue);    -- ERROR: ambiguous
@@ -4073,8 +4122,8 @@ The error names both candidates and suggests a concrete `DEF` for the type:
 ```
 error: ambiguous call to 'describe'
    = note: two DEFs match:
-     DEF CALL 'describe' <T : Numeric> (v T) -> string
-     DEF CALL 'describe' <T : Stringable> (v T) -> string
+     DEF CALL 'describe' <T : Numeric> fn(v T) -> string
+     DEF CALL 'describe' <T : Stringable> fn(v T) -> string
    = help: add a concrete DEF for the operand type
 ```
 
@@ -4085,8 +4134,8 @@ There is no precedence between traits. Two traits that both match are an error, 
 Two `DEF`s with the same op kind, symbol, and operand types are a redeclaration error:
 
 ```lucid
-DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32_v2);    -- ERROR
+DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);
+DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32_v2);    -- ERROR
 ```
 
 A user's `DEF` may not override a core-script `DEF` of the same signature. The error is reported at the second declaration.
@@ -4113,9 +4162,9 @@ const CALL       OpKind = registerOpKind("CALL");
 A binary operation between two operands. The symbol is the operator's spelling:
 
 ```lucid
-DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-DEF BINARY_OP '==' (a Vec2, b Vec2) -> bool = { ... };
-DEF BINARY_OP 'and' (a bool, b bool) -> bool = #native(and_bool);
+DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);
+DEF BINARY_OP '==' fn(a Vec2, b Vec2) -> bool = { ... };
+DEF BINARY_OP 'and' fn(a bool, b bool) -> bool = #native(and_bool);
 ```
 
 The symbol may be any operator token: `+`, `-`, `*`, `/`, `%`, `**`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&`, `|`, `^`, `<<`, `>>`, `and`, `or`.
@@ -4125,9 +4174,9 @@ The symbol may be any operator token: `+`, `-`, `*`, `/`, `%`, `**`, `==`, `!=`,
 A unary operation on one operand. The symbol is the operator's spelling:
 
 ```lucid
-DEF UNARY_OP '-' (v int) -> int = #native(neg_i32);
-DEF UNARY_OP 'not' (v bool) -> bool = #native(not_bool);
-DEF UNARY_OP '~' (v int) -> int = #native(bitnot_i32);
+DEF UNARY_OP '-' fn(v int) -> int = #native(neg_i32);
+DEF UNARY_OP 'not' fn(v bool) -> bool = #native(not_bool);
+DEF UNARY_OP '~' fn(v int) -> int = #native(bitnot_i32);
 ```
 
 The symbol may be `-`, `not`, or `~`.
@@ -4163,9 +4212,9 @@ The symbol slot is empty for `INDEX_SET`.
 A named-call operation. The symbol is the call's name:
 
 ```lucid
-DEF CALL 'toStr' (v int) -> string = #builtin(int_to_str);
-DEF CALL 'toStr' (v Vec2) -> string = { ... };
-DEF CALL 'describe' (v int) -> string = { ... };
+DEF CALL 'toStr' fn(v int) -> string = #builtin(int_to_str);
+DEF CALL 'toStr' fn(v Vec2) -> string = { ... };
+DEF CALL 'describe' fn(v int) -> string = { ... };
 ```
 
 The first parameter is the receiver; the remaining parameters are the call's arguments. A call site `name(args)` resolves through the `CALL` table, keyed on the argument types.
@@ -4202,7 +4251,7 @@ The check is done at the call site; the compiler does not defer to runtime.
 For a generic `DEF`, the compiler substitutes the type arguments and checks the constraints:
 
 ```lucid
-DEF BINARY_OP '!=' <T : Eq> (a T, b T) -> bool = { ... };
+DEF BINARY_OP '!=' <T : Eq> fn(a T, b T) -> bool = { ... };
 ```
 
 For a call `a != b` where `a` and `b` are both `Vec2`:
@@ -4219,9 +4268,9 @@ The specialization `!=` for `Vec2` is then compiled as a concrete function and u
 `CALL` resolutions are keyed by the call's name and the argument types. The `CALL` table is a sub-table of the `DEF` table, partitioned by symbol:
 
 ```lucid
-DEF CALL 'toStr' (v int) -> string = #builtin(int_to_str);
-DEF CALL 'toStr' (v string) -> string = { return v; };
-DEF CALL 'toStr' (v Vec2) -> string = { ... };
+DEF CALL 'toStr' fn(v int) -> string = #builtin(int_to_str);
+DEF CALL 'toStr' fn(v string) -> string = { return v; };
+DEF CALL 'toStr' fn(v Vec2) -> string = { ... };
 ```
 
 A call `toStr(x)` looks up `CALL 'toStr'` with the argument `x`'s type. If the type is `int`, the first `DEF` matches; if `Vec2`, the third.
@@ -4238,7 +4287,7 @@ The overload mechanism applies only to `DEF` declarations, where the operation i
 
 ### Implicit coercion in resolution
 
-The only implicit conversion is `fn → cls`. In overload resolution, a candidate whose parameter is `cls (T) -> U` is compatible with an argument of type `fn (T) -> U` (the argument is coerced). The reverse is not allowed.
+The only implicit conversion is `fn → cls`. In overload resolution, a candidate whose parameter is `fn(T) -> U` is compatible with an argument of type `fn(T) -> U` (the argument is coerced). The reverse is not allowed.
 
 No other implicit conversion exists. An argument of type `int` is not compatible with a parameter of type `uint`, even though both are integers.
 
@@ -4263,10 +4312,10 @@ A `satisfy` block contains only `DEF` declarations:
 
 ```lucid
 satisfy Numeric for Vec2 {
-    DEF BINARY_OP '+' (a Vec2, b Vec2) -> Vec2 = { ... };
-    DEF BINARY_OP '-' (a Vec2, b Vec2) -> Vec2 = { ... };
-    DEF BINARY_OP '*' (a Vec2, b Vec2) -> Vec2 = { ... };
-    DEF BINARY_OP '/' (a Vec2, b Vec2) -> Vec2 = { ... };
+    DEF BINARY_OP '+' fn(a Vec2, b Vec2) -> Vec2 = { ... };
+    DEF BINARY_OP '-' fn(a Vec2, b Vec2) -> Vec2 = { ... };
+    DEF BINARY_OP '*' fn(a Vec2, b Vec2) -> Vec2 = { ... };
+    DEF BINARY_OP '/' fn(a Vec2, b Vec2) -> Vec2 = { ... };
 }
 ```
 
@@ -4282,7 +4331,7 @@ If a `satisfy` block does not provide a `DEF` for a trait's `REQUIRE` clause, it
 
 ```
 error: 'satisfy Numeric for Vec2' does not provide a definition for
-       BINARY_OP '/' (a Vec2, b Vec2) -> Vec2
+       BINARY_OP '/' fn(a Vec2, b Vec2) -> Vec2
    = note: 'Numeric' requires this operation
 ```
 
@@ -4314,7 +4363,7 @@ When the compiler checks a constraint `<C : Container<int>>` at a call site, it 
 A constraint `<T : TraitName>` at a function declaration or a generic `TYPE` is checked at each use:
 
 ```lucid
-const first<T : Container<int>> fn (c T) -> int? = {
+const first<T : Container<int>> fn(c T) -> int? = {
     if c.count == 0 { return nil; }
     return c.value;
 };
@@ -4331,7 +4380,7 @@ A trait's parent traits are constraints on the trait:
 
 ```lucid
 trait Ord : Eq {
-    REQUIRE BINARY_OP '<' (self Self, rhs Self) -> bool;
+    REQUIRE BINARY_OP '<' fn(self Self, rhs Self) -> bool;
 }
 ```
 
@@ -4358,7 +4407,7 @@ A `DEF` inside a `satisfy` block is usable as an operator as soon as the block i
 
 ```lucid
 satisfy Eq for Vec2 {
-    DEF BINARY_OP '==' (a Vec2, b Vec2) -> bool = { ... };
+    DEF BINARY_OP '==' fn(a Vec2, b Vec2) -> bool = { ... };
 }
 
 let a Vec2 = ...;
@@ -4403,7 +4452,7 @@ Without it, `first<Player>(players)` where `first` requires `Named` is a compile
 
 ```lucid
 trait Stringable {
-    REQUIRE CALL 'toStr' (self Self) -> string;
+    REQUIRE CALL 'toStr' fn(self Self) -> string;
 }
 ```
 
@@ -4411,7 +4460,7 @@ A user type satisfies it with a `satisfy` block, which supplies the concrete `DE
 
 ```lucid
 satisfy Stringable for Vec2 {
-    DEF CALL 'toStr' (v Vec2) -> string = {
+    DEF CALL 'toStr' fn(v Vec2) -> string = {
         return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")";
     };
 }
@@ -4424,7 +4473,7 @@ The `DEF` declared in the block is an ordinary concrete `DEF` for `toStr` on `Ve
 A function that needs to *require* a `toStr` to exist — rather than merely calling `toStr` and accepting whatever resolves — constrains on `Stringable`:
 
 ```lucid
-const logValue<T : Stringable> fn (label string, v T) = {
+const logValue<T : Stringable> fn(label string, v T) = {
     println(label ++ ": " ++ toStr(v));
 };
 ```
@@ -4438,7 +4487,7 @@ The compiler's `toStr` fallback (`struct_to_str`/`enum_to_str`, [Struct and enum
 A function that accepts any `toStr` — custom, fallback, or otherwise — doesn't need the constraint at all:
 
 ```lucid
-const logValue<T> fn (label string, v T) = {
+const logValue<T> fn(label string, v T) = {
     println(label ++ ": " ++ toStr(v));    -- toStr works on any T
 };
 ```
@@ -4456,9 +4505,9 @@ The `op_kind` in a `DEF` declaration is an identifier resolved against `OpKind` 
 An `op_kind` identifier resolves by the same rules as any other identifier: local scope, module scope, imports. The value must be of type `OpKind`. A name that resolves to a non-`OpKind` value is a compile error.
 
 ```lucid
-DEF BINARY_OP '+' (...)    -- OK: BINARY_OP is an OpKind
-DEF INTEGER '+' (...)       -- ERROR: INTEGER is not an OpKind
-DEF unknown_op '+' (...)    -- ERROR: unknown_op is not defined
+DEF BINARY_OP '+' fn(...)    -- OK: BINARY_OP is an OpKind
+DEF INTEGER '+' fn(...)       -- ERROR: INTEGER is not an OpKind
+DEF unknown_op '+' fn(...)    -- ERROR: unknown_op is not defined
 ```
 
 ### The core-script declarations
@@ -4535,7 +4584,7 @@ If the time budget is exceeded, the scheduler returns to the engine, and resumes
 A fiber suspends at an `await`. It runs from the last suspension point to the next one without interruption. Between suspension points, the fiber has exclusive access to all script data — no other fiber can run, so no other fiber can see a partial update.
 
 ```lucid
-const async update fn (world &World) = {
+const async update fn(world &World) = {
     world.counter = world.counter + 1;    -- atomic with respect to other fibers
     await someDeferred;                   -- suspend point
     world.counter = world.counter + 1;    -- atomic again
@@ -4555,7 +4604,7 @@ This is the firewall between true parallelism and the VM. Everything inside the 
 Scripts can request engine-side parallelism through an `#host` function that returns a `Deferred<T>`:
 
 ```lucid
-FN host_async<T> (work #hostFn) -> Deferred<T> = #host(host_run_async);
+FN host_async<T> fn(work #hostFn) -> Deferred<T> = #host(host_run_async);
 ```
 
 The `#host` function schedules work on an engine worker thread and returns a `Deferred<T>`. The scheduler treats the returned deferred like any other: the fiber awaits it, and the scheduler wakes the fiber when the worker thread pushes the result into the completion queue.
@@ -4716,7 +4765,7 @@ The consumed-all rule is a consequence of `Deferred<T>` being a linear value: ev
 
 2. **`await` is the only path from `Deferred<T>` to `T`.** There is no implicit unwrap, no `.value` field, no conversion.
 
-3. **`await` consumes.** A deferred can be awaited at most once. A second `await` on the same binding is a compile error.
+3. **A deferred is consumed by exactly one of `await` or `cancel`.** A second `await`, a second `cancel`, or a `cancel` after an `await` (or vice versa) on the same binding along the same path is a compile error. See [Cancellation](#cancellation) for `cancel`'s consuming behavior.
 
 4. **A live deferred must be consumed on every path out of its scope.** Reaching scope exit with an unresolved `Deferred<T>` is a compile error.
 
@@ -4760,7 +4809,7 @@ await d;    -- ERROR: d is consumed on every path reaching here
 A `Deferred<T>` that reaches the end of its scope without being consumed is a compile error:
 
 ```lucid
-const async f fn () -> unit = {
+const async f fn() -> unit = {
     start d User = fetchUser(7);
     -- ...
     -- no await
@@ -4802,36 +4851,49 @@ This is the same rule as `let` and `const`: a binding declaration introduces a n
 
 ## Cancellation
 
-A deferred may be cancelled:
+A deferred may be cancelled instead of awaited:
 
 ```lucid
-FN cancel<T> (d &Deferred<T>) = #builtin(cancel_deferred);
-FN isReady<T> (d &Deferred<T>) -> bool = #builtin(deferred_ready);
+FN cancel<T> fn(d Deferred<T>) = #builtin(cancel_deferred);
+FN isReady<T> fn(d &Deferred<T>) -> bool = #builtin(deferred_ready);
 ```
+
+> [!NOTE]
+> An earlier draft of this design left `cancel` non-consuming (`d &Deferred<T>`), which produced a genuine contradiction: after `cancel(d)`, the user could neither `await d` (a runtime panic under that draft) nor let `d` go out of scope unconsumed (a compile error under rule 6 of [Restrictions Summary](#restrictions-summary)) — there was no legal way to cancel and then discard a deferred at all. **Fix A**, below, resolves it by making `cancel` itself a consuming operation, the same shape as `await`, so cancelling and dropping a deferred is always legal and no state is simultaneously required and forbidden.
 
 ### `cancel`
 
-`cancel(d)` requests cancellation of the fiber producing `d`. The fiber is marked cancelled; the scheduler stops it at the next suspension point or lets it run to completion, depending on the engine's cancellation policy.
+`cancel(d)` requests cancellation of the fiber producing `d`, and **consumes `d`** — the same linear-value consumption `await` performs, tracked by the same flow-sensitive analysis ([`Deferred<T>` — Linear Value Rules](#deferredt-linear-value-rules)). After `cancel(d)`, the binding `d` is no longer live:
 
-`cancel` does not consume `d`. A cancelled deferred is still a deferred; it has the same linear-value rules.
+```lucid
+start d User = fetchUser(7);
+cancel(d);    -- consumes d
+-- d is no longer live; the scope-exit check is satisfied
+```
 
-### `await` after `cancel`
+The fiber is marked cancelled; the scheduler stops it at the next suspension point or lets it run to completion, depending on the engine's cancellation policy. Either way, `d`'s value is never produced — `cancel` consumes the *handle*, not a result.
 
-`await` on a cancelled deferred is a **runtime panic**:
+### `await` and `cancel` are mutually exclusive
+
+A deferred is consumed by exactly one of `await` or `cancel` — never both, and never neither. Attempting the other operation after the first is a **compile error**, not a runtime panic, because both operations are now visible to the same flow-sensitive linearity check that already tracks `await`:
 
 ```lucid
 start d User = fetchUser(7);
 cancel(d);
-await d;    -- PANIC: awaited a cancelled deferred
+await d;    -- ERROR: 'd' was already consumed by 'cancel' on this path
 ```
 
-The panic terminates the current fiber with a diagnostic. There is no try/catch; the design does not provide a way to catch the panic and continue.
+```lucid
+start d User = fetchUser(7);
+await d;
+cancel(d);    -- ERROR: 'd' was already consumed by 'await' on this path
+```
 
-The rule: **cancel and do not await; or await and do not cancel.** The two are mutually exclusive. The compiler does not enforce this statically (cancel is a runtime operation on a runtime value), so the panic is the enforcement.
+This mirrors "await twice is a compile error" exactly — `cancel` and `await` are simply two different ways to consume the same linear value, and the checker does not distinguish which one it was for the purpose of rejecting a second attempt.
 
 ### `isReady`
 
-`isReady(d)` returns `true` if the deferred's fiber has resolved. It does not consume the deferred; it is a poll.
+`isReady(d)` returns `true` if the deferred's fiber has resolved. It does not consume the deferred; it is a poll, taking `d` by reference (`&Deferred<T>`) for exactly that reason — unlike `cancel`, it never removes `d` from play:
 
 ```lucid
 if isReady(d) {
@@ -4845,53 +4907,9 @@ if isReady(d) {
 
 `cancel` does not:
 
-- Free the deferred's storage. The `Deferred<T>` binding still exists and still must be consumed (by `await`, which will panic) or dropped (by scope exit, which is a compile error if the deferred is still live).
 - Interrupt the fiber mid-operation. The fiber stops at its next suspension point, not immediately.
-- Provide a value for the deferred. A cancelled deferred never resolves.
-
-To handle a cancelled deferred without panicking, the user must not await it. Use `isReady` to check, or drop the binding entirely:
-
-```lucid
-start d User = fetchUser(7);
-if shouldCancel {
-    cancel(d);
-    -- do not await; the binding is dropped at scope exit, which is an error...
-}
-```
-
-Wait — this is a conflict. If `cancel(d)` does not consume `d`, and the user does not `await d`, then `d` is a live deferred at scope exit, which is a compile error (rule 4). So the user cannot cancel-and-drop either.
-
-This is a real gap in the design. Let me flag it and propose a fix.
-
-### The cancel-and-discard problem
-
-The rules as stated produce a contradiction: after `cancel(d)`, the user must either `await d` (which panics) or let `d` go out of scope unconsumed (which is a compile error). Neither is acceptable.
-
-Two fixes:
-
-**Fix A — `cancel` consumes.** Change the rule: `cancel(d)` consumes the deferred. After cancellation, `d` is no longer available; a subsequent `await d` is a compile error (not a runtime panic). The user can cancel-and-drop without triggering the scope-exit check.
-
-```lucid
-start d User = fetchUser(7);
-cancel(d);    -- consumes d
--- d is no longer live
-```
-
-Under this fix, `cancel` and `await` are mutually exclusive at the type level. The compiler knows which one happened and rejects the other. This is cleaner: the "cancel then await panics" rule becomes "cancel then await is a compile error," which is the same shape as "await twice is a compile error."
-
-**Fix B — a `cancel` return type of `unit` plus an explicit discard.** Add a `discard(d)` function that consumes a deferred without awaiting it:
-
-```lucid
-start d User = fetchUser(7);
-cancel(d);
-discard(d);    -- consumes d without producing a value
-```
-
-This is more explicit but adds a new function for a rare case.
-
-**Fix A is cleaner.** Change `cancel` to consume the deferred, so `cancel(d)` and `await d` are alternative ways to consume a `Deferred<T>`. The compiler enforces that exactly one is used.
-
-I'll note this in the review points. The section above describes the current design; Fix A is the recommendation.
+- Provide a value for the deferred. A cancelled deferred never resolves, and — since `cancel` consumes it — there is no later operation that could observe that non-resolution anyway.
+- Guarantee immediate termination. Cancellation is cooperative, like the rest of this concurrency model; a fiber that never reaches a suspension point runs to completion regardless of `cancel`.
 
 ---
 
@@ -4931,23 +4949,23 @@ The core script declares the standard concurrency types and functions:
 ```lucid
 TYPE Deferred<T> = #host(LucidDeferred)
 
-FN isReady<T> (d &Deferred<T>) -> bool = #builtin(deferred_ready)
-FN cancel<T>  (d &Deferred<T>)       = #builtin(cancel_deferred)
+FN isReady<T> fn(d &Deferred<T>) -> bool = #builtin(deferred_ready)
+FN cancel<T> fn(d Deferred<T>)        = #builtin(cancel_deferred)
 
 -- Sleep: a fiber-level yield until a deadline
-const async sleep fn (seconds float) -> unit = #host(host_sleep);
+const async sleep fn(seconds float) -> unit = #host(host_sleep);
 
 -- Engine-parallel work
-FN host_async<T> (work #hostFn) -> Deferred<T> = #host(host_run_async);
+FN host_async<T> fn(work #hostFn) -> Deferred<T> = #host(host_run_async);
 ```
 
 `host_async` is the bridge to engine-side parallelism. A script wraps a C++ function as a `#hostFn` and calls `host_async(work)` to run it on a worker thread:
 
 ```lucid
 @[host_only]
-const computePhysics fn (worldId int, dt float) -> PhysicsResult = {};
+const computePhysics fn(worldId int, dt float) -> PhysicsResult = {};
 
-const async stepWorld fn (worldId int, dt float) -> PhysicsResult = {
+const async stepWorld fn(worldId int, dt float) -> PhysicsResult = {
     let d Deferred<PhysicsResult> = host_async(computePhysics(worldId, dt));
     return await d;
 };
@@ -4971,10 +4989,10 @@ The concurrency restrictions, in one place:
 | 6   | A live `Deferred<T>` must be consumed on every path out of its scope.                                                  |
 | 7   | A `Deferred<T>` may not be stored in a struct field or array element, or captured by a closure.                        |
 | 8   | A `Deferred<T>` may not be awaited twice on the same path.                                                             |
-| 9   | `cancel(d)` does not consume `d` (under the current design).                                                           |
-| 10  | `await` on a cancelled deferred is a runtime panic.                                                                    |
+| 9   | `cancel(d)` consumes `d` — one of the two ways to consume a `Deferred<T>`.                                             |
+| 10  | `await` after `cancel`, or `cancel` after `await`, on the same path, is a compile error.                               |
 
-Rule 9 is the one flagged in [The cancel-and-discard problem](#the-cancel-and-discard-problem). If Fix A is adopted, rule 9 becomes "`cancel(d)` consumes `d`" and rule 10 becomes "`await` on a cancelled deferred is a compile error."
+Rules 9 and 10 reflect Fix A ([Cancellation](#cancellation)): `cancel` and `await` are alternative, mutually exclusive ways to consume the same linear value.
 
 ---
 
@@ -5018,8 +5036,8 @@ A user file imports a core module by name:
 import core.io as io
 import core.math as math
 
-@[export] const main (args [*]string) -> int = {
-    io::println("sqrt(2) = " ++ toStr(math::sqrt(2.0)));
+@[export] const main fn(args [*]string) -> int = {
+    println("sqrt(2) = " ++ toStr(math::sqrt(2.0)));
     return 0;
 };
 ```
@@ -5073,20 +5091,20 @@ TYPE uint64 = ulong
 Each primitive type has the operators its semantics support. For `int`:
 
 ```lucid
-DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-DEF BINARY_OP '-' (a int, b int) -> int = #native(sub_i32);
-DEF BINARY_OP '*' (a int, b int) -> int = #native(mul_i32);
-DEF BINARY_OP '/' (a int, b int) -> int = #native(div_i32);
-DEF BINARY_OP '%' (a int, b int) -> int = #native(rem_i32);
-DEF BINARY_OP '==' (a int, b int) -> bool = #native(eq_i32);
-DEF BINARY_OP '!=' (a int, b int) -> bool = #native(ne_i32);
-DEF BINARY_OP '<' (a int, b int) -> bool = #native(lt_i32);
-DEF BINARY_OP '<=' (a int, b int) -> bool = #native(le_i32);
-DEF BINARY_OP '>' (a int, b int) -> bool = #native(gt_i32);
-DEF BINARY_OP '>=' (a int, b int) -> bool = #native(ge_i32);
+DEF BINARY_OP '+'  fn(a int, b int) -> int = #native(add_i32);
+DEF BINARY_OP '-'  fn(a int, b int) -> int = #native(sub_i32);
+DEF BINARY_OP '*'  fn(a int, b int) -> int = #native(mul_i32);
+DEF BINARY_OP '/'  fn(a int, b int) -> int = #native(div_i32);
+DEF BINARY_OP '%'  fn(a int, b int) -> int = #native(rem_i32);
+DEF BINARY_OP '==' fn(a int, b int) -> bool = #native(eq_i32);
+DEF BINARY_OP '!=' fn(a int, b int) -> bool = #native(ne_i32);
+DEF BINARY_OP '<'  fn(a int, b int) -> bool = #native(lt_i32);
+DEF BINARY_OP '<=' fn(a int, b int) -> bool = #native(le_i32);
+DEF BINARY_OP '>'  fn(a int, b int) -> bool = #native(gt_i32);
+DEF BINARY_OP '>=' fn(a int, b int) -> bool = #native(ge_i32);
 
-DEF UNARY_OP '-' (v int) -> int = #native(neg_i32);
-DEF UNARY_OP '~' (v int) -> int = #native(bitnot_i32);
+DEF UNARY_OP '-' fn(v int) -> int = #native(neg_i32);
+DEF UNARY_OP '~' fn(v int) -> int = #native(bitnot_i32);
 ```
 
 Similar sets exist for `byte`, `short`, `long`, `ubyte`, `ushort`, `uint`, `ulong`, `float`, `double`, and `bool`.
@@ -5096,33 +5114,33 @@ Similar sets exist for `byte`, `short`, `long`, `ubyte`, `ushort`, `uint`, `ulon
 `bool`:
 
 ```lucid
-DEF BINARY_OP '==' (a bool, b bool) -> bool = #native(eq_bool);
-DEF BINARY_OP '!=' (a bool, b bool) -> bool = #native(ne_bool);
-DEF BINARY_OP 'and' (a bool, b bool) -> bool = #native(and_bool);
-DEF BINARY_OP 'or'  (a bool, b bool) -> bool = #native(or_bool);
-DEF UNARY_OP  'not' (v bool) -> bool = #native(not_bool);
+DEF BINARY_OP '=='  fn(a bool, b bool) -> bool = #native(eq_bool);
+DEF BINARY_OP '!='  fn(a bool, b bool) -> bool = #native(ne_bool);
+DEF BINARY_OP 'and' fn(a bool, b bool) -> bool = #native(and_bool);
+DEF BINARY_OP 'or'  fn(a bool, b bool) -> bool = #native(or_bool);
+DEF UNARY_OP  'not' fn(v bool) -> bool = #native(not_bool);
 ```
 
 `string`:
 
 ```lucid
-DEF BINARY_OP '==' (a string, b string) -> bool = #builtin(str_eq);
-DEF BINARY_OP '!=' (a string, b string) -> bool = { return not (a == b); };
-DEF BINARY_OP '<' (a string, b string) -> bool = #builtin(str_lt);
-DEF BINARY_OP '<=' (a string, b string) -> bool = { return a < b or a == b; };
-DEF BINARY_OP '>' (a string, b string) -> bool = { return b < a; };
-DEF BINARY_OP '>=' (a string, b string) -> bool = { return b <= a; };
+DEF BINARY_OP '==' fn(a string, b string) -> bool = #builtin(str_eq);
+DEF BINARY_OP '!=' fn(a string, b string) -> bool = { return not (a == b); };
+DEF BINARY_OP '<'  fn(a string, b string) -> bool = #builtin(str_lt);
+DEF BINARY_OP '<=' fn(a string, b string) -> bool = { return a < b or a == b; };
+DEF BINARY_OP '>'  fn(a string, b string) -> bool = { return b < a; };
+DEF BINARY_OP '>=' fn(a string, b string) -> bool = { return b <= a; };
 ```
 
 `char`:
 
 ```lucid
-DEF BINARY_OP '==' (a char, b char) -> bool = #native(eq_char);
-DEF BINARY_OP '!=' (a char, b char) -> bool = #native(ne_char);
-DEF BINARY_OP '<' (a char, b char) -> bool = #native(lt_char);
-DEF BINARY_OP '<=' (a char, b char) -> bool = #native(le_char);
-DEF BINARY_OP '>' (a char, b char) -> bool = #native(gt_char);
-DEF BINARY_OP '>=' (a char, b char) -> bool = #native(ge_char);
+DEF BINARY_OP '==' fn(a char, b char) -> bool = #native(eq_char);
+DEF BINARY_OP '!=' fn(a char, b char) -> bool = #native(ne_char);
+DEF BINARY_OP '<'  fn(a char, b char) -> bool = #native(lt_char);
+DEF BINARY_OP '<=' fn(a char, b char) -> bool = #native(le_char);
+DEF BINARY_OP '>'  fn(a char, b char) -> bool = #native(gt_char);
+DEF BINARY_OP '>=' fn(a char, b char) -> bool = #native(ge_char);
 ```
 
 ### Derived operators
@@ -5130,10 +5148,10 @@ DEF BINARY_OP '>=' (a char, b char) -> bool = #native(ge_char);
 The remaining comparison operators are derived generically:
 
 ```lucid
-DEF BINARY_OP '!=' <T : Eq>  (a T, b T) -> bool = { return not (a == b); };
-DEF BINARY_OP '<=' <T : Ord> (a T, b T) -> bool = { return a < b or a == b; };
-DEF BINARY_OP '>'  <T : Ord> (a T, b T) -> bool = { return b < a; };
-DEF BINARY_OP '>=' <T : Ord> (a T, b T) -> bool = { return b <= a; };
+DEF BINARY_OP '!=' <T : Eq> fn(a T, b T) -> bool = { return not (a == b); };
+DEF BINARY_OP '<=' <T : Ord> fn(a T, b T) -> bool = { return a < b or a == b; };
+DEF BINARY_OP '>'  <T : Ord> fn(a T, b T) -> bool = { return b < a; };
+DEF BINARY_OP '>=' <T : Ord> fn(a T, b T) -> bool = { return b <= a; };
 ```
 
 Concrete `DEF`s for these operators on specific types take precedence over the generics.
@@ -5148,11 +5166,11 @@ The `core` module declares the standard traits.
 
 ```lucid
 trait Eq {
-    REQUIRE BINARY_OP '==' (self Self, rhs Self) -> bool;
+    REQUIRE BINARY_OP '==' fn(self Self, rhs Self) -> bool;
 }
 
 trait Ord : Eq {
-    REQUIRE BINARY_OP '<' (self Self, rhs Self) -> bool;
+    REQUIRE BINARY_OP '<' fn(self Self, rhs Self) -> bool;
 }
 ```
 
@@ -5160,27 +5178,27 @@ trait Ord : Eq {
 
 ```lucid
 trait Add {
-    REQUIRE BINARY_OP '+' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '+' fn(self Self, rhs Self) -> Self;
 }
 
 trait Sub {
-    REQUIRE BINARY_OP '-' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '-' fn(self Self, rhs Self) -> Self;
 }
 
 trait Mul {
-    REQUIRE BINARY_OP '*' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '*' fn(self Self, rhs Self) -> Self;
 }
 
 trait Div {
-    REQUIRE BINARY_OP '/' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '/' fn(self Self, rhs Self) -> Self;
 }
 
 trait Rem {
-    REQUIRE BINARY_OP '%' (self Self, rhs Self) -> Self;
+    REQUIRE BINARY_OP '%' fn(self Self, rhs Self) -> Self;
 }
 
 trait Neg {
-    REQUIRE UNARY_OP '-' (self Self) -> Self;
+    REQUIRE UNARY_OP '-' fn(self Self) -> Self;
 }
 
 trait Numeric : Add, Sub, Mul, Div, Neg {}
@@ -5191,7 +5209,7 @@ trait Integral : Numeric, Rem, Eq, Ord {}
 
 ```lucid
 trait Stringable {
-    REQUIRE CALL 'toStr' (self Self) -> string;
+    REQUIRE CALL 'toStr' fn(self Self) -> string;
 }
 ```
 
@@ -5227,23 +5245,23 @@ The core module satisfies the standard traits for the primitive types:
 
 ```lucid
 satisfy Eq for int {
-    DEF BINARY_OP '==' (a int, b int) -> bool = #native(eq_i32);
+    DEF BINARY_OP '==' fn(a int, b int) -> bool = #native(eq_i32);
 }
 
 satisfy Ord for int {
-    DEF BINARY_OP '<' (a int, b int) -> bool = #native(lt_i32);
+    DEF BINARY_OP '<' fn(a int, b int) -> bool = #native(lt_i32);
 }
 
 satisfy Numeric for int {
-    DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);
-    DEF BINARY_OP '-' (a int, b int) -> int = #native(sub_i32);
-    DEF BINARY_OP '*' (a int, b int) -> int = #native(mul_i32);
-    DEF BINARY_OP '/' (a int, b int) -> int = #native(div_i32);
-    DEF UNARY_OP  '-' (v int) -> int = #native(neg_i32);
+    DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);
+    DEF BINARY_OP '-' fn(a int, b int) -> int = #native(sub_i32);
+    DEF BINARY_OP '*' fn(a int, b int) -> int = #native(mul_i32);
+    DEF BINARY_OP '/' fn(a int, b int) -> int = #native(div_i32);
+    DEF UNARY_OP  '-' fn(v int) -> int = #native(neg_i32);
 }
 
 satisfy Integral for int {
-    DEF BINARY_OP '%' (a int, b int) -> int = #native(rem_i32);
+    DEF BINARY_OP '%' fn(a int, b int) -> int = #native(rem_i32);
 }
 ```
 
@@ -5313,21 +5331,21 @@ The `toStr` `DEF` family provides stringification for every type. It is declared
 ### Primitive `toStr`
 
 ```lucid
-DEF CALL 'toStr' (v int)    -> string = #builtin(int_to_str);
-DEF CALL 'toStr' (v uint)   -> string = #builtin(uint_to_str);
-DEF CALL 'toStr' (v long)   -> string = #builtin(int_to_str);    -- same handler, wider type
-DEF CALL 'toStr' (v float)  -> string = #builtin(float_to_str);
-DEF CALL 'toStr' (v double) -> string = #builtin(float_to_str);
-DEF CALL 'toStr' (v bool)   -> string = #builtin(bool_to_str);
-DEF CALL 'toStr' (v char)   -> string = #builtin(char_to_str);
-DEF CALL 'toStr' (v string) -> string = { return v; };
+DEF CALL 'toStr' fn(v int)    -> string = #builtin(int_to_str);
+DEF CALL 'toStr' fn(v uint)   -> string = #builtin(uint_to_str);
+DEF CALL 'toStr' fn(v long)   -> string = #builtin(int_to_str);    -- same handler, wider type
+DEF CALL 'toStr' fn(v float)  -> string = #builtin(float_to_str);
+DEF CALL 'toStr' fn(v double) -> string = #builtin(float_to_str);
+DEF CALL 'toStr' fn(v bool)   -> string = #builtin(bool_to_str);
+DEF CALL 'toStr' fn(v char)   -> string = #builtin(char_to_str);
+DEF CALL 'toStr' fn(v string) -> string = { return v; };
 ```
 
 ### Struct and enum `toStr`
 
 ```lucid
-DEF CALL 'toStr' <T : StructType> (v T) -> string = #builtin(struct_to_str);
-DEF CALL 'toStr' <T : EnumType>   (v T) -> string = #builtin(enum_to_str);
+DEF CALL 'toStr' <T : StructType> fn(v T) -> string = #builtin(struct_to_str);
+DEF CALL 'toStr' <T : EnumType> fn(v T) -> string = #builtin(enum_to_str);
 ```
 
 The struct walker iterates the fields and formats each as `fieldName: value`. The enum walker formats the variant as `EnumName.VariantName` for integer enums, or `EnumName.Variant` for payload enums.
@@ -5338,7 +5356,7 @@ A user type provides its own `toStr` by declaring a concrete `DEF CALL 'toStr'` 
 
 ```lucid
 satisfy Stringable for Vec2 {
-    DEF CALL 'toStr' (v Vec2) -> string = {
+    DEF CALL 'toStr' fn(v Vec2) -> string = {
         return "(" ++ toStr(v.x) ++ ", " ++ toStr(v.y) ++ ")";
     };
 }
@@ -5359,7 +5377,7 @@ When `toStr(v)` is called, the compiler resolves through the `CALL` table with o
 ### `toStr` for container types
 
 ```lucid
-DEF CALL 'toStr' <T> (v [*]T) -> string = {
+DEF CALL 'toStr' <T> fn(v [*]T) -> string = {
     let s string = "[";
     for i uint, x T in v {
         if i > 0 { s = s ++ ", "; }
@@ -5368,12 +5386,12 @@ DEF CALL 'toStr' <T> (v [*]T) -> string = {
     return s ++ "]";
 };
 
-DEF CALL 'toStr' <T> (v [_]T) -> string = {
+DEF CALL 'toStr' <T> fn(v [_]T) -> string = {
     -- same as [*]T
 };
 
-DEF CALL 'toStr' <T> (d Deferred<T>) -> string = { return "<deferred>"; };
-DEF CALL 'toStr' <T> (w Weak<T>) -> string = { return "<weak>"; };
+DEF CALL 'toStr' <T> fn(d Deferred<T>) -> string = { return "<deferred>"; };
+DEF CALL 'toStr' <T> fn(w Weak<T>) -> string = { return "<weak>"; };
 ```
 
 These use the recursive `toStr` dispatch; `toStr(x)` inside the loop resolves on `x`'s type.
@@ -5387,8 +5405,8 @@ The `core.io` module declares the output functions:
 ```lucid
 FN write (s string) = #host(host_write);
 
-const print<T>   (v T) = { write(toStr(v)); };
-const println<T> (v T) = { write(toStr(v)); write("\n"); };
+const print<T> fn(v T) = { write(toStr(v)); };
+const println<T> fn(v T) = { write(toStr(v)); write("\n"); };
 ```
 
 `print` and `println` are plain generic functions. They call `toStr` on their argument, which dispatches through the `CALL` table.
@@ -5425,8 +5443,8 @@ println(" done");
 The `core.io` module may also provide:
 
 ```lucid
-const printErr<T>   (v T) = { writeErr(toStr(v)); };
-const printlnErr<T> (v T) = { writeErr(toStr(v)); writeErr("\n"); };
+const printErr<T> fn(v T)   = { writeErr(toStr(v)); };
+const printlnErr<T> fn(v T) = { writeErr(toStr(v)); writeErr("\n"); };
 ```
 
 These write to the error channel. They are used by `warn` and by the panic handler.
@@ -5485,15 +5503,15 @@ The `core.map` module declares `Map<K, V>`.
 ```lucid
 TYPE Map<K, V> = #host(LucidMap)
 
-FN map_new<K, V>    () -> Map<K, V>          = #builtin(map_new);
-FN map_len<K, V>    (m &Map<K, V>)           -> uint = #builtin(map_len);
-FN map_has<K, V>    (m &Map<K, V>, k K)      -> bool = #builtin(map_has);
-FN map_remove<K, V> (m &Map<K, V>, k K)      -> bool = #builtin(map_remove);
-FN map_keys<K, V>   (m &Map<K, V>)           -> [*]K = #builtin(map_keys);
-FN map_values<K, V> (m &Map<K, V>)           -> [*]V = #builtin(map_values);
+FN map_new<K, V>    fn() -> Map<K, V>               = #builtin(map_new);
+FN map_len<K, V>    fn(m &Map<K, V>)        -> uint = #builtin(map_len);
+FN map_has<K, V>    fn(m &Map<K, V>, k K)   -> bool = #builtin(map_has);
+FN map_remove<K, V> fn(m &Map<K, V>, k K)   -> bool = #builtin(map_remove);
+FN map_keys<K, V>   fn(m &Map<K, V>)        -> [*]K = #builtin(map_keys);
+FN map_values<K, V> fn(m &Map<K, V>)        -> [*]V = #builtin(map_values);
 
 DEF INDEX_GET (m &Map<K, V>, k K) -> V? = #builtin(map_get);
-DEF INDEX_SET (m &Map<K, V>, k K, v V) = #builtin(map_set);
+DEF INDEX_SET (m &Map<K, V>, k K, v V)  = #builtin(map_set);
 ```
 
 ### Construction
@@ -5567,7 +5585,7 @@ struct Entry<K, V> {
     value V;
 }
 
-const map_of<K, V> fn (entries [_]Entry<K, V>) -> Map<K, V> = {
+const map_of<K, V> fn(entries [_]Entry<K, V>) -> Map<K, V> = {
     let m Map<K, V> = map_new<K, V>();
     for _, e Entry<K, V> in entries {
         m[e.key] = e.value;
@@ -5594,13 +5612,13 @@ The helper is a core-script function, not a grammar construct. It is provided be
 The `core.array` module declares the array operations. The arrays themselves (`[*]T`, `[_]T`, `[N]T`) are boot-level; the operations are free functions.
 
 ```lucid
-FN array_len<T>    (a [_]T)               -> uint = #builtin(array_len);
-FN array_push<T>   (a &[*]T, v T)         = #builtin(array_push);
-FN array_pop<T>    (a &[*]T)              -> T?   = #builtin(array_pop);
-FN array_insert<T> (a &[*]T, i uint, v T) = #builtin(array_insert);
-FN array_remove<T> (a &[*]T, i uint)      = #builtin(array_remove);
-FN array_resize<T> (a &[*]T, n uint)      = #builtin(array_resize);
-FN array_clear<T>  (a &[*]T)              = #builtin(array_clear);
+FN array_len<T>    fn(a [_]T) -> uint       = #builtin(array_len);
+FN array_push<T>   fn(a &[*]T, v T)         = #builtin(array_push);
+FN array_pop<T>    fn(a &[*]T) -> T?        = #builtin(array_pop);
+FN array_insert<T> fn(a &[*]T, i uint, v T) = #builtin(array_insert);
+FN array_remove<T> fn(a &[*]T, i uint)      = #builtin(array_remove);
+FN array_resize<T> fn(a &[*]T, n uint)      = #builtin(array_resize);
+FN array_clear<T>  fn(a &[*]T)              = #builtin(array_clear);
 ```
 
 ### Basic operations
@@ -5630,7 +5648,7 @@ if let v int = array_pop(xs) {
 ### Functional helpers
 
 ```lucid
-const array_map<T, U> fn (xs [_]T, f cls (T) -> U) -> [*]U = {
+const array_map<T, U> fn(xs [_]T, f fn(T) -> U) -> [*]U = {
     let result [*]U = [];
     for _, x T in xs {
         array_push(result, f(x));
@@ -5638,7 +5656,7 @@ const array_map<T, U> fn (xs [_]T, f cls (T) -> U) -> [*]U = {
     return result;
 };
 
-const array_filter<T> fn (xs [_]T, pred cls (T) -> bool) -> [*]T = {
+const array_filter<T> fn(xs [_]T, pred fn(T) -> bool) -> [*]T = {
     let result [*]T = [];
     for _, x T in xs {
         if pred(x) {
@@ -5648,7 +5666,7 @@ const array_filter<T> fn (xs [_]T, pred cls (T) -> bool) -> [*]T = {
     return result;
 };
 
-const array_reduce<T, U> fn (xs [_]T, seed U, f cls (U, T) -> U) -> U = {
+const array_reduce<T, U> fn(xs [_]T, seed U, f fn(U, T) -> U) -> U = {
     let acc U = seed;
     for _, x T in xs {
         acc = f(acc, x);
@@ -5656,21 +5674,21 @@ const array_reduce<T, U> fn (xs [_]T, seed U, f cls (U, T) -> U) -> U = {
     return acc;
 };
 
-const array_find<T> fn (xs [_]T, pred cls (T) -> bool) -> T? = {
+const array_find<T> fn(xs [_]T, pred fn(T) -> bool) -> T? = {
     for _, x T in xs {
         if pred(x) { return x; }
     }
     return nil;
 };
 
-const array_any<T> fn (xs [_]T, pred cls (T) -> bool) -> bool = {
+const array_any<T> fn(xs [_]T, pred fn(T) -> bool) -> bool = {
     for _, x T in xs {
         if pred(x) { return true; }
     }
     return false;
 };
 
-const array_all<T> fn (xs [_]T, pred cls (T) -> bool) -> bool = {
+const array_all<T> fn(xs [_]T, pred fn(T) -> bool) -> bool = {
     for _, x T in xs {
         if not pred(x) { return false; }
     }
@@ -5681,12 +5699,12 @@ const array_all<T> fn (xs [_]T, pred cls (T) -> bool) -> bool = {
 ### `array_sort`
 
 ```lucid
-const array_sort<T> fn (xs [*]T, cmp fn (T, T) -> int) = {
+const array_sort<T> fn(xs [*]T, cmp fn(T, T) -> int) = {
     -- in-place sort, calling cmp
 };
 ```
 
-`array_sort` takes a comparator of type `fn (T, T) -> int`. The comparator is `fn` (not `cls`) because sort is a hot path and the comparator should not capture.
+`array_sort` takes a comparator of type `fn(T, T) -> int`. The comparator is `fn` (not `cls`) because sort is a hot path and the comparator should not capture.
 
 The comparator returns a negative value if the first argument sorts before the second, zero if equal, and a positive value otherwise.
 
@@ -5719,13 +5737,13 @@ FN strConcat (a string, b string) -> string = #builtin(str_concat);
 FN strSlice  (s string, from uint, to uint) -> string = #builtin(str_slice);
 FN strFromPtr (p &uint8, len uint) -> string = #builtin(str_from_ptr);
 
-const split fn (s string, sep string) -> [*]string = { ... };
-const trim  fn (s string) -> string = { ... };
-const find  fn (s string, needle string) -> uint? = { ... };
-const contains fn (s string, needle string) -> bool = { ... };
-const startsWith fn (s string, prefix string) -> bool = { ... };
-const endsWith   fn (s string, suffix string) -> bool = { ... };
-const replace    fn (s string, from string, to string) -> string = { ... };
+const split fn(s string, sep string) -> [*]string = { ... };
+const trim  fn(s string) -> string = { ... };
+const find  fn(s string, needle string) -> uint? = { ... };
+const contains fn(s string, needle string) -> bool = { ... };
+const startsWith fn(s string, prefix string) -> bool = { ... };
+const endsWith   fn(s string, suffix string) -> bool = { ... };
+const replace    fn(s string, from string, to string) -> string = { ... };
 ```
 
 ### `split`
@@ -5763,11 +5781,11 @@ let s string = "hello, " ++ "world";
 The `core.string` module (or `core`) declares the conversion functions:
 
 ```lucid
-const stringFromInt    fn (n int) -> string = { return toStr(n); };
-const stringFromFloat  fn (f float) -> string = { return toStr(f); };
-const stringFromBool   fn (b bool) -> string = { return toStr(b); };
-const intFromString    fn (s string) -> int! = { ... };
-const floatFromString  fn (s string) -> float! = { ... };
+const stringFromInt    fn(n int) -> string = { return toStr(n); };
+const stringFromFloat  fn(f float) -> string = { return toStr(f); };
+const stringFromBool   fn(b bool) -> string = { return toStr(b); };
+const intFromString    fn(s string) -> int! = { ... };
+const floatFromString  fn(s string) -> float! = { ... };
 ```
 
 `intFromString` and `floatFromString` return a fallible type: parsing can fail.
@@ -5779,18 +5797,18 @@ const floatFromString  fn (s string) -> float! = { ... };
 The `core.math` module declares arithmetic utilities.
 
 ```lucid
-FN sqrt (x float) -> float = #native(sqrt_f32);
-FN pow  (base float, exp float) -> float = #native(pow_f32);
-FN sin  (x float) -> float = #native(sin_f32);
-FN cos  (x float) -> float = #native(cos_f32);
-FN tan  (x float) -> float = #native(tan_f32);
-FN floor (x float) -> float = #native(floor_f32);
-FN ceil  (x float) -> float = #native(ceil_f32);
-FN round (x float) -> float = #native(round_f32);
-FN abs   (x float) -> float = #native(abs_f32);
+FN sqrt  fn(x float) -> float = #native(sqrt_f32);
+FN pow   fn(base float, exp float) -> float = #native(pow_f32);
+FN sin   fn(x float) -> float = #native(sin_f32);
+FN cos   fn(x float) -> float = #native(cos_f32);
+FN tan   fn(x float) -> float = #native(tan_f32);
+FN floor fn(x float) -> float = #native(floor_f32);
+FN ceil  fn(x float) -> float = #native(ceil_f32);
+FN round fn(x float) -> float = #native(round_f32);
+FN abs   fn(x float) -> float = #native(abs_f32);
 
-const min<T : Ord> fn (a T, b T) -> T = { return if a < b ?? a else b; };
-const max<T : Ord> fn (a T, b T) -> T = { return if a > b ?? a else b; };
+const min<T : Ord> fn(a T, b T) -> T = { return if a < b ?? a else b; };
+const max<T : Ord> fn(a T, b T) -> T = { return if a > b ?? a else b; };
 
 const PI  float = 3.141592653589793;
 const TAU float = 6.283185307179586;
@@ -5817,6 +5835,44 @@ let s float = math::sin(angle);
 
 ---
 
+## SIMD Types and Operations
+
+`Simd<T, N>` is a fixed-width vector type, declared in the core script like any other generic host type:
+
+```lucid
+TYPE Simd<T, N> = #builtin(simd_type)
+
+TYPE Float2 = Simd<float, 2>
+TYPE Float4 = Simd<float, 4>
+TYPE Float8 = Simd<float, 8>
+TYPE Int2   = Simd<int, 2>
+TYPE Int4   = Simd<int, 4>
+TYPE Int8   = Simd<int, 8>
+```
+
+`T` must be a numeric primitive; `N` must be a compile-time integer constant greater than zero. The `simd_type` `#builtin` handler validates both at each instantiation and lowers the type directly to a native vector type of width `N`. The named aliases (`Float4`, `Int4`, ...) are the user-facing interface for the common widths; the generic `Simd<T, N>` form remains available for widths the named aliases don't cover.
+
+### Operations
+
+The lane-wise operations are ordinary `FN`s, one family per named alias — shown here for `Float4`, with the same shape repeating for `Float2`/`Float8`/`Int2`/`Int4`/`Int8`:
+
+```lucid
+FN float4_splat   fn(v float) -> Float4 = #builtin(simd_splat)
+FN float4_add     fn(a Float4, b Float4) -> Float4 = #builtin(simd_add)
+FN float4_sub     fn(a Float4, b Float4) -> Float4 = #builtin(simd_sub)
+FN float4_mul     fn(a Float4, b Float4) -> Float4 = #builtin(simd_mul)
+FN float4_div     fn(a Float4, b Float4) -> Float4 = #builtin(simd_div)
+FN float4_load    fn(p &float) -> Float4 = #builtin(simd_load)
+FN float4_store   fn(p &float, v Float4) = #builtin(simd_store)
+FN float4_extract fn(v Float4, i uint) -> float = #builtin(simd_extract)
+```
+
+`float4_splat` broadcasts a scalar to every lane. `float4_add`/`sub`/`mul`/`div` are lane-wise, not horizontal — `float4_add(a, b)` produces a `Float4` whose `i`-th lane is `a`'s `i`-th lane plus `b`'s. `float4_load`/`float4_store` move a full vector to and from a contiguous, correctly-sized memory region; `float4_extract` reads a single lane out.
+
+These are `#builtin`, not `#native` (see [The `#builtin` Registry](#the-builtin-registry)): the code emitted for `simd_add<Float4>` differs from `simd_add<Int4>`, since the element type and lane count both affect the emitted instruction, so the compiler generates the operation per instantiation rather than binding to one fixed VM opcode.
+
+---
+
 ## `Weak<T>` and Cycle Handling
 
 The `core` module declares `Weak<T>`:
@@ -5824,10 +5880,10 @@ The `core` module declares `Weak<T>`:
 ```lucid
 TYPE Weak<T> = #host(LucidWeak)
 
-FN weak<T>    (v &T)      -> Weak<T> = #builtin(weak);
-FN upgrade<T> (w Weak<T>) -> &T?     = #builtin(upgrade);
-FN strongCount<T> (v &T) -> uint = #builtin(strong_count);
-FN weakCount<T>   (w Weak<T>) -> uint = #builtin(weak_count);
+FN weak<T>          fn(v &T) -> Weak<T>     = #builtin(weak);
+FN upgrade<T>       fn(w Weak<T>) -> &T?    = #builtin(upgrade);
+FN strongCount<T>   fn(v &T) -> uint        = #builtin(strong_count);
+FN weakCount<T>     fn(w Weak<T>) -> uint   = #builtin(weak_count);
 ```
 
 ### Using `Weak<T>` to break cycles
@@ -5880,19 +5936,21 @@ The `core` module declares `Deferred<T>` and the concurrency helpers:
 ```lucid
 TYPE Deferred<T> = #host(LucidDeferred)
 
-FN isReady<T> (d &Deferred<T>) -> bool = #builtin(deferred_ready);
-FN cancel<T>  (d &Deferred<T>) = #builtin(cancel_deferred);
+FN isReady<T> fn(d &Deferred<T>) -> bool = #builtin(deferred_ready);
+FN cancel<T> fn(d Deferred<T>) = #builtin(cancel_deferred);
 
-const async sleep fn (seconds float) = #host(host_sleep);
-FN host_async<T> (work #hostFn) -> Deferred<T> = #host(host_run_async);
+const async sleep fn(seconds float) = #host(host_sleep);
+FN host_async<T> fn(work #hostFn) -> Deferred<T> = #host(host_run_async);
 ```
+
+`cancel(d)` consumes `d`. See [Cancellation](#cancellation).
 
 ### `sleep`
 
 `sleep` suspends the current fiber for the given number of seconds:
 
 ```lucid
-const async tick fn () = {
+const async tick fn() = {
     while true {
         doWork();
         await sleep(1.0);
@@ -5908,9 +5966,9 @@ The fiber suspends and is resumed by the scheduler when the deadline passes.
 
 ```lucid
 @[host_only]
-const computePhysics fn (worldId int, dt float) -> PhysicsResult = {};
+const computePhysics fn(worldId int, dt float) -> PhysicsResult = {};
 
-const async step fn (worldId int, dt float) -> PhysicsResult = {
+const async step fn(worldId int, dt float) -> PhysicsResult = {
     let d Deferred<PhysicsResult> = host_async(computePhysics(worldId, dt));
     return await d;
 };
@@ -5925,18 +5983,18 @@ The script never touches threads; it asks the engine to run the function and awa
 The `core.fn` module declares composition helpers.
 
 ```lucid
-const identity<T> fn (v T) -> T = { return v; };
+const identity<T> fn(v T) -> T = { return v; };
 
-const constFn<T, U> fn (v T) -> fn (U) -> T = {
-    return (x U) -> T { return v; };
+const constFn<T, U> fn(v T) -> fn(U) -> T = {
+    return fn(x U) -> T { return v; };
 };
 
-const compose2<A, B, C> fn (f cls (A) -> B, g cls (B) -> C) -> cls (A) -> C = {
-    return (x A) -> C { return g(f(x)); };
+const compose2<A, B, C> fn(f fn(A) -> B, g fn(B) -> C) -> fn(A) -> C = {
+    return fn(x A) -> C { return g(f(x)); };
 };
 
-const compose3<A, B, C, D> fn (f cls (A) -> B, g cls (B) -> C, h cls (C) -> D) -> cls (A) -> D = {
-    return (x A) -> D { return h(g(f(x))); };
+const compose3<A, B, C, D> fn(f fn(A) -> B, g fn(B) -> C, h fn(C) -> D) -> fn(A) -> D = {
+    return fn(x A) -> D { return h(g(f(x))); };
 };
 ```
 
@@ -5945,7 +6003,7 @@ const compose3<A, B, C, D> fn (f cls (A) -> B, g cls (B) -> C, h cls (C) -> D) -
 ```lucid
 import core.fn as fn
 
-const process fn (raw string) -> bool =
+const process fn(raw string) -> bool =
     fn::compose3(validate, transform, render);
 
 let result bool = process(input);
@@ -5963,10 +6021,10 @@ The `core.io` module declares console and file I/O.
 FN write    (s string) = #host(host_write);
 FN writeErr (s string) = #host(host_write_err);
 
-const print<T>    (v T) = { write(toStr(v)); };
-const println<T>  (v T) = { write(toStr(v)); write("\n"); };
-const printErr<T> (v T) = { writeErr(toStr(v)); };
-const printlnErr<T> (v T) = { writeErr(toStr(v)); writeErr("\n"); };
+const print<T> fn(v T)      = { write(toStr(v)); };
+const println<T> fn(v T)    = { write(toStr(v)); write("\n"); };
+const printErr<T> fn(v T)   = { writeErr(toStr(v)); };
+const printlnErr<T> fn(v T) = { writeErr(toStr(v)); writeErr("\n"); };
 
 FN readLine () -> string = #host(host_read_line);
 
@@ -5980,10 +6038,10 @@ FN fileExists (path string) -> bool = #host(host_file_exists);
 ```lucid
 import core.io as io
 
-io::println("hello");
-io::print("enter your name: ");
+println("hello");
+print("enter your name: ");
 let name string = io::readLine();
-io::println("hello, " ++ name);
+println("hello, " ++ name);
 ```
 
 ### File I/O
@@ -5996,59 +6054,56 @@ if contents == err {
     io::printlnErr("could not read config");
     return;
 }
-io::println(contents);
+println(contents);
 ```
 
 The file I/O is routed through the engine's VFS, so paths are resolved relative to the game's content root, not the OS filesystem.
 
 ---
 
-## The Foreign Function Interface
+## `scope_exit`
 
-Lucid interoperates with C and C++ through `@[foreign("C")]` declarations. The ABI is C; C++ is reached through `extern "C"` wrappers.
+`scope_exit<T>(callback, value)` registers `callback(value)` to run when the enclosing block exits. It runs on every exit edge — fall-through, `return`, `break`, `continue`. Multiple registrations run LIFO (last registered, first run), the same order a stack of destructors would run in.
 
-### The `@[foreign("C")]` attribute
-
-A function declared `@[foreign("C")]` is implemented in C:
+The core script declares:
 
 ```lucid
-@[foreign("C")]
+FN scope_exit<T> fn(f fn(T) -> unit, v T) = #builtin(scope_exit);
+```
+
+The callback parameter is `cls`-shaped, so both a plain `fn` and a capturing `cls` are accepted as `f` — the [`fn → cls` coercion](#the-fn-cls-coercion) handles the conversion automatically. Passing more than one value to the callback is done by wrapping them in a struct and passing that struct as `v`.
+
+`scope_exit(...)` must be a direct statement, not nested inside an expression.
+
+```lucid
+const conn Connection = openConnection();
+scope_exit(closeConnection, conn);
+
+const buf &uint8 = alloc<uint8>(4096);
+scope_exit((b &uint8) -> unit { free(b); }, buf);
+```
+
+Registrations run LIFO on the way out, so `buf`'s callback runs before `conn`'s: cleanup unwinds in the reverse of the order resources were acquired, the same discipline `defer`/RAII gives in other languages.
+
+---
+
+## The Foreign Function Interface
+
+Lucid does not compile, link, or parse C or C++ itself. Talking to C/C++ is the embedding engine's problem, solved with whatever build system the engine already uses — exactly like any other engine-side code. Lucid's only interface to it is `#host(name)` ([The Value Frame — `FN`, `const`, `let`](#the-value-frame-fn-const-let)): a declaration naming a registry entry the engine populates with a call like `registerFn(name, &fn, signature)` before any script runs. There is no separate linking step, no ABI-marking attribute, and no build directive naming libraries or source files — an earlier draft of this language carried `@[foreign("C")]` and `@[link(...)]` for that, inherited from a systems-language design that compiled and linked its own binary. Neither applies to an embedded scripting language whose host process already exists before the first line of Lucid runs.
+
+### Declaring a host-bound function
+
+```lucid
 FN malloc (size uint64) -> &uint8? = #host(malloc);
 ```
 
-The attribute names the ABI. `"C"` is the only valid value; there is no `@[foreign("C++")]`.
-
-The declaration is an ordinary `FN` with an `#host` target. The attribute tells the compiler that the symbol's calling convention and type mapping follow C rules.
-
-### The `@[link(...)]` attribute
-
-A declaration may name the library or file it links against:
-
-```lucid
-@[foreign("C"), link("m")]
-FN sqrt (x float) -> float = #host(sqrt);
-
-@[foreign("C"), link("vendor/lib/simd.c")]
-FN simd_dot (a &float, b &float, n uint64) -> float = #host(simd_dot);
-```
-
-`@[link(...)]` accepts one or more strings. Each string is either:
-
-- A library name (`"m"`, `"opengl"`, `"pthread"`) — passed to the linker as `-l<name>`.
-- A source or object file path (`"vendor/lib/file.c"`, `"build/helper.o"`) — compiled and linked as part of the build.
-
-A declaration may have multiple link targets:
-
-```lucid
-@[foreign("C"), link("vendor/math/fast.c", "vendor/math/lut.c", "m")]
-FN fastSin (x float) -> float = #host(fastSin);
-```
+Whatever `malloc`'s original ABI or source language was, it is irrelevant by the time it reaches this declaration — the engine's own registration code has already reduced it to a function pointer plus a signature the registry stores. Lucid never inspects, asserts, or cares about an ABI; it only names the registry entry.
 
 ### Type mapping
 
-C types map to Lucid types as follows:
+The table below is guidance for choosing a Lucid signature that matches what the engine actually registered — Lucid does not read a C/C++ signature itself, so a mismatch between what the engine registered and what a `#host` declaration claims is a runtime error at the call boundary, not something the compiler can catch:
 
-| C type                | Lucid type                   |
+| C/C++ type            | Lucid type                   |
 | --------------------- | ---------------------------- |
 | `int`                 | `int32`                      |
 | `unsigned int`        | `uint32`                     |
@@ -6067,100 +6122,71 @@ A `char *` is not a Lucid `string`. It is a pointer to bytes; the conversion to 
 
 ### Nullability
 
-The Lucid declaration is the sole nullability contract. The compiler does not parse C headers:
+The Lucid declaration is the sole nullability contract for a `#host`-bound function. Lucid does not inspect the registered function to infer it:
 
 ```lucid
--- programmer asserts this never returns NULL
-@[foreign("C")]
-FN getGlobalState () -> &State = #host(getGlobalState);
+-- programmer asserts this never returns null
+FN getGlobalState fn() -> &State = #host(getGlobalState);
 
--- programmer knows this may return NULL
-@[foreign("C")]
-FN findUser (id int32) -> &User? = #host(findUser);
+-- programmer knows this may return null
+FN findUser fn(id int32) -> &User? = #host(findUser);
 ```
 
-An unannotated pointer return defaults to non-nullable (`&T`). Use `&T?` only when the C function may return `NULL`.
+An unannotated pointer return defaults to non-nullable (`&T`). Use `&T?` only when the underlying host function may return null.
 
 ### Forbidden return types
 
-A foreign function must not return a `&T` (a Lucid reference) directly. The rule from [References and `Weak<T>`](#references-and-weakt) applies: a Lucid reference is a managed pointer with a refcount; C's memory does not participate in Lucid's refcount table. Returning a `&T` from a foreign function would produce a reference with no managed backing.
+A `#host`-bound function must not return a `&T` (a Lucid reference) directly. The rule from [References and `Weak<T>`](#references-and-weakt) applies: a Lucid reference is a managed pointer with a refcount; memory the engine allocated outside Lucid's own allocator does not participate in Lucid's refcount table. Returning a `&T` straight from host memory would produce a reference with no managed backing.
 
 The valid return types are:
 
 - An owned value (a primitive, a struct, an enum).
-- A host-managed pointer (`&T` where the pointer is from a Lucid allocator, not C's).
+- A host-managed pointer (`&T` where the pointer is from a Lucid allocator, not the engine's own).
 
-For C's memory, use a pointer type and convert on the Lucid side:
+For memory the engine owns, use a plain pointer type and convert on the Lucid side:
 
 ```lucid
-@[foreign("C")]
-FN c_malloc (size uint64) -> &uint8 = #host(c_malloc);
+FN engine_alloc fn(size uint64) -> &uint8 = #host(engine_alloc);
 
--- the result is a Lucid-managed reference to C-allocated memory
--- the caller must pass it back to C for freeing
-@[foreign("C")]
-FN c_free (p &uint8) = #host(c_free);
+-- the result is a Lucid-managed reference to engine-allocated memory
+-- the caller must pass it back to the engine for freeing
+FN engine_free fn(p &uint8) = #host(engine_free);
 ```
 
 ### C++ interop
 
-C++ is not called directly. It is reached through an `extern "C"` wrapper:
+C++ is called directly, with no `extern "C"` wrapper to write — there is no ABI boundary for Lucid to cross, since Lucid never links against anything. The engine registers whatever function pointer it already has, from its own already-compiled code:
 
 ```cpp
-// kernel_wrapper.cpp
-#include "kernel.hpp"
-
-extern "C" {
-    Kernel* kernel_create(int config) {
-        return new Kernel(config);
-    }
-
-    void kernel_destroy(Kernel* self) {
-        delete self;
-    }
-
-    int kernel_run(Kernel* self, float* data, int len) {
-        return self->run(data, len);
-    }
-}
+// wherever the engine already builds and links its own code —
+// no wrapper file, no extern "C" block needed
+registerFn("kernel_create",  [](int config) { return new Kernel(config); });
+registerFn("kernel_destroy", [](Kernel* self) { delete self; });
+registerFn("kernel_run",     [](Kernel* self, float* data, int len) { return self->run(data, len); });
 ```
 
 ```lucid
-@[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-FN kernel_create (config int32) -> &uint8? = #host(kernel_create);
-
-@[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-FN kernel_destroy (self &uint8) = #host(kernel_destroy);
-
-@[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-FN kernel_run (self &uint8, data &float, len int32) -> int32 = #host(kernel_run);
+FN kernel_create  fn(config int32) -> &uint8? = #host(kernel_create);
+FN kernel_destroy fn(self &uint8)              = #host(kernel_destroy);
+FN kernel_run     fn(self &uint8, data &float, len int32) -> int32 = #host(kernel_run);
 ```
 
-The C++ object is an opaque `&uint8` on the Lucid side. Lucid has no knowledge of its layout, ownership, or lifetime.
+The C++ object is still an opaque `&uint8` on the Lucid side — Lucid has no knowledge of its layout, ownership, or lifetime — but nothing about reaching it required a wrapper file, an `extern "C"` block, or a build directive naming a library or source path. The engine's own build already compiles `Kernel`; registering it is one function call.
 
-### Exporting Lucid functions to C
+### Calling Lucid from the engine
 
-A Lucid function may be exported to C with `@[export, foreign("C")]`:
-
-```lucid
-@[export, foreign("C")]
-const add fn (a int32, b int32) -> int32 = {
-    return a + b;
-};
-```
-
-`@[export]` makes the symbol visible to the linker; `@[foreign("C")]` forces the C ABI on the boundary. Both attributes are required.
+The reverse direction — the engine invoking a Lucid function — is not a Lucid-language construct. It is the VM's embedding API: the engine calls the VM with a function name and arguments, the mirror image of `#host` naming a registry entry in the other direction. There is no export-with-ABI form for this; a Lucid function the engine wants to call only needs `@[export]` ([Attributes](#attributes)) to be visible outside its own module. The embedding API itself is a property of the VM, not of the language, and is out of scope for this grammar.
 
 ### Memory safety at the boundary
 
-Lucid's memory guarantees end at the foreign boundary. The caller is responsible for:
+Lucid's memory guarantees end at the `#host` boundary. The caller is responsible for:
 
-- Not passing a scope-arena address to C that outlives the call.
-- Not mixing allocators (`#alloc`-ed memory freed by C, or C-allocated memory freed by Lucid).
+- Not passing a scope-arena address to a host function that outlives the call.
+- Not mixing allocators (Lucid-managed memory freed on the host side, or host-allocated memory freed by Lucid).
 - Passing buffer sizes explicitly.
-- Not calling `free` on Lucid-managed memory.
+- Not calling a host `free` on Lucid-managed memory.
 
-There is no compiler check for these; the design treats C interop as an unsafe boundary that the user is responsible for.
+There is no compiler check for these; the design treats the `#host` boundary as unsafe by nature, the way any embedding boundary is — the engine and the script trust each other rather than being verified against each other.
 
 ---
 
@@ -6179,30 +6205,26 @@ attr_arg       ::= STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 An attribute list precedes the declaration it modifies. Multiple attributes may share a list:
 
 ```lucid
-@[export, foreign("C")]
-const add fn (a int32, b int32) -> int32 = { return a + b; };
+@[export, inline]
+const add fn(a int32, b int32) -> int32 = { return a + b; };
 ```
 
 ### The attribute set
 
-| Attribute              | Valid on               | Meaning                                |
-| ---------------------- | ---------------------- | -------------------------------------- |
-| `@[export]`            | top-level declarations | Visible outside the file               |
-| `@[foreign("C")]`      | function declarations  | Implemented in a foreign ABI           |
-| `@[link("name", ...)]` | declarations           | Link against native libraries or files |
-| `@[deprecated("msg")]` | any declaration        | Compiler warning at use sites          |
-| `@[inline]`            | function declarations  | Inlining hint                          |
-| `@[noinline]`          | function declarations  | Prevent inlining                       |
-| `@[opaque]`            | struct fields          | No Lucid-side access                   |
-| `@[host_only]`         | declarations           | Callable only from C++                 |
+| Attribute              | Valid on               | Meaning                       |
+| ---------------------- | ---------------------- | ----------------------------- |
+| `@[export]`            | top-level declarations | Visible outside the file      |
+| `@[deprecated("msg")]` | any declaration        | Compiler warning at use sites |
+| `@[inline]`            | function declarations  | Inlining hint                 |
+| `@[noinline]`          | function declarations  | Prevent inlining              |
+| `@[opaque]`            | struct fields          | No Lucid-side access          |
+| `@[host_only]`         | declarations           | Callable only from C++        |
+
+Two attributes from an earlier draft, `@[foreign("C")]` and `@[link(...)]`, are removed: C/C++ compilation and linking are the embedding engine's own build concern, not Lucid's, and `#host(...)` ([The Foreign Function Interface](#the-foreign-function-interface)) is the only boundary Lucid needs.
 
 ### Attribute semantics
 
 **`@[export]`.** The declaration is visible outside its module. Without it, a declaration is private to the file. `@[export]` is top-level only; it is not allowed inside a block.
-
-**`@[foreign("C")]`.** The function is implemented in C. The body must be empty (the declaration is `= #host(...)`). The ABI is C.
-
-**`@[link("name", ...)]`.** The declaration links against the named libraries or files. Each string is a library name or a file path. Multiple strings may be given.
 
 **`@[deprecated("msg")]`.** Use of the declaration produces a warning with the given message. The attribute is informational.
 
@@ -6220,10 +6242,10 @@ Attributes appear before the declaration they modify:
 
 ```lucid
 @[export]
-const add fn (a int, b int) -> int = { return a + b; };
+const add fn(a int, b int) -> int = { return a + b; };
 
 @[inline]
-const square fn (x int) -> int = { return x * x; };
+const square fn(x int) -> int = { return x * x; };
 
 struct Config {
     @[deprecated("use maxConnections instead")]
@@ -6245,7 +6267,7 @@ error: unknown attribute 'unknown'
   1 | @[unknown]
     |   ^^^^^^^
     |
-   = help: valid attributes are: export, foreign, link, deprecated,
+   = help: valid attributes are: export, deprecated,
      inline, noinline, opaque, host_only
 ```
 
@@ -6322,11 +6344,17 @@ Each entry has a name (the string in `#builtin(name)`), a signature, and a descr
 
 **Closures:**
 
-| Name        | Signature                               | Behavior                         |
-| ----------- | --------------------------------------- | -------------------------------- |
-| `fn_to_cls` | `<A, B>(f fn (A) -> B) -> cls (A) -> B` | Wrap bare function with null env |
-| `call_fn`   | `<A, B>(f fn (A) -> B, a A) -> B`       | Call a bare function             |
-| `call_cls`  | `<A, B>(f cls (A) -> B, a A) -> B`      | Call a closure                   |
+| Name        | Signature                            | Behavior                         |
+| ----------- | ------------------------------------ | -------------------------------- |
+| `fn_to_cls` | `<A, B>(f fn(A) -> B) -> fn(A) -> B` | Wrap bare function with null env |
+| `call_fn`   | `<A, B>(f fn(A) -> B, a A) -> B`     | Call a bare function             |
+| `call_cls`  | `<A, B>(f fn(A) -> B, a A) -> B`     | Call a closure                   |
+
+**Scope:**
+
+| Name         | Signature                   | Behavior                                 |
+| ------------ | --------------------------- | ---------------------------------------- |
+| `scope_exit` | `<T>(f fn(T) -> unit, v T)` | Register a callback to run at block exit |
 
 **References and weak:**
 
@@ -6339,13 +6367,13 @@ Each entry has a name (the string in `#builtin(name)`), a signature, and a descr
 
 **Fibers:**
 
-| Name              | Signature                          | Behavior                           |
-| ----------------- | ---------------------------------- | ---------------------------------- |
-| `spawn_fiber`     | `<T>(f fn () -> T)`                | Run `f` on a fiber, discard result |
-| `start_fiber`     | `<T>(f fn () -> T) -> Deferred<T>` | Run `f` on a fiber, return handle  |
-| `await_deferred`  | `<T>(d &Deferred<T>) -> T`         | Suspend until resolved             |
-| `cancel_deferred` | `<T>(d &Deferred<T>)`              | Request cancellation               |
-| `deferred_ready`  | `<T>(d &Deferred<T>) -> bool`      | Whether resolved                   |
+| Name              | Signature                         | Behavior                           |
+| ----------------- | --------------------------------- | ---------------------------------- |
+| `spawn_fiber`     | `<T>(f fn() -> T)`                | Run `f` on a fiber, discard result |
+| `start_fiber`     | `<T>(f fn() -> T) -> Deferred<T>` | Run `f` on a fiber, return handle  |
+| `await_deferred`  | `<T>(d &Deferred<T>) -> T`        | Suspend until resolved             |
+| `cancel_deferred` | `<T>(d Deferred<T>)`              | Request cancellation, consumes `d` |
+| `deferred_ready`  | `<T>(d &Deferred<T>) -> bool`     | Whether resolved                   |
 
 **Errors:**
 
@@ -6385,6 +6413,20 @@ Each entry has a name (the string in `#builtin(name)`), a signature, and a descr
 | ------------------ | ------------------------- | ------------------- |
 | `register_op_kind` | `(name string) -> OpKind` | Register an op kind |
 
+**SIMD:**
+
+| Name           | Signature                           | Behavior                                 |
+| -------------- | ----------------------------------- | ---------------------------------------- |
+| `simd_type`    | `<T, N>() -> Type`                  | Construct a SIMD type; validates T and N |
+| `simd_splat`   | `<T, N>(v T) -> Simd<T, N>`         | Broadcast scalar to all lanes            |
+| `simd_add`     | `<T, N>(a, b) -> Simd<T, N>`        | Lane-wise add                            |
+| `simd_sub`     | `<T, N>(a, b) -> Simd<T, N>`        | Lane-wise subtract                       |
+| `simd_mul`     | `<T, N>(a, b) -> Simd<T, N>`        | Lane-wise multiply                       |
+| `simd_div`     | `<T, N>(a, b) -> Simd<T, N>`        | Lane-wise divide                         |
+| `simd_load`    | `<T, N>(p &T) -> Simd<T, N>`        | Load from memory                         |
+| `simd_store`   | `<T, N>(p &T, v Simd<T, N>)`        | Store to memory                          |
+| `simd_extract` | `<T, N>(v Simd<T, N>, i uint) -> T` | Extract lane                             |
+
 ### What is not in the registry
 
 - **User-facing functions** (`println`, `print`, `toStr`, `error`, `warn`). These are defined in terms of the builtins above and declared in the core script.
@@ -6415,16 +6457,16 @@ The distinction:
 A host function may be passed to `host_async` as a `#hostFn`:
 
 ```lucid
-FN host_async<T> (work #hostFn) -> Deferred<T> = #host(host_run_async);
+FN host_async<T> fn(work #hostFn) -> Deferred<T> = #host(host_run_async);
 ```
 
 `#hostFn` is a special type for host-only functions that can be scheduled on a worker thread. It is not a normal function type; it is recognized by the `host_async` builtin.
 
 ```lucid
 @[host_only]
-const computePhysics fn (worldId int, dt float) -> PhysicsResult = {};
+const computePhysics fn(worldId int, dt float) -> PhysicsResult = {};
 
-const async step fn (worldId int, dt float) -> PhysicsResult = {
+const async step fn(worldId int, dt float) -> PhysicsResult = {
     let d Deferred<PhysicsResult> = host_async(computePhysics(worldId, dt));
     return await d;
 };
@@ -6438,21 +6480,21 @@ The `@[host_only]` attribute marks the function as callable only from C++. Passi
 
 The interop surface:
 
-| Boundary                       | Mechanism                          | Direction        |
-| ------------------------------ | ---------------------------------- | ---------------- |
-| C functions into Lucid         | `@[foreign("C")]` + `@[link(...)]` | C → Lucid        |
-| Lucid functions out to C       | `@[export, foreign("C")]`          | Lucid → C        |
-| C++ classes into Lucid         | `extern "C"` wrappers              | C++ → Lucid      |
-| Host functions into Lucid      | `#host(...)`                       | Host → Lucid     |
-| VM primitives into Lucid       | `#native(...)`                     | VM → Lucid       |
-| Compiler operations into Lucid | `#builtin(...)`                    | Compiler → Lucid |
-| Engine parallelism from Lucid  | `host_async` + `#hostFn`           | Lucid → Host     |
+| Boundary                               | Mechanism                          | Direction        |
+| -------------------------------------- | ---------------------------------- | ---------------- |
+| C/C++ functions into Lucid             | `#host(...)`                       | Host → Lucid     |
+| Lucid functions callable by the engine | `@[export]` + the VM embedding API | Lucid → Host     |
+| VM primitives into Lucid               | `#native(...)`                     | VM → Lucid       |
+| Compiler operations into Lucid         | `#builtin(...)`                    | Compiler → Lucid |
+| Engine parallelism from Lucid          | `host_async` + `#hostFn`           | Lucid → Host     |
+
+C/C++ compilation and linking — including anything that would once have needed `extern "C"`, a vendor library, or a build-time source/object file — never appear in this table, because they are entirely the embedding engine's own build concern; Lucid's only visibility into any of it is the registry entry a `#host(...)` name resolves against.
 
 The memory model:
 
-- Lucid's refcounting is internal. `&T` references are managed; C sees raw pointers.
-- C's memory is not managed by Lucid. It is freed by C.
-- The boundary is explicit: pointers passed to C are raw; pointers received from C are converted with `strFromPtr` or wrapped in Lucid-owned storage.
+- Lucid's refcounting is internal. `&T` references are managed; the host side sees raw pointers.
+- Host-allocated memory is not managed by Lucid. It is freed on the host side.
+- The boundary is explicit: pointers passed to the host are raw; pointers received from the host are converted with `strFromPtr` or wrapped in Lucid-owned storage.
 
 ---
 
@@ -6675,9 +6717,11 @@ A function that walks the object graph, marks reachable values, and clears unrea
 
 ### Loop labels
 
-**Status:** deferred.
+**Status:** deferred, not rejected.
 
-Lucid has no labeled loops. To break out of an outer loop, use a flag. Labeled loops would be a small addition; they are not in this version.
+Lucid has no labeled loops. To break out of an outer loop, use a flag. Labeled loops would be a small, self-contained addition, deliberately left out of this version rather than ruled out — the flag pattern is sufficient for now, and adding syntax for a case that comes up rarely is easy to defer without cost.
+
+If the flag pattern proves painful in practice, the addition is: `IDENTIFIER ':' loop` to label a loop, plus `'break' [IDENTIFIER]` / `'continue' [IDENTIFIER]` to target a specific enclosing label instead of only the innermost one.
 
 ### General pattern matching
 
@@ -6793,6 +6837,19 @@ The `fn → cls` coercion is the only implicit conversion. There is no implicit 
 
 `?` and `!` do not apply to function types. A nullable function type does not exist.
 
+### Removed from the grammar
+
+**Status:** removed.
+
+These existed in an earlier draft and are gone from this one. Listed here so a reader who remembers an earlier version, or finds a stray reference to one of these in older notes, knows the removal was deliberate rather than an oversight:
+
+- **`#name(...)` intrinsic syntax.** Replaced by ordinary calls to `#builtin`-backed `FN`s — see [The `#builtin` Registry](#the-builtin-registry). There is no longer a bare-`#`-plus-identifier call form.
+- **`PtrTypeAST` (`*T`).** Raw pointers are removed. `&T` (a managed reference) and index-into-arena are the only ways to model indirection.
+- **`Arena`, `ArenaDescriptor` as boot types.** Removed from the boot set. They can be reintroduced later as ordinary core-script types (a `TYPE` binding plus `#host`/`#builtin` operations) if a concrete need arises, the same way any other type is added — nothing about their removal forecloses that.
+- **`Future<T>`, `Thread<T>`.** Both replaced by `Deferred<T>` — see [`Deferred<T>` — Linear Value Rules](#deferredt-linear-value-rules). There is exactly one handle type for an in-flight operation, not several with overlapping meaning.
+- **The `:` module access operator.** Replaced by `::`. `.` is field access only; `::` is module-qualified access only — see [Punctuation](#punctuation).
+- **The `~[parallel]` block form.** Removed. Real parallelism is reached only through `host_async` and `#hostFn` ([Engine parallelism from Lucid](#interop-summary)), never through a block-level annotation Lucid itself interprets.
+
 ---
 
 ## Summary of the Language
@@ -6846,7 +6903,7 @@ A one-page summary of the entire grammar.
 - `start d T = f(args)` — held handle; `Deferred<T>`.
 - `await d` — consume; narrows to `T`.
 - `Deferred<T>` is a linear value: consumed exactly once; cannot be stored in fields or arrays; cannot be captured.
-- `cancel(d)` requests cancellation.
+- `cancel(d)` requests cancellation and consumes `d` — the alternative to `await` for consuming a `Deferred<T>`.
 - True parallelism lives on the C++ side, reached through `host_async`.
 
 ### Memory
@@ -6859,10 +6916,8 @@ A one-page summary of the entire grammar.
 
 ### Interop
 
-- `@[foreign("C")]` for C functions.
-- `@[link(...)]` for library and file paths.
-- C++ through `extern "C"` wrappers.
-- `#host` for host-registered functions.
+- C/C++ compilation and linking are the embedding engine's own build concern, not Lucid's.
+- `#host` for host-registered functions — the only boundary into C/C++, in both directions.
 - `#native` for VM opcodes.
 - `#builtin` for compiler-emitted operations.
 - `host_async` for engine parallelism.
@@ -6897,16 +6952,14 @@ The keyword set is closed. No keyword may be used as an identifier.
 
 ### Attributes
 
-| Attribute              | Valid on               | Meaning                                |
-| ---------------------- | ---------------------- | -------------------------------------- |
-| `@[export]`            | top-level declarations | Visible outside the file               |
-| `@[foreign("C")]`      | function declarations  | Implemented in a foreign ABI           |
-| `@[link("name", ...)]` | declarations           | Link against native libraries or files |
-| `@[deprecated("msg")]` | any declaration        | Compiler warning at use sites          |
-| `@[inline]`            | function declarations  | Inlining hint                          |
-| `@[noinline]`          | function declarations  | Prevent inlining                       |
-| `@[opaque]`            | struct fields          | No Lucid-side access                   |
-| `@[host_only]`         | declarations           | Callable only from C++                 |
+| Attribute              | Valid on               | Meaning                       |
+| ---------------------- | ---------------------- | ----------------------------- |
+| `@[export]`            | top-level declarations | Visible outside the file      |
+| `@[deprecated("msg")]` | any declaration        | Compiler warning at use sites |
+| `@[inline]`            | function declarations  | Inlining hint                 |
+| `@[noinline]`          | function declarations  | Prevent inlining              |
+| `@[opaque]`            | struct fields          | No Lucid-side access          |
+| `@[host_only]`         | declarations           | Callable only from C++        |
 
 The attribute set is closed — an unknown attribute is a parse error. Full semantics: [Attributes](#attributes).
 
@@ -6972,13 +7025,13 @@ Full definitions: [The Trait Catalog](#the-trait-catalog).
 
 ### Operators (`DEF` `OpKind`s)
 
-| `OpKind`    | Symbol slot                                                                            | Signature shape                     | Example                                                       |
-| ----------- | -------------------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
-| `BINARY_OP` | `+` `-` `*` `/` `%` `**` `==` `!=` `<` `<=` `>` `>=` `&` `\|` `^` `<<` `>>` `and` `or` | `(a T, b T) -> T`                   | `DEF BINARY_OP '+' (a int, b int) -> int = #native(add_i32);` |
-| `UNARY_OP`  | `-` `not` `~`                                                                          | `(v T) -> T`                        | `DEF UNARY_OP '-' (v int) -> int = #native(neg_i32);`         |
-| `INDEX_GET` | (none)                                                                                 | `(container, index) -> value`       | `DEF INDEX_GET (a [*]T, i uint) -> T = #builtin(array_get);`  |
-| `INDEX_SET` | (none)                                                                                 | `(container, index, value) -> unit` | `DEF INDEX_SET (a &[*]T, i uint, v T) = #builtin(array_set);` |
-| `CALL`      | any name, e.g. `'toStr'`                                                               | `(receiver, ...args) -> value`      | `DEF CALL 'toStr' (v int) -> string = #builtin(int_to_str);`  |
+| `OpKind`    | Symbol slot                                                                            | Signature shape                     | Example                                                         |
+| ----------- | -------------------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------- |
+| `BINARY_OP` | `+` `-` `*` `/` `%` `**` `==` `!=` `<` `<=` `>` `>=` `&` `\|` `^` `<<` `>>` `and` `or` | `(a T, b T) -> T`                   | `DEF BINARY_OP '+' fn(a int, b int) -> int = #native(add_i32);` |
+| `UNARY_OP`  | `-` `not` `~`                                                                          | `(v T) -> T`                        | `DEF UNARY_OP '-' fn(v int) -> int = #native(neg_i32);`         |
+| `INDEX_GET` | (none)                                                                                 | `(container, index) -> value`       | `DEF INDEX_GET (a [*]T, i uint) -> T = #builtin(array_get);`    |
+| `INDEX_SET` | (none)                                                                                 | `(container, index, value) -> unit` | `DEF INDEX_SET (a &[*]T, i uint, v T) = #builtin(array_set);`   |
+| `CALL`      | any name, e.g. `'toStr'`                                                               | `(receiver, ...args) -> value`      | `DEF CALL 'toStr' fn(v int) -> string = #builtin(int_to_str);`  |
 
 Full mechanics: [The Standard `OpKind` Set](#the-standard-opkind-set), [Overload Resolution](#overload-resolution), [Operator Precedence](#operator-precedence).
 
@@ -6989,22 +7042,22 @@ Full mechanics: [The Standard `OpKind` Set](#the-standard-opkind-set), [Overload
 | Function  | Signature      | Notes                                                                |
 | --------- | -------------- | -------------------------------------------------------------------- |
 | `write`   | `(s string)`   | `#host(host_write)` — the raw output primitive                       |
-| `print`   | `<T> (v T)`    | Calls `toStr`, no trailing newline                                   |
-| `println` | `<T> (v T)`    | Calls `toStr`, trailing newline                                      |
+| `print`   | `<T> fn(v T)`  | Calls `toStr`, no trailing newline                                   |
+| `println` | `<T> fn(v T)`  | Calls `toStr`, trailing newline                                      |
 | `error`   | `(msg string)` | Panics the current fiber — see [`error` and `warn`](#error-and-warn) |
 | `warn`    | `(msg string)` | Prints to the warning channel, does not unwind                       |
 
 **Array** (`core.array`)
 
-| Function       | Signature                    | Notes |
-| -------------- | ---------------------------- | ----- |
-| `array_len`    | `<T> (a [_]T) -> uint`       |       |
-| `array_push`   | `<T> (a &[*]T, v T)`         |       |
-| `array_pop`    | `<T> (a &[*]T) -> T?`        |       |
-| `array_insert` | `<T> (a &[*]T, i uint, v T)` |       |
-| `array_remove` | `<T> (a &[*]T, i uint)`      |       |
-| `array_resize` | `<T> (a &[*]T, n uint)`      |       |
-| `array_clear`  | `<T> (a &[*]T)`              |       |
+| Function       | Signature                      | Notes |
+| -------------- | ------------------------------ | ----- |
+| `array_len`    | `<T> fn(a [_]T) -> uint`       |       |
+| `array_push`   | `<T> fn(a &[*]T, v T)`         |       |
+| `array_pop`    | `<T> fn(a &[*]T) -> T?`        |       |
+| `array_insert` | `<T> fn(a &[*]T, i uint, v T)` |       |
+| `array_remove` | `<T> fn(a &[*]T, i uint)`      |       |
+| `array_resize` | `<T> fn(a &[*]T, n uint)`      |       |
+| `array_clear`  | `<T> fn(a &[*]T)`              |       |
 
 **String** (`core.string`)
 
@@ -7027,30 +7080,30 @@ Full mechanics: [The Standard `OpKind` Set](#the-standard-opkind-set), [Overload
 
 **Map** (`core.map`)
 
-| Function     | Signature                            | Notes |
-| ------------ | ------------------------------------ | ----- |
-| `map_new`    | `<K, V> () -> Map<K, V>`             |       |
-| `map_len`    | `<K, V> (m &Map<K, V>) -> uint`      |       |
-| `map_has`    | `<K, V> (m &Map<K, V>, k K) -> bool` |       |
-| `map_remove` | `<K, V> (m &Map<K, V>, k K) -> bool` |       |
-| `map_keys`   | `<K, V> (m &Map<K, V>) -> [*]K`      |       |
-| `map_values` | `<K, V> (m &Map<K, V>) -> [*]V`      |       |
+| Function     | Signature                              | Notes |
+| ------------ | -------------------------------------- | ----- |
+| `map_new`    | `<K, V> fn() -> Map<K, V>`             |       |
+| `map_len`    | `<K, V> fn(m &Map<K, V>) -> uint`      |       |
+| `map_has`    | `<K, V> fn(m &Map<K, V>, k K) -> bool` |       |
+| `map_remove` | `<K, V> fn(m &Map<K, V>, k K) -> bool` |       |
+| `map_keys`   | `<K, V> fn(m &Map<K, V>) -> [*]K`      |       |
+| `map_values` | `<K, V> fn(m &Map<K, V>) -> [*]V`      |       |
 
 **`Weak<T>`** (`core`)
 
-| Function      | Signature                 | Notes                         |
-| ------------- | ------------------------- | ----------------------------- |
-| `weak`        | `<T> (v &T) -> Weak<T>`   |                               |
-| `upgrade`     | `<T> (w Weak<T>) -> &T?`  | Fails if the referent is gone |
-| `strongCount` | `<T> (v &T) -> uint`      |                               |
-| `weakCount`   | `<T> (w Weak<T>) -> uint` |                               |
+| Function      | Signature                   | Notes                         |
+| ------------- | --------------------------- | ----------------------------- |
+| `weak`        | `<T> fn(v &T) -> Weak<T>`   |                               |
+| `upgrade`     | `<T> fn(w Weak<T>) -> &T?`  | Fails if the referent is gone |
+| `strongCount` | `<T> fn(v &T) -> uint`      |                               |
+| `weakCount`   | `<T> fn(w Weak<T>) -> uint` |                               |
 
 **`Deferred<T>` and concurrency support** (`core`)
 
-| Function     | Signature                           | Notes                                         |
-| ------------ | ----------------------------------- | --------------------------------------------- |
-| `isReady`    | `<T> (d &Deferred<T>) -> bool`      | Never required for correctness — polling only |
-| `cancel`     | `<T> (d &Deferred<T>)`              |                                               |
-| `host_async` | `<T> (work #hostFn) -> Deferred<T>` | The bridge to engine-side parallelism         |
+| Function     | Signature                             | Notes                                         |
+| ------------ | ------------------------------------- | --------------------------------------------- |
+| `isReady`    | `<T> fn(d &Deferred<T>) -> bool`      | Never required for correctness — polling only |
+| `cancel`     | `<T> fn(d Deferred<T>)`               | Consumes `d`                                  |
+| `host_async` | `<T> fn(work #hostFn) -> Deferred<T>` | The bridge to engine-side parallelism         |
 
 Full listings and any functions added since this table was built: [The Core Scripts](#the-core-scripts) onward, Part VIII.
