@@ -288,6 +288,27 @@ inline bool isContentMarker(TokenType t) noexcept {
     return t >= TokenType::KW_STRUCT && t <= TokenType::KW_STATIC;
 }
 
+/// @brief True for a token that can begin a declaration.
+///
+/// A declaration begins with one of the frame keywords, with the
+/// sugar-form markers `struct` or `enum`, or with `@` for an
+/// attribute list. The attribute `@` is not included here — it is a
+/// prefix that can precede any declaration; the declaration's own
+/// keyword follows it. Callers that want to detect "the next thing
+/// is a declaration" check both this predicate and `AT_SIGN`.
+inline bool isDeclarationKeyword(TokenType t) noexcept {
+    return t == TokenType::KW_IMPORT
+        || t == TokenType::KW_TYPE
+        || t == TokenType::KW_STRUCT
+        || t == TokenType::KW_ENUM
+        || t == TokenType::KW_FN
+        || t == TokenType::KW_CONST
+        || t == TokenType::KW_LET
+        || t == TokenType::KW_TRAIT
+        || t == TokenType::KW_SATISFY
+        || t == TokenType::KW_DEF;
+}
+
 inline bool isStatementKeyword(TokenType t) noexcept {
     return t >= TokenType::KW_IF && t <= TokenType::KW_RETURN;
 }
