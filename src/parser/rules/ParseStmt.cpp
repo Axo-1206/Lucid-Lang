@@ -828,7 +828,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     ParamAST* indexVar = nullptr;
     bool isDiscardIndex = false;
 
-    if (stream.check(TokenType::UNDERSCORE)) {
+    if (isUnderscoreIdentifier(stream)) {
         stream.consume();   // `_`
         isDiscardIndex = true;
     } else if (stream.check(TokenType::IDENTIFIER)) {
@@ -866,7 +866,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     bool isDiscardValue = false;
 
     if (stream.match(TokenType::COMMA)) {
-        if (stream.check(TokenType::UNDERSCORE)) {
+        if (isUnderscoreIdentifier(stream)) {
             stream.consume();   // `_`
             isDiscardValue = true;
         } else if (stream.check(TokenType::IDENTIFIER)) {

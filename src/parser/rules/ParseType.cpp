@@ -265,7 +265,8 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
 
     if (stream.match(TokenType::MUL)) {
         arrayKind = ArrayKind::Dynamic;
-    } else if (stream.match(TokenType::UNDERSCORE)) {
+    } else if (isUnderscoreIdentifier(stream)) {
+        stream.consume();
         arrayKind = ArrayKind::Slice;
     } else if (stream.check(TokenType::INT_LITERAL)) {
         Token sizeTok = stream.consume();
