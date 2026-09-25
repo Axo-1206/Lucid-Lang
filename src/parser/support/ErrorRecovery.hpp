@@ -21,7 +21,7 @@
 
 #include <initializer_list>
 
-namespace parser {
+namespace lucid::parser {
 
 // =============================================================================
 // Error Recovery

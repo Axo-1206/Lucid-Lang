@@ -31,6 +31,7 @@ const char* tokenTypeName(TokenType t) noexcept {
         case TokenType::KW_FN_MARKER:       return "KW_FN_MARKER";
         case TokenType::KW_AS:              return "KW_AS";
         case TokenType::KW_SELF:            return "KW_SELF";
+        case TokenType::KW_STATIC:          return "KW_STATIC";
 
         // Statement keywords
         case TokenType::KW_IF:              return "KW_IF";
@@ -165,6 +166,7 @@ const char* tokenTypeDescription(TokenType t) noexcept {
         case TokenType::KW_FN_MARKER:       return "'fn'";
         case TokenType::KW_AS:              return "'as'";
         case TokenType::KW_SELF:            return "'Self'";
+        case TokenType::KW_STATIC:          return "'static'";
 
         // Statement keywords
         case TokenType::KW_IF:              return "'if'";

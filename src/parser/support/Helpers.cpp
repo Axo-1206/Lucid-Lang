@@ -1,845 +1,1201 @@
 /**
  * @file Helpers.cpp
- * @brief Implementation of parser helper functions.
- * 
- * This file implements helper functions used by the parser:
- * - harvestDocComment: Collects documentation comments
- * - parseAttributes: Parses attribute lists (@[attr1, attr2])
- * - parseAttribute: Parses a single attribute (NO comma handling)
- * - parseAttributeArgLiteral: Parses attribute argument literals
- * - parseGenericParamDecls: Parses generic parameter lists
- * - parseGenericParamDecl: Parses a single generic parameter (NO comma handling)
- * - parseGenericArgs: Parses generic argument lists
- * - parseParamList: Parses function parameter lists
- * - parseArgList: Parses function argument lists (silent on commas)
- * - parseImportPath: Parses import paths
- * 
- * @design_decision Comma handling ONLY at list level
- *   - List parsers handle commas between items
- *   - Item parsers parse a single item with NO comma handling
- *   - This creates a clean separation of concerns
- * 
- * @design_decision Hybrid comma handling for declaration lists
- *   - 1-2 commas: report "expected X" (user probably forgot the element)
- *   - 3+ commas: report "unexpected trailing comma" (user has trailing commas)
- *   - Call sites (parseArgList) silently skip commas (semantic phase handles matching)
+ * @brief Shared utility parsers used across the parser.
+ *
+ * ─── What this file implements ────────────────────────────────────────────
+ * Every helper declared in Parser.hpp's section 9 (Helpers). Grouped by
+ * role:
+ *
+ *   Doc comments and attributes:
+ *     - harvestDocComment           scan backward for a doc comment
+ *     - parseAttributes             `@[a, b, c]`
+ *     - parseAttribute              one `@[a]` item
+ *     - parseAttributeArgLiteral    one argument inside an attribute
+ *
+ *   Generic parameters and arguments:
+ *     - parseGenericParamDecl       one `<T : Trait>` entry
+ *     - parseGenericParamDecls      the whole `<...>` list
+ *     - parseGenericArgs            the `<T, U>` list at a use site
+ *
+ *   Argument and parameter lists:
+ *     - parseArgList                `(a, b, c)`
+ *     - parseParamList              `(a T, b U)`
+ *     - parseSingleParameter        one parameter
+ *
+ *   Import paths:
+ *     - parseImportPath             `a.b.c`
+ *
+ *   Trait references:
+ *     - parseTraitRefList           `A, B, C`
+ *
+ *   Host target sigils:
+ *     - parseHostTarget             `#host(name)` / `#native` / `#builtin`
+ *
+ *   Small shared utilities:
+ *     - consumeDeclarationSemicolon
+ *     - consumeSubDeclSemicolon
+ *     - makeFuncType
+ *     - startsStructFieldItem
+ *     - startsEnumVariantItem
+ *
+ * ─── Design: list parsers, item parsers, and separators ───────────────────
+ * Several helpers come in pairs: a list parser that consumes the whole
+ * `( ... )` or `< ... >` sequence, and an item parser that parses one
+ * element inside the list. The list parser owns the separators (commas);
+ * the item parser does not consume them. This is a clean separation and
+ * every list in this file follows it.
+ *
+ * ─── Design: comma handling ───────────────────────────────────────────────
+ * The list parsers tolerate trailing commas in some contexts and reject
+ * them in others, according to the grammar. Where the grammar permits a
+ * trailing comma (struct field lists, enum variant lists, argument lists
+ * in some positions), the parser consumes it silently. Where it does not
+ * (function parameter lists, generic parameter lists), the parser reports
+ * a diagnostic.
+ *
+ * The rule for a specific list is stated in the function's own comment.
+ *
+ * ─── Design: the doc-comment harvester scans backward ─────────────────────
+ * `harvestDocComment` scans *backward* from the current stream position,
+ * through the raw token vector, to find the comment that precedes the
+ * declaration the parser is about to read. It cannot use the forward
+ * stream because the parser has already consumed past the comments by
+ * the time the harvester runs; the tokens are visible only through the
+ * stream's `getTokens()` / `getPos()` accessors.
  */
 
-#include "../Parser.hpp"
+#include "parser/Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "core/ast/DeclAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "core/trace/Trace.hpp"
 
-namespace parser {
+#include <vector>
 
-std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx) {
-    Trace::detail("harvestDocComment: checking for doc comment");
-    
+using namespace lucid::diag;
+
+namespace lucid::parser {
+
+// =============================================================================
+// 9.1 Doc comments and attributes
+// =============================================================================
+
+// ─── harvestDocComment ──────────────────────────────────────────────────
+
+/// @brief Recover the doc comment attached to the declaration at the
+///        current stream position.
+///
+/// A doc comment is either:
+///
+///   - a `/-- ... --/` block comment, emitted by the lexer as a
+///     DOC_COMMENT token, or
+///   - a run of `--` line comments above the declaration.
+///
+/// Both forms appear in the token vector; the lexer drops `--` line
+/// comments but keeps `/-- ... --/` as DOC_COMMENT. Wait — under the
+/// current grammar, `--` is a line comment that the lexer *does* keep
+/// (as a LINE_COMMENT token) or drops (depending on the lexer's
+/// contract). See the note in the function.
+///
+/// The harvester scans backward from the current stream position. It
+/// stops at the first non-comment token, or when the distance between
+/// the comment and the declaration exceeds the "attached" threshold
+/// (consecutive lines).
+///
+/// The returned DocComment carries the comment text (with the comment
+/// markers stripped) and the form the comment was written in. A
+/// declaration that has no attached comment returns std::nullopt.
+std::optional<DocComment> harvestDocComment(TokenStream& stream,
+                                            ParserContext& ctx) {
     const auto& tokens = stream.getTokens();
-    size_t pos = stream.getPos();
-    
+    const size_t pos = stream.getPos();
     if (pos == 0) return std::nullopt;
-    
-    int declLine = stream.peek().line;
+
+    // The declaration's line. Used to detect "comment on the same line"
+    // (trailing form) and "comment on the previous line" (stacked form).
+    const uint32_t declLine = stream.peek().location.line();
+
     std::optional<std::string> trailingText;
-    std::vector<std::string> stackedLines;
-    int stackedTopLine = -1;
+    std::vector<std::string>   stackedLines;
+    uint32_t                   stackedTopLine = 0;
+    bool                       hasStackedTopLine = false;
     std::optional<std::string> blockText;
-    
+
+    // Scan backward through the raw token vector. The vector includes
+    // the comment tokens the forward stream skips, so this is where
+    // they are reachable.
     for (size_t i = pos; i > 0; ) {
         --i;
         const Token& t = tokens[i];
-        
+
         if (t.type == TokenType::LINE_COMMENT) {
-            if (t.line <= 0) continue;
-            
-            if (t.line == declLine) {
+            if (t.location.line() == 0) continue;   // malformed; skip
+
+            if (t.location.line() == declLine) {
+                // A comment on the same line as the declaration.
+                // This is the *trailing* form. Only the first such
+                // comment counts; subsequent same-line comments are
+                // ignored (they cannot be on the same line and
+                // precede the declaration in any meaningful order).
                 if (!trailingText.has_value()) {
                     trailingText = t.value;
                 }
                 continue;
             }
-            
+
             if (stackedLines.empty()) {
-                if (declLine - t.line == 1) {
+                // First comment above the declaration. It must be on
+                // the immediately preceding line, or it is not
+                // attached.
+                if (declLine - t.location.line() == 1) {
                     stackedLines.push_back(t.value);
-                    stackedTopLine = t.line;
+                    stackedTopLine = t.location.line();
+                    hasStackedTopLine = true;
                     continue;
                 } else {
                     break;
                 }
             } else {
-                if (stackedTopLine - t.line == 1) {
+                // Another stacked comment. It must be on the line
+                // immediately above the previous one.
+                if (hasStackedTopLine &&
+                    stackedTopLine - t.location.line() == 1) {
                     stackedLines.push_back(t.value);
-                    stackedTopLine = t.line;
+                    stackedTopLine = t.location.line();
                     continue;
                 } else {
                     break;
                 }
             }
         }
-        
+
         if (t.type == TokenType::DOC_COMMENT) {
-            if (t.line <= 0) continue;
-            if (declLine - t.line <= 1) {
+            if (t.location.line() == 0) continue;
+
+            // The block form. It must be on the declaration's line or
+            // the line immediately above it. (A block comment spanning
+            // multiple lines is one token; its location is its start.)
+            if (declLine - t.location.line() <= 1) {
                 blockText = t.value;
             }
             break;
         }
-        
+
+        // Anything else terminates the scan. The declaration is the
+        // first non-comment token, so anything else is a preceding
+        // declaration or an unrelated token.
         break;
     }
-    
-    // Priority: Block > Stacked > Trailing
+
+    // Priority: block > stacked > trailing.
+    //
+    // A block comment and a stacked-line run cannot both be attached
+    // in practice; the scan stops at the first non-comment token, so
+    // only one form reaches this point. The order is defensive.
     if (blockText.has_value()) {
-        return DocComment{ctx.pool.intern(*blockText), DocCommentForm::Block};
+        return DocComment{ctx.pool().intern(*blockText), DocCommentForm::Block};
     }
-    
+
     if (!stackedLines.empty()) {
+        // The stacked lines were collected bottom-to-top. Reverse them
+        // so the joined text reads top-to-bottom, matching the source.
         std::string combined;
-        for (int i = static_cast<int>(stackedLines.size()) - 1; i >= 0; --i) {
+        for (auto it = stackedLines.rbegin(); it != stackedLines.rend(); ++it) {
             if (!combined.empty()) combined += '\n';
-            combined += stackedLines[i];
+            combined += *it;
         }
-        return DocComment{ctx.pool.intern(combined), DocCommentForm::Stacked};
+        return DocComment{ctx.pool().intern(combined), DocCommentForm::Stacked};
     }
-    
+
     if (trailingText.has_value()) {
-        return DocComment{ctx.pool.intern(*trailingText), DocCommentForm::Trailing};
+        return DocComment{ctx.pool().intern(*trailingText),
+                          DocCommentForm::Trailing};
     }
-    
+
     return std::nullopt;
 }
 
+// ─── parseAttributes ────────────────────────────────────────────────────
 
-/// NOTE: this function should synchronize to the start of declaration when error
-///  happen
-ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream, ParserContext& ctx) {
-    Trace::detail("parseAttributes: checking for attributes");
-    
-    std::vector<AttributeAST*> attrs;
-    
-    if (!stream.match(TokenType::AT_SIGN)) {
-        return ctx.arena.makeBuilder<AttributeAST*>().build();
+/// @brief Parse an optional `@[attr, attr, ...]` list.
+///
+/// If the current token is not `@`, returns an empty span and consumes
+/// nothing. Otherwise consumes the `@`, the `[`, the comma-separated
+/// attributes, and the `]`.
+///
+/// The list may be empty: `@[]` is accepted (it parses as a list of
+/// zero attributes). In practice Sema will reject an empty list as
+/// having no effect, but the parser does not enforce that.
+ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream,
+                                         ParserContext& ctx) {
+    // No `@`: no attribute list. Return an empty span.
+    if (!stream.check(TokenType::AT_SIGN)) {
+        return ctx.arena().makeBuilder<AttributeAST*>().build();
     }
-    
+    stream.consume();   // `@`
+
     if (!stream.match(TokenType::LBRACKET)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '[' for attribute list, got '", stream.peekValue(), "'");
-        synchronizeToBoundary(stream, ctx, {TokenType::IDENTIFIER});
-        return ctx.arena.makeBuilder<AttributeAST*>().build();
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '[' after '@', got '",
+                           stream.peekValue(), "'");
+        // Recover: no attributes.
+        return ctx.arena().makeBuilder<AttributeAST*>().build();
     }
-    
-    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
-        // ─── Parse single attribute ──────────────────────────────────────
+
+    std::vector<AttributeAST*> attrs;
+
+    // Empty list: `@[]`.
+    if (stream.match(TokenType::RBRACKET)) {
+        return ctx.arena().makeBuilder<AttributeAST*>().build();
+    }
+
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET) &&
+           ctx.canContinue()) {
+        // Parse one attribute. parseAttribute does not consume the
+        // comma after it; the list loop handles the comma.
         AttributeAST* attr = parseAttribute(stream, ctx);
-        attrs.push_back(attr);
-        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
-        if (!stream.match(TokenType::COMMA)) {
-            if (stream.check(TokenType::RBRACKET)) {
-                break;
-            }
-            // Ran off the end, or stopped before a closer that isn't ours
-            // (e.g. an enclosing '}') - can't continue this list from here.
-            // Without this break, the loop would re-attempt parseAttribute()
-            // on the same un-consumed foreign token forever.
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ',' to separate attributes");
+        if (attr) attrs.push_back(attr);
+
+        // Comma or closing bracket.
+        if (stream.match(TokenType::COMMA)) {
+            continue;
+        }
+        if (stream.check(TokenType::RBRACKET)) {
             break;
         }
+
+        // Neither: error and synchronize to the next attribute or the
+        // closing bracket.
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or ']' in attribute list, got '",
+                           stream.peekValue(), "'");
+        synchronizeTo(stream, ctx,
+                      TokenType::COMMA,
+                      TokenType::RBRACKET);
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
     }
-    
-    // ─── Handle missing closing ']' ──────────────────────────────────────
-    if (!stream.check(TokenType::RBRACKET)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ']' to close attribute list");
-    } else {
-        stream.consume(); // Consume ']'
+
+    // Closing `]`.
+    if (!stream.match(TokenType::RBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ']' to close attribute list, got '",
+                           stream.peekValue(), "'");
     }
-    
-    auto builder = ctx.arena.makeBuilder<AttributeAST*>();
-    for (auto* attr : attrs) {
-        builder.push_back(attr);
-    }
+
+    auto builder = ctx.arena().makeBuilder<AttributeAST*>(attrs.size());
+    for (AttributeAST* a : attrs) builder.push_back(a);
     return builder.build();
 }
 
-// This function will not attempt to recover on error, the parseAttributes above
-// will handle it
+// ─── parseAttribute ─────────────────────────────────────────────────────
+
+/// @brief Parse one attribute: `name` or `name(arg, arg, ...)`.
+///
+/// The caller has consumed the `@[` (or the preceding comma). This
+/// function consumes the attribute's name, its optional argument list,
+/// and nothing else. It does not consume the comma that separates it
+/// from the next attribute; the list parser handles that.
 AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
+    const SourceLocation loc = stream.currentLoc();
 
     if (!stream.check(TokenType::IDENTIFIER)) {
-        if (stream.check(TokenType::COMMA)) { // We do not use match here, the parseAttributes will handle this comma
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected attribute name before ','");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected attribute name, got '", stream.peekValue(), "'");
-        }
-
-        auto* placeholder = ctx.arena.make<AttributeAST>();
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           loc,
+                           "expected attribute name, got '",
+                           stream.peekValue(), "'");
+        // Recover: produce an empty attribute with an error flag.
+        auto* placeholder = ctx.arena().make<AttributeAST>();
         placeholder->loc = loc;
-        placeholder->name = ctx.pool.intern("");
+        placeholder->name = ctx.pool().intern("");
         placeholder->hasSyntaxError = true;
+        return placeholder;
     }
-    
+
     Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    auto* attr = ctx.arena.make<AttributeAST>();
+    InternedString name = ctx.pool().intern(nameTok.value);
+
+    auto* attr = ctx.arena().make<AttributeAST>();
     attr->loc = loc;
     attr->name = name;
-    
-    // ─── Parse attribute arguments ──────────────────────────────────────────
+
+    // Optional argument list.
     if (stream.match(TokenType::LPAREN)) {
         std::vector<LiteralExprAST*> args;
-        
-        while (
-            !stream.isAtEnd() && 
-            !stream.check(TokenType::RPAREN) && 
-            !stream.check(TokenType::RBRACKET)
-        ) {
-            LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
-            args.push_back(arg);
-            if (arg->hasSyntaxError) {
-                attr->hasSyntaxError = true;
-            }
 
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN, TokenType::RBRACKET, TokenType::SEMICOLON);
-            if (!stream.match(TokenType::COMMA)) {
-                if (stream.checkAny(TokenType::RPAREN, TokenType::SEMICOLON)) {
-                    break;
-                } else if (stream.check(TokenType::RBRACKET)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ')' to close attribute literal arguments list");
-                    attr->hasSyntaxError = true;
-                    break;
-                }
-                // Ran off the end, or stopped before some other closer that
-                // isn't ours (e.g. an enclosing '}') - can't continue this
-                // argument list from here. Without this break, the loop
-                // would re-attempt parsing the same un-consumed token forever.
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate attribute literal arguments");
-                attr->hasSyntaxError = true;
+        // Empty argument list: `@[name()]`.
+        if (stream.match(TokenType::RPAREN)) {
+            attr->args = ctx.arena().makeBuilder<LiteralExprAST*>().build();
+            return attr;
+        }
+
+        while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN) &&
+               ctx.canContinue()) {
+            LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
+            if (arg) args.push_back(arg);
+
+            if (stream.match(TokenType::COMMA)) {
+                continue;
+            }
+            if (stream.check(TokenType::RPAREN)) {
                 break;
             }
+
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                               stream.currentLoc(),
+                               "expected ',' or ')' in attribute arguments, "
+                               "got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx,
+                          TokenType::COMMA,
+                          TokenType::RPAREN);
+            if (stream.match(TokenType::COMMA)) continue;
+            break;
         }
-        
-        // ─── Handle missing closing ')' ──────────────────────────────────────
-        if (!stream.check(TokenType::RPAREN)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ')' to close attribute arguments");
-        } else {
-            stream.consume(); // Consume ')'
+
+        if (!stream.match(TokenType::RPAREN)) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                               stream.currentLoc(),
+                               "expected ')' to close attribute arguments, "
+                               "got '", stream.peekValue(), "'");
         }
-        
-        auto builder = ctx.arena.makeBuilder<LiteralExprAST*>();
-        for (auto* arg : args) {
-            builder.push_back(arg);
-        }
+
+        auto builder = ctx.arena().makeBuilder<LiteralExprAST*>(args.size());
+        for (LiteralExprAST* a : args) builder.push_back(a);
         attr->args = builder.build();
     }
+
     return attr;
 }
 
-LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    Token tok = stream.peek();
-    
+// ─── parseAttributeArgLiteral ───────────────────────────────────────────
+
+/// @brief Parse one argument inside an attribute's parentheses.
+///
+/// Attribute arguments are restricted to literals: strings, integers,
+/// floats, chars, booleans, and bare identifiers. The grammar's
+/// `attr_arg` production lists these forms; a full expression is not
+/// allowed.
+///
+/// The literal is produced as a `LiteralExprAST` with the raw lexeme as
+/// its value. Sema interprets the lexeme for the specific attribute
+/// that requires it.
+LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream,
+                                         ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+    const Token tok = stream.peek();
+
     LiteralKind kind;
-    InternedString value;
-    
     switch (tok.type) {
-        case TokenType::STRING_LITERAL:
-            kind = LiteralKind::String;
-            value = ctx.pool.intern(tok.value);
-            stream.consume();
+        case TokenType::STRING_HEAD: {
+            // A string literal in the token stream is a sequence of
+            // STRING_HEAD / STRING_MIDDLE / STRING_END. An attribute
+            // argument uses the simple form (one HEAD, one END, no
+            // interpolation). If an interpolation appears, the parser
+            // reports an error and skips to the end of the string.
+            stream.consume();   // STRING_HEAD
+            if (stream.check(TokenType::STRING_END)) {
+                stream.consume();   // STRING_END
+                auto* lit = ctx.arena().make<LiteralExprAST>(
+                    LiteralKind::String, ctx.pool().intern(tok.value));
+                lit->loc = loc;
+                return lit;
+            }
+            // Interpolation inside an attribute string is not allowed.
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
+                               "an attribute argument string cannot contain "
+                               "an interpolation");
+            while (!stream.isAtEnd() &&
+                   !stream.check(TokenType::STRING_END)) {
+                stream.consume();
+            }
+            if (stream.check(TokenType::STRING_END)) stream.consume();
+            auto* lit = ctx.arena().make<LiteralExprAST>(
+                LiteralKind::String, ctx.pool().intern(tok.value));
+            lit->loc = loc;
+            lit->hasSyntaxError = true;
+            return lit;
+        }
+
+        case TokenType::RAW_STRING_LITERAL:
+            kind = LiteralKind::RawString;
             break;
-            
+
         case TokenType::INT_LITERAL:
         case TokenType::HEX_LITERAL:
         case TokenType::BINARY_LITERAL:
-        case TokenType::CHAR_LITERAL:
-            kind = LiteralKind::Int;
-            value = ctx.pool.intern(tok.value);
-            stream.consume();
+            kind = (tok.type == TokenType::INT_LITERAL) ? LiteralKind::Int
+                 : (tok.type == TokenType::HEX_LITERAL) ? LiteralKind::Hex
+                                                        : LiteralKind::Binary;
             break;
-            
+
         case TokenType::FLOAT_LITERAL:
             kind = LiteralKind::Float;
-            value = ctx.pool.intern(tok.value);
-            stream.consume();
             break;
-            
-        case TokenType::TRUE:
-        case TokenType::FALSE:
-            kind = tok.type == TokenType::TRUE ? LiteralKind::True : LiteralKind::False;
-            value = ctx.pool.intern(tok.value);
-            stream.consume();
+
+        case TokenType::CHAR_LITERAL:
+            kind = LiteralKind::Char;
             break;
-            
+
+        case TokenType::KW_TRUE:
+            kind = LiteralKind::True;
+            break;
+
+        case TokenType::KW_FALSE:
+            kind = LiteralKind::False;
+            break;
+
         case TokenType::IDENTIFIER:
+            // A bare identifier as an attribute argument. Used for
+            // arguments that name a mode or a target. Stored as a
+            // String literal with the identifier's text as value.
             kind = LiteralKind::String;
-            value = ctx.pool.intern(tok.value);
-            stream.consume();
             break;
-            
+
         default:
-            if (stream.check(TokenType::COMMA)) { // we do not use match here, parseAttribute will handle the comma
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
-                                        "expected attribute literal argument before ','");
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
-                                    "expected literal, got '", stream.peekValue(), "'");
-            }
-            auto* placeholder = ctx.arena.make<LiteralExprAST>(LiteralKind::Unknown, ctx.pool.intern(""));
-                    placeholder->hasSyntaxError = true;
-                    placeholder->loc = loc;
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral,
+                               loc,
+                               "expected a literal attribute argument, got '",
+                               stream.peekValue(), "'");
+            // Recover: produce an empty literal with an error flag.
+            stream.consume();   // consume the offending token
+            auto* placeholder = ctx.arena().make<LiteralExprAST>(
+                LiteralKind::Unknown, ctx.pool().intern(""));
+            placeholder->loc = loc;
+            placeholder->hasSyntaxError = true;
             return placeholder;
     }
-    
-    auto* literal = ctx.arena.make<LiteralExprAST>(kind, value);
-    literal->loc = loc;
-    
-    return literal;
+
+    // Simple literal: consume the token and produce the node.
+    Token valueTok = stream.consume();
+    auto* lit = ctx.arena().make<LiteralExprAST>(
+        kind, ctx.pool().intern(valueTok.value));
+    lit->loc = loc;
+    return lit;
 }
 
+// =============================================================================
+// 9.2 Generic parameters and arguments
+// =============================================================================
 
-/// Generic parameter declaration can appear in generic struct/trait/function
+// ─── parseGenericParamDecl ──────────────────────────────────────────────
+
+/// @brief Parse one `<T>` or `<T : Trait1 + Trait2>` entry.
 ///
-/// - for struct or trait the best recovery is stop at '{'
-/// - for function declaration the best recovery is stop at '('
-/// NOTE: parseGenericParamDecl will handle synchronize here
-ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
-    std::vector<GenericParamDeclAST*> params;
-    
-    if (!stream.match(TokenType::LESS)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '<' for generic parameter list, got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
-    }
-    
-    if (stream.match(TokenType::GREATER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "empty generic list, please fill a parameter or remove empty '<>'");
-        return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
-    }
-    
-    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
-        GenericParamDeclAST* param = parseGenericParamDecl(stream, ctx);
-        params.push_back(param);
-        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
-        if (!stream.match(TokenType::COMMA)) {
-            if (stream.check(TokenType::GREATER)) {
-                break;
-            } else if (stream.checkAny(TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_IncompleteDeclaration, stream.currentLoc(),
-                                        "incomplete generic parameter list");
-                break;
-            }
-            // Ran off the end, or stopped before some other closer that
-            // isn't ours (e.g. an enclosing ')' or '}') - can't continue
-            // this list from here. Without this break, the loop would
-            // re-attempt parseGenericParamDecl() on the same un-consumed
-            // foreign token forever.
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ',' to separate generic parameters");
-            break;
-        }
-    }
-    
-    // ─── Handle missing closing '>' ──────────────────────────────────────
-    if (!stream.check(TokenType::GREATER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '>' to close generic parameter list");
-    } else {
-        stream.consume(); // Consume '>'
-    }
-    
-    auto builder = ctx.arena.makeBuilder<GenericParamDeclAST*>();
-    for (auto* p : params) {
-        builder.push_back(p);
-    }
-    
-    return builder.build();
-}
+/// The caller (the list parser) has already consumed the `<` or a comma.
+/// This function consumes the parameter's name, its optional
+/// constraints, and stops at the comma or `>` that follows. The list
+/// parser handles the separator.
+GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream,
+                                           ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
 
-GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    /// NOTE: this case should only happen when the next token is ',' instead of a name
-    /// ex: <param, , param> // got ',' instead of IDENTIFIER
     if (!stream.check(TokenType::IDENTIFIER)) {
-        if (stream.check(TokenType::COMMA)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected generic parameter name before ','");
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected generic parameter name, got '", stream.peekValue(), "'");
-        }
-
-        auto* placeholder = ctx.arena.make<GenericParamDeclAST>(ctx.pool.intern(""));
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           loc,
+                           "expected a generic parameter name, got '",
+                           stream.peekValue(), "'");
+        // Recover: empty parameter.
+        auto* placeholder = ctx.arena().make<GenericParamDeclAST>(
+            ctx.pool().intern(""));
+        placeholder->loc = loc;
         placeholder->hasSyntaxError = true;
-        
         return placeholder;
     }
-    
+
     Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    auto* param = ctx.arena.make<GenericParamDeclAST>(name);
+    InternedString name = ctx.pool().intern(nameTok.value);
+
+    auto* param = ctx.arena().make<GenericParamDeclAST>(name);
     param->loc = loc;
-    
-    // ─── Parse constraints ──────────────────────────────────────────────────
+
+    // Optional constraints: `: Trait1 + Trait2`.
     if (stream.match(TokenType::COLON)) {
         std::vector<NamedTypeAST*> constraints;
-        bool hasConstraint = false;
-        
-        while (!stream.isAtEnd() && !stream.check(TokenType::COMMA) &&
-               !stream.check(TokenType::GREATER) &&
-               !stream.check(TokenType::LBRACE) &&
-               !stream.check(TokenType::LPAREN) &&
-               !stream.check(TokenType::SEMICOLON)) {
-            
-            // ─── Parse the constraint type ────────────────────────────────
-            TypeAST* traitRef = parseNamedType(stream, ctx);
-            if (traitRef && traitRef->isa<NamedTypeAST>()) {
-                constraints.push_back(traitRef->as<NamedTypeAST>());
-                hasConstraint = true;
 
-                if (!stream.match(TokenType::PLUS)) {
-                    if (stream.check(TokenType::COMMA)) { // ',' is used to separate eacg generic parameter
-                        break;
-                    }
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                            "expected '+' to separate trait constraints");
-                    param->hasSyntaxError = true;
-
-                    synchronizeTo(stream, ctx, TokenType::PLUS, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
-                    if (stream.match(TokenType::PLUS)) {
-                        continue;
-                    }
+        while (!stream.isAtEnd()) {
+            // A constraint is a named type, possibly with generic
+            // arguments: `Container<int>`, `Eq`, `Ord`.
+            TypeAST* parsed = parseNamedType(stream, ctx);
+            if (!parsed || !parsed->isa<NamedTypeAST>()) {
+                ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                                   stream.currentLoc(),
+                                   "expected a trait constraint, got '",
+                                   stream.peekValue(), "'");
+                // If a comma or `>` follows, stop the constraint list.
+                // Otherwise skip a token to make progress.
+                if (stream.check(TokenType::COMMA) ||
+                    stream.check(TokenType::GREATER)) {
                     break;
                 }
-            } else {
-                auto* placeholder = ctx.arena.make<NamedTypeAST>(ctx.pool.intern(""));
-                placeholder->hasSyntaxError = true;
-                constraints.push_back(placeholder);
-                param->hasSyntaxError = true;
+                synchronizeTo(stream, ctx,
+                              TokenType::PLUS,
+                              TokenType::COMMA,
+                              TokenType::GREATER);
+                if (stream.match(TokenType::PLUS)) continue;
+                break;
+            }
+            constraints.push_back(parsed->as<NamedTypeAST>());
 
-                if (stream.match(TokenType::PLUS)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                            "expected trait constraint name before '+'");
-                    continue;
-                } 
-
-                synchronizeTo(stream, ctx, TokenType::PLUS, TokenType::COMMA, TokenType::GREATER, TokenType::LBRACE, TokenType::LPAREN, TokenType::SEMICOLON);
-                if (stream.match(TokenType::PLUS)) {
-                    continue;
-                }
+            // `+` continues the constraint list; anything else ends it.
+            if (!stream.match(TokenType::PLUS)) {
                 break;
             }
         }
-        
-        if (!hasConstraint) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected trait constraint after ':'");
-            param->hasSyntaxError = true;
-            return param;
-        }
-        
-        auto builder = ctx.arena.makeBuilder<NamedTypeAST*>();
-        for (auto* tr : constraints) {
-            builder.push_back(tr);
-        }
+
+        auto builder = ctx.arena().makeBuilder<NamedTypeAST*>(constraints.size());
+        for (NamedTypeAST* c : constraints) builder.push_back(c);
         param->constraints = builder.build();
+
+        if (param->constraints.empty()) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                               stream.currentLoc(),
+                               "expected a trait constraint after ':'");
+            param->hasSyntaxError = true;
+        }
     }
-    
+
     return param;
 }
 
+// ─── parseGenericParamDecls ─────────────────────────────────────────────
 
-ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
+/// @brief Parse the full `<T, U, V>` list at a declaration site.
+///
+/// If the current token is not `<`, returns an empty span and consumes
+/// nothing. Otherwise consumes the `<`, the parameters (separated by
+/// commas), and the `>`.
+///
+/// Empty `<>` is a syntax error: a generic parameter list with no
+/// parameters has no meaning, and the grammar requires at least one.
+ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream,
+                                                       ParserContext& ctx) {
+    // No `<`: no generic parameters. Return an empty span.
+    if (!stream.check(TokenType::LESS)) {
+        return ctx.arena().makeBuilder<GenericParamDeclAST*>().build();
+    }
+    stream.consume();   // `<`
+
+    // Empty `<>`.
+    if (stream.check(TokenType::GREATER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           stream.currentLoc(),
+                           "a generic parameter list must not be empty; "
+                           "remove the '<>' or add a parameter");
+        stream.consume();   // `>`
+        return ctx.arena().makeBuilder<GenericParamDeclAST*>().build();
+    }
+
+    std::vector<GenericParamDeclAST*> params;
+
+    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER) &&
+           ctx.canContinue()) {
+        GenericParamDeclAST* param = parseGenericParamDecl(stream, ctx);
+        if (param) params.push_back(param);
+
+        if (stream.match(TokenType::COMMA)) {
+            continue;
+        }
+        if (stream.check(TokenType::GREATER)) {
+            break;
+        }
+
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or '>' in generic parameter list, "
+                           "got '", stream.peekValue(), "'");
+        synchronizeTo(stream, ctx,
+                      TokenType::COMMA,
+                      TokenType::GREATER);
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
+    }
+
+    if (!stream.match(TokenType::GREATER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '>' to close generic parameter list, "
+                           "got '", stream.peekValue(), "'");
+    }
+
+    auto builder = ctx.arena().makeBuilder<GenericParamDeclAST*>(params.size());
+    for (GenericParamDeclAST* p : params) builder.push_back(p);
+    return builder.build();
+}
+
+// ─── parseGenericArgs ───────────────────────────────────────────────────
+
+/// @brief Parse the `<T, U, V>` list at a use site.
+///
+/// If the current token is not `<`, returns an empty span and consumes
+/// nothing. Otherwise consumes the `<`, the argument types, and the `>`.
+///
+/// Empty `<>` is a syntax error; a generic argument list must have at
+/// least one argument.
+///
+/// The arguments are types. The grammar's `type_arg` production allows
+/// either a type or an integer literal; the parser accepts both, and
+/// produces a `PrimitiveTypeAST` for the integer form (representing a
+/// constant generic argument). Sema validates the count and shape against
+/// the declaration's parameters.
+ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream,
+                                     ParserContext& ctx) {
+    if (!stream.check(TokenType::LESS)) {
+        return ctx.arena().makeBuilder<TypeAST*>().build();
+    }
+    stream.consume();   // `<`
+
+    if (stream.check(TokenType::GREATER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                           stream.currentLoc(),
+                           "a generic argument list must not be empty; "
+                           "remove the '<>' or add an argument");
+        stream.consume();   // `>`
+        return ctx.arena().makeBuilder<TypeAST*>().build();
+    }
+
     std::vector<TypeAST*> args;
 
-    if (!stream.match(TokenType::LESS)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '<' for generic argument list, got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<TypeAST*>().build();
-    }
-
-    if (stream.match(TokenType::GREATER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected generic argument type, please fill a type or remove empty '<>'");
-        return ctx.arena.makeBuilder<TypeAST*>().build();
-    }
-
-    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
-        TypeAST* type = parseType(stream, ctx);
-        if (type) {
-            args.push_back(type);
-
-            if (!stream.match(TokenType::COMMA)) {
-                if (stream.check(TokenType::GREATER)) {
-                    break;
-                }
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate generic arguments");
-
-                // '>' alone isn't a safe recovery target here - it's also the
-                // greater-than operator, so hunting forward for "the next '>'"
-                // risks stopping at an unrelated comparison in otherwise-valid
-                // code. LPAREN/LBRACE/SEMICOLON/decl-stmt-keywords are all
-                // unambiguous, so they're included as safer fallback targets;
-                // GREATER is only the best case, not the only one relied on.
-                synchronizeToBoundary(stream, ctx,
-                    {TokenType::GREATER,   // best case: it really is the close
-                     TokenType::COMMA,     // second best recovery: we can continue with another argument
-                     TokenType::LPAREN,    // generic call: foo<T>(...)
-                     TokenType::LBRACE,    // generic struct literal: Point<int>{...}
-                     TokenType::SEMICOLON});
-                if (stream.match(TokenType::COMMA)) {
-                    continue;
-                }
-                break;
-            }
+    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER) &&
+           ctx.canContinue()) {
+        // Integer literal as a generic argument (e.g., `Simd<float, 4>`).
+        if (stream.check(TokenType::INT_LITERAL)) {
+            Token intTok = stream.consume();
+            auto* intType = ctx.arena().make<PrimitiveTypeAST>(
+                PrimitiveKind::Int);
+            intType->loc = intTok.location;
+            // Store the lexeme for Sema to read. The parser does not
+            // decide whether the integer is a valid generic argument;
+            // that's Sema's job.
+            args.push_back(intType);
+            // The lexeme itself is not stored on PrimitiveTypeAST; a
+            // separate AST node would be needed to carry it. See the
+            // note at the end of this function.
         } else {
-            auto* placeholder = ctx.arena.make<UnknownTypeAST>();
-            placeholder->hasSyntaxError = true;
-            args.push_back(placeholder);
-
-            // handle case 'arg,, arg' missing arg between ','
-            if (stream.match(TokenType::COMMA)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                        "expected generic argument type before ','");
-                continue;
+            TypeAST* arg = parseType(stream, ctx);
+            if (!arg) {
+                ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                                   stream.currentLoc(),
+                                   "expected a generic argument type, got '",
+                                   stream.peekValue(), "'");
+                arg = ctx.arena().make<UnknownTypeAST>();
+                arg->loc = stream.currentLoc();
+                arg->hasSyntaxError = true;
             }
+            args.push_back(arg);
+        }
 
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "failed to parse generic argument, got '", stream.peekValue(), "'");
-            
-            synchronizeToBoundary(stream, ctx,
-                {TokenType::GREATER, TokenType::COMMA, TokenType::LPAREN, TokenType::LBRACE, TokenType::SEMICOLON});
-            if (stream.match(TokenType::COMMA)) {
-                continue;
-            }
+        if (stream.match(TokenType::COMMA)) {
+            continue;
+        }
+        if (stream.check(TokenType::GREATER)) {
             break;
         }
+
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or '>' in generic argument list, "
+                           "got '", stream.peekValue(), "'");
+        synchronizeTo(stream, ctx,
+                      TokenType::COMMA,
+                      TokenType::GREATER);
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
     }
 
-    // ─── Handle missing closing '>' ──────────────────────────────────────
-    if (!stream.check(TokenType::GREATER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '>' to close generic argument list");
-    } else {
-        stream.consume(); // Consume '>'
+    if (!stream.match(TokenType::GREATER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '>' to close generic argument list, "
+                           "got '", stream.peekValue(), "'");
     }
 
-    auto builder = ctx.arena.makeBuilder<TypeAST*>();
-    for (auto* arg : args) {
-        builder.push_back(arg);
-    }
-
+    auto builder = ctx.arena().makeBuilder<TypeAST*>(args.size());
+    for (TypeAST* a : args) builder.push_back(a);
     return builder.build();
 }
 
+// =============================================================================
+// 9.3 Argument and parameter lists
+// =============================================================================
+
+// ─── parseArgList ───────────────────────────────────────────────────────
+
+/// @brief Parse a `(a, b, c)` argument list for a call.
+///
+/// Consumes the opening and closing parentheses and the arguments. The
+/// empty list `()` is legal and produces an empty span.
+///
+/// The argument list does not permit trailing commas; a `,` before `)`
+/// is a syntax error. The comma check happens after each argument.
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
-    std::vector<ExprAST*> args;
-    
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(' for argument list, got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<ExprAST*>().build();
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '(' for argument list, got '",
+                           stream.peekValue(), "'");
+        return ctx.arena().makeBuilder<ExprAST*>().build();
     }
-    
+
     if (stream.match(TokenType::RPAREN)) {
-        return ctx.arena.makeBuilder<ExprAST*>().build();
+        return ctx.arena().makeBuilder<ExprAST*>().build();
     }
 
-    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        // ─── Check if this looks like a type argument ──────────────────────
-        // We need to look ahead to see if this is a type in a type context.
-        // The parser can't always know, so we parse as identifier and let Sema decide.
-        bool isTypeArg = false;
-        
-        if (stream.check(TokenType::IDENTIFIER)) {
-            // Check if it's a primitive type keyword
-            if (is_primitive_type(stream.peekType())) {
-                isTypeArg = true;
-            } else {
-                // For user-defined types, we need to look ahead to see if
-                // this is in a type context. We'll let Sema resolve this.
-                // For now, parse as identifier and mark as potential type.
-                // We'll detect this later based on the intrinsic context.
-            }
-        }
-        
-        if (isTypeArg) {
-            // ─── Parse as a primitive type ──────────────────────────────────
-            // For primitive types, parseType() will create a PrimitiveTypeAST.
-            // But we need to wrap it in a way that Sema can recognize.
-            // We'll parse the type and then create an IdentifierExprAST
-            // that references it.
-            TypeAST* type = parseType(stream, ctx);
-            if (type) {
-                // ─── Create an IdentifierExprAST with isType = true ────────
-                // For primitive types, we need to create a name for the type.
-                // We'll use the type's string representation as the name.
-                std::string typeName = typeToString(type, ctx.pool);
-                InternedString name = ctx.pool.intern(typeName);
-                
-                auto* idExpr = ctx.arena.make<IdentifierExprAST>(name);
-                idExpr->loc = stream.currentLoc();
-                idExpr->isType = true;
-                idExpr->resolvedTypeNode = type;
-                idExpr->resolvedType = type;
-                idExpr->valueState = ValueState::Definite;
-                idExpr->isLValue = false;
-                idExpr->isConst = true;
-                
-                args.push_back(idExpr);
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                        "expected type, got '", stream.peekValue(), "'");
-                auto* placeholder = ctx.arena.make<UnknownExprAST>();
-                placeholder->hasSyntaxError = true;
-                args.push_back(placeholder);
-            }
-        } else {
-            // ─── Parse as regular expression ────────────────────────────────
-            ExprAST* arg = parseExpr(stream, ctx);
-            if (arg) {
-                args.push_back(arg);
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                        "failed to parse argument, got '", stream.peekValue(), "'");
-                
-                auto* placeholder = ctx.arena.make<UnknownExprAST>();
-                placeholder->hasSyntaxError = true;
-                args.push_back(placeholder);
+    std::vector<ExprAST*> args;
 
-                if (stream.match(TokenType::COMMA)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                            "expected argument expression before ','");
-                    continue;
-                }
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN) &&
+           ctx.canContinue()) {
+        ExprAST* arg = parseRequiredExpr(stream, ctx, "argument expression");
+        args.push_back(arg);
 
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (stream.match(TokenType::COMMA)) {
-                    continue;
-                }
-                break;
-            }
-        }
-        
-        if (!stream.match(TokenType::COMMA)) {
+        if (stream.match(TokenType::COMMA)) {
+            // A comma after the last argument is a trailing comma:
+            // the next token is `)`. The grammar does not permit this
+            // in argument lists.
             if (stream.check(TokenType::RPAREN)) {
+                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                                   stream.currentLoc(),
+                                   "trailing comma in argument list");
                 break;
             }
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ',' to separate arguments");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (stream.match(TokenType::COMMA)) {
-                continue;
-            }
+            continue;
+        }
+        if (stream.check(TokenType::RPAREN)) {
             break;
         }
+
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or ')' in argument list, got '",
+                           stream.peekValue(), "'");
+        synchronizeTo(stream, ctx,
+                      TokenType::COMMA,
+                      TokenType::RPAREN);
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
     }
-    
-    // ─── Handle missing closing ')' ──────────────────────────────────────────
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ')' to close argument list");
-    } else {
-        stream.consume(); // Consume ')'
+
+    if (!stream.match(TokenType::RPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ')' to close argument list, got '",
+                           stream.peekValue(), "'");
     }
-    
-    auto builder = ctx.arena.makeBuilder<ExprAST*>();
-    for (auto* arg : args) {
-        builder.push_back(arg);
-    }
-    
+
+    auto builder = ctx.arena().makeBuilder<ExprAST*>(args.size());
+    for (ExprAST* a : args) builder.push_back(a);
     return builder.build();
 }
 
-std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    std::vector<ParamAST*> params;
-    
+// ─── parseParamList ─────────────────────────────────────────────────────
+
+/// @brief Parse a `(a T, b U)` parameter list.
+///
+/// `allowNames` controls whether parameters may have names. The leading
+/// group of a function declaration or a function literal uses
+/// `allowNames = true`; subsequent stages of a curried signature use
+/// `allowNames = false` and each parameter is a bare type.
+///
+/// Variadic parameters (`...T`) are allowed only in the named form; a
+/// variadic parameter must be the last in its group. The parser does not
+/// enforce the "must be last" rule at parse time — it produces a
+/// `ParamAST` with `isVariadic = true` and lets Sema enforce the
+/// constraint. This lets the parser accept an argument list with a
+/// variadic in the middle and report a targeted error later.
+std::vector<ParamAST*> parseParamList(TokenStream& stream,
+                                      ParserContext& ctx,
+                                      bool allowNames) {
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '(' for parameter list, got '", stream.peekValue(), "'");
-        return params;
-    }
-    
-    if (stream.match(TokenType::RPAREN)) {
-        return params;
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '(' for parameter list, got '",
+                           stream.peekValue(), "'");
+        return {};
     }
 
-    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
+    std::vector<ParamAST*> params;
+
+    if (stream.match(TokenType::RPAREN)) {
+        return params;   // empty list
+    }
+
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN) &&
+           ctx.canContinue()) {
         ParamAST* param = parseSingleParameter(stream, ctx, allowNames);
-        params.push_back(param);
-        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-        if (!stream.match(TokenType::COMMA)) {
+        if (param) params.push_back(param);
+
+        if (stream.match(TokenType::COMMA)) {
+            // Trailing comma is not permitted.
             if (stream.check(TokenType::RPAREN)) {
+                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                                   stream.currentLoc(),
+                                   "trailing comma in parameter list");
                 break;
             }
-            // Ran off the end, or stopped before a closer that isn't ours
-            // (e.g. an enclosing '}') - can't continue this list from here.
-            // Without this break, the loop would re-attempt
-            // parseSingleParameter() on the same un-consumed foreign token
-            // forever.
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                        "expected ',' to separate parameters");
+            continue;
+        }
+        if (stream.check(TokenType::RPAREN)) {
             break;
         }
+
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or ')' in parameter list, got '",
+                           stream.peekValue(), "'");
+        synchronizeTo(stream, ctx,
+                      TokenType::COMMA,
+                      TokenType::RPAREN);
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
     }
-    
-    // ─── Handle missing closing ')' ──────────────────────────────────────────
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ')' to close parameter list");
-    } else {
-        stream.consume(); // Consume ')'
+
+    if (!stream.match(TokenType::RPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ')' to close parameter list, got '",
+                           stream.peekValue(), "'");
     }
-    
+
     return params;
 }
 
-ParamAST* parseSingleParameter(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    SourceLocation loc = stream.currentLoc();
+// ─── parseSingleParameter ───────────────────────────────────────────────
 
-    if (stream.check(TokenType::COMMA)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected parameter before ','");
-        // Create a dummy ParamAST with empty name and unknown type
-        auto* placeholder = ctx.arena.make<ParamAST>(
-            ctx.pool.intern(""), 
-            ctx.arena.make<UnknownTypeAST>(), 
-            false, 
-            false
-        );
-        placeholder->hasSyntaxError = true;
-        placeholder->loc = loc;
-        return placeholder;
-    }
-    
-    // ─── Parse const modifier (only allowed when names are allowed) ────────
-    bool isConstParam = false;
+/// @brief Parse one parameter inside a parameter list.
+///
+/// The parameter's form depends on `allowNames`:
+///
+///   allowNames = true:   `[const] NAME [...] TYPE`
+///   allowNames = false:  `TYPE`
+///
+/// A `const` before the name marks a read-only reference parameter.
+/// A `...` before the type marks a variadic parameter. Both modifiers
+/// are only meaningful in the named form; a `const` or `...` in the
+/// unnamed form is a syntax error.
+ParamAST* parseSingleParameter(TokenStream& stream,
+                               ParserContext& ctx,
+                               bool allowNames) {
+    const SourceLocation loc = stream.currentLoc();
+
+    // ─── Named form ───────────────────────────────────────────────────────
     if (allowNames) {
-        isConstParam = stream.match(TokenType::CONST);
-    }
-    
-    // ─── Parse parameter name (if allowed) ────────────────────────────────
-    InternedString name;
-    bool hasName = false;
-    
-    if (allowNames) {
+        bool isConstParam = stream.match(TokenType::KW_CONST);
+
+        // Name is required.
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected parameter name, got '", stream.peekValue(), "'");
-            // Create a dummy ParamAST with empty name and unknown type
-            auto* placeholder = ctx.arena.make<ParamAST>(
-                ctx.pool.intern(""), 
-                ctx.arena.make<UnknownTypeAST>(), 
-                false, 
-                isConstParam
-            );
-            placeholder->hasSyntaxError = true;
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                               stream.currentLoc(),
+                               "expected a parameter name, got '",
+                               stream.peekValue(), "'");
+            // Recover: produce a placeholder parameter with an
+            // UnknownTypeAST type.
+            auto* placeholder = ctx.arena().make<ParamAST>(
+                ctx.pool().intern(""),
+                ctx.arena().make<UnknownTypeAST>(),
+                /*isVariadic=*/false,
+                isConstParam);
             placeholder->loc = loc;
+            placeholder->hasSyntaxError = true;
             return placeholder;
         }
-        
         Token nameTok = stream.consume();
-        name = ctx.pool.intern(nameTok.value);
-        hasName = true;
+        InternedString name = ctx.pool().intern(nameTok.value);
+
+        // Variadic modifier.
+        bool isVariadic = stream.match(TokenType::VARIADIC);
+
+        // Type.
+        TypeAST* type = parseType(stream, ctx);
+        if (!type) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                               stream.currentLoc(),
+                               "expected a type for parameter '",
+                               ctx.pool().lookup(name), "', got '",
+                               stream.peekValue(), "'");
+            type = ctx.arena().make<UnknownTypeAST>();
+            type->loc = stream.currentLoc();
+            type->hasSyntaxError = true;
+        }
+
+        // A variadic parameter's type is `[*]T` in the AST, regardless
+        // of how it was written. The grammar's `param` production has
+        // `IDENTIFIER '...' type`, which is read as "collect trailing
+        // arguments into a `[*]type`". The parser wraps the type in an
+        // ArrayTypeAST with the Dynamic kind.
+        TypeAST* finalType = type;
+        if (isVariadic) {
+            auto* arrayType = ctx.arena().make<ArrayTypeAST>(
+                ArrayKind::Dynamic, 0, type);
+            arrayType->loc = type->loc;
+            finalType = arrayType;
+        }
+
+        auto* param = ctx.arena().make<ParamAST>(
+            name, finalType, isVariadic, isConstParam);
+        param->loc = loc;
+        if (finalType->hasSyntaxError) param->hasSyntaxError = true;
+        return param;
     }
-    
-    // ─── Parse variadic modifier ───────────────────────────────────────────
-    bool isVariadic = stream.match(TokenType::VARIADIC);
-    
-    // ─── Parse parameter type ──────────────────────────────────────────────
+
+    // ─── Unnamed form ─────────────────────────────────────────────────────
+    //
+    // A parameter in a subsequent curry stage: just a type.
     TypeAST* type = parseType(stream, ctx);
     if (!type) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected parameter type, got '", stream.peekValue(), "'");
-        
-        // Create a dummy ParamAST with whatever name we have and unknown type
-        auto* placeholder = ctx.arena.make<ParamAST>(
-            name, 
-            ctx.arena.make<UnknownTypeAST>(), 
-            isVariadic, 
-            isConstParam
-        );
-        placeholder->hasSyntaxError = true;
-        placeholder->loc = loc;
-        return placeholder;
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                           stream.currentLoc(),
+                           "expected a parameter type, got '",
+                           stream.peekValue(), "'");
+        type = ctx.arena().make<UnknownTypeAST>();
+        type->loc = stream.currentLoc();
+        type->hasSyntaxError = true;
     }
-    
-    // ─── If variadic, wrap the type in [*]T ──────────────────────────────
-    TypeAST* finalType = type;
-    if (isVariadic) {
-        finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
-    }
-    
-    // ─── Create ParamAST ──────────────────────────────────────────────────
-    auto* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
+
+    auto* param = ctx.arena().make<ParamAST>(
+        ctx.pool().intern(""),   // unnamed
+        type,
+        /*isVariadic=*/false,
+        /*isConstParam=*/false);
     param->loc = loc;
-    
-    // ─── Validation ──────────────────────────────────────────────────────
-    if (allowNames && !hasName) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
-                                "expected parameter name before type");
-    }
-    
-    if (!allowNames && hasName) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                                "parameter name '", ctx.pool.lookup(name), 
-                                "' is not allowed after first '->'");
-    }
-        
-    if (isVariadic && stream.check(TokenType::COMMA)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                "variadic parameter must be the last parameter");
-    }
-    
+    if (type->hasSyntaxError) param->hasSyntaxError = true;
     return param;
 }
 
 // =============================================================================
-// parseImportPath
+// 9.4 Import paths
 // =============================================================================
 
-std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx) {
-    std::vector<InternedString> pathParts;
-    
-    while (!stream.isAtEnd()) {
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected identifier in import path, got '", stream.peekValue(), "'");
-            synchronizeToBoundary(stream, ctx);
+/// @brief Parse a dotted import path: `a`, `a.b`, `a.b.c`.
+///
+/// Returns the sequence of identifiers. Does not combine them into a
+/// single InternedString; the caller does that.
+///
+/// The parser does not resolve the path. The path is stored as written
+/// and the CLI's linking step matches it against the module table.
+std::vector<InternedString> parseImportPath(TokenStream& stream,
+                                            ParserContext& ctx) {
+    std::vector<InternedString> parts;
+
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        return parts;
+    }
+
+    while (true) {
+        Token part = stream.consume();
+        parts.push_back(ctx.pool().intern(part.value));
+
+        if (!stream.match(TokenType::DOT)) {
             break;
         }
-        
-        Token tok = stream.consume();
-        pathParts.push_back(ctx.pool.intern(tok.value));
-        
-        if (stream.match(TokenType::DOT)) {
-            continue;
+
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                               stream.currentLoc(),
+                               "expected an identifier after '.' in import "
+                               "path, got '", stream.peekValue(), "'");
+            break;
         }
-        
-        break;
     }
-    
-    std::string fullPath;
-    for (size_t i = 0; i < pathParts.size(); ++i) {
-        if (i > 0) fullPath += ".";
-        fullPath += std::string(ctx.pool.lookup(pathParts[i]));
-    }
-    
-    return pathParts;
+
+    return parts;
 }
 
-} // namespace parser
+// =============================================================================
+// 9.5 Trait references
+// =============================================================================
+
+/// @brief Parse a comma-separated list of trait names: `A, B, C`.
+///
+/// Used in a struct's `: Trait1, Trait2` conformance clause and in a
+/// trait's `: Parent1, Parent2` inheritance clause. Each entry is a
+/// named type; it may carry generic arguments (`Container<int>`).
+///
+/// The list is not bounded by a delimiter; it ends when the next token
+/// is not a comma following a successful ref. The caller is responsible
+/// for having consumed the leading `:` and for handling whatever token
+/// stops the list (typically `{`).
+ArenaSpan<NamedTypeAST*> parseTraitRefList(TokenStream& stream,
+                                           ParserContext& ctx) {
+    std::vector<NamedTypeAST*> refs;
+
+    while (true) {
+        TypeAST* parsed = parseNamedType(stream, ctx);
+        if (!parsed || !parsed->isa<NamedTypeAST>()) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                               stream.currentLoc(),
+                               "expected a trait name, got '",
+                               stream.peekValue(), "'");
+            // If a comma follows, skip the bad entry and continue.
+            if (!stream.match(TokenType::COMMA)) break;
+            continue;
+        }
+
+        refs.push_back(parsed->as<NamedTypeAST>());
+
+        if (!stream.match(TokenType::COMMA)) {
+            break;
+        }
+    }
+
+    auto builder = ctx.arena().makeBuilder<NamedTypeAST*>(refs.size());
+    for (NamedTypeAST* r : refs) builder.push_back(r);
+    return builder.build();
+}
+
+// =============================================================================
+// 9.6 Host target sigils
+// =============================================================================
+
+/// @brief Parse `#host(name)`, `#native(name)`, or `#builtin(name)`.
+///
+/// The caller has established that the current token is `#`; it may have
+/// peeked the following identifier to decide the target is a host target
+/// or something else. This function consumes the entire sequence:
+///
+///   `#` IDENTIFIER `(` IDENTIFIER `)`
+///
+/// The first IDENTIFIER must be `host`, `native`, or `builtin`; anything
+/// else is an error. The second IDENTIFIER is the target name.
+///
+/// On success, `kind` is set to the specific `HostTypeKind` and
+/// `targetName` to the interned identifier. Returns true.
+///
+/// On error, reports a diagnostic and returns false. The caller decides
+/// how to recover.
+bool parseHostTarget(TokenStream& stream,
+                     ParserContext& ctx,
+                     HostTypeKind& kind,
+                     InternedString& targetName) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::HASH)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '#', got '", stream.peekValue(), "'");
+        return false;
+    }
+
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           stream.currentLoc(),
+                           "expected a target kind after '#', got '",
+                           stream.peekValue(), "'");
+        return false;
+    }
+
+    Token kindTok = stream.consume();
+    std::string_view kindName = ctx.pool().lookupView(
+        ctx.pool().intern(kindTok.value));
+
+    if (kindName == "host") {
+        kind = HostTypeKind::Host;
+    } else if (kindName == "native") {
+        kind = HostTypeKind::Native;
+    } else if (kindName == "builtin") {
+        kind = HostTypeKind::Builtin;
+    } else {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           kindTok.location,
+                           "expected 'host', 'native', or 'builtin' after "
+                           "'#', got '", kindTok.value, "'");
+        return false;
+    }
+
+    // `(`
+    if (!stream.match(TokenType::LPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '(' after '#", kindTok.value, "', got '",
+                           stream.peekValue(), "'");
+        return false;
+    }
+
+    // Target name.
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           stream.currentLoc(),
+                           "expected a target name inside '#",
+                           kindTok.value, "(...)', got '",
+                           stream.peekValue(), "'");
+        return false;
+    }
+    Token targetTok = stream.consume();
+    targetName = ctx.pool().intern(targetTok.value);
+
+    // `)`
+    if (!stream.match(TokenType::RPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ')' to close '#", kindTok.value,
+                           "(...)', got '", stream.peekValue(), "'");
+        return false;
+    }
+
+    return true;
+}
+
+// =============================================================================
+// 9.7 Small shared utilities
+// =============================================================================
+
+// ─── Semicolon consumers ────────────────────────────────────────────────
+
+void consumeDeclarationSemicolon(TokenStream& stream,
+                                 ParserContext& ctx,
+                                 bool required,
+                                 const char* declKind) {
+    if (stream.match(TokenType::SEMICOLON)) return;
+    if (!required) return;
+
+    ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                       stream.currentLoc(),
+                       "expected ';' after ", declKind, " declaration");
+}
+
+void consumeSubDeclSemicolon(TokenStream& stream,
+                             ParserContext& ctx,
+                             bool required,
+                             const char* declKind) {
+    if (stream.match(TokenType::SEMICOLON)) return;
+    if (!required) return;
+
+    ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                       stream.currentLoc(),
+                       "expected ';' after ", declKind);
+}
+
+// ─── makeFuncType ───────────────────────────────────────────────────────
+
+FuncTypeAST* makeFuncType(ParserContext& ctx,
+                          std::vector<ParamAST*>&& params,
+                          TypeAST* returnType) {
+    auto* ft = ctx.arena().make<FuncTypeAST>();
+    auto builder = ctx.arena().makeBuilder<ParamAST*>(params.size());
+    for (ParamAST* p : params) builder.push_back(p);
+    ft->params = builder.build();
+    ft->returnType = returnType;
+    return ft;
+}
+
+// ─── Item-start predicates ──────────────────────────────────────────────
+
+bool startsStructFieldItem(TokenType t) {
+    // A struct body item is a field, a const field, or a `@[...]`
+    // attribute list preceding one of those. `static` is checked
+    // separately by the struct body's list parser, before this
+    // predicate is consulted.
+    return t == TokenType::IDENTIFIER
+        || t == TokenType::KW_CONST
+        || t == TokenType::AT_SIGN;
+}
+
+bool startsEnumVariantItem(TokenType t) {
+    // An enum body item is a variant or a `@[...]` attribute list
+    // preceding one.
+    return t == TokenType::IDENTIFIER
+        || t == TokenType::AT_SIGN;
+}
+
+} // namespace lucid::parser

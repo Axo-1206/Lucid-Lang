@@ -94,6 +94,7 @@ enum class TokenType : uint16_t {
     KW_FN_MARKER,   // fn  — the function-type stage marker (not the FN frame)
     KW_AS,          // as
     KW_SELF,        // Self
+    KW_STATIC,      // static
 
     // ─── Statement keywords ─────────────────────────────────────────────
     KW_IF,          // if
@@ -284,7 +285,7 @@ inline bool isFrameKeyword(TokenType t) noexcept {
 }
 
 inline bool isContentMarker(TokenType t) noexcept {
-    return t >= TokenType::KW_STRUCT && t <= TokenType::KW_SELF;
+    return t >= TokenType::KW_STRUCT && t <= TokenType::KW_STATIC;
 }
 
 inline bool isStatementKeyword(TokenType t) noexcept {

@@ -1,58 +1,52 @@
-/// @file LookAhead.cpp
-/// @brief Lookahead helper functions for the parser.
-/// 
-/// These functions peek ahead at the token stream without consuming tokens
-/// to determine what syntactic construct we're looking at. They are used
-/// by the parser to disambiguate between similar constructs.
-/// 
-/// ## Design Principles
-/// 
-/// 1. **Non-consuming**: None of these functions should advance the token stream.
-/// 2. **Fast**: They should only peek at a few tokens ahead.
-/// 3. **Shape, not validation**: A lookahead answers the disambiguation
-///    question "does this *shape* like construct X?" — it does NOT validate
-///    the construct. Malformed input that still has the right shape returns
-///    `true`, so the real parser can produce a targeted diagnostic with the
-///    correct context. Only input that clearly cannot be construct X returns
-///    `false`. This is what makes them error-recovery-friendly: the
-///    forgotten-marker form `(a int)(b int) -> int { ... }` is still an anon
-///    func by shape, even though `parseFuncTypeParts` will report the missing
-///    `fn`/`cls`.
-/// 4. **Conservative on false**: If a function is unsure, it returns `false`
-///    so the caller tries the next branch. Preferring `false` over `true`
-///    means a mis-parse shows up as a "wrong construct" error rather than
-///    silent mis-dispatch — easier to debug and easier to recover from.
-/// 
-/// ## Usage
-/// 
-/// ```cpp
-/// if (looksLikeFuncDecl(stream, ctx)) {
-///     return parseFuncDecl(stream, ctx);
-/// } else {
-///     return parseVarDecl(stream, ctx);
-/// }
-/// ```
+/**
+ * @file LookAhead.cpp
+ * @brief Non-consuming disambiguation for the parser.
+ *
+ * ─── What this file implements ────────────────────────────────────────────
+ *   - looksLikeFuncDecl     `let`/`const` NAME ... fn (...) ... header?
+ *   - looksLikeAnonFunc     `fn (...)` ... `{ ... }` at expression position?
+ *
+ * Both save the stream position on entry, scan forward, and restore the
+ * position before returning. Neither consumes tokens the caller will see.
+ *
+ * ─── Design: shape, not validation ────────────────────────────────────────
+ * A lookahead answers the disambiguation question "does this *shape* like
+ * construct X?" — it does NOT validate the construct. Malformed input that
+ * still has the right shape returns `true`, so the real parser produces a
+ * targeted diagnostic with the correct context. Only input that clearly
+ * cannot be construct X returns `false`.
+ *
+ * This is what makes the lookaheads error-recovery-friendly. A function
+ * declaration with a missing `=` still shapes like a function declaration
+ * (`let f fn(...) -> int`), so `looksLikeFuncDecl` returns `true`, the
+ * dispatcher routes to `parseFuncDecl`, and `parseFuncDecl` reports the
+ * missing `=` with a specific error. If the lookahead had returned
+ * `false`, the dispatcher would route to `parseVarDecl`, which would
+ * mis-parse the whole thing as a variable declaration and produce a
+ * cascade of unrelated errors.
+ *
+ * ─── Design: conservative on false ────────────────────────────────────────
+ * If a function is unsure, it returns `false` so the caller tries the next
+ * branch. Preferring `false` over `true` means a mis-parse shows up as a
+ * "wrong construct" error rather than silent mis-dispatch — easier to
+ * debug and easier to recover from.
+ *
+ * ─── Local helpers ────────────────────────────────────────────────────────
+ * This file defines two file-local helpers, `skipBalanced` and
+ * `skipOneType`. They are the scanning primitives both lookaheads use.
+ * They are not declared in Parser.hpp because no other file needs them.
+ */
 
-#include "../Parser.hpp"
+#include "parser/Parser.hpp"
 #include "core/Tokens.hpp"
 
-namespace parser {
+namespace lucid::parser {
+
+namespace {
 
 // =============================================================================
-// Local Helpers
+// Local scanning primitives
 // =============================================================================
-//
-// Both lookaheads below need the same two low-level operations:
-//
-//   - skipBalanced()  — skip a matched pair of brackets
-//   - skipOneType()   — skip one type in the token stream
-//
-// Neither validates. Both are shape-skips: they consume a sequence of
-// tokens that *looks like* the thing being skipped, and stop. The real
-// parsers produce all structural diagnostics.
-//
-// They are file-local because no caller outside the two lookaheads needs
-// them. If a third lookahead ever needs them, promote them to the header.
 
 /// @brief Skip a balanced pair of brackets starting at the current token.
 ///
@@ -61,17 +55,22 @@ namespace parser {
 /// (EOF before the close), the stream position is unspecified — the
 /// caller must restore it.
 ///
+/// The scan tracks depth so that nested pairs of the same kind are
+/// skipped correctly: `( ( ) )` ends after the second `)`, and
+/// `( ( )` fails at EOF.
+///
 /// @param stream The token stream.
 /// @param open   The opening bracket token type (LPAREN, LBRACKET, LESS).
 /// @param close  The matching closing token type.
 /// @return true on success, false on EOF before the close.
-static bool skipBalanced(TokenStream& stream,
-                         TokenType open, TokenType close) {
+bool skipBalanced(TokenStream& stream,
+                  TokenType open,
+                  TokenType close) {
     if (!stream.check(open)) return false;
 
     int depth = 0;
     while (!stream.isAtEnd()) {
-        TokenType t = stream.peekType();
+        const TokenType t = stream.peekType();
 
         if (t == open) {
             depth++;
@@ -84,6 +83,10 @@ static bool skipBalanced(TokenStream& stream,
             if (depth == 0) return true;
             continue;
         }
+        // Any other token, including another bracket kind, is consumed
+        // without affecting this pair's depth. `( [ ] )` is a balanced
+        // LPAREN-RPAREN pair containing a balanced LBRACKET-RBRACKET
+        // pair; the inner brackets don't affect the outer depth.
         stream.consume();
     }
     return false;
@@ -91,46 +94,47 @@ static bool skipBalanced(TokenStream& stream,
 
 /// @brief Skip one type in the token stream, for lookahead purposes.
 ///
-/// This is a *shape* skip, not a full type parse. It recognizes the
-/// token sequences that can appear in a type and stops at the first
-/// token that cannot. It does NOT validate the type — `Vec2<int`
-/// (unclosed), `fn (int) ->` (missing return), `[N]T` with a bad `N`
-/// all pass through. The real parser produces any structural errors.
+/// This is a *shape* skip, not a full type parse. It recognizes the token
+/// sequences that can appear in a type and stops at the first token that
+/// cannot continue the type. It does NOT validate the type: `Vec2<int`
+/// (unclosed), `fn (int) ->` (missing return), `[N]T` with a bad `N`, and
+/// every other malformed type pass through. The real parser produces the
+/// structural errors.
 ///
 /// Recognized shapes:
-///   - Primitive keywords      `int`, `float`, `bool`, ...
-///   - Named types             `Vec2`, `mod:Type`, `Box<int>`
-///   - Modifiers               `T?`, `T!`, `T?!`
-///   - Arrays                  `[N]T`, `[*]T`, `[_]T`
-///   - Ref / ptr               `&T`, `*T`
-///   - Function types          `fn (...)`, `cls (...)...`
+///   - Primitive type names   `int`, `float`, ... (as identifiers)
+///   - Named types            `Vec2`, `mod::Type`, `Box<int>`
+///   - Modifiers              `T?`, `T!`, `T?!`
+///   - Arrays                 `[N]T`, `[*]T`, `[_]T`
+///   - Ref                    `&T`
+///   - Function types         `fn (...)` (possibly curried)
+///
+/// The `mod::Type` shape uses `DOUBLE_COLON` in the current grammar. The
+/// lookahead accepts either `::` (the current spelling) or `:` (an older
+/// spelling that should not appear, but is cheap to tolerate).
 ///
 /// @param stream The token stream.
 /// @return true if at least one type token was consumed, false otherwise.
-static bool skipOneType(TokenStream& stream) {
+bool skipOneType(TokenStream& stream) {
     bool consumedAny = false;
 
     while (!stream.isAtEnd()) {
-        TokenType t = stream.peekType();
+        const TokenType t = stream.peekType();
 
-        // ─── Primitive keyword: `int`, `float`, ... ────────────────────
-        if (stream.isPrimitiveTypeToken(t)) {
-            stream.consume();
-            return true;
-        }
-
-        // ─── Identifier: named type, possibly qualified or generic ─────
+        // ─── Identifier: named type, possibly qualified or generic ──────
+        //
+        // Under the clean-model design, primitive type names (`int`,
+        // `float`, `bool`, ...) are ordinary identifiers. The lookahead
+        // treats them the same as any other name: consume the identifier,
+        // then check for qualification and generic arguments.
         if (t == TokenType::IDENTIFIER) {
             stream.consume();
             consumedAny = true;
 
-            // Module qualification: `mod:Type`. Note the lookahead does
-            // NOT distinguish `mod:Type` (module-qualified type) from
-            // `member:Type` in some other position — it just skips the
-            // identifier, the ':', and the identifier. If the real parser
-            // needed to know which, it would say so; the lookahead only
-            // needs to know "a type shape ends here."
-            if (stream.match(TokenType::COLON)) {
+            // Module qualification: `mod::Type`. The `::` is a single
+            // token (`DOUBLE_COLON`) in the current grammar.
+            if (stream.check(TokenType::DOUBLE_COLON)) {
+                stream.consume();   // `::`
                 if (stream.check(TokenType::IDENTIFIER)) {
                     stream.consume();
                 } else {
@@ -143,62 +147,74 @@ static bool skipOneType(TokenStream& stream) {
                 skipBalanced(stream, TokenType::LESS, TokenType::GREATER);
             }
 
-            // Suffixes: `?`, `!` (in either order; the parser enforces
-            // that `!?` is invalid — the lookahead does not).
+            // Suffixes: `?`, `!`. Order is `?!` only, but the lookahead
+            // accepts either order; the parser enforces the rule.
             stream.match(TokenType::QUESTION);
             stream.match(TokenType::BANG);
             return true;
         }
 
-        // ─── Array: `[N]T`, `[*]T`, `[_]T` ─────────────────────────────
+        // ─── Array: `[N]T`, `[*]T`, `[_]T` ──────────────────────────────
         if (t == TokenType::LBRACKET) {
-            stream.consume();
+            stream.consume();   // `[`
 
+            // The size slot: an integer literal, `*`, or `_`.
             if (stream.check(TokenType::INT_LITERAL) ||
-                stream.check(TokenType::ARRAY_STAR) ||
-                stream.check(TokenType::ARRAY_UNDER)) {
+                stream.check(TokenType::MUL) ||
+                stream.check(TokenType::UNDERSCORE)) {
                 stream.consume();
             }
             if (!stream.match(TokenType::RBRACKET)) {
                 return consumedAny;   // malformed; stop here
             }
 
-            // Recurse for the element type.
+            // The element type follows. Recurse to consume it.
             return skipOneType(stream);
         }
 
-        // ─── Reference / pointer: `&T`, `*T` ───────────────────────────
-        if (t == TokenType::AMPERSAND || t == TokenType::MUL) {
-            stream.consume();
+        // ─── Reference: `&T` ────────────────────────────────────────────
+        if (t == TokenType::BIT_AND) {
+            stream.consume();   // `&`
             return skipOneType(stream);
         }
 
-        // ─── Function type: `fn (...)...`, `cls (...)...` ──────────────
-        if (is_function_type_keyword(t)) {
-            stream.consume();
+        // ─── Function type: `fn (...)` (possibly curried) ───────────────
+        //
+        // The grammar has one function-type marker (`fn`) and requires it
+        // on every stage. The lookahead walks stages until it finds a
+        // non-`fn` token or the end of the type.
+        if (t == TokenType::KW_FN_MARKER) {
+            stream.consume();   // `fn`
+
+            // A parameter group is required at every stage. Missing the
+            // `(` is a shape failure: the lookahead stops here.
             while (!stream.isAtEnd()) {
-                if (!stream.check(TokenType::LPAREN)) return consumedAny;
-                if (!skipBalanced(stream, TokenType::LPAREN, TokenType::RPAREN)) {
+                if (!stream.check(TokenType::LPAREN)) {
                     return consumedAny;
                 }
+                if (!skipBalanced(stream, TokenType::LPAREN, TokenType::RPAREN)) {
+                    return consumedAny;   // unclosed; stop here
+                }
 
-                // Another marker → adjacent stage.
-                if (is_function_type_keyword(stream.peekType())) {
+                // After a group, one of:
+                //   - another `fn` (adjacent stage in a leading cluster)
+                //   - an arrow `->` (curried continuation or return type)
+                //   - anything else (void return; the type ends here)
+                if (stream.check(TokenType::KW_FN_MARKER)) {
                     stream.consume();
                     continue;
                 }
 
-                // Arrow → either another stage or the return type.
                 if (stream.match(TokenType::ARROW)) {
-                    if (is_function_type_keyword(stream.peekType())) {
+                    if (stream.check(TokenType::KW_FN_MARKER)) {
                         stream.consume();
                         continue;
                     }
-                    // Return type: recurse so nested function types work.
+                    // The return type is a plain type. Recurse.
                     return skipOneType(stream);
                 }
 
-                // Void return: stop after the last group.
+                // Void return: the type ends after the last group.
                 return true;
             }
             return consumedAny;
@@ -211,6 +227,8 @@ static bool skipOneType(TokenStream& stream) {
     return consumedAny;
 }
 
+} // namespace
+
 // =============================================================================
 // looksLikeFuncDecl
 // =============================================================================
@@ -222,9 +240,11 @@ static bool skipOneType(TokenStream& stream) {
 ///
 ///   ('let' | 'const') IDENTIFIER? generic_params? func_type_chain
 ///
-/// where `func_type_chain` starts with a `fn`/`cls` marker **or** with
-/// a bare `(` — the latter is the forgotten-marker recovery case, and
-/// `parseFuncTypeParts` will report the missing marker with full context.
+/// where `func_type_chain` starts with `fn` **or** with a bare `(` — the
+/// latter is the forgotten-marker recovery case. `parseFuncDecl` will
+/// report the missing marker with full context if the shape matches but
+/// the marker is absent.
+///
 /// Accepting the bare-`(` form here is what lets the dispatcher in
 /// `parseDecl` route to `parseFuncDecl` (which produces a targeted
 /// diagnostic) instead of `parseVarDecl` (which would mis-parse the whole
@@ -233,41 +253,62 @@ static bool skipOneType(TokenStream& stream) {
 /// This function does NOT validate the header. `let f fn (a int) -> int`
 /// (missing `=`) returns `true`; the missing `=` is reported by
 /// `parseFuncDecl`. `let f` with nothing after returns `true`; the
-/// missing signature is reported by `parseFuncTypeParts`.
+/// missing signature is reported by `parseFuncDecl`'s header loop.
+///
+/// The function restores the stream position before returning. It has no
+/// side effects other than the temporary advance-and-restore.
 ///
 /// @param stream The token stream.
-/// @param ctx    The parsing context (unused; kept for symmetry with
-///               other lookaheads that may need it in the future).
+/// @param ctx    The parsing context (unused; kept for symmetry).
 /// @return true if the current position looks like the start of a
 ///         function declaration.
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
-    size_t savedPos = stream.getPos();
+    (void)ctx;   // unused; kept for signature symmetry
+
+    const size_t savedPos = stream.getPos();
 
     // ─── 1. Must start with 'let' or 'const' ─────────────────────────────
-    if (!stream.checkAny(TokenType::LET, TokenType::CONST)) {
+    //
+    // A function declaration and a variable declaration share the same
+    // leading keyword. The dispatcher calls `looksLikeFuncDecl` only
+    // after confirming the keyword is present; the check here is
+    // defensive and cheap.
+    if (!stream.checkAny(TokenType::KW_LET, TokenType::KW_CONST)) {
         stream.setPos(savedPos);
         return false;
     }
-    stream.consume();
+    stream.consume();   // `let` or `const`
 
-    // ─── 2. Optional name (error-recovery: name may be missing) ──────────
+    // ─── 2. Optional name ────────────────────────────────────────────────
+    //
+    // The name may be missing in error-recovery cases (`let fn (...) = ...`
+    // with no name). The lookahead accepts the absence; the real parser
+    // reports it.
     stream.match(TokenType::IDENTIFIER);
 
     // ─── 3. Optional generic parameter list ──────────────────────────────
+    //
+    // `<T>`, `<T : Trait>`, and `<K, V>` all parse as a balanced
+    // `<...>`. The lookahead does not validate the contents.
     if (stream.check(TokenType::LESS)) {
         skipBalanced(stream, TokenType::LESS, TokenType::GREATER);
     }
 
     // ─── 4. Header must begin with a marker or a bare '(' ────────────────
     //
-    // Bare '(' is accepted as the forgotten-marker recovery case. Note
-    // that this also matches `let x (1 + 2)` — a variable whose type is
+    // The bare-`(` form is the forgotten-marker recovery case: the parser
+    // will report "expected 'fn' before parameter group". We accept the
+    // shape here so the dispatcher routes to `parseFuncDecl`, where the
+    // targeted error is produced.
+    //
+    // This also matches `let x (1 + 2)` — a variable whose type is
     // missing and whose init is a parenthesized expression. That input
     // is malformed either way; routing it to `parseFuncDecl` gives a
-    // clearer "expected 'fn' or 'cls'" diagnostic than routing it to
+    // clearer "expected 'fn'" diagnostic than routing it to
     // `parseVarDecl` would.
-    bool result = is_function_type_keyword(stream.peekType())
-                  || stream.check(TokenType::LPAREN);
+    const bool result =
+        stream.check(TokenType::KW_FN_MARKER) ||
+        stream.check(TokenType::LPAREN);
 
     stream.setPos(savedPos);
     return result;
@@ -277,26 +318,23 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
 // looksLikeAnonFunc
 // =============================================================================
 
-/// @brief Determine whether the current position begins an anonymous
-///        function expression.
+/// @brief Determine whether the current position begins a function
+///        literal.
 ///
-/// An anonymous function is a func_type chain followed by a block body:
+/// A function literal is a func_type chain followed by a block body:
 ///
 ///   func_type_chain '{' ... '}'
 ///
-/// The chain can start two ways:
-///   - With a `fn`/`cls` marker: `fn (a int) -> int { ... }`
-///   - With a bare `(`:             `(a int) -> int { ... }` (names allowed)
-///
-/// The bare-`(` form is the one used inside expressions like pipeline
-/// steps, where the surrounding context already implies "this is a
-/// function value."
+/// The chain starts with `fn` **or** with a bare `(` — the latter is the
+/// forgotten-marker recovery case in expression position. Inside an
+/// expression, a bare `(` could also be a parenthesized expression; the
+/// lookahead has to distinguish them by what comes after the closing `)`.
 ///
 /// This function does NOT validate the header — the same shape-first
 /// principle as `looksLikeFuncDecl`. A malformed chain that still *shapes*
-/// like a func_type chain (e.g. `(a int)(b int) -> int { ... }`, the
-/// forgotten-marker case) returns `true`, so `parseAnonFuncExpr` runs and
-/// `parseFuncTypeParts` reports the missing marker with full context.
+/// like a func_type chain (for example, `fn(a int)(b int) -> int { ... }`
+/// with the second stage unmarked) returns `true`, so `parseAnonFuncExpr`
+/// runs and reports the missing marker with full context.
 ///
 /// It returns `false` only when the input clearly is not an anon func:
 ///
@@ -309,20 +347,29 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
 ///
 /// @param stream The token stream.
 /// @param ctx    The parsing context (unused; kept for symmetry).
-/// @return true if the current position looks like the start of an
-///         anonymous function expression.
+/// @return true if the current position looks like the start of a
+///         function literal.
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
-    size_t savedPos = stream.getPos();
+    (void)ctx;   // unused; kept for signature symmetry
+
+    const size_t savedPos = stream.getPos();
 
     bool sawFirstStage = false;
 
-    // ─── 1. Skip the header: stages, markers, arrows, return type ────────
+    // ─── 1. Walk the header: stages, markers, arrows, return type ────────
+    //
+    // The loop consumes the entire header. It stops when it sees the `{`
+    // that introduces the body, or when it sees a token that cannot
+    // continue the header.
     while (!stream.isAtEnd()) {
-        // 1a. Optional marker. Every stage may or may not have one; the
-        //     real parser enforces that only the first stage may omit it
-        //     (the bare-`(` form). The lookahead accepts both forms at
-        //     every stage so malformed input still *shapes* correctly.
-        if (is_function_type_keyword(stream.peekType())) {
+        // 1a. Optional marker.
+        //
+        // Only the *leading* stage may omit its marker; subsequent stages
+        // require one. The lookahead accepts the omission at every stage
+        // so that malformed input (a curried literal with a missing
+        // marker on an inner stage) still shapes as a function literal
+        // and gets a targeted error from the parser.
+        if (stream.check(TokenType::KW_FN_MARKER)) {
             stream.consume();
         }
 
@@ -339,35 +386,32 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
 
         // 1c. What follows this stage?
         //
-        //   marker  → another stage, loop
-        //   '('     → another stage with a forgotten marker; the real
-        //             parser recovers and diagnoses. Loop so we still
-        //             confirm the trailing '{'.
-        //   '->'    → another stage or the final return type; loop or
-        //             break depending on what follows
-        //   '{'     → body; done
+        //   `fn`    → another stage with a marker; loop
+        //   `(`     → another stage with a forgotten marker; loop
+        //   `->`    → another stage (if followed by `fn`) or the return
+        //             type (if followed by anything else)
+        //   `{`     → body; done
         //   other   → not a header; fail
-        if (is_function_type_keyword(stream.peekType())) {
+        if (stream.check(TokenType::KW_FN_MARKER)) {
             continue;
         }
         if (stream.check(TokenType::LPAREN)) {
             continue;
         }
         if (stream.match(TokenType::ARROW)) {
-            if (is_function_type_keyword(stream.peekType())) {
+            if (stream.check(TokenType::KW_FN_MARKER)) {
                 continue;   // arrow-separated stage
             }
-            // Final return type: skip exactly one type, then the header
-            // ends. `skipOneType` recurses for nested function types, so
-            // `fn (int) -> fn (int) -> int` also works.
+            // The return type. `skipOneType` recurses for nested function
+            // types, so `fn (int) -> fn (int) -> int` also works.
             if (!skipOneType(stream)) {
                 stream.setPos(savedPos);
                 return false;
             }
-            break;
+            break;   // after the return type, only `{` or nothing
         }
         if (stream.check(TokenType::LBRACE)) {
-            break;   // void return, body follows directly
+            break;   // void return; body follows directly
         }
 
         // Anything else after a completed stage is not a header.
@@ -376,10 +420,14 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
     }
 
     // ─── 2. The header must be followed by a block body ──────────────────
-    bool result = sawFirstStage && stream.check(TokenType::LBRACE);
+    //
+    // If the loop ended at EOF, `stream.check(LBRACE)` is false and the
+    // result is false. If it ended at a `{`, the result is true. If it
+    // ended at anything else, the loop would have returned false above.
+    const bool result = sawFirstStage && stream.check(TokenType::LBRACE);
 
     stream.setPos(savedPos);
     return result;
 }
 
-} // namespace parser
+} // namespace lucid::parser

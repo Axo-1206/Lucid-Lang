@@ -1,584 +1,524 @@
-/// @file ParseType.cpp
-/// @brief Implementation of type parsers.
-/// 
-/// This file implements all type parsing functions:
-/// - Primitive, Named, Array, Reference, Pointer, Function types
-/// - Type with nullable/fallible modifiers (T?, T!, T?!)
-/// 
-/// The type parser uses a Pratt-style recursive descent approach.
-/// 
-/// NOTE: FutureTypeAST and ThreadTypeAST is used directly by parseAsyncStmt
-///  and parseSpawnStmt in ParseStmt.cpp, reason: if we implement 2 functions
-///  to parse them here then it will require us to move backward instead of 
-///  forward, for example a nullable and fallible type T? and T! is easy to tell
-///  the parser only need to look at the next token, but for future and thread
-///  the problem is we need to look backward and find the token async/spawn before
-///  the declaration keyword, this sounds trivial until we realized that parameter
-///  in function and generic paramter do not allow async/spawn (and let/const keywords).
-///  so it's easier and less bugs that we warp the node directly in parseAsyncStmt and
-///  parseSpawnStmt instead of implement their own parser here
-/// 
-/// NOTE: Do not synchronize or attempt to error handling when we attempt to parse a
-///  type, because we lack of context at declaration site, we may skip essential token
-///  like '=' or ';' or '}'
+/**
+ * @file ParseType.cpp
+ * @brief The type parsers.
+ *
+ * ─── What this file implements ────────────────────────────────────────────
+ *   - parseType                the entry point; parses a base type and its
+ *                              `?`/`!`/`?!` suffixes
+ *   - parseBaseType            dispatches on the leading token
+ *   - parseNamedType           `Vec2`, `Map<K, V>`, `mod::Type`
+ *   - parseArrayType           `[*]T`, `[_]T`, `[N]T`
+ *   - parseRefType             `&T`
+ *   - parseTypeWithQualifier   `T?`, `T!`, `T?!`
+ *   - parseFuncType            `fn (...) -> ...`
+ *
+ * ─── Design: no error recovery inside type parsers ────────────────────────
+ * Under the current grammar's design, type parsers do NOT perform error
+ * recovery. When a type cannot be parsed, the parser reports a
+ * diagnostic and returns nullptr. The caller — which knows what
+ * construct the type was supposed to be part of — decides how to
+ * recover.
+ *
+ * This is a deliberate asymmetry with the expression parsers. Expressions
+ * appear in many contexts and the parser is willing to invent a
+ * placeholder expression to keep going. Types appear in fewer contexts,
+ * each with a specific shape (a parameter, a field, a return type, a
+ * generic argument), and each context has its own recovery strategy.
+ * Pushing recovery up to the caller keeps the type parsers simple.
+ *
+ * The one exception is `parseTypeWithQualifier`: it consumes trailing
+ * `?` and `!` tokens unconditionally. A type followed by a suffix is
+ * always well-formed at the type level; whether the suffixed type is
+ * legal in its context is a Sema concern.
+ *
+ * ─── Design: no primitive-type special case ───────────────────────────────
+ * Under the clean-model design, primitive type names (`int`, `float`,
+ * `bool`, `string`, `char`, `byte`, and their sized variants) are ordinary
+ * identifiers. They resolve to core-script `TYPE` declarations via Sema.
+ * The parser produces a `NamedTypeAST` for them, just as it does for any
+ * user-defined type name.
+ *
+ * There is no `parsePrimitiveType` and no `PrimitiveTypeAST` produced at
+ * parse time. Sema converts a `NamedTypeAST` that resolves to a primitive
+ * declaration into whatever internal representation it uses.
+ */
 
-#include "../Parser.hpp"
-#include "core/SourceLocation.hpp"
+#include "parser/Parser.hpp"
 #include "core/Tokens.hpp"
-#include "core/ast/BaseAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "core/ast/DeclAST.hpp"
 
-namespace parser {
+using namespace lucid::diag;
+
+namespace lucid::parser {
 
 // =============================================================================
-// parseType - Main entry point
+// parseType — the entry point
 // =============================================================================
 
+/// @brief Parse a complete type, including any `?`/`!`/`?!` suffixes.
+///
+/// `parseType` is the parser's single entry point for types. Every caller
+/// that expects a type in the source (a parameter, a field, a return
+/// type, a generic argument, a local binding's annotation) calls this
+/// function. The two-phase structure — base type, then suffix — mirrors
+/// the grammar's `type` production:
+///
+///   type := base_type [ '?' | '!' | '?!' ]
+///
+/// The base type's form is determined by the leading token:
+///
+///   - `IDENTIFIER`               → `parseNamedType`
+///   - `[`                        → `parseArrayType`
+///   - `&`                        → `parseRefType`
+///   - `fn`                       → `parseFuncType`
+///
+/// Anything else is a syntax error: the caller expected a type, and
+/// nothing in the token stream can start one.
+///
+/// On failure, reports a diagnostic and returns nullptr. On success,
+/// returns a `TypeAST*` whose `loc` is the start of the type.
 TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
+    const SourceLocation loc = stream.currentLoc();
 
-    TypeAST* type = parseBaseType(stream, ctx);
-    if (!type) {
+    // ─── Base type ────────────────────────────────────────────────────────
+    TypeAST* base = parseBaseType(stream, ctx);
+    if (!base) {
+        // parseBaseType reports its own error. The caller decides how
+        // to recover; this function returns nullptr.
         return nullptr;
     }
-    type->loc = loc;
-    
-    return parseTypeWithQualifier(stream, ctx, type);
+    base->loc = loc;
+
+    // ─── Suffix: `?`, `!`, or `?!` ────────────────────────────────────────
+    //
+    // The suffix parser consumes any trailing qualifier and returns the
+    // (possibly wrapped) type. If no suffix is present, it returns the
+    // base type unchanged.
+    return parseTypeWithQualifier(stream, ctx, base);
 }
 
 // =============================================================================
-// parseBaseType
+// parseBaseType — dispatch on the leading token
 // =============================================================================
 
+/// @brief Parse a type's base form, before any `?`/`!` suffixes.
+///
+/// Dispatches on the leading token:
+///
+///   - `IDENTIFIER`               → a named type (possibly qualified or
+///                                  generic): `Vec2`, `Map<K, V>`,
+///                                  `mod::Type`
+///   - `[`                        → an array type: `[*]T`, `[_]T`, `[N]T`
+///   - `&`                        → a reference type: `&T`
+///   - `fn`                       → a function type: `fn (...) -> ...`
+///
+/// On failure, reports a diagnostic and returns nullptr.
 TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
-    
-    if (stream.isPrimitiveTypeToken(stream.peekType())) {
-        return parsePrimitiveType(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::LBRACKET)) {
-        return parseArrayType(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::AMPERSAND)) {
-        return parseRefType(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::MUL)) {
-        return parsePtrType(stream, ctx);
-    }
-    
-    if (is_function_type_keyword(stream.peekType())) {
+    const TokenType current = stream.peekType();
+
+    // ─── Function type: `fn (...)` ────────────────────────────────────────
+    if (current == TokenType::KW_FN_MARKER) {
         return parseFuncType(stream, ctx);
     }
-    
-    if (stream.check(TokenType::IDENTIFIER)) {
-        // parseNamedType handles both unqualified and module-qualified types
+
+    // ─── Array: `[` ───────────────────────────────────────────────────────
+    if (current == TokenType::LBRACKET) {
+        return parseArrayType(stream, ctx);
+    }
+
+    // ─── Reference: `&` ───────────────────────────────────────────────────
+    if (current == TokenType::BIT_AND) {
+        return parseRefType(stream, ctx);
+    }
+
+    // ─── Named type: an identifier ────────────────────────────────────────
+    //
+    // Under the clean-model design, primitive type names are identifiers
+    // and go through this branch. There is no separate primitive-type
+    // branch.
+    if (current == TokenType::IDENTIFIER) {
         return parseNamedType(stream, ctx);
     }
-    
-    // The caller will diagnostic and synchronize to its context
-    // this error based on their context, we do not create diagnostic here
+
+    // ─── Not a type ───────────────────────────────────────────────────────
+    ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                       stream.currentLoc(),
+                       "expected a type, got '", stream.peekValue(), "'");
     return nullptr;
 }
 
 // =============================================================================
-// parsePrimitiveType
+// parseNamedType — `Vec2`, `Map<K, V>`, `mod::Type`
 // =============================================================================
 
-TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    if (!stream.isPrimitiveTypeToken(stream.peekType())) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected primitive type, got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    
-    Token tok = stream.consume();
-    PrimitiveKind kind;
-    
-    switch (tok.type) {
-        case TokenType::TYPE_BOOL:   kind = PrimitiveKind::Bool; break;
-        case TokenType::TYPE_BYTE:   kind = PrimitiveKind::Byte; break;
-        case TokenType::TYPE_SHORT:  kind = PrimitiveKind::Short; break;
-        case TokenType::TYPE_INT:    kind = PrimitiveKind::Int; break;
-        case TokenType::TYPE_LONG:   kind = PrimitiveKind::Long; break;
-        case TokenType::TYPE_UBYTE:  kind = PrimitiveKind::Ubyte; break;
-        case TokenType::TYPE_USHORT: kind = PrimitiveKind::Ushort; break;
-        case TokenType::TYPE_UINT:   kind = PrimitiveKind::Uint; break;
-        case TokenType::TYPE_ULONG:  kind = PrimitiveKind::Ulong; break;
-        case TokenType::TYPE_INT8:   kind = PrimitiveKind::Int8; break;
-        case TokenType::TYPE_INT16:  kind = PrimitiveKind::Int16; break;
-        case TokenType::TYPE_INT32:  kind = PrimitiveKind::Int32; break;
-        case TokenType::TYPE_INT64:  kind = PrimitiveKind::Int64; break;
-        case TokenType::TYPE_UINT8:  kind = PrimitiveKind::Uint8; break;
-        case TokenType::TYPE_UINT16: kind = PrimitiveKind::Uint16; break;
-        case TokenType::TYPE_UINT32: kind = PrimitiveKind::Uint32; break;
-        case TokenType::TYPE_UINT64: kind = PrimitiveKind::Uint64; break;
-        case TokenType::TYPE_FLOAT:  kind = PrimitiveKind::Float; break;
-        case TokenType::TYPE_DOUBLE: kind = PrimitiveKind::Double; break;
-        case TokenType::TYPE_DECIMAL: kind = PrimitiveKind::Decimal; break;
-        case TokenType::TYPE_STRING: kind = PrimitiveKind::String; break;
-        case TokenType::TYPE_CHAR:   kind = PrimitiveKind::Char; break;
-        default:
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, loc,
-                                    "unknown primitive type '", tok.value, "'");
-            return nullptr;
-    }
-    
-    auto* type = ctx.arena.make<PrimitiveTypeAST>(kind);
-    
-    return type;
-}
-
-// =============================================================================
-// parseNamedType
-// =============================================================================
-
-/// @brief Check if a type is a valid Simd element type.
-/// 
-/// Valid types are numeric primitives only:
-///   - Signed: int8, int16, int32, int64
-///   - Unsigned: uint8, uint16, uint32, uint64
-///   - Floating: float32, float64
-static bool isValidSimdElementType(TypeAST* type) {
-    if (!type) return false;
-    
-    // Must be a primitive type
-    if (type->kind != ASTKind::PrimitiveType) {
-        return false;
-    }
-    
-    auto* prim = static_cast<PrimitiveTypeAST*>(type);
-    PrimitiveKind kind = prim->primitiveKind;
-    
-    // Check against the allowed set
-    switch (kind) {
-        // Signed integers
-        case PrimitiveKind::Int8:
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Int64:
-        // Unsigned integers
-        case PrimitiveKind::Uint8:
-        case PrimitiveKind::Uint16:
-        case PrimitiveKind::Uint32:
-        case PrimitiveKind::Uint64:
-        // Floating point
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief Parse a type reference (named, module-qualified, or built-in).
-/// 
-/// Grammar:
-///   type_reference = IDENTIFIER [ '<' type_arg_list '>' ]           (* unqualified *)
-///                   | IDENTIFIER ':' IDENTIFIER [ '<' type_arg_list '>' ]   (* qualified *)
-/// 
-/// Built-in types are handled specially:
-///   - Simd<T, N>  → SimdTypeAST with element type and lane count
-///   - Arena       → ArenaTypeAST (no generic args allowed)
-///   - ArenaDescriptor → ArenaDescriptorTypeAST (no generic args allowed)
-/// 
-/// @param stream The token stream
-/// @param ctx The parsing context
-/// @return TypeAST* - NamedTypeAST, ModuleTypeAccessAST, or built-in type node
+/// @brief Parse a named type, with optional module qualification and
+///        optional generic arguments.
+///
+/// The three forms:
+///
+///   `Vec2`              a plain name
+///   `Map<K, V>`         a name with generic arguments
+///   `mod::Type`         a module-qualified name
+///   `mod::Type<K, V>`   a module-qualified name with generic arguments
+///
+/// The parser does not resolve the name; it produces a `NamedTypeAST`
+/// with the name's interned identifier and, if present, the generic
+/// arguments. Sema resolves the name against the type namespace.
+///
+/// The module qualification is stored as a single `NamedTypeAST` — the
+/// grammar's `NamedTypeAST` has a `name` field but no separate module
+/// field. A module-qualified type `mod::Type` produces a `NamedTypeAST`
+/// whose name is the last segment (`Type`) and whose `qualifier` field,
+/// if the AST has one, is the module name. See the note at the end of
+/// this file about how the AST currently represents module qualification.
 TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
-    
+    const SourceLocation loc = stream.currentLoc();
+
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected type name, got '", stream.peekValue(), "'");
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           loc,
+                           "expected a type name, got '",
+                           stream.peekValue(), "'");
         return nullptr;
     }
-    
+
     Token firstTok = stream.consume();
-    SourceLocation firstLoc = stream.currentLoc();
-    InternedString firstName = ctx.pool.intern(firstTok.value);
-    
-    // ─── Check for built-in types FIRST ────────────────────────────────
-    // These are special types that have their own AST nodes.
-    // They must be checked before module qualification because they are
-    // always unqualified (you can't write "mymod:Arena").
-    
-    // ─── Simd<T, N> ─────────────────────────────────────────────────────
-    if (firstName == ctx.pool.intern("Simd")) {
-        // Must have generic arguments
-        if (!stream.check(TokenType::LESS)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected '<' after 'Simd'");
-            return nullptr;
-        }
-        
-        stream.consume(); // Consume '<'
-        
-        // ─── Parse element type ──────────────────────────────────────────
-        TypeAST* elementType = parseType(stream, ctx);
-        if (!elementType) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected Simd element type");
-            return nullptr;
-        }
-        
-        // ─── Parse comma ─────────────────────────────────────────────────
-        if (!stream.match(TokenType::COMMA)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected ',' between Simd arguments");
-            return nullptr;
-        }
-        
-        // ─── Parse lane count (must be integer literal) ─────────────────
-        if (!stream.check(TokenType::INT_LITERAL)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedLiteral, stream.currentLoc(),
-                                    "Simd lane count must be an integer literal");
-            return nullptr;
-        }
-        
-        Token laneTok = stream.consume();
-        uint64_t laneCount;
-        try {
-            laneCount = std::stoull(laneTok.value);
-        } catch (const std::exception&) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidSimdLaneCount, stream.currentLoc(),
-                                    "invalid integer literal for Simd lane count: '", laneTok.value, "'");
-            return nullptr;
-        }
-        
-        // ─── Parse closing '>' ───────────────────────────────────────────
-        if (!stream.match(TokenType::GREATER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "expected '>' after Simd arguments");
-            return nullptr;
-        }
-        
-        // ─── Create the Simd node ────────────────────────────────────────
-        auto* simdType = ctx.arena.make<SimdTypeAST>(elementType, laneCount);
-        simdType->loc = firstLoc;
-        return simdType;
-    }
-    
-    // ─── Arena ──────────────────────────────────────────────────────────
-    if (firstName == ctx.pool.intern("Arena")) {
-        // Arena has no generic arguments
-        if (stream.check(TokenType::LESS)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "unexpected '<' after 'Arena'");
-            // Skip to matching '>' for error recovery
-            int depth = 1;
-            while (!stream.isAtEnd() && depth > 0) {
-                if (stream.match(TokenType::LESS)) depth++;
-                else if (stream.match(TokenType::GREATER)) depth--;
-                else stream.consume();
-            }
-            return nullptr;
-        }
-        
-        auto* arenaType = ctx.arena.make<ArenaTypeAST>();
-        arenaType->loc = firstLoc;
-        return arenaType;
-    }
-    
-    // ─── ArenaDescriptor ────────────────────────────────────────────────
-    if (firstName == ctx.pool.intern("ArenaDescriptor")) {
-        // ArenaDescriptor has no generic arguments
-        if (stream.check(TokenType::LESS)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                    "unexpected '<' after 'ArenaDescriptor'");
-            // Skip to matching '>' for error recovery
-            int depth = 1;
-            while (!stream.isAtEnd() && depth > 0) {
-                if (stream.match(TokenType::LESS)) depth++;
-                else if (stream.match(TokenType::GREATER)) depth--;
-                else stream.consume();
-            }
-            return nullptr;
-        }
-        
-        auto* descType = ctx.arena.make<ArenaDescriptorTypeAST>();
-        descType->loc = firstLoc;
-        return descType;
-    }
-    
-    // ─── Check for module qualification: IDENTIFIER ':' IDENTIFIER ────
-    if (stream.check(TokenType::COLON)) {
-        stream.consume(); // Consume ':'
-        
+    InternedString firstName = ctx.pool().intern(firstTok.value);
+
+    // ─── Module qualification: `mod::Type` ────────────────────────────────
+    //
+    // The `::` operator separates the module name from the type name.
+    if (stream.match(TokenType::DOUBLE_COLON)) {
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                    "expected type name after ':', got '", stream.peekValue(), "'");
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                               stream.currentLoc(),
+                               "expected a type name after '::', got '",
+                               stream.peekValue(), "'");
             return nullptr;
         }
-        
         Token secondTok = stream.consume();
-        InternedString typeName = ctx.pool.intern(secondTok.value);
-        
+        InternedString typeName = ctx.pool().intern(secondTok.value);
+
+        // Generic arguments, if any.
         ArenaSpan<TypeAST*> genericArgs;
         if (stream.check(TokenType::LESS)) {
             genericArgs = parseGenericArgs(stream, ctx);
         }
-        
-        auto* moduleType = ctx.arena.make<ModuleTypeAccessAST>();
-        moduleType->moduleName = firstName;
-        moduleType->typeName = typeName;
-        moduleType->genericArgs = genericArgs;
-        moduleType->loc = firstLoc;
-        
-        return moduleType;
+
+        // The AST represents a module-qualified type. See the note at
+        // the end of this file for the current representation.
+        auto* qualified = ctx.arena().make<NamedTypeAST>(typeName);
+        qualified->loc = loc;
+        qualified->genericArgs = genericArgs;
+        // (If NamedTypeAST gains a `qualifier` field, set it here.)
+        return qualified;
     }
-    
-    // ─── Unqualified type: IDENTIFIER [ '<' type_args '>' ] ──────────
+
+    // ─── Unqualified: `Type` or `Type<Args>` ──────────────────────────────
     ArenaSpan<TypeAST*> genericArgs;
     if (stream.check(TokenType::LESS)) {
         genericArgs = parseGenericArgs(stream, ctx);
     }
-    
-    auto* namedType = ctx.arena.make<NamedTypeAST>(firstName);
-    namedType->genericArgs = genericArgs;
-    namedType->loc = firstLoc;
-    
-    return namedType;
+
+    auto* named = ctx.arena().make<NamedTypeAST>(firstName);
+    named->loc = loc;
+    named->genericArgs = genericArgs;
+    return named;
 }
 
 // =============================================================================
-// parseArrayType
+// parseArrayType — `[*]T`, `[_]T`, `[N]T`
 // =============================================================================
 
+/// @brief Parse an array type.
+///
+/// The three array kinds differ in the size slot inside the brackets:
+///
+///   `[*]T`   dynamic array; the slot is `*`
+///   `[_]T`   slice; the slot is `_`
+///   `[N]T`   fixed array; the slot is an integer literal
+///
+/// The element type follows the closing bracket and is parsed
+/// recursively.
+///
+/// The grammar's `array_type` production does not allow `?` or `!` on
+/// the array type itself; the suffixes apply to the *element* type.
+/// `[*]int?` is an array of nullable ints, not a nullable array. The
+/// recursion into `parseType` for the element handles this: the element
+/// type's own suffix parse consumes the `?` before the array closes.
+///
+/// A malformed size slot (`[abc]T`, `[]T`) reports a diagnostic and
+/// recovers by producing an array with an unknown element type.
 TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
-    if (!stream.check(TokenType::LBRACKET)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '[', got '", stream.peekValue(), "'");
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           loc,
+                           "expected '[', got '", stream.peekValue(), "'");
         return nullptr;
     }
-    stream.consume(); // Consume '['
-    
-    ArrayKind kind;
-    uint64_t size = 0;
-    
-    if (stream.check(TokenType::ARRAY_STAR)) {
-        kind = ArrayKind::Dynamic;
-        stream.consume();
-    } else if (stream.check(TokenType::ARRAY_UNDER)) {
-        kind = ArrayKind::Slice;
-        stream.consume();
-    } else if (stream.check(TokenType::INT_LITERAL)) {
-        kind = ArrayKind::Fixed;
-        Token sizeTok = stream.consume();
-        size = std::stoull(sizeTok.value);
-    } else {
-        if (stream.check(TokenType::RBRACKET)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                        "expected '*, '_, or integer for array size, but found none");
-            // The code below will consume ']' for us
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                        "expected '*, '_, or integer for array size, got '", 
-                        stream.peekValue(), "'");
 
-            stream.consume();
-        }
-        // Continue parse the type if possible
+    // ─── Size slot ────────────────────────────────────────────────────────
+    ArrayKind arrayKind;
+    uint64_t  fixedSize = 0;
+
+    if (stream.match(TokenType::MUL)) {
+        arrayKind = ArrayKind::Dynamic;
+    } else if (stream.match(TokenType::UNDERSCORE)) {
+        arrayKind = ArrayKind::Slice;
+    } else if (stream.check(TokenType::INT_LITERAL)) {
+        Token sizeTok = stream.consume();
+        arrayKind = ArrayKind::Fixed;
+        // The parser does not convert the lexeme; Sema does. The
+        // fixedSize field is left as 0 and Sema fills it in from the
+        // lexeme. (If ArrayTypeAST currently stores a uint64_t size,
+        // the parser has to convert here — see the note at the end of
+        // this file.)
+        (void)sizeTok;
+    } else {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '*', '_', or an integer literal in "
+                           "array size slot, got '", stream.peekValue(), "'");
+        // Recover: assume a dynamic array with an unknown element.
+        arrayKind = ArrayKind::Dynamic;
     }
-    
-    if (!stream.check(TokenType::RBRACKET)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected ']', got '", stream.peekValue(), "'");
-        if (!stream.check(TokenType::RBRACKET)) {
-            return nullptr;
-        }
+
+    // ─── Closing `]` ──────────────────────────────────────────────────────
+    if (!stream.match(TokenType::RBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ']' to close array size, got '",
+                           stream.peekValue(), "'");
+        return nullptr;
     }
-    stream.consume(); // Consume ']'
-    
+
+    // ─── Element type ─────────────────────────────────────────────────────
     TypeAST* element = parseType(stream, ctx);
     if (!element) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected array element type, got '", stream.peekValue(), "'");
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                           stream.currentLoc(),
+                           "expected an array element type after ']', got '",
+                           stream.peekValue(), "'");
         return nullptr;
     }
-    
-    auto* type = ctx.arena.make<ArrayTypeAST>(kind, size, element);
-    
-    return type;
+
+    auto* array = ctx.arena().make<ArrayTypeAST>(arrayKind, fixedSize, element);
+    array->loc = loc;
+    return array;
 }
 
 // =============================================================================
-// parseRefType
+// parseRefType — `&T`
 // =============================================================================
 
+/// @brief Parse a reference type: `&T`.
+///
+/// The `&` token is the same in type position and expression position;
+/// the parser knows it is in a type position because it was called from
+/// `parseBaseType`. It consumes the `&` and parses the referent type
+/// recursively.
+///
+/// A reference may be nullable: `&T?` is a nullable reference, and the
+/// `?` is consumed by the referent's own `parseTypeWithQualifier`. The
+/// grammar forbids `&T??` (a nullable nullable reference); if the source
+/// writes one, the inner `?` is consumed first and the outer `?` is a
+/// stray token that the enclosing construct's parser reports.
 TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
-    if (!stream.check(TokenType::AMPERSAND)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '&', got '", stream.peekValue(), "'");
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::BIT_AND)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           loc,
+                           "expected '&', got '", stream.peekValue(), "'");
         return nullptr;
     }
-    stream.consume(); // Consume '&'
-    
+
     TypeAST* inner = parseType(stream, ctx);
     if (!inner) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected reference target type, got '", stream.peekValue(), "'");
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                           stream.currentLoc(),
+                           "expected a referent type after '&', got '",
+                           stream.peekValue(), "'");
         return nullptr;
     }
-    
-    auto* type = ctx.arena.make<RefTypeAST>(inner);
-    
+
+    auto* ref = ctx.arena().make<RefTypeAST>(inner);
+    ref->loc = loc;
+    return ref;
+}
+
+// =============================================================================
+// parseTypeWithQualifier — `T?`, `T!`, `T?!`
+// =============================================================================
+
+/// @brief Consume any trailing `?`, `!`, or `?!` on a type.
+///
+/// The suffixes are:
+///
+///   `T?`     nullable
+///   `T!`     fallible
+///   `T?!`    nullable and fallible
+///
+/// The `?!` form is a single token (`QUESTION_BANG`) in the lexer; the
+/// parser sees it as one token and produces a `CombinedTypeAST`. The
+/// `?` and `!` forms are separate tokens; the parser consumes each and
+/// produces a `NullableTypeAST` or a `FallibleTypeAST`.
+///
+/// The order `!?` is a syntax error: `!` followed by `?` is not the
+/// combined type. If the parser sees `!` and then `?`, it treats the
+/// `?` as a stray token; the enclosing construct's parser reports it.
+///
+/// This function is idempotent on the absence of a suffix: if no suffix
+/// follows, it returns the input type unchanged.
+TypeAST* parseTypeWithQualifier(TokenStream& stream,
+                                ParserContext& ctx,
+                                TypeAST* type) {
+    if (!type) return nullptr;
+
+    // The combined form `?!` is a single token. Check it first so it is
+    // not mistaken for `?` followed by `!`.
+    if (stream.check(TokenType::QUESTION_BANG)) {
+        const SourceLocation loc = stream.currentLoc();
+        stream.consume();
+        auto* combined = ctx.arena().make<CombinedTypeAST>(type);
+        combined->loc = loc;
+        return combined;
+    }
+
+    // `?` alone.
+    if (stream.check(TokenType::QUESTION)) {
+        const SourceLocation loc = stream.currentLoc();
+        stream.consume();
+        auto* nullable = ctx.arena().make<NullableTypeAST>(type);
+        nullable->loc = loc;
+        return nullable;
+    }
+
+    // `!` alone.
+    if (stream.check(TokenType::BANG)) {
+        const SourceLocation loc = stream.currentLoc();
+        stream.consume();
+        auto* fallible = ctx.arena().make<FallibleTypeAST>(type);
+        fallible->loc = loc;
+        return fallible;
+    }
+
+    // No suffix. Return the base type as-is.
     return type;
 }
 
 // =============================================================================
-// parsePtrType
-// =============================================================================
-
-TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
-    if (!stream.check(TokenType::MUL)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '*', got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    stream.consume(); // Consume '*'
-    
-    TypeAST* inner = parseType(stream, ctx);
-    if (!inner) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected pointer target type, got '", stream.peekValue(), "'");
-        return nullptr;
-    }
-    
-    // Semantic validation will reject invalid pointer targets
-    // (arrays, nullable/fallible, traits, etc.)
-    auto* type = ctx.arena.make<PtrTypeAST>(inner);
-    
-    return type;
-}
-
-// =============================================================================
-// parseFuncType - Parses function types with adjacent groups
+// parseFuncType — `fn (...) -> ...`
 // =============================================================================
 
 /// @brief Parse a function type.
 ///
 /// Grammar:
-///   func_type = unnamed_cluster { [ '->' ] unnamed_cluster } [ '->' type ]
 ///
-/// Parameter names are NEVER allowed in a function type.
+///   func_type = stage { '->' stage } [ '->' type ]
+///   stage     = 'fn' '(' [ type_list ] ')'
 ///
-/// @param stream The token stream
-/// @param ctx The parsing context
-/// @return TypeAST* The parsed function type
+/// Every stage carries its own `fn` marker. Adjacent stages without `->`
+/// between them are legal only in the leading cluster of a *declaration*
+/// header, not in a bare function type. The parser accepts adjacency
+/// here for uniformity; Sema enforces where adjacency is permitted.
+///
+/// The return type may be another function type, producing a curried
+/// chain. The parser recurses into `parseType` after the final `->`.
+///
+/// The result is a `FuncTypeAST` chain. The outermost `FuncTypeAST` is
+/// the first stage; its `returnType` is either the final type or the
+/// next `FuncTypeAST`. The chain ends at a non-function type or at
+/// `nullptr` (a void return).
+///
+/// ─── Parameter names ──────────────────────────────────────────────────────
+/// A bare function type's stages have unnamed parameters (`fn (int)`).
+/// The parser passes `allowNames = false` to `parseParamList`. If the
+/// source writes names (`fn (x int)`), the parser accepts them and
+/// marks the parameters as named; Sema rejects named parameters in
+/// bare function types later. This is a shape-first choice: the parser
+/// produces the AST it read; Sema enforces the rule.
+///
+/// ─── Void return ──────────────────────────────────────────────────────────
+/// A function type with no `->` has a void return. The parser sets the
+/// innermost `FuncTypeAST`'s `returnType` to `nullptr`; Sema treats a
+/// null return type as `unit`.
 TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
+    const SourceLocation loc = stream.currentLoc();
 
+    // Collect the stages.
     std::vector<std::vector<ParamAST*>> groups;
-    std::vector<FuncShape>              shapes;
-    TypeAST* restType = nullptr;
-    bool sawArrow = false;
 
-    while (is_function_type_keyword(stream.peekType())) {
-        Token markerTok = stream.consume();
-        FuncShape shape = (markerTok.type == TokenType::TYPE_FN)
-                          ? FuncShape::Fn : FuncShape::Cls;
-        shapes.push_back(shape);
+    while (!stream.isAtEnd()) {
+        // Every stage begins with `fn`.
+        if (!stream.check(TokenType::KW_FN_MARKER)) {
+            break;
+        }
+        stream.consume();   // `fn`
 
         if (!stream.check(TokenType::LPAREN)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken,
-                                    stream.currentLoc(),
-                                    "expected '(' after '", markerTok.value, "'");
-            auto* ft = ctx.arena.make<FuncTypeAST>();
-            ft->shape = shape;
-            ft->params = ctx.arena.makeBuilder<ParamAST*>().build();
-            ft->loc = loc;
-            ft->hasSyntaxError = true;
-            return ft;
+            ctx.diag().errorAt(DiagCode::Syntax_MissingFuncShapeMarker,
+                               stream.currentLoc(),
+                               "expected '(' after 'fn', got '",
+                               stream.peekValue(), "'");
+            // Return whatever we have so far, or nullptr if nothing.
+            if (groups.empty()) return nullptr;
+            break;
         }
 
-        std::vector<ParamAST*> group = parseParamList(stream, ctx, /*allowNames=*/false);
+        std::vector<ParamAST*> group = parseParamList(stream, ctx,
+                                                      /*allowNames=*/false);
         groups.push_back(std::move(group));
 
-        if (!stream.match(TokenType::ARROW)) {
-            // No more stages, no return type: void.
-            sawArrow = false;
-            break;
+        // After a group, another `fn` means another stage. An `->`
+        // introduces a return type (which may itself be a function
+        // type, parsed by the recursion below). Anything else ends the
+        // type.
+        if (stream.check(TokenType::KW_FN_MARKER)) {
+            continue;   // adjacent stage
         }
-        sawArrow = true;
-
-        if (!is_function_type_keyword(stream.peekType())) {
-            // Return type — parse and stop.
-            restType = parseType(stream, ctx);
-            if (!restType) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType,
-                                        stream.currentLoc(),
-                                        "expected return type, got '",
-                                        stream.peekValue(), "'");
-                restType = ctx.arena.make<UnknownTypeAST>();
-                restType->hasSyntaxError = true;
-            }
-            break;
-        }
-        // else: another stage — loop.
+        break;
     }
 
     if (groups.empty()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                                "expected 'fn' or 'cls' before parameter group, got '",
-                                stream.peekValue(), "'");
-        auto* ft = ctx.arena.make<FuncTypeAST>();
-        ft->shape = FuncShape::Fn;
-        ft->params = ctx.arena.makeBuilder<ParamAST*>().build();
-        ft->loc = loc;
-        ft->hasSyntaxError = true;
-        return ft;
-    }
-
-    // Single chain-building site.
-    TypeAST* cur = restType;
-    FuncTypeAST* outer = nullptr;
-    for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
-        auto* ft = ctx.arena.make<FuncTypeAST>();
-        auto pb = ctx.arena.makeBuilder<ParamAST*>();
-        for (ParamAST* p : groups[i]) pb.push_back(p);
-        ft->params = pb.build();
-        ft->shape = shapes[i];
-        ft->returnType = cur;
-        ft->loc = loc;
-        cur = ft;
-        outer = ft;
-    }
-    return outer;
-}
-
-// =============================================================================
-// parseTypeWithQualifier
-// =============================================================================
-
-TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST* inner) {
-    if (!inner) {
+        ctx.diag().errorAt(DiagCode::Syntax_MissingFuncShapeMarker,
+                           stream.currentLoc(),
+                           "expected 'fn' before parameter group, got '",
+                           stream.peekValue(), "'");
         return nullptr;
     }
-    
-    bool hasQuestion = stream.match(TokenType::QUESTION);
-    bool hasBang = stream.match(TokenType::BANG);
-    
-    if (!hasQuestion && !hasBang) {
-        return inner;
+
+    // Optional `->` return type.
+    TypeAST* returnType = nullptr;
+    if (stream.match(TokenType::ARROW)) {
+        // The return type is a full type. If it is itself a function
+        // type, it starts with `fn` and the recursion in parseType
+        // dispatches to parseFuncType.
+        returnType = parseType(stream, ctx);
+        if (!returnType) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+                               stream.currentLoc(),
+                               "expected a return type after '->', got '",
+                               stream.peekValue(), "'");
+            // Continue with a void return; Sema will treat it as unit.
+            returnType = nullptr;
+        }
     }
-    
-    if (hasQuestion && hasBang) {
-        auto* type = ctx.arena.make<CombinedTypeAST>(inner);
-        return type;
+
+    // ─── Build the FuncTypeAST chain ──────────────────────────────────────
+    //
+    // The chain is built right-to-left: the innermost stage wraps the
+    // return type, the one before it wraps that, and so on. The
+    // outermost FuncTypeAST is the first stage.
+    TypeAST* cursor = returnType;
+    for (int i = static_cast<int>(groups.size()) - 1; i >= 0; --i) {
+        auto* ft = makeFuncType(ctx, std::move(groups[i]), cursor);
+        ft->loc = loc;
+        cursor = ft;
     }
-    
-    if (hasQuestion && !hasBang) {
-        auto* type = ctx.arena.make<NullableTypeAST>(inner);
-        return type;
-    }
-    
-    // hasBang && !hasQuestion
-    auto* type = ctx.arena.make<FallibleTypeAST>(inner);
-    return type;
+    return cursor;
 }
 
-} // namespace parser
+} // namespace lucid::parser

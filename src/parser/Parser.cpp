@@ -1,227 +1,289 @@
-/**
- * @file Parser.cpp
- * @brief Implementation of core parsing functions.
- * 
- * This file implements the core parsing infrastructure:
- * - parse(): Single entry point - parses a file and all its imports
- * - parseProgram(): Whole-program convenience wrapper
- * - parseInternal(): Parses internal declarations of a file
- * - parseDecl(): Dispatch to specific declaration parsers
- * 
- */
+/// @file Parser.cpp
+/// @brief The parser's two entry points: parseOneFile and parseInternal.
+/// 
+/// ─── What this file does ──────────────────────────────────────────────────
+/// Two functions:
+/// 
+///   - parseOneFile:     lex, parse, and return one ModuleAST.
+///   - parseInternal:    parse the top-level declarations of one file
+///                       into a caller-supplied vector.
+/// 
+/// Everything else the parser does lives in the sibling .cpp files, grouped
+/// by role (ParseDecl.cpp, ParseStmt.cpp, ParseExpr.cpp, ParseType.cpp,
+/// Helpers.cpp, LookAhead.cpp). This file is the entry point; the other
+/// files are the implementation of the pieces that parseOneFile calls.
+/// 
+/// ─── Design: one file per call ────────────────────────────────────────────
+/// The parser does not walk imports. parseOneFile lexes one file, parses
+/// its declarations, builds a ModuleAST, and returns. It does not read other
+/// files, does not recurse, and does not know whether the file it is
+/// parsing is the program's entry point or a transitively imported module.
+/// 
+/// The CLI is responsible for walking imports and calling parseOneFile once
+/// per file. See Parser.hpp's top-of-file comment for the full design.
+/// 
+/// ─── Design: the context stack is empty at file boundaries ────────────────
+/// A ParserContext is created once per compilation session and passed to
+/// every parseOneFile call. The syntactic-context stack on the context is
+/// empty before parseOneFile runs and empty after it returns. Two debug
+/// assertions in parseOneFile enforce this. If either fires, the parser has
+/// a bug (an unbalanced pushContext/popContext), not the input.
+/// 
+/// ─── Design: diagnostics carry the file ───────────────────────────────────
+/// The DiagnosticEngine is shared across the whole session, so every
+/// diagnostic has to be tagged with the file it came from. A
+/// ScopedDiagnosticFile guard sets the engine's current file for the
+/// duration of this parseOneFile call and restores the previous value on
+/// exit. See ParserContext.hpp for the guard.
 
 #include "Parser.hpp"
 #include "core/Tokens.hpp"
 #include "lexer/Lexer.hpp"
-#include "core/ast/BaseAST.hpp"
-#include "core/trace/Trace.hpp"
 
-#include <filesystem>
-#include <fstream>
-#include <sstream>
+#include <utility>
 
-namespace parser {
+namespace lucid::parser {
 
 // =============================================================================
-// parseProgram() - ENTRY POINT (ALL FILE)
+// parseOneFile — the parser's public entry point
 // =============================================================================
 
-std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
-                                      const std::string& rootSource,
-                                      ParserContext& ctx) {
-    ModuleAST* root = parse(rootPath, rootSource, ctx);
-
-    if (!ctx.resolver) {
-        Trace::detail("parseProgram: no resolver, returning root module only");
-        return { root };
-    }
-
-    // ─── Get modules in dependency order ──────────────────────────────────
-    // This triggers computeTopologicalOrder() if not already computed.
-    const std::vector<ModuleAST*>& orderedModules = ctx.resolver->getModulesInOrder();
-    
-    // If the resolver returned an empty list, fall back to collecting from root
-    std::vector<ModuleAST*> modules = orderedModules;
-    if (modules.empty() && root) {
-        modules.push_back(root);
-    }
-
-    Trace::info("Total modules in program: ", modules.size());
-    return modules;
-}
-
-// =============================================================================
-// parse() - SINGLE FILE
-// =============================================================================
-
-ModuleAST* parse(const std::string& path, 
-                  const std::string& source,
-                  ParserContext& ctx) {
-    Trace::info("Parsing file: ", path);
-    
-    InternedString filePath = ctx.pool.intern(path);
-
-    // ─── Check cache ──────────────────────────────────────────────────
-    if (ctx.resolver) {
-        if (auto* cached = ctx.resolver->getParsedModule(filePath)) {
-            Trace::detail("Using cached module: ", path);
-            return cached;
-        }
-    }
-
-    // ─── File context ──────────────────────────────────────────────────
-    ScopedFileContext fileContext(ctx);
+ModuleAST* parseOneFile(std::string_view path,
+                        std::string_view source,
+                        ParserContext&   ctx) {
+    // ─── Tag every diagnostic raised during this parse with the file ──────
+    //
+    // The engine is session-scoped; the file is per-parse. The guard sets
+    // the engine's current file on construction and restores the previous
+    // value on destruction. It restores the *previous* value rather than
+    // clearing, because a caller (the CLI, the LSP) may have set a current
+    // file before calling us and may still be using it after we return.
+    const InternedString filePath = ctx.pool().intern(path);
     ScopedDiagnosticFile fileTag(ctx, filePath);
-    
-    // ─── Circular import detection ────────────────────────────────────
-    if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
-        // Infrastructure error - compiler can't resolve the cycle
-        Trace::error("Circular import detected: ", path);
-        
-        // User-facing diagnostic with proper error code
-        ctx.diagnostics.errorAt(DiagCode::Sem_ModuleCycle,
-                                SourceLocation(1, 1),  // Start of file
-                                "Circular import detected: ", path);
-        
-        auto* dummy = ctx.arena.make<ModuleAST>();
-        dummy->filePath = filePath;
-        dummy->hasErrors = true;
-        return dummy;
-    }
-    
-    ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
-    
-    // ─── Lex the source ────────────────────────────────────────────────
-    Trace::detail("Lexing: ", path);
-    std::vector<Token> tokens = lexer::tokenize(source, ctx.diagnostics);
 
-    if (tokens.empty()) {
-        Trace::detail("Empty file: ", path);
-        auto* mod = ctx.arena.make<ModuleAST>();
-        mod->filePath = filePath;
-        mod->hasErrors = false;
-        if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
-        return mod;
-    }
+    // ─── Invariant: the context stack is empty on entry ───────────────────
+    //
+    // Under the one-file-per-call model, the parser has no cross-file state.
+    // The context stack is a per-construct stack: it is pushed on entering
+    // a block, a function body, a struct body, and so on, and popped on
+    // leaving. By the time parseOneFile returns, every push has been
+    // matched by a pop, so the stack is empty. If it isn't empty at entry,
+    // a previous parseOneFile left it unbalanced, and the invariant has
+    // been violated.
+    //
+    // AST_ASSERT_MSG fires in every build, not just debug, because a
+    // violated AST invariant means the compiler is broken, not the user's
+    // program. See BaseAST.hpp for the macro's contract.
+    AST_ASSERT_MSG(ctx.contextStack.empty(),
+                   "ParserContext context stack must be empty at file entry");
 
-    // ─── Check for lexer errors ────────────────────────────────────────
-    // User code errors - use Diagnostic only
-    for (const auto& tok : tokens) {
-        if (tok.type == TokenType::UNKNOWN) {
-            ctx.diagnostics.errorAt(DiagCode::Lex_UnknownCharacter,
-                                    SourceLocation(tok.line, tok.column),
-                                    "Unknown character in source");
-            auto* mod = ctx.arena.make<ModuleAST>();
-            mod->filePath = filePath;
-            mod->hasErrors = true;
-            if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
-            return mod;
-        }
-    }
-    
-    // ─── Create ModuleAST BEFORE parsing imports ──────────────────────
-    // This allows parseImportDecl() to populate module->imports.
-    auto* module = ctx.arena.make<ModuleAST>();
+    // ─── Build the ModuleAST before parsing ───────────────────────────────
+    //
+    // The module is built incrementally: its `filePath` is set here, its
+    // `decls` is filled in below, and its `hasErrors` is set after parsing
+    // by consulting the diagnostic engine.
+    //
+    // Creating the module before parsing means declaration parsers can, in
+    // principle, reach it through the context if they need to. Under the
+    // current design, none of them do — the parser produces a flat list of
+    // declarations and the module is assembled at the end. The early
+    // creation is a convention that matches the previous design's shape and
+    // that a future feature (module-level annotations, say) could rely on.
+    auto* module = ctx.arena().make<ModuleAST>();
     module->filePath = filePath;
-    module->imports.clear();  // Will be populated during parsing
-    
-    // ─── Set current module in context ──────────────────────────────
-    ctx.currentModule = module;
-    
-    // ─── Parse declarations ────────────────────────────────────────────
-    Trace::detail("Parsing declarations in: ", path);
+    module->hasErrors = false;
+
+    // ─── Lex ──────────────────────────────────────────────────────────────
+    //
+    // The lexer produces a flat token stream. It reports lexer errors
+    // through the same diagnostic engine. Its output always ends in an
+    // EOF_TOKEN, even on error, so parseInternal always has a well-defined
+    // final token to stop on.
+    std::vector<Token> tokens = lexer::tokenize(source, ctx.diag());
+
+    // ─── Empty file ───────────────────────────────────────────────────────
+    //
+    // A file with no tokens (empty source) still produces a valid module.
+    // The lexer emits a single EOF_TOKEN for empty input, so `tokens` is
+    // never truly empty — but we check defensively, in case the lexer's
+    // contract changes.
+    if (tokens.empty()) {
+        return module;
+    }
+
+    // ─── Parse declarations ───────────────────────────────────────────────
+    //
+    // parseInternal reads tokens from the stream, produces DeclAST nodes,
+    // and appends them to `allDecls`. It stops at EOF or when the
+    // diagnostic engine has accumulated too many errors.
     TokenStream stream(std::move(tokens));
     std::vector<DeclAST*> allDecls;
     parseInternal(stream, ctx, allDecls);
-    
-    // ─── Reset context ──────────────────────────────────────────────────
-    ctx.currentModule = nullptr;
-    
-    // ─── Build module AST ──────────────────────────────────────────────
-    auto builder = ctx.arena.makeBuilder<DeclAST*>();
-    for (auto* d : allDecls) {
-        builder.push_back(d);
+
+    // ─── Assemble the module ──────────────────────────────────────────────
+    //
+    // The declarations are moved into an arena-allocated span. The span is
+    // immutable once built; the ModuleAST holds it as `decls`.
+    auto declsBuilder = ctx.arena().makeBuilder<DeclAST*>(allDecls.size());
+    for (DeclAST* decl : allDecls) {
+        declsBuilder.push_back(decl);
     }
-    module->decls = builder.build();
-    module->hasErrors = ctx.diagnostics.hasErrors();
-    
-    // ─── Cache the result ──────────────────────────────────────────────
-    if (ctx.resolver) {
-        ctx.resolver->cacheModule(filePath, module);
-        Trace::detail("Cached module: ", path, " with ", 
-                     module->imports.size(), " imports");
-    }
-    
-    Trace::info("Parsed ", allDecls.size(), " declarations in ", path);
+    module->decls = declsBuilder.build();
+
+    // ─── Record whether the parse produced errors ─────────────────────────
+    //
+    // The module's `hasErrors` flag tells callers (the CLI, the LSP)
+    // whether the parse produced a usable AST. The flag is a convenience;
+    // the diagnostic engine is the source of truth. But a ModuleAST with
+    // `hasErrors == true` and a clean engine is a bug, and a ModuleAST with
+    // `hasErrors == false` and a dirty engine is also a bug — the flag
+    // mirrors the engine's state at the moment the parse finished, no more.
+    //
+    // The flag is set to the engine's *current* state, not to "did this
+    // file produce errors". If a previous file's parse left errors in the
+    // engine, this file's module has `hasErrors == true` even if this file
+    // is clean. In practice the CLI clears the engine between files, or
+    // treats the engine's state as the session-wide answer, so the
+    // per-module flag is informational.
+    module->hasErrors = ctx.diag().hasErrors();
+
+    // ─── Invariant: the context stack is empty on exit ────────────────────
+    //
+    // Every parse function that pushes a context frame must pop it before
+    // returning. This assertion catches an unbalanced push in the parser
+    // itself, at the point where the imbalance is detected.
+    AST_ASSERT_MSG(ctx.contextStack.empty(),
+                   "ParserContext context stack must be empty at file exit");
+
     return module;
 }
 
 // =============================================================================
-// parseInternal() - Parse a file's internal declarations
+// parseInternal — parse a file's top-level declarations
 // =============================================================================
 
-void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*>& outDecls) {
-    Trace::detail("Parsing internal declarations");
-    
-    int declCount = 0;
-    
-    // ─── Parse declarations until EOF ──────────────────────────────────────
+void parseInternal(TokenStream& stream,
+                   ParserContext& ctx,
+                   std::vector<DeclAST*>& outDecls) {
+    // ─── The main loop ────────────────────────────────────────────────────
+    //
+    // Read declarations until the stream is exhausted or the diagnostic
+    // engine says to stop. Each iteration either:
+    //
+    //   - consumes a stray `;` and continues (empty statements at top
+    //     level are harmless and common after a declaration),
+    //   - parses a declaration and appends it,
+    //   - or reports an error and synchronizes to the next declaration.
+    //
+    // The loop can make progress on any of these paths; the only way it
+    // terminates without producing a declaration is at EOF or when
+    // ctx.canContinue() returns false.
     while (!stream.isAtEnd() && ctx.canContinue()) {
-        // ─── Filter invalid tokens in this context ──────────────────────
-        // A top-level declaration starts with a declaration keyword
-        // We also skip stray semicolons
-        if (!stream.check(TokenType::SEMICOLON) &&
-            !stream.check(TokenType::AT_SIGN) &&  // Attributes are part of declarations
-            !is_declaration_keyword(stream.peekType())) {
-            
-            // Check if it's a control flow or concurrency keyword (invalid at top level)
-            if (is_control_flow_keyword(stream.peekType()) || 
-                is_concurrency_keyword(stream.peekType())) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "statement keyword '", stream.peekValue(), 
-                                        "' cannot appear at top level - expected a declaration");
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                        "unexpected token '", stream.peekValue(), 
-                                        "' - expected declaration");
-            }
-            
-            // Synchronize to nearest valid declaration to recover
-            synchronizeToBoundary(stream, ctx, {
-                TokenType::AT_SIGN, 
-                TokenType::SEMICOLON
-            });
-            
-            if (stream.isAtEnd()) {
-                break;
-            }
-        }
-
-        // ─── Skip stray semicolons ──────────────────────────────────────
+        // ─── Skip stray semicolons ────────────────────────────────────────
+        //
+        // A stray `;` at top level is a no-op. This happens after a
+        // declaration that already consumed its terminating `;`, or when
+        // the user wrote `;;` by accident. Skipping is silent.
         if (stream.match(TokenType::SEMICOLON)) {
             continue;
         }
 
-        // ─── Progress guard ──────────────────────────────────────────────
-        // Save position before parsing to detect zero-progress
-        size_t savedPos = stream.getPos();
+        // ─── Check for a declaration start ────────────────────────────────
+        //
+        // A top-level declaration starts with one of the declaration
+        // keywords, or with `@` for an attribute list. Anything else is
+        // either a statement keyword (illegal at top level) or a token
+        // that cannot begin a declaration.
+        //
+        // The check produces a targeted error: a control-flow keyword at
+        // top level gets "statements are not allowed at top level", a
+        // concurrency keyword gets the same, and any other token gets
+        // "expected a declaration".
+        const TokenType current = stream.peekType();
+        const bool atDeclStart =
+            current == TokenType::KW_IMPORT  ||
+            current == TokenType::KW_TYPE    ||
+            current == TokenType::KW_STRUCT  ||
+            current == TokenType::KW_ENUM    ||
+            current == TokenType::KW_FN      ||
+            current == TokenType::KW_CONST   ||
+            current == TokenType::KW_LET     ||
+            current == TokenType::KW_TRAIT   ||
+            current == TokenType::KW_SATISFY ||
+            current == TokenType::KW_DEF     ||
+            current == TokenType::AT_SIGN;
 
-        // ─── Parse declaration ──────────────────────────────────────────
-        DeclAST* decl = parseDecl(stream, ctx);
-        if (decl) {
-            outDecls.push_back(decl);
-            declCount++;
-        } else {
-            // parseDecl reported the error. If no progress was made
-            // Synchronize to nearest valid declaration to recover
-            synchronizeToBoundary(stream, ctx, {
-                TokenType::AT_SIGN, 
-                TokenType::SEMICOLON
-            });
+        if (!atDeclStart) {
+            // Report the appropriate error for what we found.
+            if (isStatementKeyword(current) ||
+                isConcurrencyKeyword(current)) {
+                ctx.diag().errorAt(
+                    diag::DiagCode::Syntax_UnexpectedToken,
+                    stream.currentLoc(),
+                    "statement keyword '", stream.peekValue(),
+                    "' is not allowed at top level; expected a declaration");
+            } else {
+                ctx.diag().errorAt(
+                    diag::DiagCode::Syntax_UnexpectedToken,
+                    stream.currentLoc(),
+                    "expected a declaration, got '", stream.peekValue(), "'");
+            }
+
+            // Synchronize to the next plausible declaration start.
+            // `synchronizeToBoundary` stops at declaration keywords and at
+            // statement keywords, which is the correct follow-set for a
+            // top-level recovery: the next declaration starts at a
+            // declaration keyword, and a statement keyword that
+            // accidentally appears at top level is itself an error to be
+            // reported by the next iteration.
+            synchronizeToBoundary(stream, ctx,
+                                  {TokenType::AT_SIGN, TokenType::SEMICOLON});
+
+            if (stream.isAtEnd()) break;
+            continue;
         }
+
+        // ─── Parse the declaration ────────────────────────────────────────
+        //
+        // parseDecl dispatches on the current keyword and returns a
+        // DeclAST. It reports its own errors; a declaration that recovered
+        // from a syntax error is marked `hasSyntaxError` but is still
+        // returned, so the parser can continue.
+        //
+        // A nullptr return from parseDecl means a caller bug — the
+        // dispatcher only returns null when it was called with a token
+        // that isn't a declaration start, which we just checked. We treat
+        // it defensively: if parseDecl returns null, synchronize and
+        // continue rather than crashing.
+        const size_t posBefore = stream.getPos();
+
+        DeclAST* decl = parseDecl(stream, ctx);
+
+        if (decl != nullptr) {
+            outDecls.push_back(decl);
+            continue;
+        }
+
+        // ─── parseDecl returned null ──────────────────────────────────────
+        //
+        // This should not happen for a well-formed dispatch, but it can if
+        // a parser bug causes parseDecl to fail to produce a node. If the
+        // stream has not advanced, we would loop forever; synchronize to
+        // make progress.
+        if (stream.getPos() == posBefore) {
+            ctx.diag().errorAt(
+                diag::DiagCode::Syntax_IncompleteDeclaration,
+                stream.currentLoc(),
+                "parser could not recover from the previous error");
+
+            synchronizeToBoundary(stream, ctx,
+                                  {TokenType::AT_SIGN, TokenType::SEMICOLON});
+
+            if (stream.isAtEnd()) break;
+        }
+        // If the stream advanced but parseDecl returned null, the next
+        // iteration will handle whatever token we're on. Loop.
     }
-    
-    Trace::info("Parsed ", declCount, " declarations");
 }
 
-} // namespace parser
+} // namespace lucid::parser

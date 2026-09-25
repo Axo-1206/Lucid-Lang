@@ -135,6 +135,7 @@ TokenType keywordToType(std::string_view word) noexcept {
     if (word == "fn")        return TokenType::KW_FN_MARKER;
     if (word == "as")        return TokenType::KW_AS;
     if (word == "Self")      return TokenType::KW_SELF;
+    if (word == "static")    return TokenType::KW_STATIC;
 
     // ─── Statements ─────────────────────────────────────────────────────
     if (word == "if")        return TokenType::KW_IF;

@@ -443,6 +443,7 @@ struct StructDeclAST : TypeDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
     ArenaSpan<FieldDeclAST*>        fields;
+    ArenaSpan<StaticFnDeclAST*>     statics;
     ArenaSpan<NamedTypeAST*>        traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
 
@@ -455,6 +456,7 @@ struct StructDeclAST : TypeDeclAST {
     StructDeclAST(InternedString n,
                   ArenaSpan<GenericParamDeclAST*> params,
                   ArenaSpan<FieldDeclAST*> flds,
+                  ArenaSpan<StaticFnDeclAST*> statics_,
                   ArenaSpan<NamedTypeAST*> traits,
                   bool packed = false)
         : TypeDeclAST(ASTKind::StructDecl, n)
