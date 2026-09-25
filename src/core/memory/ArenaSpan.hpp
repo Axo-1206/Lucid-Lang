@@ -32,8 +32,6 @@
 
 #include <cstddef>
 
-namespace lucid {
-
 template <typename T>
 class ArenaSpan {
     const T* data_ = nullptr;
@@ -105,5 +103,3 @@ public:
 /// Deduction guide: `ArenaSpan{ptr, n}` deduces T from the pointer type.
 template <typename T>
 ArenaSpan(const T*, size_t) -> ArenaSpan<T>;
-
-} // namespace lucid

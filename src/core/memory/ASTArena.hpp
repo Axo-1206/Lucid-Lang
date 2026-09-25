@@ -37,8 +37,6 @@
 #include <utility>
 #include <vector>
 
-namespace lucid {
-
 class ASTArena {
 public:
     ASTArena() = default;
@@ -351,5 +349,3 @@ private:
     char*  currentBlock_  = nullptr;
     size_t currentOffset_ = 0;
 };
-
-} // namespace lucid

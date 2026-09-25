@@ -40,8 +40,6 @@
 #include <cstdint>
 #include <functional>
 
-namespace lucid {
-
 struct InternedString {
     uint32_t id = 0;
 
@@ -59,8 +57,6 @@ struct InternedString {
     bool isEmpty() const noexcept { return id == 0; }
 };
 
-} // namespace lucid
-
 // ─── std::hash ──────────────────────────────────────────────────────────────
 //
 // Specializing std::hash for a user type is legal regardless of the type's
@@ -69,8 +65,8 @@ struct InternedString {
 
 namespace std {
     template <>
-    struct hash<lucid::InternedString> {
-        size_t operator()(const lucid::InternedString& s) const noexcept {
+    struct hash<InternedString> {
+        size_t operator()(const InternedString& s) const noexcept {
             return hash<uint32_t>{}(s.id);
         }
     };

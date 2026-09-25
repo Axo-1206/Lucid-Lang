@@ -44,8 +44,6 @@
 #include <unordered_map>
 #include <vector>
 
-namespace lucid {
-
 class StringPool {
 public:
     StringPool();
@@ -109,5 +107,3 @@ private:
     size_t currentOffset_ = 0;
     static constexpr size_t kBlockSize = 64 * 1024;  // 64 KiB
 };
-
-} // namespace lucid

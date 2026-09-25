@@ -31,8 +31,6 @@
 #include <cassert>
 #include <ostream>
 
-namespace lucid {
-
 /// @brief A position in a source file, packed into 32 bits.
 struct SourceLocation {
     /// Packed line and column. Zero means unknown.
@@ -82,5 +80,3 @@ inline std::ostream& operator<<(std::ostream& os, const SourceLocation& loc) {
     }
     return os;
 }
-
-} // namespace lucid

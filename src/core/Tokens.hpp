@@ -35,8 +35,6 @@
 #include <string>
 #include <string_view>
 
-namespace lucid {
-
 // ─────────────────────────────────────────────────────────────────────────────
 // TokenType
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,5 +400,3 @@ const char* tokenTypeName(TokenType t) noexcept;
 /// "identifier", `EOF_TOKEN` becomes "end of input", punctuation keeps its
 /// spelling. Returns a string literal.
 const char* tokenTypeDescription(TokenType t) noexcept;
-
-} // namespace lucid

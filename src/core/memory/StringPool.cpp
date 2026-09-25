@@ -4,8 +4,6 @@
 #include <cassert>
 #include <cstring>
 
-namespace lucid {
-
 StringPool::StringPool() {
     // Reserve ID 0 for the empty / invalid handle. Every real string
     // starts at ID 1.
@@ -61,5 +59,3 @@ std::string_view StringPool::lookupView(InternedString s) const {
     if (!contains(s) || s.id == 0) return {};
     return strings_[s.id];
 }
-
-} // namespace lucid
