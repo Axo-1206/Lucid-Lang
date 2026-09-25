@@ -92,7 +92,6 @@ enum class TokenType : uint16_t {
     KW_STRUCT,      // struct
     KW_ENUM,        // enum
     KW_FN_MARKER,   // fn  — the function-type stage marker (not the FN frame)
-    KW_CLS_MARKER,  // cls — the function-type stage marker
     KW_AS,          // as
     KW_SELF,        // Self
 

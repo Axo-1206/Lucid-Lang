@@ -53,30 +53,6 @@ enum class ArrayKind {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FuncShape — the runtime representation of a function value.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Distinguishes the two runtime shapes a function value can take.
-///
-/// Every function type stage is preceded by `fn` or `cls` in source. The
-/// marker is mandatory and per-stage: in a curry chain, each parameter
-/// group carries its own marker, so a single signature can mix shapes.
-///
-/// | Marker | Runtime value | Words | Resource?            | Call protocol |
-/// | ------ | ------------- | ----- | -------------------- | ------------- |
-/// | `fn`   | bare `ptr`    | 1     | No                   | direct call   |
-/// | `cls`  | `{func, env}` | 2     | Yes (refcounted env) | closure call  |
-///
-/// The distinction is static. CodeGen knows which shape each function value
-/// has from its type, so there is no runtime shape check and no conservative
-/// retain/release: `fn` values skip ownership entirely, `cls` values follow
-/// the existing ownership model.
-enum class FuncShape : uint8_t {
-    Fn,     ///< Bare function pointer. One word. No environment. Not a resource.
-    Cls,    ///< Closure fat pointer `{func, env}`. Two words. Refcounted env.
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PrimitiveKind — the primitive type tags.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -437,69 +413,30 @@ struct RefTypeAST : TypeAST {
 // FuncTypeAST — function type.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a function type with a single parameter group.
+/// @brief A function type.
 ///
-/// This is a recursive design: a function type consists of one parameter group
-/// and one return type. If the function is curried, the return type
-/// is another FuncTypeAST.
-///
-/// ─── Per-Stage Shape Markers (Mandatory) ───────────────────────────────
-///
-/// Every function type stage is preceded by `fn` or `cls`:
+/// A function type is a chain of stages. Every stage is preceded by
+/// `fn`:
 ///
 ///   func_type = stage { '->' stage } [ '->' type ]
-///   stage     = ( 'fn' | 'cls' ) unnamed_group
+///   stage     = 'fn' '(' [ type_list ] ')'
 ///
-/// The marker is mandatory and applies to that stage only. **Every group
-/// in a curry chain carries its own marker.**
+/// A stage's parameter group and return type describe the signature.
+/// The runtime representation of a value of this type is uniform — a
+/// fat pointer whose environment is null when the function captures
+/// nothing and refcounted otherwise. The compiler tracks capture
+/// behavior; the type does not.
 ///
-/// Groups may be adjacent (desugars to arrow) or arrow-separated. Adjacency
-/// is purely a syntactic shorthand for "these groups form a curry chain";
-/// it does **not** propagate a marker from one group to the next.
-///
-/// Examples:
-///
-///   fn (a int) cls (b int) -> int
-///     → outer: params=[a], shape=Fn,  returnType = inner
-///     → inner: params=[b], shape=Cls, returnType = int
-///
-///   fn (a int) fn (b int) -> int
-///     → outer: params=[a], shape=Fn,  returnType = inner
-///     → inner: params=[b], shape=Fn,  returnType = int
-///
-///   fn (n int) -> cls (int) -> int
-///     → outer: params=[n], shape=Fn,  returnType = inner
-///     → inner: params=[],  shape=Cls, returnType = int
-///
-///   fn (a int) fn (b int) -> int      (adjacent form — valid; each group
-///     is explicitly marked, and the parser desugars them into nested
-///     FuncTypeAST nodes)
-///
-///   fn (a int)(b int) -> int          (MALFORMED — the second group has
-///     no marker; the parser rejects this with a "missing 'fn' or 'cls'
-///     before parameter group" diagnostic)
-///
-/// `fn`-marked stages lower to bare `llvm::Function*` values; `cls`-marked
-/// stages lower to `{func, env}` fat pointers with a refcounted environment.
-/// The shape is static, so CodeGen dispatches on the type, never on a runtime
-/// tag.
-///
-/// ─── ParamASTs in a FuncTypeAST ─────────────────────────────────────────
-/// The `params` here are the **type-side** parameters of a function type.
-/// When this `FuncTypeAST` is part of a declaration header, the same shape
-/// is mirrored on the declaration's `AnonFuncExprAST`, whose `params` are
-/// the **runtime** parameters that CodeGen binds. See `AnonFuncExprAST`
-/// for the distinction.
-///
-/// @field params        The parameters for this group (raw pointers to ParamAST).
-/// @field returnType    Return type — a plain TypeAST or another FuncTypeAST.
-/// @field shape         The runtime shape of this stage (Fn or Cls).
+/// The `params` here are the type-side parameters. When this
+/// FuncTypeAST is part of a declaration header, the same shape is
+/// mirrored on the declaration's AnonFuncExprAST, whose `params` are
+/// the runtime parameters CodeGen binds. See `AnonFuncExprAST` for
+/// the distinction.
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
     TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
-    FuncShape shape = FuncShape::Fn;   // runtime shape of this stage
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
 
@@ -515,8 +452,4 @@ struct FuncTypeAST : TypeAST {
         }
         return nullptr;
     }
-
-    // ─── Shape Predicates ───────────────────────────────────────────────
-    bool isFn()  const { return shape == FuncShape::Fn;  }
-    bool isCls() const { return shape == FuncShape::Cls; }
 };

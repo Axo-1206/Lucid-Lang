@@ -953,34 +953,38 @@ struct UnknownTypeAST : TypeAST {
 /// either a snapshot of the captured value (for read-only captures) or a
 /// reference to shared storage (for captures the closure writes to).
 struct CapturedVariable {
-    // ─── Lexical Identity (invariant under generic substitution) ────────
+    // ─── Lexical Identity ───────────────────────────────────────────────
     InternedString name;
 
-    /// The declaration this capture resolves to, in the specialized context.
-    /// Set by Sema's capture analysis; valid for CodeGen because substitution
-    /// rebuilds the anon before capture analysis runs on it, so the
-    /// declaration pointer is never stale.
+    /// The declaration this capture resolves to, in the specialized
+    /// context. Set by Sema's capture analysis.
     ValueDeclAST* resolvedDecl = nullptr;
 
-    // ─── Capture Flags (computed once by capture analysis) ─────────────
+    // ─── Capture Flags ──────────────────────────────────────────────────
+
     /// True if the closure writes to the captured variable, and therefore
     /// must share one heap slot with every other holder (the enclosing
-    /// frame, and any other closure capturing the same declaration). False
-    /// if the closure only reads it, in which case it may be
+    /// frame, and any other closure capturing the same declaration).
+    /// False if the closure only reads it, in which case it may be
     /// snapshot-copied into the environment at construction time.
     bool byReference = false;
 
-    /// True if the value being captured is itself a closure — meaning the
-    /// environment slot must hold a fat pointer `{ func, env }` and the
-    /// closure's environment must be retained, rather than holding a bare
-    /// function pointer.
+    /// What kind of resource the captured value owns. This determines
+    /// what ownership action the environment slot performs:
     ///
-    /// Set for function-typed parameters and struct fields where the actual
-    /// value's shape (fn vs cls) is not known at the capture site. CodeGen
-    /// emits a runtime shape check for these captures.
-    bool isClosureValue = false;
+    ///   None        — bit copy, no action on drop
+    ///   Refcounted  — retain on copy, release on drop
+    ///   OwnedBuffer — deep copy on copy, free on drop
+    ///   Arena       — Sema rejects; arenas are scope-confined
+    ///   Handle      — Sema rejects; Deferred<T> is not capturable
+    ///   Aggregate   — CodeGen walks the type for per-field actions
+    ///
+    /// Set by Sema's capture analysis from `classifyResourceKind` on
+    /// the declaration's resolved type.
+    ResourceKind resourceKind = ResourceKind::None;
 
-    // ─── Environment Layout (set by Sema, per closure) ─────────────────
+    // ─── Environment Layout ─────────────────────────────────────────────
+
     /// Index of this capture's slot in the owning closure's environment
     /// struct. Assigned on insert; distinct for each closure that captures
     /// the same variable.

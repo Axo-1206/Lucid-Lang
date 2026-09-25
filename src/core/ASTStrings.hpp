@@ -262,16 +262,6 @@ inline std::string valueStateToString(ValueState state) {
     }
 }
 
-// ─── FuncShape to String ───────────────────────────────────────────────────
-
-inline std::string funcShapeToString(FuncShape shape) {
-    switch (shape) {
-        case FuncShape::Fn:  return "fn";
-        case FuncShape::Cls: return "cls";
-        default: return "Unknown";
-    }
-}
-
 // ─── AwaitKind to String ───────────────────────────────────────────────────
 
 inline std::string awaitKindToString(AwaitKind kind) {
@@ -365,7 +355,7 @@ inline std::string typeToString(TypeAST* type, StringPool& pool) {
     // ─── FuncType ──────────────────────────────────────────────────────────
     if (type->isa<FuncTypeAST>()) {
         auto* func = type->as<FuncTypeAST>();
-        std::string result = funcShapeToString(func->shape) + " (";
+        std::string result = "fn(";
         for (size_t i = 0; i < func->params.size(); ++i) {
             if (i > 0) result += ", ";
             ParamAST* param = func->params[i];

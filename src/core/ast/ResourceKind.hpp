@@ -6,8 +6,9 @@
 ///
 ///   1. `enum class ResourceKind` — the six-way classification of a type
 ///      by the resource it owns. Used by CodeGen at every allocation and
-///      free site, and by Sema during Phase 1 to populate
-///      `ValueDeclAST::resourceKind`.
+///      free site, by Sema during Phase 1 to populate
+///      `ValueDeclAST::resourceKind`, and by capture analysis to populate
+///      `CapturedVariable::resourceKind`.
 ///
 ///   2. `classifyResourceKind(TypeAST*)` — the single function that
 ///      produces a `ResourceKind` from a type. A pure function of the
@@ -66,27 +67,33 @@ struct TypeAST;
 // ─── What Each Kind Means ─────────────────────────────────────────────────
 //
 //   None        — owns nothing. Copy is a bit copy. Drop is a no-op.
-//                 Primitives, `fn` pointers, references, enum variants,
-//                 `ArenaDescriptor`, and (until Phase 4) aggregates whose
-//                 resource-ness isn't yet computed.
+//                 Primitives (except strings), references, enum variants,
+//                 and (until Phase 4) aggregates whose resource-ness
+//                 isn't yet computed.
 //
-//   Refcounted  — a closure environment. A `cls`-shaped function value is
-//                 a fat pointer `{ fn, env }` whose env pointer holds a
-//                 refcount. Copy retains. Drop releases. A move zeroes
-//                 the source.
+//   Refcounted  — a function value's environment. Every function value is
+//                 a fat pointer `{ code, env }`; the environment is
+//                 refcounted when the function captures, and null
+//                 otherwise. Copy retains. Drop releases (a null
+//                 environment is a no-op). A move zeroes the source.
 //
-//   OwnedBuffer — a string or dynamic array. The value owns its buffer
+//   OwnedBuffer — a string or a dynamic array. The value owns its buffer
 //                 outright. Copy deep-copies. Drop frees the buffer,
-//                 unless `cap == 0` (a static string literal).
+//                 unless the buffer is empty (a static or empty string).
 //
 //   Arena       — a bump allocator. Sema rejects copy. Drop frees the base
-//                 pointer. A move zeroes the source.
+//                 pointer. A move zeroes the source. Under the new
+//                 grammar, Arena is a core-script type (a `NamedTypeAST`
+//                 resolving to a `HostTypeDeclAST`), not a boot-level
+//                 AST node; the classifier recognizes it by resolving
+//                 the named type.
 //
-//   Handle      — a `Future<T>` or `Thread<T>`. Linear: Sema rejects
-//                 copy, and the only legal drop is consumption by
-//                 await/join. Reaching scope exit with a live handle is a
-//                 Sema error, so CodeGen's drop is a no-op that exists
-//                 only so the switch is exhaustive.
+//   Handle      — a `Deferred<T>`. Linear: Sema rejects copy, and the
+//                 only legal drop is consumption by `await` or `cancel`.
+//                 Reaching scope exit with a live handle is a Sema
+//                 error, so CodeGen's drop is a no-op that exists only
+//                 so the switch is exhaustive. Like Arena, Deferred is
+//                 a `NamedTypeAST` resolving to a `HostTypeDeclAST`.
 //
 //   Aggregate   — a struct, tuple, `T?`, `T!`, or fixed array that
 //                 contains at least one resource. Copy and drop are
@@ -113,10 +120,10 @@ struct TypeAST;
 
 enum class ResourceKind : uint8_t {
     None,          // owns nothing
-    Refcounted,    // closure env
+    Refcounted,    // a function value's refcounted environment
     OwnedBuffer,   // string or dynamic array
     Arena,         // arena memory pool
-    Handle,        // Future<T> / Thread<T>, linear, consumed by await/join
+    Handle,        // Deferred<T>, linear, consumed by await/cancel
     Aggregate,     // struct/tuple/T?/T!/fixed-array containing a resource
 };
 
@@ -165,15 +172,19 @@ constexpr const char* resourceKindName(ResourceKind kind) {
 /// function of the type rather than a method on `SemaContext`.
 ///
 /// ─── Dispatch Table ──────────────────────────────────────────────────────
-///   FuncTypeAST(shape == Cls)  →  Refcounted
-///   FuncTypeAST(shape == Fn)   →  None
-///   PrimitiveTypeAST(String)   →  OwnedBuffer
-///   ArrayTypeAST(isDynamic)    →  OwnedBuffer
-///   ArenaTypeAST               →  Arena
-///   ArenaDescriptorTypeAST     →  None
-///   FutureTypeAST              →  Handle
-///   ThreadTypeAST              →  Handle
-///   (everything else)          →  None
+///   FuncTypeAST                    →  Refcounted
+///   PrimitiveTypeAST(String)       →  OwnedBuffer
+///   ArrayTypeAST(isDynamic)        →  OwnedBuffer
+///   NamedTypeAST(Deferred)         →  Handle
+///   NamedTypeAST(Arena)            →  Arena
+///   (everything else)              →  None
+///
+/// The `NamedTypeAST` cases are resolved by consulting the named type's
+/// `resolvedDecl`. If the declaration is a core-script `HostTypeDeclAST`
+/// whose `targetName` is a known kind ("LucidDeferred" or "LucidArena"),
+/// the classifier returns the corresponding kind. This is done here
+/// rather than at each use site so that the special-casing is confined to
+/// one place.
 ///
 /// The `Aggregate` case is a Phase 4 stub. Until then, `None` is correct:
 /// no program that compiles today can construct a resource-owning

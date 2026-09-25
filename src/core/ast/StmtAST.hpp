@@ -39,12 +39,13 @@
 /// from a `scope_exit(callback, value)` call. Stored on `BlockStmtAST` as
 /// metadata for CodeGen to emit LIFO callbacks on scope exit.
 ///
-/// Multiple registrations within one block run in LIFO order (last registered,
-/// first called). The callback must be `cls`-shaped (a `fn`-shaped argument
-/// coerces up via the `fn → cls` coercion) and take exactly one argument.
+/// Multiple registrations within one block run in LIFO order (last
+/// registered, first called). The callback must be a function of type
+/// `fn(T) -> unit`, where `T` is the type of the value argument, and it
+/// must take exactly one argument.
 ///
 /// @field callExpr   The original `scope_exit(...)` call expression (for diagnostics).
-/// @field callback   The resolved callback expression (a `cls`-shaped function value).
+/// @field callback   The resolved callback expression — a function value of type `fn(T) -> unit`.
 /// @field value      The resolved value expression passed to the callback.
 struct ScopeExitRegistration {
     CallExprAST* callExpr = nullptr;   // The original scope_exit(...) call, for diagnostics

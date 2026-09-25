@@ -29,7 +29,6 @@ const char* tokenTypeName(TokenType t) noexcept {
         case TokenType::KW_STRUCT:          return "KW_STRUCT";
         case TokenType::KW_ENUM:            return "KW_ENUM";
         case TokenType::KW_FN_MARKER:       return "KW_FN_MARKER";
-        case TokenType::KW_CLS_MARKER:      return "KW_CLS_MARKER";
         case TokenType::KW_AS:              return "KW_AS";
         case TokenType::KW_SELF:            return "KW_SELF";
 
@@ -164,7 +163,6 @@ const char* tokenTypeDescription(TokenType t) noexcept {
         case TokenType::KW_STRUCT:          return "'struct'";
         case TokenType::KW_ENUM:            return "'enum'";
         case TokenType::KW_FN_MARKER:       return "'fn'";
-        case TokenType::KW_CLS_MARKER:      return "'cls'";
         case TokenType::KW_AS:              return "'as'";
         case TokenType::KW_SELF:            return "'Self'";
 
