@@ -185,6 +185,8 @@ enum class TokenType : uint16_t {
     COLON,          // :
     ARROW,          // ->
     VARIADIC,       // ...
+    RANGE,          // ..
+    RANGE_EXCLUSIVE,// ..<
     AT_SIGN,        // @
 
     // ─── Operators ──────────────────────────────────────────────────────

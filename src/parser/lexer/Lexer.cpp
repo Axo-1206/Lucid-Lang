@@ -577,11 +577,15 @@ void lexOperatorOrPunctuation(LexerState& s) {
     if (c == '.' && next == '.' && peekChar(s, 2) == '.') {
         emit(TokenType::VARIADIC, "...", 3); return;
     }
+    if (c == '.' && next == '.' && peekChar(s, 2) == '<') {
+        emit(TokenType::RANGE_EXCLUSIVE, "..<", 3); return;
+    }
 
     // ─── Two-character operators ────────────────────────────────────────
     if (c == '*' && next == '*') { emit(TokenType::POW, "**", 2); return; }
     if (c == '<' && next == '<') { emit(TokenType::SHL, "<<", 2); return; }
     if (c == '>' && next == '>') { emit(TokenType::SHR, ">>", 2); return; }
+    if (c == '.' && next == '.') { emit(TokenType::RANGE, "..", 2); return; }
     if (c == '-' && next == '>') { emit(TokenType::ARROW, "->", 2); return; }
     if (c == '=' && next == '=') { emit(TokenType::EQUAL_EQUAL, "==", 2); return; }
     if (c == '!' && next == '=') { emit(TokenType::NOT_EQUAL, "!=", 2); return; }
