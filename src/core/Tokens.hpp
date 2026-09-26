@@ -1,35 +1,43 @@
-/// @file Tokens.hpp
-/// 
-/// @responsibility The token vocabulary: the TokenType enum, the Token value
-///                 type, and the classification predicates the parser uses
-///                 to dispatch.
-/// 
-/// ─── Design: the token vocabulary is the boot set ─────────────────────────
-/// The lexer recognizes only the boot set — the frames, the content markers,
-/// the statement and concurrency keywords, the literals, the punctuation,
-/// and the target sigils. Every name the language appears to have beyond
-/// that list (int, float, Vec2, Map, toStr, Stringable, ...) is lexed as
-/// IDENTIFIER and resolved by Sema against the core scripts. This header
-/// enumerates the boot set and nothing else.
-/// 
-/// ─── Design: Token is a value type ────────────────────────────────────────
-/// Every token carries a TokenType, a std::string payload, and a packed
-/// SourceLocation. The payload is the raw lexeme for identifiers and
-/// literals, the spelling for operators, the text for doc-comments, and
-/// empty for tokens that have no text (like EOF_TOKEN). The lexer does not
-/// interpret the payload; Sema does. A HEX_LITERAL with payload "0xFF" is
-/// a string until Sema turns it into a number.
-/// 
-/// ─── Design: SourceLocation is packed into 32 bits ────────────────────────
-/// A token's location is a single SourceLocation (4 bytes), not separate
-/// line/column fields (8 bytes). This matches the AST, where every node
-/// also carries a SourceLocation. It also makes every diagnostic a single
-/// field read, and every parser backtrack a single-index operation.
-/// 
-/// ─── Design: no TokenStream here ──────────────────────────────────────────
-/// TokenStream — the forward-only view the parser consumes — is a separate
-/// header in the parser subsystem. This file defines the tokens themselves
-/// and the predicates over their types. Nothing else.
+/**
+ * @file Tokens.hpp
+ *
+ * @responsibility The token vocabulary for the consolidated Lucid grammar:
+ *                 the TokenType enum, the Token value type, and the
+ *                 classification predicates the parser uses to dispatch.
+ *
+ * ─── Design: the token set is the language's fixed vocabulary ─────────────
+ * The parser recognizes the keywords, punctuation, and literal forms below
+ * and nothing else. Every other name — a table name, a function name, a
+ * variable — is an IDENTIFIER and is resolved by Sema against the module's
+ * declarations.
+ *
+ * The primitive type names (`int`, `float`, `bool`, ...) are keywords, not
+ * identifiers. The grammar (§2.2) lists them alongside the declaration
+ * keywords, and they are recognized directly by the lexer. A primitive is
+ * stored inline at its natural size; it carries no host handle, no
+ * registry lookup, and no runtime indirection. Making the primitive names
+ * keywords rather than declarable identifiers is what keeps that property
+ * true: nothing can shadow `int`, and nothing can redefine it.
+ *
+ * ─── Design: `and`, `or`, `not` are keywords ──────────────────────────────
+ * They are operators, and operators are fixed lexical tokens (§6.10).
+ * Making them keywords is what lets the parser recognize an operator
+ * without consulting name resolution — the same reason `+` and `==` are
+ * punctuation rather than identifiers.
+ *
+ * ─── Design: attributes are juxtaposed, not bracketed ─────────────────────
+ * The grammar writes `@export @on(EventKind.KeyDown)` — `@` followed by an
+ * identifier, repeated. There are no `[...]` brackets around attribute
+ * lists. The lexer emits `AT_SIGN` and the identifier as separate tokens;
+ * the parser reads the pair.
+ *
+ * ─── Design: every function value is a bare code pointer ──────────────────
+ * The grammar has no `fn`/`cls` distinction and no closures. Every
+ * function value is a compile-time-known code address (§5.0). There is no
+ * `KW_FN_MARKER` distinct from the `FN` declaration keyword; the same
+ * `FN` token introduces a declaration and (via §5.0's function-type
+ * syntax) names the code-address type.
+ */
 
 #pragma once
 
@@ -43,19 +51,18 @@
 // TokenType
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The enum is ordered so tokens of the same kind are contiguous. The parser
-// uses the `isXxx` predicates below rather than raw numeric comparisons, but
-// the grouping is what makes a `switch` over TokenType readable: all
-// keywords, all literals, all operators, all delimiters appear together.
-//
 // Naming convention:
 //
-//   KW_*      — a boot-set keyword. The lexer recognizes it by spelling.
+//   KW_*      — a keyword. The lexer recognizes it by spelling.
 //   *_LITERAL — a literal form. The lexer produces the raw lexeme.
-//   *_COMMENT — a comment form that survives to the parser (only DOC_COMMENT)
+//   DOC_COMMENT — the one comment form that survives to the parser.
 //   (none)    — an operator or delimiter, named by its shape.
 //   UNKNOWN   — a lexing error; the parser reports and recovers.
 //   EOF_TOKEN — end of input. Always the final token.
+//
+// The enum is ordered so tokens of the same category are contiguous. The
+// parser uses the `isXxx` predicates rather than raw numeric comparisons,
+// but the ordering is what makes a `switch` over TokenType readable.
 
 enum class TokenType : uint16_t {
 
@@ -66,80 +73,101 @@ enum class TokenType : uint16_t {
     UNKNOWN,        // bad character, malformed literal; the parser reports
 
     // ─── Identifiers ────────────────────────────────────────────────────
-    IDENTIFIER,     // any name that is not a boot-set keyword
+    IDENTIFIER,     // any name that is not a keyword
 
-    // ─── Frame keywords ─────────────────────────────────────────────────
+    // ─── Declaration keywords ───────────────────────────────────────────
     //
-    // The keywords that introduce a declaration. Uppercase frames bind to
-    // the host or declare behavior; lowercase frames name things.
+    // The three declaration forms plus `import`, plus the `host` target
+    // modifier, plus `as` for import aliases.
 
-    KW_TYPE,        // TYPE
+    KW_TABLE,       // TABLE
     KW_FN,          // FN
-    KW_DEF,         // DEF
-    KW_REQUIRE,     // REQUIRE
-
-    KW_CONST,       // const
     KW_LET,         // let
+    KW_CONST,       // const
     KW_IMPORT,      // import
-    KW_TRAIT,       // trait
-    KW_SATISFY,     // satisfy
-
-    // ─── Content markers ────────────────────────────────────────────────
-    //
-    // Markers that appear inside a frame's target position. `struct` and
-    // `enum` may also start a top-level declaration as sugar.
-
-    KW_STRUCT,      // struct
-    KW_ENUM,        // enum
-    KW_FN_MARKER,   // fn  — the function-type stage marker (not the FN frame)
     KW_AS,          // as
-    KW_SELF,        // Self
-    KW_STATIC,      // static
+    KW_HOST,        // host
+
+    // ─── Primitive type keywords ────────────────────────────────────────
+    //
+    // The primitive type names are keywords, not identifiers. The sized
+    // aliases (`int`, `long`, `uint`, `ulong`, `float`, `double`) are
+    // distinct tokens from their canonical forms (`int32`, `int64`, ...)
+    // so that Sema can decide whether a given spelling is the canonical
+    // name or the alias. Both spellings produce the same underlying type.
+
+    KW_BOOL,
+    KW_CHAR,
+    KW_STRING,
+    KW_UNIT,
+
+    KW_INT8,    KW_INT16,   KW_INT32,   KW_INT64,
+    KW_UINT8,   KW_UINT16,  KW_UINT32,  KW_UINT64,
+    KW_FLOAT32, KW_FLOAT64,
+
+    // Sized aliases (same types as their canonical forms).
+    KW_INT,     // = int32
+    KW_LONG,    // = int64
+    KW_UINT,    // = uint32
+    KW_ULONG,   // = uint64
+    KW_FLOAT,   // = float32
+    KW_DOUBLE,  // = float64
 
     // ─── Statement keywords ─────────────────────────────────────────────
     KW_IF,          // if
     KW_ELSE,        // else
-    KW_FOR,         // for
-    KW_WHILE,       // while
-    KW_DO,          // do
     KW_SWITCH,      // switch
     KW_CASE,        // case
     KW_DEFAULT,     // default
+    KW_FOR,         // for
+    KW_IN,          // in
+    KW_WHILE,       // while
+    KW_RETURN,      // return
     KW_BREAK,       // break
     KW_CONTINUE,    // continue
-    KW_RETURN,      // return
 
-    // ─── Concurrency keywords ───────────────────────────────────────────
-    KW_ASYNC,       // async
-    KW_SPAWN,       // spawn
-    KW_START,       // start
-    KW_AWAIT,       // await
-    KW_ALL,         // all
-    KW_ANY,         // any
+    // ─── Sequence keywords (§9.2) ───────────────────────────────────────
+    //
+    // The suspension primitive. These are recognized by the parser like
+    // statement keywords; Sema enforces that they appear only inside a
+    // `@sequence`-annotated function's body.
+
+    KW_WAIT,            // wait
+    KW_WAIT_FRAMES,     // waitFrames
+    KW_WAIT_UNTIL,      // waitUntil
+    KW_WAIT_FOR_EVENT,  // waitForEvent
+    KW_WAIT_FOR_REQUEST,// waitForRequest
+    KW_START,           // start
+
+    // ─── Operator keywords ──────────────────────────────────────────────
+    //
+    // `and`, `or`, `not` are operators (§6.10). They are keywords so the
+    // parser can recognize them without consulting name resolution.
+
+    KW_AND,         // and
+    KW_OR,          // or
+    KW_NOT,         // not
 
     // ─── Literal keywords ───────────────────────────────────────────────
-    KW_NIL,         // nil
-    KW_ERR,         // err
     KW_TRUE,        // true
     KW_FALSE,       // false
+    KW_NIL,         // nil
 
     // ─── Literals with a payload ────────────────────────────────────────
     INT_LITERAL,        // decimal integer
     FLOAT_LITERAL,      // float
     HEX_LITERAL,        // 0x...
     BINARY_LITERAL,     // 0b...
+    OCTAL_LITERAL,      // 0o...
     CHAR_LITERAL,       // 'c' or '\n'
-    STRING_HEAD,        // opening segment of a "..." string
-    STRING_MIDDLE,      // a segment between two interpolations
-    STRING_END,         // closing segment of a "..." string
+    STRING_LITERAL,     // "..."
     RAW_STRING_LITERAL, // """..."""
 
-    // ─── Comments that survive to the parser ────────────────────────────
+    // ─── The one comment form that reaches the parser ───────────────────
     //
-    // Ordinary `--` and `/- ... -/` comments are dropped by the lexer. The
-    // doc-comment form `/-- ... --/` is attached to the declaration that
-    // follows it, and the harvester scans backward from the declaration's
-    // start position to recover it.
+    // `--` line comments and `/- ... -/` block comments are dropped by the
+    // lexer. The doc-comment form `/-- ... --/` attaches to the next
+    // declaration, so it survives as a token.
 
     DOC_COMMENT,    // /-- ... --/
 
@@ -153,16 +181,11 @@ enum class TokenType : uint16_t {
 
     COMMA,          // ,
     SEMICOLON,      // ;
-    COLON,          // :
-    DOUBLE_COLON,   // ::
     DOT,            // .
+    COLON,          // :
     ARROW,          // ->
-    RANGE,          // ..
-    RANGE_EXCLUSIVE,// ..<
     VARIADIC,       // ...
-
     AT_SIGN,        // @
-    HASH,           // #
 
     // ─── Operators ──────────────────────────────────────────────────────
 
@@ -173,7 +196,6 @@ enum class TokenType : uint16_t {
     MUL_ASSIGN,     // *=
     DIV_ASSIGN,     // /=
     MOD_ASSIGN,     // %=
-    POW_ASSIGN,     // **=
     BIT_AND_ASSIGN, // &=
     BIT_OR_ASSIGN,  // |=
     BIT_XOR_ASSIGN, // ^=
@@ -204,13 +226,7 @@ enum class TokenType : uint16_t {
     SHL,            // <<
     SHR,            // >>
 
-    // Suffix markers
-    QUESTION,       // ?
-    BANG,           // !
-    QUESTION_BANG,  // ?!
-
-    // Special operators
-    PIPELINE,          // |>
+    // Null coalescing
     QUESTION_QUESTION, // ??
 };
 
@@ -221,25 +237,13 @@ enum class TokenType : uint16_t {
 /// @brief A single lexical token.
 ///
 /// The payload's meaning depends on the type:
-///   - IDENTIFIER, keyword types: the identifier or keyword spelling.
-///   - literal types:              the raw lexeme from the source
-///                                 (for STRING_HEAD/MIDDLE/END, the segment
-///                                 content with escapes already processed).
-///   - operator types:             the operator's spelling.
-///   - DOC_COMMENT:                the comment text, with `/--` and `--/`
-///                                 stripped.
-///   - punctuation:                the punctuation character(s).
-///   - EOF_TOKEN, UNKNOWN:         empty or the offending character.
-///
-/// The payload is `std::string`, not `std::string_view`, because a token
-/// can outlive the source buffer in the LSP path (the buffer is re-read on
-/// every keystroke, and a token captured for a completion list must not
-/// dangle). One small allocation per token is acceptable for a lexer that
-/// runs once per compile.
-///
-/// The location is a single `SourceLocation` (4 bytes packed) rather than
-/// separate `line` and `column` fields. See the memory note at the top of
-/// this file.
+///   - IDENTIFIER and keyword types: the spelling.
+///   - literal types: the raw lexeme from the source.
+///   - operator types: the operator's spelling.
+///   - DOC_COMMENT: the comment text, with the `/--` and `--/` markers
+///     stripped.
+///   - punctuation: the punctuation character(s).
+///   - EOF_TOKEN, UNKNOWN: empty or the offending character.
 struct Token {
     TokenType      type     = TokenType::UNKNOWN;
     std::string    value;
@@ -247,22 +251,19 @@ struct Token {
 
     Token() = default;
 
-    /// The canonical constructor: type, value, location.
     Token(TokenType t, std::string v, SourceLocation loc)
         : type(t), value(std::move(v)), location(loc) {}
 
     /// Convenience: line and column as raw integers. The lexer uses this
-    /// form because it tracks line and column as integers, not packed.
+    /// form because it tracks line and column as integers.
     Token(TokenType t, std::string v, uint32_t line, uint32_t column)
         : type(t), value(std::move(v)), location(line, column) {}
 
-    bool is(TokenType t)      const noexcept { return type == t; }
-    bool isNot(TokenType t)   const noexcept { return type != t; }
-    bool isEof()              const noexcept { return type == TokenType::EOF_TOKEN; }
-    bool isUnknown()          const noexcept { return type == TokenType::UNKNOWN; }
+    bool is(TokenType t)    const noexcept { return type == t; }
+    bool isNot(TokenType t) const noexcept { return type != t; }
+    bool isEof()            const noexcept { return type == TokenType::EOF_TOKEN; }
+    bool isUnknown()        const noexcept { return type == TokenType::UNKNOWN; }
 
-    /// True if this token has a non-empty payload. Used by diagnostics to
-    /// decide whether to quote the value or just name the token type.
     bool hasValue() const noexcept { return !value.empty(); }
 };
 
@@ -270,55 +271,50 @@ struct Token {
 // Classification predicates
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The parser dispatches on these rather than on raw enum comparisons. The
-// predicates are the contract; the enum's ordering is an implementation
-// detail.
+// The parser dispatches on these. The enum's ordering is an implementation
+// detail; the predicates are the contract.
 
 inline bool isKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_TYPE && t <= TokenType::KW_FALSE;
-}
-
-inline bool isFrameKeyword(TokenType t) noexcept {
-    return (t >= TokenType::KW_TYPE    && t <= TokenType::KW_DEF)
-        || (t >= TokenType::KW_CONST   && t <= TokenType::KW_SATISFY)
-        || t == TokenType::KW_REQUIRE;
-}
-
-inline bool isContentMarker(TokenType t) noexcept {
-    return t >= TokenType::KW_STRUCT && t <= TokenType::KW_STATIC;
+    return t >= TokenType::KW_TABLE && t <= TokenType::KW_NIL;
 }
 
 /// @brief True for a token that can begin a declaration.
 ///
-/// A declaration begins with one of the frame keywords, with the
-/// sugar-form markers `struct` or `enum`, or with `@` for an
-/// attribute list. The attribute `@` is not included here — it is a
-/// prefix that can precede any declaration; the declaration's own
-/// keyword follows it. Callers that want to detect "the next thing
-/// is a declaration" check both this predicate and `AT_SIGN`.
+/// A declaration begins with one of the three declaration keywords.
+/// `import` and `host` are not included: `import` begins an import
+/// directive, which the parser handles separately, and `host` is a target
+/// modifier that appears after `=`.
 inline bool isDeclarationKeyword(TokenType t) noexcept {
-    return t == TokenType::KW_IMPORT
-        || t == TokenType::KW_TYPE
-        || t == TokenType::KW_STRUCT
-        || t == TokenType::KW_ENUM
+    return t == TokenType::KW_TABLE
         || t == TokenType::KW_FN
-        || t == TokenType::KW_CONST
         || t == TokenType::KW_LET
-        || t == TokenType::KW_TRAIT
-        || t == TokenType::KW_SATISFY
-        || t == TokenType::KW_DEF;
+        || t == TokenType::KW_CONST;
+}
+
+/// @brief True for a token that begins a primitive type.
+inline bool isPrimitiveTypeKeyword(TokenType t) noexcept {
+    return t >= TokenType::KW_BOOL && t <= TokenType::KW_DOUBLE;
 }
 
 inline bool isStatementKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_IF && t <= TokenType::KW_RETURN;
+    return t >= TokenType::KW_IF && t <= TokenType::KW_CONTINUE;
 }
 
-inline bool isConcurrencyKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_ASYNC && t <= TokenType::KW_ANY;
+/// @brief True for a token that begins a sequence suspend point.
+inline bool isSuspendKeyword(TokenType t) noexcept {
+    return t >= TokenType::KW_WAIT && t <= TokenType::KW_WAIT_FOR_REQUEST;
+}
+
+inline bool isOperatorKeyword(TokenType t) noexcept {
+    return t == TokenType::KW_AND
+        || t == TokenType::KW_OR
+        || t == TokenType::KW_NOT;
 }
 
 inline bool isLiteralKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_NIL && t <= TokenType::KW_FALSE;
+    return t == TokenType::KW_TRUE
+        || t == TokenType::KW_FALSE
+        || t == TokenType::KW_NIL;
 }
 
 inline bool isLiteral(TokenType t) noexcept {
@@ -326,14 +322,8 @@ inline bool isLiteral(TokenType t) noexcept {
         || isLiteralKeyword(t);
 }
 
-inline bool isStringSegment(TokenType t) noexcept {
-    return t == TokenType::STRING_HEAD
-        || t == TokenType::STRING_MIDDLE
-        || t == TokenType::STRING_END;
-}
-
 inline bool isDelimiter(TokenType t) noexcept {
-    return t >= TokenType::LPAREN && t <= TokenType::HASH;
+    return t >= TokenType::LPAREN && t <= TokenType::AT_SIGN;
 }
 
 inline bool isOpeningDelimiter(TokenType t) noexcept {
@@ -364,31 +354,29 @@ inline bool isBitwiseOperator(TokenType t) noexcept {
     return t >= TokenType::BIT_AND && t <= TokenType::SHR;
 }
 
-/// True for tokens that can begin an expression. The parser's Pratt loop
-/// uses this to decide whether to parse a prefix.
+/// @brief True for a token that can begin a prefix expression.
+///
+/// Used by the Pratt loop's prefix dispatcher to decide whether to
+/// consume a token at all.
 inline bool canStartExpression(TokenType t) noexcept {
     return isLiteral(t)
         || t == TokenType::IDENTIFIER
         || t == TokenType::LPAREN
         || t == TokenType::LBRACKET
         || t == TokenType::MINUS
-        || t == TokenType::BANG
         || t == TokenType::BIT_NOT
-        || t == TokenType::KW_IF
-        || t == TokenType::KW_NIL
-        || t == TokenType::KW_ERR;
+        || t == TokenType::KW_NOT
+        || t == TokenType::KW_START;    // start expr: `start f(args)`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Names
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The canonical spelling of a token type, for diagnostics and JSON dumps.
-/// Returns a string literal — no allocation. Defined in Tokens.cpp.
+/// The canonical spelling of a token type, for diagnostics and JSON
+/// dumps. Returns a string literal. Defined in Tokens.cpp.
 const char* tokenTypeName(TokenType t) noexcept;
 
-/// The predicate name the parser uses in "expected X, found Y" messages.
-/// Differs from `tokenTypeName` for a few tokens: IDENTIFIER becomes
-/// "identifier", EOF_TOKEN becomes "end of input", punctuation keeps its
-/// spelling. Returns a string literal. Defined in Tokens.cpp.
+/// The predicate name the parser uses in "expected X, found Y"
+/// messages. Defined in Tokens.cpp.
 const char* tokenTypeDescription(TokenType t) noexcept;
