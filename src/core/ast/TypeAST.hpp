@@ -1,152 +1,112 @@
-/// @file TypeAST.hpp
-/// 
-/// @responsibility Defines the syntactic representation of types
-///                 (Primitive, Array, Reference, Function, Nullable, Fallible).
-/// 
-/// @hierarchy BaseAST → TypeAST → [Concrete Nodes]
-/// 
-/// @related_files
-///   - src/parser/ParserType.cpp – primary producer of these nodes
-///   - src/semantic/TypeResolver.cpp – resolves types to semantic representations
-/// 
-/// @note These represent types **as written** in source. The semantic pass
-///       resolves them into fully resolved semantic types.
-///
-/// ─── No Removed Nodes ────────────────────────────────────────────────────
-/// This header deliberately has NO nodes for:
-///   - Raw pointers (`*T`) — removed from the language.
-///   - `Future<T>` / `Thread<T>` — replaced by the single `Deferred<T>` type,
-///     which is a host-backed `NamedTypeAST`, not a dedicated node.
-///   - `Arena` / `ArenaDescriptor` — no longer boot-level; they may be declared
-///     as host-backed types in a core script (`TYPE Arena = #host(...)`) and
-///     use the ordinary `NamedTypeAST` shape.
-///   - `Simd<T, N>` — a core-script type (`TYPE Simd<T, N> = #builtin(simd_type)`)
-///     resolved as a `NamedTypeAST`. Named aliases like `Float4` are also
-///     `NamedTypeAST`s.
-///   - `ModuleTypeAccess` — `::` is handled through `ModuleAccessExprAST` on the
-///     value side; module-qualified type names resolve through the ordinary
-///     named-type path.
+/**
+ * @file TypeAST.hpp
+ *
+ * @responsibility The syntactic representation of types: primitives,
+ *                 named types, arrays, row references, and function types.
+ *
+ * @hierarchy BaseAST → TypeAST → [Concrete Type Nodes]
+ *
+ * ─── Design: five kinds of type ───────────────────────────────────────────
+ * A type in Lucid is exactly one of:
+ *
+ *   - a primitive             (`int`, `float`, `string`, `bool`, `char`, ...)
+ *   - a named type            (`Person`, `SpriteRef`, `Direction`)
+ *   - an array                (`[T]`, `[N]T`)
+ *   - a row reference         (`&T`)
+ *   - a function type         (`(T, U) -> R`)
+ *
+ * There is no nullable type, no fallible type, no value reference. A row
+ * reference (`&T`) is inherently nilable; `nil` is an ordinary value of
+ * that type (grammar §5.2). Primitives are never nilable. Tables are
+ * global and reference-typed; a bare `Person` is the sheet itself.
+ *
+ * ─── Design: no `fn`/`cls` marker ─────────────────────────────────────────
+ * Every function value is a bare code pointer (grammar §4.2.5). A
+ * function type names the signature; the representation is uniform.
+ *
+ * ─── Design: primitive names are keywords, not identifiers ────────────────
+ * The primitive type names are recognized directly by the lexer (see
+ * Tokens.hpp). The parser produces a `PrimitiveTypeAST` with a
+ * `PrimitiveKind` tag; sized aliases (`int`, `int32`) fold into the same
+ * kind. There is exactly one internal representation per primitive type,
+ * regardless of which spelling the source used.
+ */
 
 #pragma once
 
 #include "BaseAST.hpp"
-#include "core/memory/StringPool.hpp"
 
-#include <string>
-#include <vector>
-#include <memory>
 #include <cstdint>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArrayKind — the three array shapes.
+// PrimitiveKind
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// The internal tag for a primitive type. Aliases in the source — `int`
+// vs. `int32`, `long` vs. `int64` — fold to the same kind, so downstream
+// code has one representation per type to handle.
+//
+// The grammar names the canonical forms and their aliases in §2.2. The
+// aliases are:
+//
+//     int    = int32
+//     long   = int64
+//     uint   = uint32
+//     ulong  = uint64
+//     float  = float32
+//     double = float64
 
-/// @brief Distinguishes the three array types in Lucid.
-/// 
-/// - Slice   : non‑owning view (`[_]T`)
-/// - Dynamic : heap‑owned, growable (`[*]T`)
-/// - Fixed   : stack/inline, compile‑time size (`[N]T`)
-enum class ArrayKind {
-    Slice,   // [_]T
-    Dynamic, // [*]T
-    Fixed    // [N]T
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PrimitiveKind — the primitive type tags.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Identifies a primitive type in the type system.
-/// 
-/// The parser maps token types (e.g., `TYPE_INT`) to this enum.
-/// The semantic pass and codegen read `PrimitiveKind` directly.
-/// 
-/// @note Fixed‑width types (`int8`, `uint32`, etc.) are critical for
-///       Vulkan struct layouts and FFI compatibility.
-enum class PrimitiveKind {
-    // Boolean
+enum class PrimitiveKind : uint8_t {
     Bool,
+    Char,
+    String,
+    Unit,
 
-    // Signed integers (machine‑dependent sizes)
-    Byte,     // int8,  -128..127
-    Short,    // int16
-    Int,      // int32
-    Long,     // int64
-
-    // Unsigned integers (machine‑dependent sizes)
-    Ubyte,    // uint8,  0..255
-    Ushort,   // uint16
-    Uint,     // uint32
-    Ulong,    // uint64
-
-    // Fixed‑width aliases – critical for Vulkan struct layouts
     Int8,
     Int16,
     Int32,
     Int64,
+
     Uint8,
     Uint16,
     Uint32,
     Uint64,
 
-    // Floating point
-    Float,    // 32‑bit
-    Double,   // 64‑bit
-    Decimal,  // 128‑bit, high precision
-
-    // Text
-    String,
-    Char,
+    Float32,
+    Float64,
 };
 
-// ─── PrimitiveKind Predicates ─────────────────────────────────────────────
+// ─── PrimitiveKind predicates ─────────────────────────────────────────────
 
-/// @brief Get the bit width of a primitive kind.
-inline size_t getPrimitiveBitWidth(PrimitiveKind kind) {
+/// @brief The bit width of a primitive numeric kind. Returns 0 for
+///        `bool`, `char`, `string`, and `unit`.
+inline size_t primitiveBitWidth(PrimitiveKind kind) noexcept {
     switch (kind) {
-        case PrimitiveKind::Bool:
-        case PrimitiveKind::Char:
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Ubyte:
         case PrimitiveKind::Int8:
         case PrimitiveKind::Uint8:
             return 8;
-
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Ushort:
         case PrimitiveKind::Int16:
         case PrimitiveKind::Uint16:
             return 16;
-
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Uint:
         case PrimitiveKind::Int32:
         case PrimitiveKind::Uint32:
+        case PrimitiveKind::Float32:
             return 32;
-
-        case PrimitiveKind::Long:
-        case PrimitiveKind::Ulong:
         case PrimitiveKind::Int64:
         case PrimitiveKind::Uint64:
+        case PrimitiveKind::Float64:
             return 64;
-
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-        case PrimitiveKind::Decimal:
+        case PrimitiveKind::Bool:
+        case PrimitiveKind::Char:
         case PrimitiveKind::String:
-            return 0;
-
-        default:
+        case PrimitiveKind::Unit:
             return 0;
     }
+    return 0;
 }
 
-inline bool isSignedIntegerKind(PrimitiveKind kind) {
+inline bool isSignedIntegerKind(PrimitiveKind kind) noexcept {
     switch (kind) {
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Long:
         case PrimitiveKind::Int8:
         case PrimitiveKind::Int16:
         case PrimitiveKind::Int32:
@@ -157,12 +117,8 @@ inline bool isSignedIntegerKind(PrimitiveKind kind) {
     }
 }
 
-inline bool isUnsignedIntegerKind(PrimitiveKind kind) {
+inline bool isUnsignedIntegerKind(PrimitiveKind kind) noexcept {
     switch (kind) {
-        case PrimitiveKind::Ubyte:
-        case PrimitiveKind::Ushort:
-        case PrimitiveKind::Uint:
-        case PrimitiveKind::Ulong:
         case PrimitiveKind::Uint8:
         case PrimitiveKind::Uint16:
         case PrimitiveKind::Uint32:
@@ -173,31 +129,51 @@ inline bool isUnsignedIntegerKind(PrimitiveKind kind) {
     }
 }
 
-inline bool isFloatKind(PrimitiveKind kind) {
-    switch (kind) {
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-        case PrimitiveKind::Decimal:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool isIntegerKind(PrimitiveKind kind) {
+inline bool isIntegerKind(PrimitiveKind kind) noexcept {
     return isSignedIntegerKind(kind) || isUnsignedIntegerKind(kind);
 }
+
+inline bool isFloatKind(PrimitiveKind kind) noexcept {
+    return kind == PrimitiveKind::Float32 || kind == PrimitiveKind::Float64;
+}
+
+inline bool isNumericKind(PrimitiveKind kind) noexcept {
+    return isIntegerKind(kind) || isFloatKind(kind);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ArrayKind
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The two array shapes.
+///
+/// - `Dynamic` — `[T]`. Grows and shrinks via `.ADD`/`.REMOVE`. Owns its
+///   backing buffer.
+/// - `Fixed`   — `[N]T`. Compile-time length. Inline storage.
+///
+/// A slice (`[_]T`) existed in the old grammar; it is removed. A
+/// non-owning view over an array is expressed by passing the array
+/// itself, and the language does not distinguish view from owner at the
+/// type level.
+enum class ArrayKind : uint8_t {
+    Dynamic,  // [T]
+    Fixed,    // [N]T
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PrimitiveTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a primitive type keyword.
-/// 
+/// @brief A primitive type: `int`, `float`, `string`, `bool`, `char`, ...
+///
+/// The parser produces this node when it sees one of the primitive type
+/// keywords. Sized aliases fold into the canonical kind: `int` and
+/// `int32` both produce `PrimitiveKind::Int32`.
+///
 /// @example
-///   let x int    = 5       → PrimitiveKind::Int
-///   let s string = "hi"    → PrimitiveKind::String
-///   let b bool   = true    → PrimitiveKind::Bool
+///   let x: int    = 5      → PrimitiveKind::Int32
+///   let s: string = "hi"   → PrimitiveKind::String
+///   let b: bool   = true   → PrimitiveKind::Bool
 struct PrimitiveTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PrimitiveType;
 
@@ -211,245 +187,152 @@ struct PrimitiveTypeAST : TypeAST {
 // NamedTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief References a user‑defined type by name, with optional generic arguments.
-/// 
+/// @brief A user-declared type referenced by name.
+///
+/// A `NamedTypeAST` names a table (the sheet itself) or a host type.
+/// There are no generic arguments in the new grammar; a name is a name.
+///
+/// The parser produces this node for any identifier that appears in a
+/// type position. Sema resolves the name against the type namespace and
+/// writes the resolved declaration to `resolvedDecl`.
+///
 /// @example
-///   Vec2               → name = "Vec2",    genericArgs = {}
-///   Buffer<int>        → name = "Buffer",  genericArgs = [Int]
-///   Map<string, Vec2>  → name = "Map",     genericArgs = [String, Vec2]
-///   Deferred<User>     → name = "Deferred", genericArgs = [User]
-///   Weak<Node>         → name = "Weak",     genericArgs = [Node]
-///   Float4             → name = "Float4",   genericArgs = {}
-/// 
-/// `genericArgs` holds the concrete types supplied at the use site (e.g., the
-/// `<int>` in `Buffer<int>`). These are `TypeAST` nodes, not `GenericParamAST`.
-/// The semantic pass resolves the name against the symbol table and verifies
-/// the argument count matches the declaration.
-/// 
-/// ─── Resolution Targets ─────────────────────────────────────────────────
-/// A `NamedTypeAST` may resolve to any of:
-///   - `StructDeclAST` — a user-defined struct (possibly a specialization).
-///   - `EnumDeclAST` — a user-defined enum (possibly a specialization).
-///   - `HostTypeDeclAST` — a host-backed type (`Map`, `Deferred`, `Weak`,
-///     `Simd`, `Float4`, ...).
-///   - `TypeAliasDeclAST` — a type alias.
-///   - `GenericParamDeclAST` — a generic parameter reference (`T`, `K`, ...).
-///   - `TraitDeclAST` — only in constraint position (`<T : Trait>`).
-/// The resolved decl is written to `resolvedDecl` by Sema.
+///   let p: Person        → name = "Person"
+///   let s: SpriteRef     → name = "SpriteRef"
+///   let d: Direction     → name = "Direction"
+///
+/// Resolution targets:
+///   - `TableDeclAST` — a table (the sheet itself).
+///   - A host-backed table declared with `TABLE X = host("name")`.
+///   - A module-qualified name that resolves through the module's exports.
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     InternedString name;
-    ArenaSpan<TypeAST*> genericArgs;
+
+    /// The module qualifier, if the type was written `mod.Type`. An
+    /// invalid InternedString (id == 0) if the type was unqualified.
+    ///
+    /// A module-qualified type name refers to a table exported by the
+    /// named module. Sema resolves the module by the qualifier and the
+    /// table by the name.
+    InternedString qualifier;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    /// @brief The resolved declaration for this named type.
-    ///
-    /// Set by `resolveNamedType()` during semantic analysis. See the class
-    /// comment above for the full set of possible targets.
+    /// The resolved declaration for this named type.
     TypeDeclAST* resolvedDecl = nullptr;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
-};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NullableTypeAST / FallibleTypeAST / CombinedTypeAST
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Wraps an inner type with the nullable suffix `?`.
-/// 
-/// @example
-///   int?        → inner = PrimitiveTypeAST(Int)
-///   Vec2?       → inner = NamedTypeAST("Vec2")
-///   User?       → inner = NamedTypeAST("User")
-/// 
-/// Grammar rules enforced by the semantic pass:
-///   - `?` attaches to value types only (primitives, structs, enums).
-///   - `?` binds to the **element type** of an array, not the array type:
-///     `[*]int?` is an array of nullable ints. There is no nullable array
-///     type; use an empty array to signal "no array".
-///   - `?` is not valid on function types.
-/// 
-/// @see CombinedTypeAST for `T?!` (nullable + fallible combined)
-struct NullableTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::NullableType;
-
-    TypeAST* inner = nullptr;
-
-    explicit NullableTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::NullableType), inner(t) {}
-};
-
-/// @brief Wraps an inner type with the fallible suffix `!`.
-/// 
-/// @example
-///   int!        → inner = PrimitiveTypeAST(Int)
-///   string!     → inner = PrimitiveTypeAST(String)
-///   User!       → inner = NamedTypeAST("User")
-/// 
-/// Grammar rules enforced by the semantic pass:
-///   - `!` attaches to value types only (primitives, structs, enums).
-///   - `!` binds to the **element type** of an array, not the array type:
-///     `[*]int!` is an array of fallible ints.
-///   - `!` is not valid on function types.
-/// 
-/// @see CombinedTypeAST for `T?!` (nullable + fallible combined)
-struct FallibleTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::FallibleType;
-
-    TypeAST* inner = nullptr;
-
-    explicit FallibleTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::FallibleType), inner(t) {}
-};
-
-/// @brief Represents a type that is both nullable and fallible: `T?!`
-/// 
-/// @example
-///   int?!       → inner = PrimitiveTypeAST(Int)
-///   User?!      → inner = NamedTypeAST("User")
-/// 
-/// A `T?!` value has three states. Narrowing must rule out both sentinels
-/// before the plain `T` is usable.
-/// 
-/// Grammar rules enforced by the semantic pass:
-///   - `?!` is the only valid order — `!?` is a parse error.
-///   - Same restrictions as `?` and `!` individually apply.
-/// 
-/// @note This is a distinct type from `NullableTypeAST` + `FallibleTypeAST`
-///       composition. The combined type has three states (T, nil, err) while
-///       `T?` has two (T, nil) and `T!` has two (T, err).
-struct CombinedTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::CombinedType;
-
-    TypeAST* inner = nullptr;
-
-    explicit CombinedTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::CombinedType), inner(t) {}
+    bool isQualified() const { return qualifier.isValid(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ArrayTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a concrete array type: slice, dynamic, or fixed.
-/// 
-/// This node unifies the three array kinds under a single representation.
-/// The `kind` field determines which memory model applies.
-/// 
-/// Grammar:
-///   array_type := '[' '*' ']' type      -- owned heap array
-///               | '[' '_' ']' type      -- slice (borrowed view)
-///               | '[' INT_LITERAL ']' type   -- fixed-size stack array
-/// 
-/// Examples:
-///   [*]int   → kind = Dynamic, element = Int
-///   [_]float → kind = Slice,   element = Float
-///   [4]Vec2  → kind = Fixed,   size = 4, element = Vec2
-/// 
-/// @note `?` and `!` annotations apply to the element type, not the array
-///       itself: `[*]int?` is an array of nullable int; there is no nullable
-///       array type.
-/// 
-/// @field arrayKind  The array kind (Slice, Dynamic, Fixed).
-/// @field size       Only valid when `arrayKind == Fixed`; ignored otherwise.
-/// @field element    The element type.
+/// @brief An array type: `[T]` (dynamic) or `[N]T` (fixed).
+///
+/// The element type is stored as a `TypeAST*`; the array kind determines
+/// whether `fixedSize` is meaningful.
+///
+/// Array literals (`[1, 2, 3]`) have their element type inferred from
+/// context; the parser produces the literal without a `type`, and Sema
+/// fills it in. The array *type* is produced by the type parser when the
+/// source writes `[T]` or `[N]T`.
+///
+/// @example
+///   [T]      → kind = Dynamic, element = T
+///   [4]int   → kind = Fixed, size = 4, element = PrimitiveTypeAST(Int32)
 struct ArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayType;
 
     ArrayKind arrayKind;
-    uint64_t size;
-    TypeAST* element = nullptr;
+    uint64_t  fixedSize;   // meaningful only when arrayKind == Fixed
+    TypeAST*  element;
 
     ArrayTypeAST(ArrayKind k, uint64_t sz, TypeAST* elem)
-        : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(elem) {}
+        : TypeAST(ASTKind::ArrayType)
+        , arrayKind(k)
+        , fixedSize(sz)
+        , element(elem) {}
 
-    bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
-    bool isSlice()   const { return arrayKind == ArrayKind::Slice; }
     bool isDynamic() const { return arrayKind == ArrayKind::Dynamic; }
+    bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RefTypeAST
+// RowRefTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief A strong reference to another value, written `&T`.
-/// 
+/// @brief A row reference: `&T`, where `T` is a table.
+///
+/// A `&Person` refers to one row of the `Person` sheet. The reference is
+/// inherently nilable: `nil` is a valid value of any `&T` type, produced
+/// by a lookup that found nothing or by a cell whose referenced row was
+/// removed. The `??` operator coalesces nil to a fallback.
+///
+/// `&` is only valid on a table type. There is no `&int`, no `&string`;
+/// primitives are always copied (grammar §5.1.1). If the source writes
+/// `&int`, the parser produces this node with a non-table inner type,
+/// and Sema reports "row reference requires a table type".
+///
+/// The name is `RowRefTypeAST`, not `RefTypeAST`, because the new
+/// grammar has exactly one reference kind and its referent is always a
+/// table row. The old grammar's `RefTypeAST` (a value reference) is
+/// gone.
+///
 /// @example
-///   &int    → inner = PrimitiveTypeAST(Int)
-///   &Vec2   → inner = NamedTypeAST("Vec2")
-/// 
-/// References are refcounted. The referent's storage is kept alive as long as
-/// at least one `&T` points at it. Storability is unrestricted:
-///   - Struct fields may have reference type.
-///   - Arrays and slices may store reference types.
-///   - Functions may return reference types.
-///   - Closures may capture reference values.
-/// 
-/// ─── Cycles ─────────────────────────────────────────────────────────────
-/// A cycle of strong references keeps every value in the cycle alive. The
-/// fix is to make one edge `Weak<T>` — a non-owning reference that does not
-/// participate in refcounting. The compiler warns on obvious same-scope
-/// cycles but does not enforce the fix statically; the rest is the user's
-/// responsibility.
-/// 
-/// ─── Nullable References ────────────────────────────────────────────────
-/// To express a nullable reference, wrap in `NullableTypeAST`: `&Vec2?`.
-/// A recursive reference field (`next &Node`) must be nullable; without `?`,
-/// the first instance of the struct cannot be constructed (there is no
-/// existing instance for the field to point at).
-struct RefTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::RefType;
+///   &Person     → inner = NamedTypeAST("Person")
+///   &Direction  → inner = NamedTypeAST("Direction")
+struct RowRefTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::RowRefType;
 
-    TypeAST* inner = nullptr;
+    TypeAST* inner;
 
-    explicit RefTypeAST(TypeAST* t)
-        : TypeAST(ASTKind::RefType), inner(t) {}
+    explicit RowRefTypeAST(TypeAST* t)
+        : TypeAST(ASTKind::RowRefType), inner(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FuncTypeAST — function type.
+// FunctionTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief A function type.
+/// @brief A function type: `(T, U) -> R`.
 ///
-/// A function type is a chain of stages. Every stage is preceded by
-/// `fn`:
+/// A function type names the signature of a callable value. Every
+/// function value in Lucid is a bare code pointer with no captures and
+/// no environment; a function type therefore describes only the
+/// signature, not a runtime representation.
 ///
-///   func_type = stage { '->' stage } [ '->' type ]
-///   stage     = 'fn' '(' [ type_list ] ')'
+/// A function value is produced by:
+///   - a top-level `FN` declaration, referred to by name;
+///   - a lambda literal (`(p) -> p.age < 18`).
 ///
-/// A stage's parameter group and return type describe the signature.
-/// The runtime representation of a value of this type is uniform — a
-/// fat pointer whose environment is null when the function captures
-/// nothing and refcounted otherwise. The compiler tracks capture
-/// behavior; the type does not.
+/// Both forms produce a value of the same function type, and the
+/// compiler lowers both to a compile-time code address. There is no
+/// difference between the two at the type level.
 ///
-/// The `params` here are the type-side parameters. When this
-/// FuncTypeAST is part of a declaration header, the same shape is
-/// mirrored on the declaration's AnonFuncExprAST, whose `params` are
-/// the runtime parameters CodeGen binds. See `AnonFuncExprAST` for
-/// the distinction.
-struct FuncTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::FuncType;
+/// Parameters are unnamed: a function type's parameter list is a list of
+/// types, not a list of `name: type` pairs. The grammar's `function_type`
+/// production is `'(' [ type { ',' type } ] ')' '->' type`. The
+/// parameters are therefore stored as a span of `TypeAST*`, not
+/// `ParamAST*`.
+///
+/// @example
+///   () -> unit                       → params = {},  returnType = unit
+///   (&Person) -> bool                → params = [&Person], returnType = bool
+///   (int, string) -> float           → params = [int, string], returnType = float
+struct FunctionTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::FunctionType;
 
-    ArenaSpan<ParamAST*> params;      // parameters for this group
-    TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
+    /// The parameter types, in order. May be empty.
+    ArenaSpan<TypeAST*> params;
 
-    explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
+    /// The return type. Never null.
+    TypeAST* returnType = nullptr;
 
-    // Returns true if the return type is a function type (currying)
-    bool isCurried() const {
-        return returnType && returnType->isa<FuncTypeAST>();
-    }
-
-    // Returns the inner function type if curried, otherwise nullptr
-    FuncTypeAST* getNext() const {
-        if (isCurried()) {
-            return returnType->as<FuncTypeAST>();
-        }
-        return nullptr;
-    }
+    FunctionTypeAST() : TypeAST(ASTKind::FunctionType) {}
 };
