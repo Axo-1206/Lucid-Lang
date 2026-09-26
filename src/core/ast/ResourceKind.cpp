@@ -1,18 +1,5 @@
 /// @file core/ast/ResourceKind.cpp
 /// @brief Implementation of the resource-kind classifier.
-///
-/// ─── Why This Is a Separate Translation Unit ──────────────────────────────
-/// The classifier downcasts a `TypeAST*` to its concrete subclass
-/// (`FuncTypeAST`, `PrimitiveTypeAST`, ...). Those subclass definitions
-/// live in `TypeAST.hpp`, which is included here but not by
-/// `ResourceKind.hpp`. That separation is deliberate: `ResourceKind.hpp`
-/// only needs the forward declaration of `TypeAST` for its function
-/// signature, and the enum's callers shouldn't have to include the full
-/// AST to use it.
-///
-/// ─── The Single Implementation ────────────────────────────────────────────
-/// Sema and CodeGen both call `classifyResourceKind` from this file.
-/// There is one function and one definition; the two sides cannot drift.
 
 #include "ResourceKind.hpp"
 #include "TypeAST.hpp"
@@ -21,77 +8,69 @@
 ResourceKind classifyResourceKind(TypeAST* type) {
     if (!type) return ResourceKind::None;
 
-    // ─── Function-typed bindings ──────────────────────────────────────────
-    // Every function value is a fat pointer `{ code, env }`. The
-    // environment is refcounted when the function captures, and null
-    // otherwise. The classifier cannot distinguish the two from the type
-    // alone — whether a given value captures is a runtime fact about the
-    // value, not a property of its type — so the classification is
-    // conservative: every function value is Refcounted, and the
-    // ownership layer handles the null-environment case by checking
-    // before retaining or releasing.
-    if (type->isa<FuncTypeAST>()) {
-        return ResourceKind::Refcounted;
-    }
-
-    // ─── Strings ──────────────────────────────────────────────────────────
-    // A string is an owned buffer: it owns its bytes. Its copy is a deep
-    // copy; its drop frees the buffer unless the buffer is empty.
+    // ─── Primitives ───────────────────────────────────────────────────────
+    // Strings own their bytes. Every other primitive is inline and owns
+    // nothing.
     if (type->isa<PrimitiveTypeAST>()) {
         return type->as<PrimitiveTypeAST>()->primitiveKind
-                == PrimitiveKind::String
+                    == PrimitiveKind::String
             ? ResourceKind::OwnedBuffer
             : ResourceKind::None;
     }
 
-    // ─── Dynamic arrays ───────────────────────────────────────────────────
-    // A `[*]T` is a heap-owned buffer. A `[_]T` (slice) is a borrowed view
-    // and owns nothing; a `[N]T` (fixed array) is inline storage whose
-    // resource-ness depends on its element type, which is the Phase 4
-    // `Aggregate` case.
+    // ─── Function values ──────────────────────────────────────────────────
+    // A function value is a compile-time code address. No captures, no
+    // environment, no allocation. It owns nothing.
+    if (type->isa<FunctionTypeAST>()) {
+        return ResourceKind::None;
+    }
+
+    // ─── Row references ───────────────────────────────────────────────────
+    // A `&T` is a pointer to a row in some table. Copying the reference
+    // copies the pointer; the row is owned by the table, not by the
+    // reference. It owns nothing.
+    if (type->isa<RowRefTypeAST>()) {
+        return ResourceKind::None;
+    }
+
+    // ─── Arrays ───────────────────────────────────────────────────────────
+    // A dynamic array `[T]` owns its backing buffer; a copy deep-copies
+    // it and a drop frees it. A fixed array `[N]T` owns its elements
+    // inline: it is Aggregate if any element is a resource, otherwise
+    // None.
     if (type->isa<ArrayTypeAST>()) {
-        return type->as<ArrayTypeAST>()->isDynamic()
-            ? ResourceKind::OwnedBuffer
+        auto* arr = type->as<ArrayTypeAST>();
+        if (arr->isDynamic()) return ResourceKind::OwnedBuffer;
+        // Fixed array. Recurse into the element type.
+        return isResourceKind(classifyResourceKind(arr->element))
+            ? ResourceKind::Aggregate
             : ResourceKind::None;
     }
 
-    // ─── Host-backed named types ──────────────────────────────────────────
-    // A NamedTypeAST whose declaration is a HostTypeDeclAST carrying a
-    // non-None RecognizedHostKind is one of the language's runtime-backed
-    // types. Today, the only such kind is Deferred.
+    // ─── Named types ──────────────────────────────────────────────────────
+    // A name resolves to either a table or a host-backed type.
     //
-    // A NamedTypeAST whose declaration is any other type — a user struct,
-    // an enum, an alias, an ordinary #host type — is None: the compiler
-    // does not track its resource behavior; the user's registered
-    // operations do.
+    //   - A columned table is a reference; the value owns nothing.
+    //   - A host-backed table is an opaque host handle; the host manages
+    //     its lifetime, and the convention is that host handles are
+    //     refcounted.
+    //
+    // A named type whose `resolvedDecl` has not been set is a Sema
+    // error; the classifier returns None to be safe.
     if (type->isa<NamedTypeAST>()) {
-        const auto* named = type->as<NamedTypeAST>();
-        if (named->resolvedDecl && named->resolvedDecl->isa<HostTypeDeclAST>()) {
-            const auto* host = named->resolvedDecl->as<HostTypeDeclAST>();
-            switch (host->recognizedKind) {
-                case RecognizedHostKind::Deferred:
-                    return ResourceKind::Handle;
-                case RecognizedHostKind::None:
-                    return ResourceKind::None;
-            }
+        auto* named = type->as<NamedTypeAST>();
+        if (!named->resolvedDecl) return ResourceKind::None;
+        if (named->resolvedDecl->isa<TableDeclAST>()) {
+            auto* table = named->resolvedDecl->as<TableDeclAST>();
+            return table->isHostBacked
+                ? ResourceKind::Refcounted
+                : ResourceKind::None;
         }
         return ResourceKind::None;
     }
 
-    // ─── Aggregate (Phase 4) ──────────────────────────────────────────────
-    // A struct, tuple, T?, T!, or fixed array that contains at least one
-    // resource. Sema's job is only to answer "yes, this owns something"
-    // or "no, it does not." CodeGen derives the per-field copy and drop
-    // glue by walking the type.
-    //
-    // Phase 4 implements the walk:
-    //   - NullableTypeAST / FallibleTypeAST / CombinedTypeAST: recurse
-    //     into inner.
-    //   - NamedTypeAST pointing at a StructDeclAST: recurse into fields.
-    //   - ArrayTypeAST of Fixed kind with a resource element: recurse.
-    //
-    // Until then, `None` is correct: the resource kinds that would make a
-    // type an aggregate (Refcounted, OwnedBuffer) are handled above, and
-    // Handle is linear and rejected from aggregates by Sema.
+    // ─── Everything else ──────────────────────────────────────────────────
+    // Unknown / error-recovery nodes, and any future type node that does
+    // not have a resource semantics, classify as None.
     return ResourceKind::None;
 }

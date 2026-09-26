@@ -1,52 +1,22 @@
 /// @file core/ast/ResourceKind.hpp
 /// @brief The ResourceKind classification of a Lucid type.
 ///
-/// ─── What This File Is ────────────────────────────────────────────────────
-/// Two things, plus a set of small helpers:
-///
-///   1. `enum class ResourceKind` — the classification of a type by the
-///      resource it owns. Used by CodeGen at every allocation and free
-///      site, by Sema during Phase 1 to populate
-///      `ValueDeclAST::resourceKind`, and by capture analysis to populate
-///      `CapturedVariable::resourceKind`.
-///
+/// ─── What this file is ────────────────────────────────────────────────────
+///   1. `enum class ResourceKind` — the four-way classification of a type
+///      by what heap resource a value of that type owns.
 ///   2. `classifyResourceKind(TypeAST*)` — the single function that
-///      produces a `ResourceKind` from a type. A pure function of the
-///      type; no state, no dependencies beyond the AST.
+///      produces a ResourceKind from a type.
+///   3. Small `constexpr` helpers for the enum.
 ///
-///   3. Small `constexpr` helpers for the enum: `isResourceKind` and
-///      `resourceKindName`.
+/// ─── What this file is not ────────────────────────────────────────────────
+/// It is not the ownership model. It answers "does a value of this type
+/// own anything, and what kind?" — a fact about the type, independent of
+/// any codegen run. The ownership model (in codegen's `Ownership`) decides
+/// what to *do* with a value of a given kind: copy, retain, free, no-op.
 ///
-/// ─── What This File Is NOT ────────────────────────────────────────────────
-/// It is NOT the ownership model. `Ownership::drop` and
-/// `Ownership::intoOwned` in `codegen/ownership/Ownership.cpp` decide
-/// *what to do* with a value of a given kind (retain, deep-copy, free,
-/// no-op). This file decides *what kind* the value is. The decision is a
-/// fact about the type; the action is a fact about codegen's behaviour.
-///
-/// It is NOT the cached per-declaration answer. `ValueDeclAST::resourceKind`
-/// stores the classifier's result for a declaration, populated by Sema in
-/// Phase 1. This file provides the classifier that produces that result,
-/// and the same function is used by CodeGen at sites that don't have a
-/// declaration (a struct field, a temporary, an expression's resolved
-/// type).
-///
-/// ─── Why the Classifier Is a Free Function ────────────────────────────────
-/// The classifier takes a `TypeAST*` and returns a value. It could be a
-/// method on `TypeAST` (`type->resourceKind()`), but the method body would
-/// need to downcast to the concrete subclasses (`FuncTypeAST`,
-/// `PrimitiveTypeAST`, ...), and those subclass definitions live in
-/// `TypeAST.hpp` *after* `TypeAST` itself. A method on `TypeAST` would
-/// therefore be unable to see the subclass definitions.
-///
-/// A free function in a separate translation unit sidesteps the ordering
-/// problem: `ResourceKind.cpp` includes the full `TypeAST.hpp` (with all
-/// subclasses visible) and does the downcasts.
-///
-/// ─── Sema and CodeGen Share This Function ─────────────────────────────────
-/// This file is the single implementation. Sema's call sites call
-/// `classifyResourceKind` directly. Codegen's call sites do the same.
-/// The two sides can't drift, because there's only one function.
+/// It is not the cached per-declaration answer. `ValueDeclAST::resourceKind`
+/// caches the classifier's result for a declaration. This file provides
+/// the classifier that produces that result.
 
 #pragma once
 
@@ -55,96 +25,57 @@
 struct TypeAST;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ResourceKind — what kind of heap resource does a type own?
+// ResourceKind
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// ─── What Each Kind Means ─────────────────────────────────────────────────
+// ─── What each kind means ─────────────────────────────────────────────────
 //
-//   None        — owns nothing. Copy is a bit copy. Drop is a no-op.
-//                 Primitive scalars, references, enum variants, and
-//                 (until Phase 4) aggregates whose resource-ness isn't
-//                 yet computed. Also: every user-declared `#host` type
-//                 whose copy and drop are whatever the user's registered
-//                 operations do; the compiler does not track those.
+//   None        — owns nothing. Copy is a bit copy; drop is a no-op.
+//                 Primitives except string, references (both table and
+//                 row), function values, unknown / error-recovery types.
 //
-//   Refcounted  — a function value's environment. Every function value is
-//                 a fat pointer `{ code, env }`; the environment is
-//                 refcounted when the function captures, and null
-//                 otherwise. Copy retains. Drop releases (a null
-//                 environment is a no-op). A move zeroes the source.
+//   Refcounted  — a host handle. The value names a host-owned object
+//                 whose lifetime is managed by the host's refcount. Copy
+//                 retains; drop releases. Every host-backed table
+//                 (`TABLE X = host("...")`) is Refcounted by convention.
 //
-//   OwnedBuffer — a string or a dynamic array. The value owns its buffer
-//                 outright. Copy deep-copies. Drop frees the buffer,
-//                 unless the buffer is empty (a static or empty string).
+//   OwnedBuffer — a value that owns a heap-allocated backing buffer.
+//                 Two cases: `string` (owns its bytes) and `[T]` (owns
+//                 its element buffer). Copy deep-copies; drop frees.
 //
-//   Handle      — a `Deferred<T>`. Linear: Sema rejects copy, and the
-//                 only legal drop is consumption by `await` or `cancel`.
-//                 Reaching scope exit with a live handle is a Sema
-//                 error, so CodeGen's drop is a no-op that exists only
-//                 so the switch is exhaustive.
+//   Aggregate   — a value that owns its elements inline, with at least
+//                 one element being a resource. The single case is a
+//                 fixed array `[N]T` where `T` is a resource. Copy is
+//                 per-element; drop is per-element. Codegen generates
+//                 the glue by walking the element type.
 //
-//                 `Deferred` is declared by the core script as a
-//                 host-backed type and recognized by name; see
-//                 `RecognizedHostKind` in `DeclAST.hpp`.
-//
-//   Aggregate   — a struct, tuple, `T?`, `T!`, or fixed array that
-//                 contains at least one resource. Copy and drop are
-//                 per-field, generated lazily by `Ownership` as
-//                 `__copy_<type>` and `__drop_<type>`. Sema's job is only
-//                 to answer "yes, this owns something"; CodeGen derives
-//                 the glue by walking the type.
-//
-//                 Phase 4 implements the walk. Until then, the classifier
-//                 returns `None` for every type that would be an
-//                 aggregate, because no compilable program can construct
-//                 one yet: the resource kinds that would make a type an
-//                 aggregate are handled above, and `Handle` is linear and
-//                 rejected from aggregates by Sema.
-//
-// ─── Why Aggregate Is Not "the Field Kinds, OR'd Together" ────────────────
-// Because "does this struct own anything" and "what is the glue for this
-// struct" are different questions with different answers. A struct with a
-// `Refcounted` field and a struct with two `Refcounted` fields are both
-// `Aggregate`; their glue differs. CodeGen's drop-glue generator walks the
-// field list to produce the right sequence, and it needs to know only
-// that it should walk — the per-field kinds it reads from the field
-// declarations themselves.
+// ─── Why Aggregate still exists ───────────────────────────────────────────
+// A fixed array of resources (`[3]string`) is a value whose copy and drop
+// are not simple: they walk the elements. A dynamic array or a string is
+// a single buffer, so a copy or a drop is one operation on the buffer.
+// The two shapes need different handling at every use site, and the
+// classifier distinguishes them so CodeGen knows which path to emit.
 
 enum class ResourceKind : uint8_t {
-    None,          // owns nothing
-    Refcounted,    // a function value's refcounted environment
-    OwnedBuffer,   // string or dynamic array
-    Handle,        // Deferred<T>, linear, consumed by await/cancel
-    Aggregate,     // struct/tuple/T?/T!/fixed-array containing a resource
+    None,
+    Refcounted,
+    OwnedBuffer,
+    Aggregate,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief True if the kind owns a heap resource.
-///
-/// `None` is the only kind that owns nothing. Every other kind has at
-/// least one resource whose lifetime the binding is responsible for.
-///
-/// This is the boolean form of the classifier's answer. Code that only
-/// needs "does this binding need cleanup?" can call this instead of
-/// comparing against `None` directly. It's `constexpr` so it can be used
-/// in `static_assert`s and constant expressions.
 constexpr bool isResourceKind(ResourceKind kind) {
     return kind != ResourceKind::None;
 }
 
-/// @brief Human-readable name for a kind, for diagnostics and tracing.
-///
-/// Returns a string literal — no allocation. The names match the enum
-/// values, so a diagnostic that prints the kind is self-documenting.
 constexpr const char* resourceKindName(ResourceKind kind) {
     switch (kind) {
         case ResourceKind::None:        return "None";
         case ResourceKind::Refcounted:  return "Refcounted";
         case ResourceKind::OwnedBuffer: return "OwnedBuffer";
-        case ResourceKind::Handle:      return "Handle";
         case ResourceKind::Aggregate:   return "Aggregate";
     }
     return "<unknown>";
@@ -154,39 +85,37 @@ constexpr const char* resourceKindName(ResourceKind kind) {
 // The classifier
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Classify a Lucid type into its resource kind.
+/// @brief Classify a Lucid type by what heap resource a value of that
+///        type owns.
 ///
-/// The single source of truth for "does this type own a heap resource, and
-/// if so, which kind?" Answers the same question Sema answers during
-/// Phase 1 when it populates `ValueDeclAST::resourceKind`, but as a pure
-/// function of the type rather than a method on `SemaContext`.
+/// The classifier is a pure function of the type. It answers a single
+/// question: when a binding of this type is copied or dropped, does the
+/// operation need to do anything beyond a bit copy or a no-op?
 ///
-/// ─── Dispatch Table ──────────────────────────────────────────────────────
-///   FuncTypeAST                →  Refcounted
+/// ─── Dispatch table ───────────────────────────────────────────────────────
 ///   PrimitiveTypeAST(String)   →  OwnedBuffer
-///   ArrayTypeAST(isDynamic)    →  OwnedBuffer
-///   NamedTypeAST(Deferred)     →  Handle
-///   (everything else)          →  None
+///   PrimitiveTypeAST(other)    →  None
+///   FunctionTypeAST            →  None
+///   RowRefTypeAST              →  None
+///   ArrayTypeAST(Dynamic)      →  OwnedBuffer
+///   ArrayTypeAST(Fixed)        →  Aggregate (if element is a resource)
+///                              →  None otherwise
+///   NamedTypeAST(host-backed)  →  Refcounted
+///   NamedTypeAST(table)        →  None  (a reference; the sheet owns the rows)
+///   UnknownTypeAST             →  None
+///   nullptr                    →  None
 ///
-/// The `NamedTypeAST` case for `Deferred` is resolved by consulting the
-/// named type's `resolvedDecl`, which by the time the classifier runs is
-/// a `HostTypeDeclAST` whose `recognizedKind` Sema has set to
-/// `RecognizedHostKind::Deferred`.
+/// ─── A note on tables ─────────────────────────────────────────────────────
+/// A table is a reference type (grammar §5.1). A `Person` value is a
+/// pointer to the `Person` sheet, not the sheet itself. Copying the value
+/// copies the pointer; the sheet's rows are not copied and their
+/// ownership is unchanged. The classifier therefore returns `None` for a
+/// table reference, regardless of what resources the table's columns hold.
 ///
-/// The `Aggregate` case is a Phase 4 stub. Until then, `None` is correct:
-/// no program that compiles today can construct a resource-owning
-/// aggregate, because the resource kinds that would make it one are
-/// handled above, and `Handle` is linear and rejected from aggregates by
-/// Sema.
+/// The resources owned by a table's *cells* are the responsibility of the
+/// table's storage management, not of any binding whose type is `Person`.
 ///
-/// ─── Null Input ──────────────────────────────────────────────────────────
+/// ─── Null input ───────────────────────────────────────────────────────────
 /// A null `TypeAST*` returns `ResourceKind::None`. This lets callers treat
-/// a missing type as "owns nothing" without a separate null check at
-/// every call site. The alternative — asserting non-null — would make
-/// every caller defensive against a case that is handled uniformly by
-/// returning the safe answer.
-///
-/// Defined in `ResourceKind.cpp`, which includes the full `TypeAST.hpp`
-/// and `DeclAST.hpp` so the classifier can downcast to the concrete
-/// type subclasses and read the resolved declaration.
+/// a missing type as "owns nothing" without a separate null check.
 ResourceKind classifyResourceKind(TypeAST* type);
