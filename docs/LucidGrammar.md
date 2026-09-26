@@ -1222,7 +1222,7 @@ A label is its own small namespace: it never collides with a variable, function,
 
 - Traits, `DEF`, `REQUIRE`, `OpKind`, user-defined operator overloading.
 - A `fn`/`cls` distinction, general closures, currying.
-- `async`, `await`, `spawn`, `Deferred<T>`, threads, locks — see §13.1. (`start`/`wait`/`waitFrames`/`waitUntil` are adopted, but only as the narrow sequence primitive in §9.2, not a general concurrency system.)
+- `async`, `await`, `spawn`, `Deferred<T>`, threads, locks — see §13.1. (`start`/`wait`/`waitFrames`/`waitUntil`/`waitForEvent`/`waitForRequest` are adopted, but only as the narrow sequence primitive in §9.2, not a general concurrency system.)
 - Generics.
 - `T?`/`T!` type suffixes (nilability is a property of `&T`, not a suffix, §5.2).
 - Value references (`&int`) — primitives are always copied.
@@ -1235,7 +1235,7 @@ Every async-shaped need identified so far, apart from one, reduces to a synchron
 - **Input** — an `@on(EventKind.KeyDown)` callback, called once per event.
 - **Network** — sending is a fire-and-forget `host(...)` call; receiving is an `@on(EventKind.NetworkMessage)` callback when a response lands.
 
-The one case that doesn't fit a callback is **sequencing** work across time inside one logical unit — "wait 2 seconds, then do X," for cutscenes and scripted dialogue — because that requires *pausing partway through a function's own body and resuming it later*, which a callback (which always returns control to the engine immediately) can't express. §9.2 answers that directly with `@sequence`/`wait`/`waitFrames`/`waitUntil`/`start`, rather than deferring it.
+The one case that doesn't fit a callback is **sequencing** work across time inside one logical unit — "wait 2 seconds, then do X," for cutscenes and scripted dialogue — because that requires *pausing partway through a function's own body and resuming it later*, which a callback (which always returns control to the engine immediately) can't express. §9.2 answers that directly with `@sequence` and its suspend points (`wait`/`waitFrames`/`waitUntil` for polled waits, `waitForEvent`/`waitForRequest` for push-based ones) plus `start` to launch one, rather than deferring it.
 
 This is still a narrow, single-purpose addition, not general concurrency: `@sequence` functions cannot call each other directly (§9.2.4), the runtime advances every active sequence cooperatively and in a fixed, deterministic order once per tick (§9.2.5), and there is no preemption, no shared-memory data race, and nothing resembling a thread or a lock anywhere in the model. If a need ever arises that this doesn't cover — genuine parallel execution, for instance — that would be a different, much larger feature, and isn't part of this decision.
 
@@ -1245,7 +1245,7 @@ This is still a narrow, single-purpose addition, not general concurrency: `@sequ
 
 These are extensions that can be added later without reshaping anything above:
 
-1. Direct sequence-to-sequence composition (today, a `@sequence` composes another only via `start` + `waitUntil(isDone(...))`, §9.2.4 — a nested-composition form, if ever needed, is a bigger compiler change and deliberately not attempted yet).
+1. Direct sequence-to-sequence composition (today, a `@sequence` composes another only via `start` + `waitUntil(isDone, handle)`, §9.2.5 — a nested-composition form, if ever needed, is a bigger compiler change and deliberately not attempted yet).
 2. Registry-scoping tooling for Tier 2 mods (the *policy* — one-way dependency, Tier-1-only registration — is settled in §3.4; the concrete host-side API for defining a mod's registry view is not part of this document).
 
 ---
