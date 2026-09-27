@@ -145,6 +145,7 @@ const char* tokenTypeName(TokenType t) noexcept {
         case TokenType::VARIADIC:               return "VARIADIC";
         case TokenType::RANGE:                  return "RANGE";
         case TokenType::RANGE_EXCLUSIVE:        return "RANGE_EXCLUSIVE";
+        case TokenType::QUESTION:               return "QUESTION";
         case TokenType::AT_SIGN:                return "AT_SIGN";
 
         // ─── Operators ──────────────────────────────────────────────────
@@ -309,6 +310,7 @@ const char* tokenTypeDescription(TokenType t) noexcept {
         case TokenType::VARIADIC:               return "'...'";
         case TokenType::RANGE:                  return "'..'";
         case TokenType::RANGE_EXCLUSIVE:        return "'..<'";
+        case TokenType::QUESTION:                return "'?'";
         case TokenType::AT_SIGN:                return "'@'";
 
         // ─── Operators ──────────────────────────────────────────────────

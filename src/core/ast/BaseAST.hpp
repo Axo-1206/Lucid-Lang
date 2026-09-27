@@ -78,6 +78,7 @@ struct NamedTypeAST;
 struct ArrayTypeAST;
 struct RowRefTypeAST;
 struct FunctionTypeAST;
+struct NullableTypeAST;
 
 // DeclAST.hpp
 struct ImportDeclAST;
@@ -161,6 +162,7 @@ enum class ASTKind : uint16_t {
     ArrayType,
     RowRefType,
     FunctionType,
+    NullableType,
 
     // ─── Declaration nodes ──────────────────────────────────────────────
     ImportDecl,

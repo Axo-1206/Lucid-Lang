@@ -243,7 +243,7 @@ struct NamedTypeAST : TypeAST {
 // ArrayTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief An array type: `[T]` (dynamic) or `[N]T` (fixed).
+/// @brief An array type: `[T]` (dynamic) or `[N, T]` (fixed).
 ///
 /// The element type is stored as a `TypeAST*`; the array kind determines
 /// whether `fixedSize` is meaningful.
@@ -251,11 +251,11 @@ struct NamedTypeAST : TypeAST {
 /// Array literals (`[1, 2, 3]`) have their element type inferred from
 /// context; the parser produces the literal without a `type`, and Sema
 /// fills it in. The array *type* is produced by the type parser when the
-/// source writes `[T]` or `[N]T`.
+/// source writes `[T]` or `[N, T]`.
 ///
 /// @example
 ///   [T]      → kind = Dynamic, element = T
-///   [4]int   → kind = Fixed, size = 4, element = PrimitiveTypeAST(Int32)
+///   [4, int]   → kind = Fixed, size = 4, element = PrimitiveTypeAST(Int32)
 struct ArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayType;
 
@@ -345,4 +345,32 @@ struct FunctionTypeAST : TypeAST {
     TypeAST* returnType = nullptr;
 
     FunctionTypeAST() : TypeAST(ASTKind::FunctionType) {}
+};
+
+/// @brief A nilable type: `T?`.
+///
+/// Wraps any type that may hold `nil`. The inner type is the type
+/// without the nilability suffix.
+///
+/// Nilability is meaningful for primitives, host types, and arrays.
+/// It is redundant on `&T` (which is already nilable) and an error on
+/// bare table types, function types, and `unit`.
+///
+/// The parser produces this node when it sees a `?` after a base type
+/// (§5.3). The wrapper is transparent to consumers that only care
+/// about the underlying type; a caller that needs to know whether a
+/// value may be nil checks for this node.
+///
+/// @example
+///   int?            → NullableTypeAST{ inner = PrimitiveTypeAST(Int32) }
+///   [int]?          → NullableTypeAST{ inner = ArrayTypeAST(Dynamic, ...) }
+///   [5, int]?       → NullableTypeAST{ inner = ArrayTypeAST(Fixed, 5, ...) }
+struct NullableTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::NullableType;
+
+    /// The type without the nilability suffix. Never null.
+    TypeAST* inner = nullptr;
+
+    explicit NullableTypeAST(TypeAST* t)
+        : TypeAST(ASTKind::NullableType), inner(t) {}
 };

@@ -6,7 +6,7 @@
  *   - parseType            the entry point; dispatches on the leading token
  *   - parsePrimitiveType   `int`, `float`, `bool`, `string`, `char`, `unit`
  *   - parseNamedType       `Person`, `alias.Person`, `SpriteRef`
- *   - parseArrayType       `[T]` (dynamic) or `[N]T` (fixed-size)
+ *   - parseArrayType       `[T]` (dynamic) or `[N, T]` (fixed-size)
  *   - parseRowRefType      `&T`
  *   - parseFunctionType    `(T, U) -> R`
  *
@@ -16,7 +16,7 @@
  *   primitive_type     a primitive keyword
  *   table_type         a qualified table name (`Person`, `alias.Person`)
  *   row_ref_type       `&` followed by a qualified table name
- *   array_type         `[T]` or `[N]T`
+ *   array_type         `[T]` or `[N, T]`
  *   function_type      `(T, U) -> R`
  *
  * parseType dispatches on the leading token; each branch has its own
@@ -39,7 +39,7 @@
  * resolve the alias; Sema does.
  *
  * ─── Design: fixed-array sizes are evaluated at parse time ────────────────
- * A fixed-size array type is `[N]T` where `N` is an INT_LITERAL (§5's
+ * A fixed-size array type is `[N, T]` where `N` is an INT_LITERAL (§5's
  * grammar). Because the grammar restricts the token to a plain decimal
  * integer, the parser converts it to a `uint64_t` and stores it in
  * `ArrayTypeAST::fixedSize`. Sema does not have to re-parse the token.
@@ -73,10 +73,29 @@ using namespace lucid::diag;
 namespace lucid::parser {
 
 // =============================================================================
-// parseType — the entry point
+// parseBaseType — the dispatcher, file-local
 // =============================================================================
 
-TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
+namespace {
+
+/// @brief Parse a type's base form, before any `?` suffix.
+///
+/// Dispatches on the leading token:
+///
+///   - a primitive keyword       → parsePrimitiveType
+///   - IDENTIFIER                → parseNamedType
+///   - `&`                       → parseRowRefType
+///   - `[`                       → parseArrayType
+///   - `(`                       → parseFunctionType
+///   - anything else             → error
+///
+/// The `?` suffix is handled by the caller (`parseType`), not here.
+/// This function returns the base type without any nilability wrapper.
+///
+/// File-local because it has no external caller: `parseType` is the
+/// only entry point for types, and every recursive type parse goes
+/// through `parseType`.
+TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     const TokenType current = stream.peekType();
 
@@ -109,6 +128,46 @@ TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
                                stream.peekValueView(ctx.pool()), "'");
             return nullptr;
     }
+}
+
+} // namespace
+
+// =============================================================================
+// parseType — the entry point
+// =============================================================================
+
+/// @brief Parse a complete type: a base type, then an optional `?` suffix.
+///
+/// §5's grammar: `type ::= base_type [ '?' ]`.
+///
+/// The `?` suffix makes the type nilable. It is only meaningful on
+/// primitives, host types, and arrays; on a row reference it is
+/// redundant (accepted but ignored by Sema); on a bare table type or a
+/// function type it is a type error (Sema reports it). The parser
+/// produces the `NullableTypeAST` wrapper uniformly and lets Sema
+/// enforce the applicability rules.
+///
+/// The recursion into `parseBaseType` handles the four base forms
+/// (primitive, named, array, row-ref, function). The `?` check runs
+/// after the base type is complete.
+///
+/// On failure, reports a diagnostic and returns nullptr.
+TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    TypeAST* base = parseBaseType(stream, ctx);
+    if (base == nullptr) {
+        return nullptr;
+    }
+
+    // Optional `?` suffix.
+    if (stream.match(TokenType::QUESTION)) {
+        auto* nullable = ctx.arena().make<NullableTypeAST>(base);
+        nullable->loc = loc;
+        return nullable;
+    }
+
+    return base;
 }
 
 // =============================================================================
@@ -217,7 +276,7 @@ NamedTypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
-// parseArrayType — `[T]` (dynamic) or `[N]T` (fixed-size)
+// parseArrayType — `[T]` (dynamic) or `[N, T]` (fixed-size)
 // =============================================================================
 
 ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
@@ -230,11 +289,12 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    // ─── Fixed-size form: `[N]T` ──────────────────────────────────────────
+    // ─── Fixed-size form: `[N, T]` ────────────────────────────────────────
     //
-    // The size slot holds a plain decimal integer literal. The grammar
-    // restricts the token to INT_LITERAL (§5), so the parser converts the
-    // lexeme to a uint64_t. No radix prefixes, no fractional part.
+    // The size slot holds a plain decimal integer literal, followed by a
+    // comma, followed by the element type. The grammar restricts the size
+    // token to INT_LITERAL (§5), so the parser converts the lexeme to a
+    // uint64_t directly.
     if (stream.check(TokenType::INT_LITERAL)) {
         Token sizeTok = stream.consume();
         const std::string_view lexeme = ctx.pool().lookupView(sizeTok.value);
@@ -254,24 +314,34 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
             fixedSize = 0;
         }
 
-        if (!stream.match(TokenType::RBRACKET)) {
+        // `,` between the size and the element type.
+        if (!stream.match(TokenType::COMMA)) {
             ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
                                stream.currentLoc(),
-                               "expected ']' after the array size, got '",
+                               "expected ',' after the array size, got '",
                                stream.peekValueView(ctx.pool()), "'");
             sizeIsValid = false;
         }
 
-        // Element type follows the closing `]`.
+        // Element type.
         TypeAST* element = parseType(stream, ctx);
         if (element == nullptr) {
             ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
                                stream.currentLoc(),
-                               "expected an element type after ']', got '",
+                               "expected an element type after ',', got '",
                                stream.peekValueView(ctx.pool()), "'");
             element = ctx.arena().make<UnknownTypeAST>();
             element->loc = stream.currentLoc();
             element->hasSyntaxError = true;
+        }
+
+        // Closing `]`.
+        if (!stream.match(TokenType::RBRACKET)) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                               stream.currentLoc(),
+                               "expected ']' to close the array type, got '",
+                               stream.peekValueView(ctx.pool()), "'");
+            sizeIsValid = false;
         }
 
         auto* arr = ctx.arena().make<ArrayTypeAST>(
@@ -285,9 +355,8 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Dynamic form: `[T]` ──────────────────────────────────────────────
     //
-    // The element type is inside the brackets. The grammar (§5.4) writes
-    // the dynamic form as `[T]`, matching every example in the document
-    // (`[int]`, `[string]`, `[&Person]`).
+    // The element type is inside the brackets: `[int]`, `[string]`,
+    // `[&Person]`.
     TypeAST* element = parseType(stream, ctx);
     if (element == nullptr) {
         ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
@@ -327,19 +396,27 @@ RowRefTypeAST* parseRowRefType(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    // The referent is a qualified table name. §5's row_ref_type is
-    // `'&' qualified_table`; `&int` is a semantic error, but it parses as
-    // a row reference whose referent happens to be a primitive type.
-    // Sema reports "row reference requires a table type".
-    TypeAST* inner = parseType(stream, ctx);
+    // The referent is a qualified table name, not a full type. §5's
+    // grammar: `row_ref_type ::= '&' qualified_table`.
+    NamedTypeAST* inner = parseNamedType(stream, ctx);
     if (inner == nullptr) {
         ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
-                           "expected a referent type after '&', got '",
+                           "expected a table name after '&', got '",
                            stream.peekValueView(ctx.pool()), "'");
-        inner = ctx.arena().make<UnknownTypeAST>();
-        inner->loc = stream.currentLoc();
-        inner->hasSyntaxError = true;
+
+        // Partial-parse: an inner named type with a placeholder name.
+        // Actually, we need a TypeAST for `RowRefTypeAST::inner`. If we
+        // have no name, we can't build a NamedTypeAST. Use an
+        // UnknownTypeAST.
+        auto* unk = ctx.arena().make<UnknownTypeAST>();
+        unk->loc = stream.currentLoc();
+        unk->hasSyntaxError = true;
+
+        auto* ref = ctx.arena().make<RowRefTypeAST>(unk);
+        ref->loc = loc;
+        ref->hasSyntaxError = true;
+        return ref;
     }
 
     auto* ref = ctx.arena().make<RowRefTypeAST>(inner);

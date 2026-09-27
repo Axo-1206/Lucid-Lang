@@ -189,6 +189,7 @@ enum class TokenType : uint16_t {
     VARIADIC,       // ...
     RANGE,          // ..
     RANGE_EXCLUSIVE,// ..<
+    QUESTION,       // ?
     AT_SIGN,        // @
 
     // ─── Operators ──────────────────────────────────────────────────────

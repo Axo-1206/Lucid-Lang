@@ -700,6 +700,7 @@ void lexOperatorOrPunctuation(LexerState& s) {
         case '[': emit(TokenType::LBRACKET, "[", 1); return;
         case ']': emit(TokenType::RBRACKET, "]", 1); return;
         case '.': emit(TokenType::DOT,      ".", 1); return;
+        case '?': emit(TokenType::QUESTION, "?", 1); return;
         case '@': emit(TokenType::AT_SIGN,  "@", 1); return;
         default:  break;
     }
