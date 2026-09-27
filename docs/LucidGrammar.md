@@ -711,6 +711,10 @@ The following are type errors:
 - `T?` for `unit`: `unit` already means "no value"; `unit?` is redundant and forbidden.
 - `T?` for a `&T`: `&T` is already nilable; `&T?` is accepted but the `?` is redundant.
 
+A `?` written after a function type is a type error, but the parser's attachment of the `?` is different from what a reader might expect. In `(int) -> string?`, the `?` binds to the **return type** `string`, producing a function that returns a nilable `string`. There is no way to write "a nilable function type": the trailing `?` after `string` is always consumed by the return type's `type` production (which is `base_type [ '?' ]`), and a second `?` (as in `(int) -> string??`) attaches to the whole function type and is rejected by Sema. A function value is always a valid code address; nilability of a function value is meaningless.
+
+This is the "old rule we are reusing". The `?` suffix is a suffix on the *innermost* type at the point it's parsed; for function types, the innermost type at the end is the return type, so that's where the `?` goes. The "nilable function type" the user might have wanted is not expressible, and Sema rejects attempts to express it.
+
 **A `&T?` written explicitly is the same type as `&T`.** The parser accepts it; Sema silently treats it as `&T`. The `?` on a reference is a readability hint, not a distinct type.
 
 **A nilable value must be narrowed before use.** §6.13 describes the narrowing rules. Reading a `T?` in a context that requires a `T` is a compile error unless the value has been narrowed.
