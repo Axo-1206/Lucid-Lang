@@ -93,6 +93,8 @@ ESCAPE      ::= '\' ( 'n' | 't' | 'r' | '\' | '\'' | '"' | '0' )
 
 An untyped integer or float literal (§5.7) takes its concrete type from context. A `"..."` string processes escapes and forbids literal newlines. A `"""..."""` raw string processes neither and may span lines; its only forbidden content is `"""` itself.
 
+**Lexing `.` vs. `..`/`..<` (range operators, §6.12).** A `FLOAT_LIT` requires at least one digit immediately after its decimal point; a bare `.` followed by another `.` never satisfies that, so the lexer resolves the ambiguity with one character of lookahead: after consuming a digit sequence and a `.`, if the next character is also `.`, back up and emit the digit sequence as an `INT_LIT` followed by a `..`/`..<` token, rather than attempting a `FLOAT_LIT`. This means `1..10` lexes as `INT_LIT(1)`, `..`, `INT_LIT(10)`, while `1.0` lexes as a single `FLOAT_LIT`.
+
 ### 2.5 Comments
 
 ```
@@ -114,6 +116,7 @@ A doc comment attaches to the declaration that follows it.
 and or not
 & | ^ ~ << >>
 += -= *= /= %= &= |= ^= <<= >>=
+.. ..<
 ```
 
 `::` is not in the set. Module member access uses `.` like every other member access.
@@ -127,7 +130,7 @@ Whitespace is not significant except as a token separator. Commas and semicolons
 ## 3. Program structure
 
 ```
-program        ::= { import_decl } { top_level_decl }
+program        ::= { import_decl | top_level_decl }
 import_decl    ::= 'import' module_path [ 'as' IDENTIFIER ]
 module_path    ::= IDENTIFIER { '.' IDENTIFIER }
 
@@ -136,7 +139,7 @@ top_level_decl ::= table_decl
                  | var_decl
 ```
 
-The top level contains only declarations. There are no top-level statements — nothing runs at module load time.
+The top level contains only declarations (imports included). There are no top-level statements — nothing runs at module load time.
 
 ### 3.1 Modules
 
@@ -150,6 +153,7 @@ import entities.person as person
 - `module_path` is the module's identity; the loader converts `core.math` to `core/math.luc`.
 - The alias (after `as`) is the local name used to reach the module's members. Without an alias, the last path segment is the alias.
 - Module member access uses `.`: `math.sqrt(...)`, `person.Person`.
+- An `import_decl` may appear anywhere among a module's top-level declarations, not only at the top of the file — there is no separate "imports section" to keep in order. This falls directly out of §3.3's two-pass resolution: every import in a module is collected before any declaration's types are resolved, so where an `import` sits relative to other declarations in the source never affects what compiles.
 
 ### 3.2 Visibility
 
@@ -640,6 +644,7 @@ expr          ::= literal
                 | row_literal          -- only inside table_init, see §4.1
                 | lambda_expr
                 | start_expr           -- see §9.2
+                | range_expr           -- see §6.12
                 | unary_expr
                 | binary_expr
                 | paren_expr
@@ -661,6 +666,9 @@ arg_list      ::= expr { ',' expr }
 array_literal ::= '[' [ expr { ',' expr } ] ']'
 
 lambda_expr   ::= '(' [ param_list ] ')' '->' expr
+
+range_expr    ::= expr range_op expr [ range_op expr ]
+range_op      ::= '..' | '..<'
 
 unary_expr    ::= ( '-' | 'not' | '~' ) expr
 binary_expr   ::= expr binary_op expr
@@ -750,6 +758,27 @@ Highest to lowest:
 | 2     | `and`                        | left          |
 | 1     | `or`                         | left          |
 | 0     | `??`                         | left          |
+
+`..`/`..<` (range operators, §6.12) are not in this table — they don't compose with the arithmetic/logical operators above. A range's operands are restricted to literals, arithmetic on literals, and `T.Member` references (the same shape as `const_expr`, §4.1.1a), so there's no case where range precedence needs to interact with, say, `+` or `and`.
+
+### 6.12 Range expressions
+
+A range is `lo..hi` (inclusive) or `lo..<hi` (exclusive). **A range is not a first-class value** — Sema rejects it anywhere a real type is expected (`let x: int = 0..10` is an error; there's no range type in §5), because it cannot be assigned to a variable, passed to a function, or used in arithmetic. It's legal in exactly two positions, both enforced by Sema rather than the grammar (the same pattern §7.7/§8.2 already use for `for`-binding types):
+
+- as the iterable of a `for` loop (§12.3);
+- as a `case_value` in a `switch` case (§12.2).
+
+Both bounds must be the same integer type — like any other numeric context (§5.7), untyped integer literals adapt to whatever concrete type the position requires.
+
+A range used as a `for` iterable may additionally carry a step, written with a second range operator: `lo..hi..step` or `lo..<hi..step`. A step of zero is a compile error; a negative step counts down. A range used as a `switch` case value may not carry a step, and both bounds must be compile-time constants (§12.2).
+
+In a `for` loop over a range, the loop variable takes the values `lo`, `lo+step`, `lo+2*step`, ... up to and including `hi` (`..`) or up to but not including `hi` (`..<`). The default step is `1`.
+
+```
+for i: int in 0..<10 { ... }        -- 0, 1, 2, ... 9
+for i: int in 0..10..2 { ... }      -- 0, 2, 4, 6, 8, 10
+for i: int in 10..0..-1 { ... }     -- 10, 9, 8, ... 0
+```
 
 ---
 
@@ -859,14 +888,15 @@ if scores.CONTAINS(30) {
 scores.REMOVE(0)               -- scores is now [25, 30, 40, 50]
 ```
 
-**Looping to modify every element needs the index form, not the value form.** For primitive element types, `for x: T in arr` binds a *copy* of each element — writing to `x` changes only the local loop variable, not the array:
+**Looping to modify every element needs the index form, not the value form.** For primitive element types, `for x: T in arr` binds a *copy* of each element, and — since loop bindings are `const` (§12.3) — writing to `x` isn't just pointless, it's rejected outright:
 
 ```
--- DOES NOT modify `scores` — x is a copy of each element
 for x: int in scores {
-    x = x * 2
+    x = x * 2    -- error: x is a loop binding, which is const
 }
 ```
+
+That compile error is a deliberate improvement over the alternative: a mutable-by-value loop binding would let this compile and silently do nothing to `scores`, which is a much worse failure mode than catching it before the program ever runs.
 
 To mutate the array in place, iterate with the index and assign back through it:
 
@@ -1144,11 +1174,12 @@ continue_stmt ::= 'continue' [ IDENTIFIER ]
 suspend_stmt  ::= ( 'wait' | 'waitFrames' ) '(' expr ')'
                 | 'waitUntil' '(' expr ',' expr ')'
                 | 'waitForEvent' '(' expr ')'
-                | 'waitForRequest' '(' expr ')'          -- see §9.2
+                | 'waitForRequest' '(' expr ')'          -- see §9.2; valid only inside a @sequence body (§9.2.2)
 
 if_stmt       ::= 'if' expr block [ 'else' ( block | if_stmt ) ]
 switch_stmt   ::= 'switch' expr '{' { case_clause } default_clause '}'
-case_clause   ::= 'case' expr ':' block
+case_clause   ::= 'case' case_value { ',' case_value } ':' block
+case_value    ::= expr
 default_clause ::= 'default' ':' block
 
 while_stmt    ::= [ label ] 'while' expr block
@@ -1158,6 +1189,10 @@ binding       ::= IDENTIFIER ':' type | '_'
 
 expr_stmt     ::= expr
 ```
+
+An `assign_stmt` is a statement only — there is no assignment form in the `expr` grammar (§6), so `let y: int = (x = 5)` is a syntax error; assignment must be its own statement, never nested inside an expression.
+
+A `suspend_stmt` node parses wherever any statement is allowed — the parser doesn't special-case its position. Sema is what actually restricts it: it reports a diagnostic if a `suspend_stmt` appears outside a function tagged `@sequence` (§9.2.2), the same division of labor used everywhere else a rule depends on surrounding context rather than local syntax (e.g. `break`/`continue` needing an enclosing loop, or a `for` binding's type needing to match its iterable, §7.7/§8.2).
 
 ### 12.1 Compound assignment
 
@@ -1180,9 +1215,53 @@ switch d {
 
 The check only applies when the subject's type is a specific fixed table — it doesn't run for a growing table (which has no fixed member list to check against) or for a `switch` over an ordinary primitive value. It's a warning rather than an error precisely because `default` is mandatory and always well-defined: the point isn't to forbid relying on `default`, it's to flag that a fixed table gained members since this `switch` was written, so you can confirm the fallthrough to `default` was intended rather than assumed.
 
+A `case` may list several values separated by commas; the case matches if the subject equals any one of them:
+
+```
+switch d {
+    case Direction.North, Direction.South: { println("vertical") }
+    case Direction.East, Direction.West:   { println("horizontal") }
+    default: { }
+}
+```
+
+Each `case_value` must be a constant expression — a literal, a fixed-table member (`Direction.North`), a small arithmetic combination of literals, or a range (§6.12, without a step, both bounds compile-time constants). Sema enforces the constant-ness; the parser accepts any `expr` in that position, the same permissive-grammar/restrictive-Sema split used throughout this document.
+
 ### 12.3 `for` bindings
 
-One or two bindings depending on the iterable — see §7.7 (tables/views) and §8 (arrays); a discard binding is `_`.
+A `for` loop takes one or two bindings; how many, and what they mean, depends on the iterable:
+
+| Iterable                   | One binding            | Two bindings                   |
+| -------------------------- | ---------------------- | ------------------------------ |
+| Range (§6.12)              | the counter            | —                              |
+| Table / `FIND` view (§7.7) | a row reference (`&T`) | index (`uint`) + row reference |
+| Column view (§7.4)         | the value              | —                              |
+| Array (§8.2)               | the element            | index (`uint`) + element       |
+
+```
+for i: int in 0..<10 { ... }             -- a range: i is the counter
+for r: &Person in Person { ... }         -- a table: r is a row reference
+for i: uint, r: &Person in Person { ... } -- a table, indexed
+for v: int in Person.age { ... }         -- a column view: v is the value
+for x: int in scores { ... }             -- an array: x is the element
+for i: uint, x: int in scores { ... }    -- an array, indexed
+```
+
+A binding may be `_` to discard its value; a discarded binding takes no type annotation:
+
+```
+for _, x: int in scores { ... }          -- values only
+for i: uint, _ in scores { ... }         -- indices only
+```
+
+**Loop bindings are `const` within the body** — assigning to one directly is a compile error (§8.1 shows this: `x = x * 2` inside `for x: int in scores` is rejected at compile time, rather than silently compiling to a change nobody sees). Shadow with a `let` inside the body if a mutable local copy is genuinely wanted:
+
+```
+for x: int in scores {
+    let doubled: int = x * 2    -- OK: a new local, not a write to the binding
+    println(doubled)
+}
+```
 
 ### 12.4 Loop labels
 
