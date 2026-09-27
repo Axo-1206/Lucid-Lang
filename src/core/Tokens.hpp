@@ -81,6 +81,7 @@ enum class TokenType : uint16_t {
     // The three declaration forms plus `import`, plus the `host` target
     // modifier, plus `as` for import aliases.
 
+    KW_FIXED,       // FIXED
     KW_TABLE,       // TABLE
     KW_FN,          // FN
     KW_LET,         // let
@@ -280,84 +281,7 @@ struct Token {
 // detail; the predicates are the contract.
 
 inline bool isKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_TABLE && t <= TokenType::KW_NIL;
-}
-
-/// @brief True for a token that can begin a top-level declaration.
-///
-/// The top level of a file is `{ import_decl | top_level_decl }` (§3), and
-/// every declaration may be preceded by juxtaposed attributes (§9). So a
-/// top-level declaration position is entered by `import`, by one of the
-/// three declaration keywords, or by `@` for an attribute list.
-inline bool isDeclarationStart(TokenType t) noexcept {
-    return t == TokenType::KW_IMPORT
-        || t == TokenType::KW_TABLE
-        || t == TokenType::KW_FN
-        || t == TokenType::KW_LET
-        || t == TokenType::KW_CONST
-        || t == TokenType::AT_SIGN;
-}
-
-/// @brief True for a keyword that names a declaration form.
-///
-/// This is the *keyword* question, not the *position* question. `import`
-/// is a directive, not a name-binding declaration. `@` is not a keyword
-/// at all. A caller that wants "can this token begin a declaration
-/// position" uses `isDeclarationStart`; a caller that wants "is this
-/// keyword one of the declaration forms" uses this.
-inline bool isDeclarationKeyword(TokenType t) noexcept {
-    return t == TokenType::KW_TABLE
-        || t == TokenType::KW_FN
-        || t == TokenType::KW_LET
-        || t == TokenType::KW_CONST;
-}
-
-/// @brief True for a keyword that can begin a statement inside a block.
-///
-/// This is the *statement-start* set, not the broader "any keyword that
-/// appears in statement position" set. `else`, `in`, `case`, and
-/// `default` are keywords that appear *inside* a statement, not at its
-/// start; they are not members of this set.
-///
-/// The sequence keywords (`wait`, `waitFrames`, `waitUntil`,
-/// `waitForEvent`, `waitForRequest`) are statements under §9.2 and are
-/// members of this set.
-inline bool isStatementStart(TokenType t) noexcept {
-    switch (t) {
-        case TokenType::KW_IF:
-        case TokenType::KW_SWITCH:
-        case TokenType::KW_FOR:
-        case TokenType::KW_WHILE:
-        case TokenType::KW_RETURN:
-        case TokenType::KW_BREAK:
-        case TokenType::KW_CONTINUE:
-        case TokenType::KW_WAIT:
-        case TokenType::KW_WAIT_FRAMES:
-        case TokenType::KW_WAIT_UNTIL:
-        case TokenType::KW_WAIT_FOR_EVENT:
-        case TokenType::KW_WAIT_FOR_REQUEST:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief True for a keyword that appears inside a statement, not at its
-///        start.
-///
-/// The complement of `isStatementStart` within the statement-keyword
-/// range. Exposed because a diagnostic like "unexpected 'else' inside an
-/// expression" wants to distinguish "this is a keyword that could have
-/// been valid somewhere else" from "this is not a keyword at all".
-inline bool isStatementInternalKeyword(TokenType t) noexcept {
-    return t == TokenType::KW_ELSE
-        || t == TokenType::KW_IN
-        || t == TokenType::KW_CASE
-        || t == TokenType::KW_DEFAULT;
-}
-
-inline bool isStatementKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_IF && t <= TokenType::KW_CONTINUE;
+    return t >= TokenType::KW_FIXED && t <= TokenType::KW_NIL;
 }
 
 /// @brief True for a keyword that begins a suspend statement (§9.2.2).
@@ -429,21 +353,6 @@ inline bool isComparisonOperator(TokenType t) noexcept {
 
 inline bool isBitwiseOperator(TokenType t) noexcept {
     return t >= TokenType::BIT_AND && t <= TokenType::SHR;
-}
-
-/// @brief True for a token that can begin a prefix expression.
-///
-/// Used by the Pratt loop's prefix dispatcher to decide whether to
-/// consume a token at all.
-inline bool canStartExpression(TokenType t) noexcept {
-    return isLiteral(t)
-        || t == TokenType::IDENTIFIER
-        || t == TokenType::LPAREN
-        || t == TokenType::LBRACKET
-        || t == TokenType::MINUS
-        || t == TokenType::BIT_NOT
-        || t == TokenType::KW_NOT
-        || t == TokenType::KW_START;    // start expr: `start f(args)`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
