@@ -1,6 +1,6 @@
-# Lucid — Language Specification (Consolidated Draft)
+# Lucid — Language Specification
 
-This document is the whole language. Anything not described here is not part of Lucid. It supersedes every earlier draft in this design thread; where an earlier draft and this document disagree, this document wins.
+The whole language. Anything not described here is not part of Lucid. Supersedes every earlier draft; where an earlier draft and this document disagree, this document wins.
 
 ---
 
@@ -26,7 +26,7 @@ Source files are UTF-8. A file is a sequence of declarations. There is no prepro
 
 **Declaration keywords:**
 ```
-TABLE   FN   let   const   import
+FIXED   TABLE   FN   let   const   import
 ```
 
 **Type keywords:**
@@ -91,9 +91,11 @@ CHAR_CHAR   ::= ANY_CHAR_EXCEPT('\'', '\')
 ESCAPE      ::= '\' ( 'n' | 't' | 'r' | '\' | '\'' | '"' | '0' )
 ```
 
-An untyped integer or float literal (§5.7) takes its concrete type from context. A `"..."` string processes escapes and forbids literal newlines. A `"""..."""` raw string processes neither and may span lines; its only forbidden content is `"""` itself.
+An untyped integer or float literal (§5.8) takes its concrete type from context. A `"..."` string processes escapes and forbids literal newlines. A `"""..."""` raw string processes neither and may span lines; its only forbidden content is `"""` itself.
 
 **Lexing `.` vs. `..`/`..<` (range operators, §6.12).** A `FLOAT_LIT` requires at least one digit immediately after its decimal point; a bare `.` followed by another `.` never satisfies that, so the lexer resolves the ambiguity with one character of lookahead: after consuming a digit sequence and a `.`, if the next character is also `.`, back up and emit the digit sequence as an `INT_LIT` followed by a `..`/`..<` token, rather than attempting a `FLOAT_LIT`. This means `1..10` lexes as `INT_LIT(1)`, `..`, `INT_LIT(10)`, while `1.0` lexes as a single `FLOAT_LIT`.
+
+**Lexing `?` vs. `??`.** A single `?` is the nilability suffix (§5.3). Two consecutive `?` are the null-coalescing operator (§5.4). The lexer resolves the ambiguity with one character of lookahead: after consuming a `?`, if the next character is also `?`, emit `??`; otherwise emit `?`.
 
 ### 2.5 Comments
 
@@ -110,7 +112,7 @@ A doc comment attaches to the declaration that follows it.
 ```
 ( ) { } [ ]
 , ; . @
-: -> = ...  ??
+: -> = ...  ?  ??
 + - * / % **
 == != < <= > >=
 and or not
@@ -193,7 +195,7 @@ Dependency direction is strictly one-way: **mods depend on core; core never depe
 ### 4.1 Table declarations
 
 ```
-table_decl   ::= attribute_list 'TABLE' IDENTIFIER ( table_body | host_target )
+table_decl   ::= attribute_list [ 'FIXED' ] 'TABLE' IDENTIFIER ( table_body | host_target )
 table_body   ::= '{' { column } '}' [ table_init ]
 table_init   ::= '=' '[' { row } ']'
 column       ::= attribute_list IDENTIFIER ':' type
@@ -220,11 +222,13 @@ TABLE Person {
 
 #### 4.1.1 Growing vs. fixed tables
 
-- **Growing** (no `table_init`): rows are added at runtime with `T.ADD(...)`.
-- **Fixed** (`table_init` present, `= [ ... ]`): the row count is fixed by the declaration itself. `.ADD` and `.REMOVE` are not available. This is the enum replacement:
+A table is either **growing** or **fixed**. The `FIXED` keyword determines which:
+
+- **Growing** (`TABLE X { ... }`): rows are added at runtime with `T.ADD(...)` and removed with `T.REMOVE(i)`. A growing table's storage is managed by the runtime; slots are reused after a `REMOVE` (§4.1.1a).
+- **Fixed** (`FIXED TABLE X { ... }`): the row set is decided at declaration. `.ADD` and `.REMOVE` are not available. This is the enum replacement:
 
 ```
-TABLE Direction {
+FIXED TABLE Direction {
     name: string
 } = [
     { "North" }, { "East" }, { "South" }, { "West" }
@@ -237,14 +241,38 @@ switch d {
 }
 ```
 
-A table with inline rows is **implicitly `@readonly`** (frozen: no add, remove, or cell write) unless it is explicitly marked `@immutable` (cells may still be written; row count still cannot change).
+**The presence of a `= [ ... ]` initializer does not determine fixedness.** A growing table may have an initializer, in which case the rows are its initial contents. A `FIXED` table has an initializer (its rows are its only rows), but the grammar does not require it — a `FIXED` table with no initializer is a zero-row table. Sema warns on a `FIXED` table with no rows (§4.1.1b).
 
-#### 4.1.1a Fixed-table rows are constant expressions, and why
+**A `FIXED` table's row set is decided at declaration.** Its cells are writeable unless the table is also marked `@readonly`. The `FIXED` keyword does not by itself forbid cell writes.
 
-A `row`'s cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time fixed-row sugar), and — for a function-typed column (§5.0) — a bare top-level `FN` name. **Function calls and references to a growing table's contents are not allowed inside a fixed table's inline rows:**
+**A growing table with an initializer is not implicitly readonly.** Its initial rows are the same as rows added later; both can be written and removed.
+
+#### 4.1.1a Slot reclamation in growing tables
+
+A growing table's storage is a **slot array**: a fixed-capacity buffer of rows, plus a free list of available slots, plus a generation counter per slot.
+
+- **`ADD`** pops a slot from the free list, or appends a new slot if the free list is empty. It writes the row's data and marks the slot live.
+- **`REMOVE(i)`** marks slot `i` dead and pushes it onto the free list. Every `&T` reference to the removed row becomes `nil` (the null-out rule, §7.6).
+- **Slot reuse.** When a slot is reused for a new row, its generation counter is incremented. A stale `&T` reference (one whose generation doesn't match the slot's current generation) reads as `nil`. This makes a reference to a removed-and-reused row safely `nil` instead of silently aliasing a different row.
+
+**Iteration order is slot order.** Rows are visited in the order of their slot indices, not in the order they were added. This order may change after a `REMOVE` and subsequent `ADD`. A program that needs a specific order must sort the table explicitly.
+
+**A `FIXED` table has no slot array, no free list, and no generation counters.** Its rows are indexed 0..N-1 in declaration order, and its `&T` references are simple indices. A `FIXED` table's references are therefore smaller than a growing table's.
+
+#### 4.1.1b Fixed tables: initializer and warnings
+
+A `FIXED` table's row set is decided at declaration. The `= [ ... ]` initializer, if present, supplies those rows. A `FIXED` table without an initializer has zero rows.
+
+**Sema warns on a `FIXED` table with no rows.** A table whose row set can never change and is empty is almost always a mistake. The warning is not a compile error: a zero-row fixed table is technically valid, and the program might use it as a placeholder.
+
+**A `FIXED` table's rows are baked into the compiled artifact** (§4.1.1c). Their cells must be constant expressions.
+
+#### 4.1.1c Constant expressions in a `FIXED` table's rows
+
+A `FIXED` table's inline `row` cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time fixed-row sugar), and — for a function-typed column (§5.0) — a bare top-level `FN` name. **Function calls and references to a growing table's contents are not allowed inside a `FIXED` table's inline rows:**
 
 ```
-TABLE Loadout {
+FIXED TABLE Loadout {
     weapon: &Item
 } = [
     { Item.byId(computeStartingWeapon()) }   -- error: function calls are not const_expr
@@ -258,6 +286,8 @@ This isn't an arbitrary restriction — it's what makes fixed-table construction
 - **There is no table load order to define.** Fixed tables aren't sequenced relative to each other or to growing tables at load time, because nothing about them runs at load time — their rows already exist as compiled constant data before the host loads anything (§3.4). Growing tables need no ordering either: they simply start as an empty header (row count zero), with no expression to evaluate.
 - **A cross-reference between two fixed tables is a compile-time dependency**, resolved by the compiler the same way it already resolves `Direction.North` to a specific row. A genuine cycle between two fixed tables' constant rows (`A`'s row referencing `B.SomeMember` while `B`'s row references `A.SomeMember`) is a **compile error**, not a runtime problem — unlike the type-level cycles in §3.3, a *value* cycle between constants has no pointer trick to fall back on, so it's simply rejected.
 
+**A growing table's `= [ ... ]` initializer is also evaluated at compile time.** Its rows are the same as `const_expr` rows in a fixed table; the difference is only that a growing table may add more rows at runtime. A growing table's initializer is a compile-time constant block, seeded into the runtime's storage at startup.
+
 #### 4.1.2 Host-backed tables
 
 `TABLE X = host("name")` declares an opaque type whose storage lives on the C++ side. The script can hold, pass, and store values of this type, but cannot inspect or construct one — construction and inspection happen through host functions.
@@ -266,6 +296,14 @@ This isn't an arbitrary restriction — it's what makes fixed-table construction
 @export
 TABLE SpriteRef = host("SpriteRef")
 ```
+
+A host-backed table may also be `FIXED`:
+
+```
+FIXED TABLE OpaqueHandle = host("OpaqueHandle")
+```
+
+A `FIXED` host-backed table is a fixed set of opaque handles. This combination is legal; it means the handles' identities are decided at declaration, not added at runtime. In practice, `FIXED TABLE X = host(...)` is unusual (an opaque handle is a value, not a row set), but it is permitted.
 
 **This is only for a genuinely opaque handle — a value the script only ever passes around, never decomposes.** Primitive types (§2.2) are keywords, not declarations of any kind — they're a different case, not an example of this one. A native type in general falls into one of three shapes, each with its own convention; there is no fourth option, and in particular an opaque host type is never the right answer when the script needs to read or write fields:
 
@@ -290,27 +328,38 @@ TABLE LoadRequest = host("LoadRequest")
 - A column's type is fixed at declaration.
 - Every row supplies a value for every column.
 - Duplicate rows are allowed by default (this is a data container, not a set); use `@unique`/`@primary` on a column to forbid duplicates.
-- A column's type may be a primitive, a host type, or a row reference (`&T`). **A column may not be a bare table type or an array type** — the former is a meaningless whole-sheet reference in a cell; the latter is modeled as a separate related table instead.
+- A column's type may be a primitive, a host type, a row reference (`&T`), or an array (`[T]`, `[N, T]`). **A column may not be a bare table type or a function type** — the former is a meaningless whole-sheet reference in a cell; the latter is a code pointer that a data container should not hold (use a bare `FN` name in a function-typed column of a fixed table, §4.1.1c, or store a `&T` to a table row that holds the function value).
+- **Any column type may be nilable (`T?`)** for primitives, host types, and arrays. A nilable cell may hold `nil`; a non-nilable one may not.
+- **A `FIXED` table's row set is decided at declaration**; a growing table's is not.
+
+**Array-typed columns are permitted.** A column of type `[T]` holds one array per row. The runtime stores the array's data in a shared buffer with per-row offsets (§7.4). This supports 2D and higher-dimensional data directly.
 
 #### 4.1.4 Table attributes
 
-| Attribute         | Meaning                                                                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `@export`         | Visible outside the module.                                                                                                           |
-| `@readonly`       | No mutation at all: no `ADD`, `REMOVE`, or cell write.                                                                                |
-| `@immutable`      | No `ADD`/`REMOVE`; cells may still be written. Mutually exclusive with `@readonly`.                                                   |
-| `@capped(N)`      | Upper bound of N rows for a growing table; `.ADD` fails once full. Mutually exclusive with inline rows (which already fix the count). |
-| `@packed`         | Contiguous storage; valid only when every column is a primitive or host type.                                                         |
-| `@sorted(column)` | Rows are kept sorted by `column`; `.ADD` inserts in order.                                                                            |
-| `@request`        | Only valid on a `host(...)`-backed table (§4.1.2); marks it as a single-operation async handle usable with `waitForRequest` (§9.2.3). |
+| Attribute         | Meaning                                                                                                                                                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@export`         | Visible outside the module.                                                                                                                                                                                                                                          |
+| `@readonly`       | No mutation at all: no `ADD`, `REMOVE`, or cell write. Implies `@immutable`.                                                                                                                                                                                         |
+| `@immutable`      | No `ADD`/`REMOVE` after initialization; cells may still be written. Redundant on a `FIXED` table (whose row set is already fixed at declaration); Sema warns when `FIXED` and `@immutable` appear together. Mutually exclusive with `@readonly` (which is stricter). |
+| `@packed`         | Contiguous storage with no slack. Implies `@immutable`.                                                                                                                                                                                                              |
+| `@reserve(N)`     | A storage hint: reserve room for N rows. Not a policy limit.                                                                                                                                                                                                         |
+| `@columnar`       | Store the table's columns in separate contiguous buffers, rather than row-major.                                                                                                                                                                                     |
+| `@sorted(column)` | Rows are kept sorted by `column`; `.ADD` inserts in order.                                                                                                                                                                                                           |
+| `@request`        | Only valid on a `host(...)`-backed table (§4.1.2); marks it as a single-operation async handle usable with `waitForRequest` (§9.2.3).                                                                                                                                |
+
+**`@reserve(N)` is a storage hint, not a policy limit.** A table declared `@reserve(10)` has room reserved for 10 rows at startup; it can still grow past 10 (with reallocation), and it can have fewer than 10 rows. A policy limit ("the game allows at most 10 inventory slots") is expressed as ordinary code — a wrapper function that checks `InventorySlot.COUNT()` before calling `.ADD`. This mirrors the design's treatment of `@default` (there is no `@default` attribute; a default value is domain logic, expressed as a wrapper function).
+
+**`@packed` implies `@immutable`.** A packed table's storage is finalized at initialization and never grows, shrinks, or reallocates. `ADD` and `REMOVE` are unavailable. Cell writes are allowed unless the table is also `@readonly`.
+
+**`@packed` and `@readonly` are not mutually exclusive.** A `@packed @readonly` table is a fixed-layout, read-only lookup table, which is a common case (a constants table).
 
 #### 4.1.5 Column attributes
 
-| Attribute   | Meaning                                                                                                                                                             |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@unique`   | No two rows share a value in this column. Checked on `ADD`; a duplicate panics.                                                                                     |
-| `@primary`  | Implies `@unique`; also generates a `T.by<Column>(value) -> &T` lookup (e.g. `@primary id:` generates `Person.byId(...)`). At most one `@primary` column per table. |
-| `@readonly` | The column's cells cannot be written after the row is added.                                                                                                        |
+| Attribute   | Meaning                                                                                                                                                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@unique`   | No two rows share a value in this column. Checked on `ADD`; a duplicate panics.                                                                                                                                                          |
+| `@primary`  | Implies `@unique`; also generates a `T.by<Column>(value) -> &T` lookup (e.g. `@primary id:` generates `Person.byId(...)`). At most one `@primary` column per table. The runtime builds an index over the column, making the lookup O(1). |
+| `@readonly` | The column's cells cannot be written after the row is added.                                                                                                                                                                             |
 
 **No `@default(expr)` attribute.** `T.ADD(args...)` has exactly one calling rule: argument count must equal column count, in order (§7.1) — no exceptions. A default-value attribute would carve an exception into that rule (some trailing columns optional, others not), for something that's already fully achievable as domain logic rather than storage — an ordinary wrapper function, the same pattern already used for every other table convenience (`FIND` predicates, lookups, aggregations):
 
@@ -320,14 +369,26 @@ FN addPerson(name: string) -> &Person {
 }
 ```
 
-This is a closed decision, not a deferral — a future version of `@default` would either duplicate this wrapper-function pattern or reopen `ADD`'s one-rule calling convention, and neither is worth it for what a one-line function already does.
+This is a closed decision, not a deferral.
+
+**No `@optional` attribute.** A column that may hold `nil` is written with the `?` type suffix (§5.3):
+
+```
+TABLE Person {
+    name: string
+    nick: string?      -- an optional nickname
+    age:  int?         -- an optional age
+}
+```
+
+Reading an `@optional` column's cell produces a `T?` value, which is narrowed by the usual rules (§6.13).
 
 #### 4.1.6 Worked example: reading, writing, adding, and looking up rows
 
 This example uses two related tables — an item catalog and an inventory that references it — to show every basic operation together.
 
 ```
-TABLE Item {
+FIXED TABLE Item {
     @primary
     id:    int
 
@@ -335,42 +396,39 @@ TABLE Item {
     name:  string
 
     price: float
-}
+} = [
+    { 1, "Iron Sword",    45.0 },
+    { 2, "Health Potion",  5.0 },
+]
 
 TABLE InventorySlot {
     item:  &Item
     count: int
 }
 
--- ADD: build the catalog. Each ADD returns a &Item you can keep using.
-let sword:  &Item = Item.ADD(1, "Iron Sword", 45.0)
-let potion: &Item = Item.ADD(2, "Health Potion", 5.0)
-
--- ADD again, this time into a different table, holding a reference
--- to a row in the first one (the foreign-key pattern from §4.1).
-InventorySlot.ADD(sword, 3)
-InventorySlot.ADD(potion, 10)
+-- ADD: build the inventory. Each ADD returns a &InventorySlot you can
+-- keep using.
+let slot0: &InventorySlot = InventorySlot.ADD(Item.byId(1), 3)
+let slot1: &InventorySlot = InventorySlot.ADD(Item.byId(2), 10)
 
 -- READ a cell.
-println(sword.name)                  -- "Iron Sword"
+println(slot0.item.name)             -- "Iron Sword"
 
 -- WRITE a cell — mutates the row in place. Anyone else holding a
--- reference to this row (e.g. every InventorySlot.item pointing at
--- it) sees the change immediately, because rows are shared, not copied.
-sword.price = 40.0
+-- reference to this row sees the change immediately, because rows are
+-- shared, not copied.
+slot0.count = 5
 
--- LOOK UP a row later by its @primary column instead of holding
--- onto the reference from ADD. Always check for nil — by<Column>
--- returns nil rather than panicking when nothing matches (§7.3).
+-- LOOK UP a row later by its @primary column instead of holding onto
+-- the reference from ADD. Always check for nil — by<Column> returns
+-- nil rather than panicking when nothing matches (§7.3).
 let found: &Item = Item.byId(2)
-if found == nil {
-    println("no such item")
-} else {
+if found != nil {
     println(found.name)              -- "Health Potion"
 }
 
 -- ITERATE every row and mutate through a nested reference:
--- 10% off every item currently sitting in someone's inventory.
+-- 10% off every item currently sitting in the inventory.
 for slot: &InventorySlot in InventorySlot {
     slot.item.price = slot.item.price * 0.9
 }
@@ -384,6 +442,17 @@ for s: &InventorySlot in bulky {
 
 Note what each operation returns and why: `ADD` gives you a row reference so you don't need a second lookup to keep working with the row you just created; `byId` gives you `nil` on a miss because "no item with this id" is an expected outcome, not a bug; and `slot.item.price = ...` chains a row-level write through a cell that itself holds a row reference — that's the whole foreign-key mechanism, with no special syntax beyond ordinary field access.
 
+#### 4.1.7 Quick reference on table's constraints
+
+| Example                          | Note                                      |
+| -------------------------------- | ----------------------------------------- |
+| TABLE X { ... }                  | mutable (growable, cells writable).       |
+| TABLE X { ... } @immutable       | no ADD/REMOVE after init; cells writable. |
+| TABLE X { ... } @readonly        | no ADD/REMOVE, no cell writes.            |
+| FIXED TABLE X { ... }            | fixed row set; cells writable.            |
+| FIXED TABLE X { ... } @readonly  | fixed row set; cells read-only.           |
+| FIXED TABLE X { ... } @immutable | redundant (a FIXED table is already       | immutable); Sema warns. |
+
 ### 4.2 Function declarations
 
 ```
@@ -392,8 +461,9 @@ fn_decl    ::= attribute_list 'FN' IDENTIFIER '(' [ param_list ] ')'
 fn_body    ::= block
              | '=' 'host' '(' STRING_LIT ')'
 
-param_list ::= param { ',' param } [ ',' '...' type ]
+param_list ::= param { ',' param } [ ',' variadic_param ]
 param      ::= [ 'const' ] IDENTIFIER ':' type
+variadic_param ::= IDENTIFIER ':' '...' type
 ```
 
 A function is a named procedure with one parameter group, an optional return type, and a body.
@@ -412,7 +482,7 @@ FN incrementAge(const p: &Person) {
 
 - No `-> type`: the function returns `unit`.
 - `-> type`: the function returns one value. `-> unit` may be written explicitly for symmetry with the no-arrow form.
-- A function's declared return type is a primitive, a row reference, or `unit`. A function never returns a bare table (copying a whole sheet isn't a meaningful operation).
+- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `unit`. A function never returns a bare table. A function never returns a function type (no first-class functions, §4.2.5).
 
 #### 4.2.2 Parameters and `const`
 
@@ -455,6 +525,8 @@ FN spawnEnemies(kind: string, positions: ...int) {
 spawnEnemies("goblin", 10, 20, 30)
 ```
 
+**A variadic parameter's element type may be nilable:** `...int?` collects into `[int?]`.
+
 #### 4.2.3 Host functions
 
 A function whose body is `= host("name")` is implemented by a native function registered under that name:
@@ -480,9 +552,9 @@ FN sum(nums: ...int) -> int = host("host_sum_ints")
 int32_t host_sum_ints(const int32_t* data, size_t count);
 ```
 
-The compiler always calls the native side this way for a variadic parameter, so `host_sum_ints` is written once, against a fixed pointer+count signature, regardless of how many arguments a particular script call site happens to pass. This is the same idea §4.2.3's plain host functions already rely on — the compiler shouldn't need to understand a target-platform's variadic calling convention, which differs by ABI and is exactly the kind of parser-unfriendly irregularity the fixed-operator-token decision (§6.10) was written to avoid elsewhere.
+The compiler always calls the native side this way for a variadic parameter, so `host_sum_ints` is written once, against a fixed pointer+count signature, regardless of how many arguments a particular script call site happens to pass.
 
-If a native function genuinely needs true C variadics — wrapping something like `printf` — that's outside this mechanism. Wrap it by hand on the C++ side into a fixed- or array-taking function first, then register that wrapper normally. The language does not provide a way to call a true variadic native function directly.
+If a native function genuinely needs true C variadics — wrapping something like `printf` — that's outside this mechanism. Wrap it by hand on the C++ side into a fixed- or array-taking function first, then register that wrapper normally.
 
 #### 4.2.5 No currying, no nesting, no closures
 
@@ -502,10 +574,10 @@ The one narrow exception is the lambda form (§6.9), which is sugar for a compil
 ### 4.3 Variable declarations
 
 ```
-var_decl ::= ( 'let' | 'const' ) IDENTIFIER ':' type '=' expr
+var_decl ::= ( 'let' | 'const' ) IDENTIFIER ':' type '=' expr ';'
 ```
 
-A variable holds a value: a primitive (copied), or a row/table reference (shared).
+A variable holds a value: a primitive (copied), or a row/table reference (shared), or an array (copied on assignment; §5.5).
 
 - `let` — the binding may be reassigned; if it holds a reference, mutation through it is allowed.
 - `const` — the binding may not be reassigned, and no mutation through it is allowed.
@@ -524,15 +596,20 @@ b.age = 31       -- error: b is const
 
 `const` on a primitive and `const` on a reference are the same construct — both are read-only bindings; the grammar does not distinguish them.
 
+**A `;` terminates every `let`/`const`, whether at top level or inside a block.** §3's `top_level_decl` and §12's `statement` both route through `var_decl`, which carries its own `;`.
+
 ---
 
 ## 5. Types
 
 ```
-type           ::= primitive_type
+type           ::= base_type [ '?' ]
+
+base_type      ::= primitive_type
                  | table_type
                  | row_ref_type
                  | array_type
+                 | function_type
 
 primitive_type ::= 'bool' | 'char' | 'string'
                  | 'int8'   | 'int16'  | 'int32'  | 'int64'
@@ -546,8 +623,8 @@ table_type     ::= qualified_table            -- a sheet
 row_ref_type   ::= '&' qualified_table         -- a reference to one row
 qualified_table ::= [ IDENTIFIER '.' ] IDENTIFIER   -- optional module alias, then table name
 
-array_type     ::= '[' ']' type               -- dynamic array
-                 | '[' INT_LIT ']' type       -- fixed-size array
+array_type     ::= '[' type ']'                -- dynamic array
+                 | '[' INT_LIT ',' type ']'    -- fixed-size array
 
 function_type  ::= '(' [ type { ',' type } ] ')' '->' type
 ```
@@ -574,63 +651,133 @@ FN isAdult(p: &Person) -> bool { return p.age >= 18 }
 let pred: (&Person) -> bool = isMinor
 ```
 
-A function-typed value can be reassigned to any named `FN` or lambda whose parameter and return types match exactly — no implicit conversion between different function types, same as everywhere else in the type system (§5.7).
+A function-typed value can be reassigned to any named `FN` or lambda whose parameter and return types match exactly — no implicit conversion between different function types, same as everywhere else in the type system (§5.8).
+
+Function types are not nilable: a function value is always a valid code address. `((&Person) -> bool)?` is a type error.
 
 ### 5.1 The reference model
 
 Removing value references (`&int`) — see 5.1.1 below — leaves exactly two reference kinds, both spelled with identifiers rather than a shared ambiguous sigil doing double duty:
 
-| Type                           | Storage                   | Copy semantics                                                                |
-| ------------------------------ | ------------------------- | ----------------------------------------------------------------------------- |
-| Primitive (`int`, `bool`, ...) | Inline                    | Copy the value                                                                |
-| Table (`Person`)               | Pointer to sheet          | Copy the pointer (share the sheet)                                            |
-| Row reference (`&Person`)      | Pointer to row            | Copy the pointer (share the row)                                              |
-| Function ((`&T`) `-> R`)       | Compile-time code address | Copy the address — never allocated, never captures (§6.9)                     |
-| Array (`[T]`, `[N]T`)          | Depends on `T`            | Element-wise copy for primitives; pointer copy per element for row references |
-| Host type                      | Opaque                    | Host-defined                                                                  |
+| Type                           | Storage                   | Copy semantics                                                                            |
+| ------------------------------ | ------------------------- | ----------------------------------------------------------------------------------------- |
+| Primitive (`int`, `bool`, ...) | Inline                    | Copy the value                                                                            |
+| Table (`Person`)               | Pointer to sheet          | Copy the pointer (share the sheet)                                                        |
+| Row reference (`&Person`)      | Row index (1–8 bytes)     | Copy the index (share the row)                                                            |
+| Function ((`&T`) `-> R`)       | Compile-time code address | Copy the address — never allocated, never captures (§6.9)                                 |
+| Array (`[T]`, `[N, T]`)        | Depends on `T`            | Copy the array (element-wise for primitives, pointer copy per element for row references) |
+| Host type                      | Opaque                    | Host-defined                                                                              |
 
 `Person` names the sheet; `&Person` names a reference to one of its rows. Both are references under the hood, but they refer to different things, and the type name makes that explicit at every use site.
+
+The runtime representation of a `&T` reference is a row index, not a pointer — see the storage model document for details. The language guarantees only that a `&T` is comparable, may be `nil`, and is invalidated by `REMOVE` of the target row.
 
 #### 5.1.1 No value references
 
 There is no `&int`, `&string`, etc. Primitives are always copied. If a function needs to mutate a caller's data, it takes a row reference and writes a cell — there is no other way to achieve "output parameter" semantics, and none is needed.
 
-### 5.2 Nilability
+### 5.2 Nilability of row references
 
-**There is no `T?` or `T!` type suffix.** Instead, every row-reference type (`&T`) is inherently nilable — `nil` is an ordinary value of any `&T` type, the same way a null pointer is an ordinary value of a pointer type. This is a property `&T` already has, not a second type layered on top of it.
+**Every row-reference type (`&T`) is inherently nilable** — `nil` is an ordinary value of any `&T` type, the same way a null pointer is an ordinary value of a pointer type. This is a property `&T` already has, not a second type layered on top of it.
 
-- `T.byId(...)`-style lookups (`@primary`, §4.1.5) return `&T`, and are `nil` when nothing matches.
+- `T.by<Column>(...)`-style lookups (`@primary`, §4.1.5) return `&T`, and are `nil` when nothing matches.
 - A row reference stored in a cell becomes `nil` if the row it pointed to is removed (§7.6).
-- `nil` is compared with `==`/`!=` (§6.8) and defaulted with `??` (§5.3).
+- `nil` is compared with `==`/`!=` (§6.8) and defaulted with `??` (§5.4).
 
-Bare table types and primitives are never nilable.
+Bare table types are never nilable.
 
-### 5.3 The `??` operator
+**Dereferencing a `nil` row reference panics.** A program that wants to avoid the panic must check with `!= nil` before dereferencing. `&T` values do not require narrowing (§5.3); the user is responsible.
 
-`??` is the null-coalescing operator, nothing else:
+### 5.3 Nilability of non-reference types
+
+**A type that may hold `nil` is written with a `?` suffix.** `T?` is a nilable `T`.
+
+```
+let x: int?     = nil
+let y: string?  = "hello"
+let z: [int]?   = nil
+```
+
+The suffix applies to primitives, host types, and arrays. The following are nilable types:
+
+- `T?` for a primitive `T` (`int?`, `float?`, `bool?`, `char?`, `string?`, `unit?`).
+- `T?` for a host type `T` (`SpriteRef?`).
+- `T?` for an array type (`[int]?`, `[4, int]?`).
+
+The following are type errors:
+
+- `T?` for a bare table type: a table is a global; "the table is nil" is meaningless.
+- `T?` for a function type: a function value is always defined.
+- `T?` for `unit`: `unit` already means "no value"; `unit?` is redundant and forbidden.
+- `T?` for a `&T`: `&T` is already nilable; `&T?` is accepted but the `?` is redundant.
+
+**A `&T?` written explicitly is the same type as `&T`.** The parser accepts it; Sema silently treats it as `&T`. The `?` on a reference is a readability hint, not a distinct type.
+
+**A nilable value must be narrowed before use.** §6.13 describes the narrowing rules. Reading a `T?` in a context that requires a `T` is a compile error unless the value has been narrowed.
+
+```
+let x: int? = lookup()
+
+let y: int = x          -- error: x may be nil; narrow first
+let z: int = x ?? 0     -- OK: `??` produces a non-nil value
+if x != nil {
+    let w: int = x      -- OK: x narrowed to non-nil inside the branch
+}
+```
+
+**The `?` suffix binds to the innermost type.** For a dynamic array, `[int?]` is an array of nilable elements, and `[int]?` is a nilable array. Both are valid and distinct.
+
+**For a fixed-size array**, the `?` inside the brackets makes the elements nilable, and the `?` after the brackets makes the array nilable:
+
+- `[5, int]` — a fixed array of 5 non-nilable ints.
+- `[5, int?]` — a fixed array of 5 nilable ints.
+- `[5, int]?` — a nilable fixed array of 5 non-nilable ints.
+- `[5, int?]?` — a nilable fixed array of 5 nilable ints.
+
+All four are distinct types. `[5, int??]` is invalid (there is no second `?` inside the brackets); `[5, int]??` is invalid (the array can be nilable, but the nilability is not itself nilable).
+
+### 5.4 The `??` operator
+
+`??` is the null-coalescing operator:
 
 ```
 expr ?? fallback
 ```
 
-If `expr` (a row-reference-typed expression) is `nil`, evaluate and return `fallback`. Otherwise return `expr` unchanged. There is no `if cond ?? a else b` ternary form — that reused `??` for an unrelated second meaning and is removed; use a plain `if` statement.
+If `expr` (a nilable value) is `nil`, evaluate and return `fallback`. Otherwise return `expr` unchanged. The result is non-nil.
 
-### 5.4 Arrays
+- LHS type: any nilable type (`T?` or `&T`).
+- RHS type: the corresponding non-nil type (`T`).
+- Result type: `T`.
+
+```
+let a: int?   = lookup()
+let b: int    = a ?? 0           -- int
+let c: &Item  = Item.byId(1) ?? fallbackItem   -- &Item (RHS may be nil if fallbackItem is nil, but that's the caller's choice)
+```
+
+There is no `if cond ?? a else b` ternary form — that reused `??` for an unrelated second meaning and is removed; use a plain `if` statement.
+
+### 5.5 Arrays
 
 - `[T]` — dynamic; grows and shrinks via `.ADD`/`.REMOVE` (§8).
-- `[N]T` — fixed-size, `N` a compile-time constant; supports indexing, `.COUNT()`, `.CONTAINS()`, and iteration, but not `.ADD`/`.REMOVE`.
+- `[N, T]` — fixed-size, `N` a compile-time constant; supports indexing, `.COUNT()`, `.CONTAINS()`, and iteration, but not `.ADD`/`.REMOVE`.
 
 Array literals are first-class expressions: `[1, 2, 3]`. An empty `[]` requires a type context to infer the element type.
 
-### 5.5 Column views have no storable type
+**Arrays are values.** An assignment `let b: [int] = a` copies the array's contents. This is unlike row references, which share.
+
+**Nested arrays are allowed.** `[[int]]` is a dynamic array of dynamic arrays of ints; `[[5, int]]` is a dynamic array of fixed arrays of 5 ints; `[5, [int]]` is a fixed array of 5 dynamic arrays of ints; `[5, [5, int]]` is a fixed array of 5 fixed arrays of 5 ints. The runtime stores the inner arrays' data in a shared flat buffer with per-outer-element offsets (a compressed-sparse-array layout).
+
+### 5.6 Column views have no storable type
 
 `T.column` (§7.4) produces a live view over a column's values, usable only inline in a `for` loop or an aggregation call (`.SUM()`, `.AVG()`). It cannot be assigned to a variable or passed as an argument — it is not a value of any type in this grammar, dynamic array included, because unlike an array it is a live view rather than a copy. To obtain a real, storable `[T]` copy of a column, call `.toArray()` on it.
 
-### 5.6 Host types
+### 5.7 Host types
 
-A host type is declared with `TABLE X = host("name")` (§4.1.2). The script can hold and pass values of this type but not inspect or construct them.
+A host type is declared with `TABLE X = host("name")` (§4.1.2). The script can hold and pass values of this type but not inspect or construct them. A host type may be nilable: `X?`.
 
-### 5.7 Numeric literals and coercion
+### 5.8 Numeric literals and coercion
 
 **No implicit coercion between two already-typed values.** `int + float` is a compile error; use an explicit conversion function (`toFloat(x) + y`, §11.1).
 
@@ -642,6 +789,8 @@ let b: long  = 42     -- OK, 42 adapts to long
 let c: uint  = a + 1  -- OK, 1 adapts to uint to match a
 let d: float = a      -- error: a is already uint32; no implicit coercion
 ```
+
+A literal adapts to a nilable numeric type as well: `let x: int? = 42` is valid, with `42` becoming a non-nil `int?`.
 
 ---
 
@@ -695,9 +844,38 @@ binary_op     ::= '+' | '-' | '*' | '/' | '%' | '**'
 paren_expr    ::= '(' expr ')'
 ```
 
-### 6.1–6.7 (unchanged from earlier drafts)
+### 6.1 Identifier, table access
 
-Identifier, table-access, field-access, index, call, and array-literal expressions behave as previously specified: `Person` names the sheet; `Person.ADD(...)`/`Person[i]`/`Person.column` are the sheet operations (§7); `p.name` reads or writes a cell of the row `p`; `f(args)` calls a function.
+`Person` names the sheet. `Person.ADD(...)`, `Person[i]`, `Person.column` are the sheet operations (§7). A bare `Person` used as a value is a reference to the sheet itself.
+
+### 6.2 Field access
+
+`p.name` reads or writes a cell of the row `p`. `p` must be a `&T` (a row reference); dereferencing a `nil` `&T` panics.
+
+`math.sqrt` (where `math` is a module) accesses a module export. Sema classifies a field access as a cell access, a column view, or a module access based on the object's type.
+
+### 6.3 Index
+
+`container[index]`:
+
+- `Person[i]` accesses row `i` of the `Person` sheet. Out of bounds panics.
+- `arr[i]` accesses element `i` of an array. Out of bounds panics.
+
+### 6.4 Call
+
+`f(args)` calls a function. `callee` may be a named `FN`, a lambda, a table method (`Person.ADD`), or a module function (`math.sqrt`). No currying.
+
+### 6.5 Array literal
+
+`[1, 2, 3]` produces an array. The element type is inferred from context. `[]` requires a type context.
+
+### 6.6 Lambda expression
+
+A lambda is `(params) -> expr`. See §6.9.
+
+### 6.7 Parenthesized expression
+
+`(expr)` groups an expression. The AST keeps the paren node for source reconstruction.
 
 ### 6.8 Equality and comparison
 
@@ -705,11 +883,15 @@ Identifier, table-access, field-access, index, call, and array-literal expressio
 | ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
 | `==` `!=`         | primitives                           | value equality                                                                        |
 | `==` `!=`         | `&T` (including against `nil`)       | identity — do both sides refer to the same row (or is one/both `nil`)                 |
-| `==` `!=`         | `[T]` / `[N]T`                       | structural: same length, each element equal (element-wise identity for `&T` elements) |
+| `==` `!=`         | `T?` and `nil`                       | nil-check                                                                             |
+| `==` `!=`         | two `T?` values of the same `T`      | both `nil`, or both non-nil and equal                                                 |
+| `==` `!=`         | `[T]` / `[N, T]`                     | structural: same length, each element equal (element-wise identity for `&T` elements) |
 | `==` `!=`         | function types                       | identity — same underlying `FN`/lambda or not                                         |
 | `<` `<=` `>` `>=` | numeric primitives, `string`, `char` | ordering (lexicographic for `string`)                                                 |
 
 Comparing two bare table-typed expressions (`Person == Person`) is a compile error — there is exactly one sheet per table name, so the comparison is always trivially true and carries no information. Ordering operators are not defined for `&T`, table, or array types.
+
+**Comparing a `T?` to a non-nil `T` is a compile error.** The RHS must be `T?` or `nil`. This prevents the common bug of comparing a possibly-nil value to a real value.
 
 ### 6.9 Lambda expressions and function values
 
@@ -738,10 +920,10 @@ countWhere(Person, isAdult)
 countWhere(Person, (p) -> p.age == 18)   -- a lambda works at the same call site
 ```
 
-Because a function value is a compile-time-known address rather than something constructed at runtime, a bare function name is also a valid `const_expr` (§4.1.1a) — a fixed table can hold behavior directly:
+Because a function value is a compile-time-known address rather than something constructed at runtime, a bare function name is also a valid `const_expr` (§4.1.1c) — a fixed table can hold behavior directly:
 
 ```
-TABLE StateHandler {
+FIXED TABLE StateHandler {
     name:    string
     onEnter: (&Enemy) -> unit
 } = [
@@ -773,16 +955,16 @@ Highest to lowest:
 | 1     | `or`                         | left          |
 | 0     | `??`                         | left          |
 
-`..`/`..<` (range operators, §6.12) are not in this table — they don't compose with the arithmetic/logical operators above. A range's operands are restricted to literals, arithmetic on literals, and `T.Member` references (the same shape as `const_expr`, §4.1.1a), so there's no case where range precedence needs to interact with, say, `+` or `and`.
+`..`/`..<` (range operators, §6.12) are not in this table — they don't compose with the arithmetic/logical operators above. A range's operands are restricted to literals, arithmetic on literals, and `T.Member` references (the same shape as `const_expr`, §4.1.1c), so there's no case where range precedence needs to interact with, say, `+` or `and`.
 
 ### 6.12 Range expressions
 
-A range is `lo..hi` (inclusive) or `lo..<hi` (exclusive). **A range is not a first-class value** — Sema rejects it anywhere a real type is expected (`let x: int = 0..10` is an error; there's no range type in §5), because it cannot be assigned to a variable, passed to a function, or used in arithmetic. It's legal in exactly two positions, both enforced by Sema rather than the grammar (the same pattern §7.7/§8.2 already use for `for`-binding types):
+A range is `lo..hi` (inclusive) or `lo..<hi` (exclusive). **A range is not a first-class value** — Sema rejects it anywhere a real type is expected (`let x: int = 0..10` is an error; there's no range type in §5), because it cannot be assigned to a variable, passed to a function, or used in arithmetic. It's legal in exactly two positions, both enforced by Sema rather than the grammar:
 
 - as the iterable of a `for` loop (§12.3);
 - as a `case_value` in a `switch` case (§12.2).
 
-Both bounds must be the same integer type — like any other numeric context (§5.7), untyped integer literals adapt to whatever concrete type the position requires.
+Both bounds must be the same integer type — like any other numeric context (§5.8), untyped integer literals adapt to whatever concrete type the position requires.
 
 A range used as a `for` iterable may additionally carry a step, written with a second range operator: `lo..hi..step` or `lo..<hi..step`. A step of zero is a compile error; a negative step counts down. A range used as a `switch` case value may not carry a step, and both bounds must be compile-time constants (§12.2).
 
@@ -794,6 +976,61 @@ for i: int in 0..10..2 { ... }      -- 0, 2, 4, 6, 8, 10
 for i: int in 10..0..-1 { ... }     -- 10, 9, 8, ... 0
 ```
 
+A range's `lo` and `hi` (and `step`, if present) are stored on the `RangeExprAST`; the step is `nullptr` when no step was written.
+
+### 6.13 Narrowing of nilable values
+
+A `T?` value must be narrowed before being used where a `T` is expected. Narrowing happens when the compiler can prove the value is not `nil` at the use site:
+
+**By nil-check.** A `!= nil` comparison narrows the value inside the branch:
+
+```
+let x: int? = lookup()
+if x != nil {
+    let y: int = x          -- OK: x narrowed to int inside the branch
+}
+```
+
+A `== nil` comparison narrows the value inside the else branch:
+
+```
+if x == nil {
+    -- x is nil here; using x as an int would be an error
+} else {
+    let y: int = x          -- OK: x narrowed to int
+}
+```
+
+**By `??`.** The result of `??` is non-nil:
+
+```
+let y: int = x ?? 0         -- OK: y is int
+```
+
+**By `&&` chaining.** Narrowing propagates through `&&`:
+
+```
+if x != nil && y != nil {
+    let sum: int = x + y    -- OK: both narrowed
+}
+```
+
+**By early return.** If a `nil` branch returns, the code after the `if` sees the value as narrowed:
+
+```
+FN compute() -> int {
+    let x: int? = lookup()
+    if x == nil {
+        return 0
+    }
+    return x                -- OK: x narrowed to int
+}
+```
+
+**Narrowing applies to `T?` values only.** A `&T` value does not require narrowing; dereferencing a `nil` `&T` panics at runtime. A program that wants to avoid the panic checks with `!= nil` before dereferencing, but the check is not required by the type system.
+
+**Narrowing is per-expression, not per-variable.** A narrowed `x` in one branch does not narrow `x` in another. A narrowed `x` at one use site does not narrow it at another. The compiler tracks the narrowed state through the control flow within a single function body; it does not track it across function calls.
+
 ---
 
 ## 7. Table operations
@@ -803,14 +1040,16 @@ for i: int in 10..0..-1 { ... }     -- 10, 9, 8, ... 0
 | Operation             | Result       | Notes                                                                                                                                                   |
 | --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `T.ADD(args...)`      | `&T`         | Append a row. Not available on fixed or `@readonly` tables.                                                                                             |
-| `T.REMOVE(i)`         | `unit`       | Remove row `i`; rows after it shift down by one. Not available on fixed or `@readonly` tables.                                                          |
-| `T[i]`                | `&T`         | Row `i` by index. **Panics** if `i` is out of bounds — this never returns `nil`.                                                                        |
-| `T.at(i)`             | `&T`         | Row `i` by index; returns `nil` instead of panicking if `i` is out of bounds.                                                                           |
-| `T.COUNT()`           | `uint`       | Number of rows.                                                                                                                                         |
+| `T.REMOVE(i)`         | `unit`       | Remove row `i`. Not available on fixed or `@readonly` tables. Rows after `i` are not shifted; slot `i` is reused by a future `ADD`.                     |
+| `T[i]`                | `&T`         | Row at slot `i`. **Panics** if `i` is out of bounds or refers to a removed slot.                                                                        |
+| `T.at(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                    |
+| `T.COUNT()`           | `uint`       | Number of live rows.                                                                                                                                    |
 | `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` on the parent table. |
-| `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); `nil` if no row matches.                                                                          |
-| `T.column`            | (view, §5.5) | Iterable/aggregable view over one column's values across all rows.                                                                                      |
+| `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); O(1) via the primary index; `nil` if no row matches.                                              |
+| `T.column`            | (view, §5.6) | Iterable/aggregable view over one column's values across all rows.                                                                                      |
 | `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                  |
+
+**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. A program that needs insertion order must maintain it explicitly.
 
 ### 7.2 Row-level operations
 
@@ -821,9 +1060,9 @@ for i: int in 10..0..-1 { ... }     -- 10, 9, 8, ... 0
 
 ### 7.3 Panic vs. nil — which operations do which
 
-**Panics** (bugs, not recoverable in-language — see §10): `T[i]` out of bounds, a duplicate `@unique`/`@primary` value on `ADD`, exceeding `@capped(N)`, and dereferencing a `nil` row reference (`"attempt to access a nil value"`).
+**Panics** (bugs, not recoverable in-language — see §10): `T[i]` out of bounds or on a dead slot, a duplicate `@unique`/`@primary` value on `ADD`, and dereferencing a `nil` row reference (`"attempt to access a nil value"`).
 
-**Returns `nil`** (an expected, checkable absence): `T.at(i)` out of range, `T.by<Column>(value)` with no match, a cell whose referenced row was removed.
+**Returns `nil`** (an expected, checkable absence): `T.at(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a cell whose referenced row was removed.
 
 ### 7.4 Column views and aggregation
 
@@ -848,6 +1087,8 @@ The view is an index list into the parent table — cheap, no allocation of row 
 
 When `T.REMOVE(i)` runs, every cell across every table that held a `&T` reference to that specific row becomes `nil`. The compiler tracks which columns are row-reference-typed at compile time; the runtime maintains a small reference index (row → referencing cells) so this is proportional to the number of live references, not to the size of any table.
 
+A slot reused by a subsequent `ADD` gets a new row; any `&T` value that referred to the *old* occupant of the slot is now `nil` (its generation counter doesn't match), so the reference is safe even though the slot is occupied.
+
 ### 7.7 Iteration
 
 ```
@@ -863,19 +1104,25 @@ The `for` binding over a table or view is always a row reference; mutating throu
 for p: Person in Person { ... }     -- error: iterating Person yields &Person, not Person
 ```
 
-This is caught by Sema, not the parser, since `binding` accepts any `IDENTIFIER ':' type` — a bare `T` binding is exactly correct when the iterable is instead an *array* of row references (§8.2), where the array's own element type already is `&T`.
+### 7.8 Array-typed columns
+
+A column whose type is `[T]` holds one array per row. The runtime stores the arrays' data in a shared flat buffer with per-row offsets (a compressed-sparse-array layout). Reading `r.col[i]` looks up the row's `(offset, length)` and reads from the shared buffer.
+
+**A row's array cell may be reassigned.** `r.col = [1, 2, 3]` replaces the row's array. The runtime stores the new array in the shared buffer (at a new offset), and the row's cell is updated to point at it. Old data may leave holes; a table marked `@packed` cannot have holes, so `@packed` forbids reassigning an array cell after initialization.
+
+**Array-typed columns may be nested:** `[[int]]` holds one array-of-arrays per row. The layout is the same, with an extra level of offsets.
 
 ---
 
 ## 8. Array operations
 
-| Operation         | Result | Available on                |
-| ----------------- | ------ | --------------------------- |
-| `arr[i]`          | `T`    | `[T]`, `[N]T`               |
-| `arr.ADD(x)`      | `unit` | `[T]` only                  |
-| `arr.REMOVE(i)`   | `unit` | `[T]` only                  |
-| `arr.COUNT()`     | `uint` | `[T]`, `[N]T`               |
-| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N]T` (linear scan) |
+| Operation         | Result | Available on                  |
+| ----------------- | ------ | ----------------------------- |
+| `arr[i]`          | `T`    | `[T]`, `[N, T]`               |
+| `arr.ADD(x)`      | `unit` | `[T]` only                    |
+| `arr.REMOVE(i)`   | `unit` | `[T]` only                    |
+| `arr.COUNT()`     | `uint` | `[T]`, `[N, T]`               |
+| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan) |
 
 These reuse the table's own vocabulary (`ADD`/`REMOVE`/`COUNT`) rather than a second naming convention, so every collection in the language looks the same from the outside.
 
@@ -923,6 +1170,8 @@ for i: uint, x: int in scores {
 
 This is the array equivalent of the table pattern in §4.1.6: a table's `for r: &Person in Person` binding is a row *reference*, so writing `r.age = ...` mutates the underlying row directly — no index needed. An array of primitives has no such reference to hand out (§5.1.1 — primitives are always copied), so the index is how you get back to the slot you want to change.
 
+**Array `REMOVE` does shift later elements down.** This is unlike a table's `REMOVE`, which reuses slots. The distinction: a table's rows are referenced by `&T` values, which need stable slots; an array's elements are copied, so shifting is invisible to anyone who isn't holding an index.
+
 ### 8.2 `for`-binding type must match the array's element type
 
 Unlike a table (§7.7, where the binding is always `&T` regardless of what `T` is), an array's binding type is whatever the array's own declared element type is — bare `T` for an array of primitives, `&T` for an array of row references:
@@ -962,7 +1211,7 @@ FN onJump(key: Key) {
 
 (Splitting across lines is equivalent; it's the same tokens with different whitespace, not a second grammar form.)
 
-Attributes never change what the parser reads for the declaration that follows — they're metadata Sema interprets, not syntax that reshapes the declaration. The full set is listed in §4.1.4, §4.1.5, and §4.2.5.
+Attributes never change what the parser reads for the declaration that follows — they're metadata Sema interprets, not syntax that reshapes the declaration. The full set is listed in §4.1.4, §4.1.5, and §4.2.6.
 
 ### 9.1 Event callbacks
 
@@ -1019,7 +1268,7 @@ suspend_stmt   ::= ( 'wait' | 'waitFrames' ) '(' expr ')'
 | `waitForEvent(EventKind.Member)` | a fixed-table member (§9.1)                                | The next time that event kind fires.                  | Zero-poll — registered once, resumed on fire.       |
 | `waitForRequest(req)`            | `req: &T`, `T` an `@request`-attributed host type (§4.1.2) | The host signals that specific request as complete.   | Zero-poll — registered once, resumed on completion. |
 
-**`waitUntil` takes its predicate and argument separately rather than as a closed-over lambda.** A lambda can only see its own parameters and module-level declarations (§6.9) — it cannot capture a local like a request handle you just created. Passing the value in explicitly (`waitUntil(isDown, Key.Space)`, `waitUntil(isLoaded, req)`) keeps the no-capture rule intact everywhere, including here: `pred` is an ordinary no-capture function or lambda, and `arg` is just another local the compiler already has to keep alive across the pause (§9.2.6).
+**`waitUntil` takes its predicate and argument separately rather than as a closed-over lambda.** A lambda can only see its own parameters and module-level declarations (§6.9) — it cannot capture a local like a request handle you just created. Passing the value in explicitly (`waitUntil(isDown, Key.Space)`, `waitUntil(isLoaded, req)`) keeps the no-capture rule intact everywhere, including here: `pred` is an ordinary no-capture function or lambda, and `arg` is just another local the compiler already has to keep alive across the pause.
 
 #### 9.2.3 Push-based waiting: events and requests
 
@@ -1100,8 +1349,8 @@ A `@sequence` function is lowered by the compiler into a small generated state m
 
 Lucid has exactly two failure channels and no `try`/`catch`:
 
-- **Panics** — programmer bugs: out-of-bounds `T[i]`, a `@unique`/`@primary` violation, a `@capped(N)` table already full, dereferencing `nil`. Not recoverable inside the script.
-- **`nil`** — a legitimately absent result: `T.at(i)`, `T.by<Column>(...)`, a cell whose row was removed. Checked with `== nil` / `!= nil` or defaulted with `??`.
+- **Panics** — programmer bugs: out-of-bounds `T[i]`, a `@unique`/`@primary` violation, dereferencing `nil`. Not recoverable inside the script.
+- **`nil`** — a legitimately absent result: `T.at(i)`, `T.by<Column>(...)`, a cell whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
 
 A panic unwinds only as far as the host call boundary: the specific `@export`ed function the engine invoked (directly, or via `@on(...)`) returns an error to the engine instead of crashing the whole process. There is no in-script exception handling beyond that.
 
@@ -1160,7 +1409,7 @@ A game module does `import core.input` and calls `input.isDown(Key.W)`, or write
 ## 12. Statements
 
 ```
-statement     ::= var_decl ';'
+statement     ::= var_decl
                 | assign_stmt ';'
                 | return_stmt ';'
                 | break_stmt ';'
@@ -1206,11 +1455,11 @@ expr_stmt     ::= expr
 
 An `assign_stmt` is a statement only — there is no assignment form in the `expr` grammar (§6), so `let y: int = (x = 5)` is a syntax error; assignment must be its own statement, never nested inside an expression.
 
-A `suspend_stmt` node parses wherever any statement is allowed — the parser doesn't special-case its position. Sema is what actually restricts it: it reports a diagnostic if a `suspend_stmt` appears outside a function tagged `@sequence` (§9.2.2), the same division of labor used everywhere else a rule depends on surrounding context rather than local syntax (e.g. `break`/`continue` needing an enclosing loop, or a `for` binding's type needing to match its iterable, §7.7/§8.2).
+A `suspend_stmt` node parses wherever any statement is allowed — the parser doesn't special-case its position. Sema is what actually restricts it: it reports a diagnostic if a `suspend_stmt` appears outside a function tagged `@sequence` (§9.2.2).
 
 ### 12.1 Compound assignment
 
-`lvalue op= expr` desugars to `lvalue = lvalue op expr`. Valid for every numeric and bitwise binary operator; not defined for `&T`, table, or array lvalues.
+`lvalue op= expr` desugars to `lvalue = lvalue op expr`. Valid for every numeric and bitwise binary operator; not defined for `&T`, table, or array lvalues. Not defined for `??` (there is no `??=`).
 
 ### 12.2 `switch`
 
@@ -1227,7 +1476,9 @@ switch d {
 -- warning: switch over Direction does not cover all members (missing: South, West)
 ```
 
-The check only applies when the subject's type is a specific fixed table — it doesn't run for a growing table (which has no fixed member list to check against) or for a `switch` over an ordinary primitive value. It's a warning rather than an error precisely because `default` is mandatory and always well-defined: the point isn't to forbid relying on `default`, it's to flag that a fixed table gained members since this `switch` was written, so you can confirm the fallthrough to `default` was intended rather than assumed.
+The check only applies when the subject's type is a specific fixed table — it doesn't run for a growing table (which has no fixed member list to check against) or for a `switch` over an ordinary primitive value.
+
+**The match is by reference identity.** When the subject is a `&T` for a fixed table `T`, each `case_value` is a `&T` reference, typically the fixed-table sugar `T.Member` (e.g. `Direction.North`). The match compares the subject to the case value using `==` on `&T`, which is reference identity (§6.8). The fixed table's number of columns is irrelevant — a case names a row, not a set of field values. Even a table with multiple columns is matched by reference; Sema's exhaustiveness check verifies that every row of the fixed table appears as a case value, not that any field-level equality holds.
 
 A `case` may list several values separated by commas; the case matches if the subject equals any one of them:
 
@@ -1239,7 +1490,9 @@ switch d {
 }
 ```
 
-Each `case_value` must be a constant expression — a literal, a fixed-table member (`Direction.North`), a small arithmetic combination of literals, or a range (§6.12, without a step, both bounds compile-time constants). Sema enforces the constant-ness; the parser accepts any `expr` in that position, the same permissive-grammar/restrictive-Sema split used throughout this document.
+Each `case_value` must be a constant expression — a literal, a fixed-table member (`Direction.North`), a small arithmetic combination of literals, or a range (§6.12, without a step, both bounds compile-time constants). Sema enforces the constant-ness.
+
+Because a growing table's row references are not compile-time constants, a `switch` over a growing table is not expressible: its case values cannot be constant expressions. A `switch` is intended for fixed tables and primitive values.
 
 ### 12.3 `for` bindings
 
@@ -1268,7 +1521,7 @@ for _, x: int in scores { ... }          -- values only
 for i: uint, _ in scores { ... }         -- indices only
 ```
 
-**Loop bindings are `const` within the body** — assigning to one directly is a compile error (§8.1 shows this: `x = x * 2` inside `for x: int in scores` is rejected at compile time, rather than silently compiling to a change nobody sees). Shadow with a `let` inside the body if a mutable local copy is genuinely wanted:
+**Loop bindings are `const` within the body** — assigning to one directly is a compile error. Shadow with a `let` inside the body if a mutable local copy is genuinely wanted:
 
 ```
 for x: int in scores {
@@ -1292,16 +1545,7 @@ search: for i: uint, row: [int] in matrix {
 }
 ```
 
-`break` and `continue` without a label affect only the nearest enclosing loop, exactly as before — a label is purely opt-in. `continue label` jumps to the next iteration of the labeled loop rather than the innermost one:
-
-```
-rows: for r: &Person in Person {
-    for s: &InventorySlot in InventorySlot {
-        if s.item == nil { continue rows }   -- give up on this Person, move to the next one
-        -- ... work with r and s together ...
-    }
-}
-```
+`break` and `continue` without a label affect only the nearest enclosing loop, exactly as before — a label is purely opt-in. `continue label` jumps to the next iteration of the labeled loop rather than the innermost one.
 
 A label is its own small namespace: it never collides with a variable, function, or table name, and `break`/`continue`'s optional identifier is resolved only against enclosing labels, not against ordinary identifiers in scope.
 
@@ -1317,9 +1561,9 @@ A label is its own small namespace: it never collides with a variable, function,
 - A `fn`/`cls` distinction, general closures, currying.
 - `async`, `await`, `spawn`, `Deferred<T>`, threads, locks — see §13.1. (`start`/`wait`/`waitFrames`/`waitUntil`/`waitForEvent`/`waitForRequest` are adopted, but only as the narrow sequence primitive in §9.2, not a general concurrency system.)
 - Generics.
-- `T?`/`T!` type suffixes (nilability is a property of `&T`, not a suffix, §5.2).
 - Value references (`&int`) — primitives are always copied.
 - `@default(expr)` on a column (§4.1.5) — a default value is domain logic, expressed as an ordinary wrapper function, not storage metadata.
+- `@optional` on a column (§4.1.5) — nilability is a type-level property, expressed with the `?` suffix (§5.3).
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
@@ -1328,19 +1572,19 @@ Every async-shaped need identified so far, apart from one, reduces to a synchron
 - **Input** — an `@on(EventKind.KeyDown)` callback, called once per event.
 - **Network** — sending is a fire-and-forget `host(...)` call; receiving is an `@on(EventKind.NetworkMessage)` callback when a response lands.
 
-The one case that doesn't fit a callback is **sequencing** work across time inside one logical unit — "wait 2 seconds, then do X," for cutscenes and scripted dialogue — because that requires *pausing partway through a function's own body and resuming it later*, which a callback (which always returns control to the engine immediately) can't express. §9.2 answers that directly with `@sequence` and its suspend points (`wait`/`waitFrames`/`waitUntil` for polled waits, `waitForEvent`/`waitForRequest` for push-based ones) plus `start` to launch one, rather than deferring it.
+The one case that doesn't fit a callback is **sequencing** work across time inside one logical unit — "wait 2 seconds, then do X," for cutscenes and scripted dialogue — because that requires *pausing partway through a function's own body and resuming it later*, which a callback (which always returns control to the engine immediately) can't express. §9.2 answers that directly with `@sequence` and its suspend points plus `start` to launch one, rather than deferring it.
 
-This is still a narrow, single-purpose addition, not general concurrency: `@sequence` functions cannot call each other directly (§9.2.4), the runtime advances every active sequence cooperatively and in a fixed, deterministic order once per tick (§9.2.5), and there is no preemption, no shared-memory data race, and nothing resembling a thread or a lock anywhere in the model. If a need ever arises that this doesn't cover — genuine parallel execution, for instance — that would be a different, much larger feature, and isn't part of this decision.
+This is still a narrow, single-purpose addition, not general concurrency: `@sequence` functions cannot call each other directly (§9.2.4), the runtime advances every active sequence cooperatively and in a fixed, deterministic order once per tick (§9.2.5), and there is no preemption, no shared-memory data race, and nothing resembling a thread or a lock anywhere in the model.
 
 ---
 
 ## 14. Remaining open items (deferred, not blocking)
 
-These are extensions that can be added later without reshaping anything above:
-
 1. Direct sequence-to-sequence composition (today, a `@sequence` composes another only via `start` + `waitUntil(isDone, handle)`, §9.2.5 — a nested-composition form, if ever needed, is a bigger compiler change and deliberately not attempted yet).
 2. Registry-scoping tooling for Tier 2 mods (the *policy* — one-way dependency, Tier-1-only registration — is settled in §3.4; the concrete host-side API for defining a mod's registry view is not part of this document).
+3. `T.compact()` for growing tables, to reclaim dead slots after many `REMOVE`s. v1 accepts the memory waste of unused slots; a future `compact()` would shift live rows and rewrite all references.
+4. Non-nil reference types (e.g. a type that means "a `&T` that is never `nil`"), which would let a constructor like `ADD` return a value that the caller can use without a nil-check. v1 has no such type; the caller checks.
 
 ---
 
-*This document consolidates the full design conversation: the tables/functions/variables redesign, the sheet-vs-shape resolution, the attribute system, the `??`/nilability rework, lambdas and first-class function types, `switch` (with fixed-table exhaustiveness warnings), compound assignment, array operations, numeric coercion rules, the `@on(...)` event/callback mechanism, the `@sequence` suspension primitive, the host/standard-library split (including the opaque-handle/enum/struct convention for native types), and the Tier 1/Tier 2 loading model.*
+*This document consolidates the full design conversation: the tables/functions/variables redesign, the sheet-vs-shape resolution, the attribute system, the `??`/nilability rework (including `?` as a type suffix for non-reference types), lambdas and first-class function types, `switch` (with fixed-table exhaustiveness warnings), compound assignment, array operations, numeric coercion rules, the `@on(...)` event/callback mechanism, the `@sequence` suspension primitive, the host/standard-library split, and the Tier 1/Tier 2 loading model.*
