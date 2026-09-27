@@ -209,22 +209,32 @@ struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
+    /// The table's name, as written. Always present.
     InternedString name;
 
-    /// The module qualifier, if the type was written `mod.Type`. An
-    /// invalid InternedString (id == 0) if the type was unqualified.
+    /// The module alias, if the type was written `alias.Name`. This is
+    /// the *local* alias introduced by an `import ... as alias` in this
+    /// module (§3.1), never a full dotted module path — §5 fixes the
+    /// qualified-table form at one level: `[ IDENTIFIER '.' ] IDENTIFIER`.
     ///
-    /// A module-qualified type name refers to a table exported by the
-    /// named module. Sema resolves the module by the qualifier and the
-    /// table by the name.
+    /// An invalid InternedString (id == 0) when the type was written
+    /// unqualified. `isQualified()` reports this.
     InternedString qualifier;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     /// The resolved declaration for this named type.
+    ///
+    /// When `isQualified()`, Sema resolves `qualifier` to a module via
+    /// the enclosing module's `resolvedImports`, then resolves `name`
+    /// against that module's exported type declarations. The two
+    /// modules named `weapons` and `consumables` in §5's example each
+    /// have their own `Item` table; `&weapons.Item` and
+    /// `&consumables.Item` are distinct types with distinct
+    /// `resolvedDecl` pointers.
     TypeDeclAST* resolvedDecl = nullptr;
 
-    explicit NamedTypeAST(InternedString n)
-        : TypeAST(ASTKind::NamedType), name(n) {}
+    NamedTypeAST(InternedString n, InternedString q = InternedString{})
+        : TypeAST(ASTKind::NamedType), name(n), qualifier(q) {}
 
     bool isQualified() const { return qualifier.isValid(); }
 };
