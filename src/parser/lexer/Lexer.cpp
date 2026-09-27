@@ -1,49 +1,44 @@
 /**
  * @file Lexer.cpp
+ *
  * @brief Implementation of the Lucid lexer.
  *
- * ─── What this file implements ────────────────────────────────────────────
- * A single-pass lexer over one source file. Every function below lexes
- * one category of token; the top-level `lexOne` dispatches on the
- * current character.
+ * ─── Structure of this file ───────────────────────────────────────────────
+ *   1. LexerState — the cursor and the diagnostic sink
+ *   2. Cursor primitives (advance, peek, match)
+ *   3. Token construction
+ *   4. The keyword table
+ *   5. Comment scanners (block, doc, line)
+ *   6. Literal scanners (identifier, number, string, raw string, char)
+ *   7. Operator/punctuation scanner
+ *   8. The dispatch (lexOne) and the public entry points
  *
  * ─── The cursor ───────────────────────────────────────────────────────────
- * The lexer maintains a triple (position, line, column). Only one
- * operation, `advance()`, moves them, and it moves all three together so
- * they can never disagree. Every token constructor takes the cursor's
- * location *before* the token's first character was consumed.
- *
- * ─── No conditional keywording ────────────────────────────────────────────
- * Every keyword in Tokens.hpp is a keyword everywhere. There is no
- * context where `int` is an identifier and no context where `start` is
- * not a keyword. This is a deliberate property of the token set: it
- * makes the parser's dispatch a pure function of the current token
- * type, with no dependence on surrounding context.
+ * The lexer maintains (position, line, column). Only `advance()` moves
+ * them, and it moves all three together so they can never disagree. Every
+ * token constructor captures the cursor's location *before* the token's
+ * first character is consumed.
  */
 
 #include "Lexer.hpp"
 
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 
 using namespace lucid::diag;
 
 namespace lucid::lexer {
 
-namespace {
+// =============================================================================
+// 1. LexerState
+// =============================================================================
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lexer state
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief The cursor and the diagnostic sink.
-///
-/// The cursor is a triple (position, line, column) where `position` is a
-/// byte offset into the source and `line`/`column` are 1-indexed. The
-/// cursor always points at the next character to be lexed.
+/// @brief The cursor, the pool, and the diagnostic sink.
 struct LexerState {
     std::string_view              source;
+    StringPool&                   pool;
     lucid::diag::DiagnosticEngine& diagnostics;
     std::vector<Token>            tokens;
 
@@ -51,13 +46,17 @@ struct LexerState {
     uint32_t line     = 1;   // 1-indexed
     uint32_t column   = 1;   // 1-indexed
 
-    LexerState(std::string_view src, lucid::diag::DiagnosticEngine& diag)
-        : source(src), diagnostics(diag) {}
+    LexerState(std::string_view src,
+               StringPool& p,
+               lucid::diag::DiagnosticEngine& diag)
+        : source(src), pool(p), diagnostics(diag) {}
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Cursor operations
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// 2. Cursor primitives
+// =============================================================================
+
+namespace {
 
 bool isAtEnd(const LexerState& s) noexcept {
     return s.position >= s.source.size();
@@ -89,37 +88,70 @@ bool match(LexerState& s, char expected) noexcept {
     return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Token construction
-// ─────────────────────────────────────────────────────────────────────────────
-
-Token makeToken(TokenType type,
-                std::string value,
-                SourceLocation location) {
-    return Token{type, std::move(value), location};
-}
-
-/// @brief Capture the cursor's current (line, column) as a SourceLocation.
 SourceLocation currentLocation(const LexerState& s) noexcept {
     return SourceLocation{s.line, s.column};
 }
 
-void reportError(LexerState& s, DiagCode code, std::string message) {
+} // namespace
+
+// =============================================================================
+// 3. Token construction
+// =============================================================================
+
+namespace {
+
+/// @brief Build a token. The payload is already interned.
+Token makeToken(TokenType type,
+                InternedString value,
+                SourceLocation location) {
+    return Token{type, value, location};
+}
+
+/// @brief Build a token from a raw lexeme, interning it through the pool.
+Token makeTokenFromLexeme(LexerState& s,
+                          TokenType type,
+                          std::string_view lexeme,
+                          SourceLocation location) {
+    return Token{type, s.pool.intern(lexeme), location};
+}
+
+// ─── Diagnostics ──────────────────────────────────────────────────────────
+//
+// Every diagnostic takes an explicit location. The two helpers below exist
+// so the call sites read cleanly:
+//
+//   reportAt — the diagnostic is about the current cursor position.
+//   reportErrorAt — the diagnostic is about a location captured earlier
+//                   (the opening quote of an unterminated string, for
+//                   instance). These are the ones that fixed the old
+//                   "reported at EOF" bug.
+
+void reportAt(LexerState& s, DiagCode code, std::string message) {
     s.diagnostics.errorAt(code, currentLocation(s), std::move(message));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The keyword table
-// ─────────────────────────────────────────────────────────────────────────────
+void reportErrorAt(LexerState& s,
+                   DiagCode code,
+                   SourceLocation loc,
+                   std::string message) {
+    s.diagnostics.errorAt(code, loc, std::move(message));
+}
+
+} // namespace
+
+// =============================================================================
+// 4. The keyword table
+// =============================================================================
 //
-// This is the *entire* set of words the lexer recognizes as anything
-// other than IDENTIFIER. Every entry corresponds to a `KW_*` value in
-// Tokens.hpp.
+// This is the entire set of words the lexer recognizes as anything other
+// than IDENTIFIER. Every entry corresponds to a KW_* value in Tokens.hpp.
 //
-// The table is a flat lookup; the lexer compares the identifier's lexeme
-// against each spelling. Fifty entries; a switch or a hash map would
-// also work, but a linear scan of an array of string_views is fast
-// enough and the table is a single readable list.
+// A linear scan over string_views. Fifty entries, one comparison per entry
+// on a miss; the branch predictor handles it well because most identifiers
+// share prefixes with at most a few keywords. If this ever shows up in a
+// profile, the fix is a perfect hash — not now.
+
+namespace {
 
 TokenType keywordToType(std::string_view word) noexcept {
     // ─── Declaration keywords ───────────────────────────────────────────
@@ -148,7 +180,8 @@ TokenType keywordToType(std::string_view word) noexcept {
     if (word == "float32")          return TokenType::KW_FLOAT32;
     if (word == "float64")          return TokenType::KW_FLOAT64;
 
-    // Sized aliases
+    // Sized aliases. Both spellings produce the same PrimitiveKind; the
+    // distinct token types let Sema detect which spelling the source used.
     if (word == "int")              return TokenType::KW_INT;
     if (word == "long")             return TokenType::KW_LONG;
     if (word == "uint")             return TokenType::KW_UINT;
@@ -187,13 +220,8 @@ TokenType keywordToType(std::string_view word) noexcept {
     if (word == "false")            return TokenType::KW_FALSE;
     if (word == "nil")              return TokenType::KW_NIL;
 
-    // Not a keyword. Sema resolves the name against declarations.
     return TokenType::IDENTIFIER;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Whitespace
-// ─────────────────────────────────────────────────────────────────────────────
 
 void skipWhitespace(LexerState& s) noexcept {
     while (!isAtEnd(s)) {
@@ -206,10 +234,108 @@ void skipWhitespace(LexerState& s) noexcept {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Identifiers and keywords
-// ─────────────────────────────────────────────────────────────────────────────
+} // namespace
 
+// =============================================================================
+// 5. Comments
+// =============================================================================
+//
+// Three forms:
+//
+//   -- ...           line comment; dropped, no token.
+//   /- ... -/        block comment; nestable; dropped, no token.
+//   /-- ... --/      doc comment; NOT nestable; survives as DOC_COMMENT.
+//
+// The two delimiter forms are different on purpose:
+//   - The block-comment opener is /- (two chars); its closer is -/ (two).
+//   - The doc-comment opener is /-- (three chars); its closer is --/ (three).
+//   - A block comment nests: a nested /- ... -/ inside it must be consumed
+//     before the outer -/ can close it. A doc comment does not nest: its
+//     body is "any char", so --/ is the first --/ that appears and it ends
+//     the comment.
+//
+// This is the bug the previous implementation had: it used one scanner for
+// both, looking for -/ as the closer and stripping only two characters,
+// which left a stray '-' in the doc-comment body and terminated on the
+// wrong sequence.
+
+namespace {
+
+/// @brief Consume a line comment. The leading `--` has been consumed.
+void skipLineComment(LexerState& s) noexcept {
+    while (!isAtEnd(s) && currentChar(s) != '\n') advance(s);
+}
+
+/// @brief Consume a nestable block comment. The leading `/-` has been consumed.
+/// @param terminated  Set to true if a matching `-/` was found.
+void readBlockComment(LexerState& s, bool& terminated) {
+    terminated = false;
+    int depth = 1;
+
+    while (!isAtEnd(s)) {
+        if (currentChar(s) == '/' && peekChar(s, 1) == '-') {
+            depth++;
+            advance(s); advance(s);
+            continue;
+        }
+        if (currentChar(s) == '-' && peekChar(s, 1) == '/') {
+            depth--;
+            advance(s); advance(s);
+            if (depth == 0) {
+                terminated = true;
+                return;
+            }
+            continue;
+        }
+        advance(s);
+    }
+}
+
+/// @brief Consume a doc comment. The leading `/--` has been consumed.
+///
+/// Returns the comment's body, with the `--/` closer stripped. Not
+/// nestable: the first `--/` after the opener ends the comment, and any
+/// `/-` or `-/` inside the body is literal text.
+///
+/// @param terminated  Set to true if a matching `--/` was found. When
+///                    false, the body is everything from the opener to
+///                    end-of-input, and the caller reports an error at
+///                    the opener's location.
+std::string readDocComment(LexerState& s, bool& terminated) {
+    terminated = false;
+    std::string body;
+
+    while (!isAtEnd(s)) {
+        if (currentChar(s) == '-' &&
+            peekChar(s, 1) == '-' &&
+            peekChar(s, 2) == '/') {
+            advance(s); advance(s); advance(s);   // consume `--/`
+            terminated = true;
+            return body;
+        }
+        body += currentChar(s);
+        advance(s);
+    }
+
+    return body;
+}
+
+} // namespace
+
+// =============================================================================
+// 6. Literal scanners
+// =============================================================================
+
+namespace {
+
+// ─── Identifiers and keywords ─────────────────────────────────────────────
+
+/// @brief Lex an identifier or a keyword.
+///
+/// The lexeme is interned once, whether the token is a keyword or an
+/// identifier. Keyword spellings are canonical strings ("TABLE", "let"),
+/// so the pool ends up with one ID per keyword regardless of how many
+/// times each appears.
 void lexIdentifier(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
     const size_t         startPos = s.position;
@@ -222,77 +348,57 @@ void lexIdentifier(LexerState& s) {
         s.source.substr(startPos, s.position - startPos);
     const TokenType type = keywordToType(word);
 
-    s.tokens.push_back(makeToken(type, std::string(word), startLoc));
+    s.tokens.push_back(makeTokenFromLexeme(s, type, word, startLoc));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Numbers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Numbers ──────────────────────────────────────────────────────────────
 //
-// The lexer produces raw lexemes. It does not parse the number: `0xFF`
-// is a HEX_LITERAL with value "0xFF", and Sema interprets it.
+// The lexer produces raw lexemes; it does not parse the number. `0xFF` is
+// a HEX_LITERAL whose value is the interned string "0xFF". Sema interprets
+// the lexeme.
+//
+// The `.` vs `..` / `..<` ambiguity is resolved here: a `.` is part of a
+// float only if it is immediately followed by a digit. `1..10` lexes as
+// INT_LITERAL(1), RANGE, INT_LITERAL(10); `1.0` lexes as one FLOAT_LITERAL.
 
 void lexNumber(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
     const size_t         startPos = s.position;
 
-    // Radix prefixes: 0x, 0b, 0o (and uppercase).
+    // Radix prefixes: 0x, 0b, 0o (case-insensitive).
     if (currentChar(s) == '0') {
         const char next = peekChar(s, 1);
-        if (next == 'x' || next == 'X') {
-            advance(s); advance(s);  // consume 0x
-            if (!isHexDigit(currentChar(s))) {
-                reportError(s, DiagCode::Lex_InvalidRadixLiteral,
-                            "hexadecimal literal has no digits after '0x'");
-                s.tokens.push_back(makeToken(
-                    TokenType::UNKNOWN,
-                    std::string(s.source.substr(startPos, s.position - startPos)),
+
+        auto lexRadix = [&](char lower, char upper,
+                            bool (*isDigitFn)(char),
+                            TokenType type,
+                            const char* name) {
+            advance(s); advance(s);   // consume `0x` / `0b` / `0o`
+            if (!isDigitFn(currentChar(s))) {
+                reportErrorAt(s, DiagCode::Lex_InvalidRadixLiteral, startLoc,
+                              std::string(name) +
+                              " literal has no digits after '0" +
+                              std::string(1, lower) + "'");
+                s.tokens.push_back(makeTokenFromLexeme(
+                    s, TokenType::UNKNOWN,
+                    s.source.substr(startPos, s.position - startPos),
                     startLoc));
-                return;
+                return true;
             }
-            while (isHexDigit(currentChar(s))) advance(s);
-            s.tokens.push_back(makeToken(
-                TokenType::HEX_LITERAL,
-                std::string(s.source.substr(startPos, s.position - startPos)),
+            while (isDigitFn(currentChar(s))) advance(s);
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, type,
+                s.source.substr(startPos, s.position - startPos),
                 startLoc));
-            return;
-        }
-        if (next == 'b' || next == 'B') {
-            advance(s); advance(s);
-            if (!isBinDigit(currentChar(s))) {
-                reportError(s, DiagCode::Lex_InvalidRadixLiteral,
-                            "binary literal has no digits after '0b'");
-                s.tokens.push_back(makeToken(
-                    TokenType::UNKNOWN,
-                    std::string(s.source.substr(startPos, s.position - startPos)),
-                    startLoc));
-                return;
-            }
-            while (isBinDigit(currentChar(s))) advance(s);
-            s.tokens.push_back(makeToken(
-                TokenType::BINARY_LITERAL,
-                std::string(s.source.substr(startPos, s.position - startPos)),
-                startLoc));
-            return;
-        }
-        if (next == 'o' || next == 'O') {
-            advance(s); advance(s);
-            if (!isOctDigit(currentChar(s))) {
-                reportError(s, DiagCode::Lex_InvalidRadixLiteral,
-                            "octal literal has no digits after '0o'");
-                s.tokens.push_back(makeToken(
-                    TokenType::UNKNOWN,
-                    std::string(s.source.substr(startPos, s.position - startPos)),
-                    startLoc));
-                return;
-            }
-            while (isOctDigit(currentChar(s))) advance(s);
-            s.tokens.push_back(makeToken(
-                TokenType::OCTAL_LITERAL,
-                std::string(s.source.substr(startPos, s.position - startPos)),
-                startLoc));
-            return;
-        }
+            return true;
+        };
+
+        if (next == 'x' || next == 'X')
+            { lexRadix('x', 'X', isHexDigit, TokenType::HEX_LITERAL, "hexadecimal"); return; }
+        if (next == 'b' || next == 'B')
+            { lexRadix('b', 'B', isBinDigit, TokenType::BINARY_LITERAL, "binary"); return; }
+        if (next == 'o' || next == 'O')
+            { lexRadix('o', 'O', isOctDigit, TokenType::OCTAL_LITERAL, "octal"); return; }
     }
 
     // Decimal integer part.
@@ -300,11 +406,11 @@ void lexNumber(LexerState& s) {
 
     bool isFloat = false;
 
-    // Fractional part: `.` followed by a digit. A bare `.` is not part
-    // of the number — `1.method()` lexes as `1`, `.`, `method`, `(`, `)`.
+    // Fractional part: `.` followed by a digit. A bare `.` is not part of
+    // the number — `1.method()` lexes as INT_LITERAL(1), DOT, IDENTIFIER.
     if (currentChar(s) == '.' && isDigit(peekChar(s, 1))) {
         isFloat = true;
-        advance(s);  // '.'
+        advance(s);   // `.`
         while (isDigit(currentChar(s))) advance(s);
     }
 
@@ -314,44 +420,79 @@ void lexNumber(LexerState& s) {
         advance(s);
         if (currentChar(s) == '+' || currentChar(s) == '-') advance(s);
         if (!isDigit(currentChar(s))) {
-            reportError(s, DiagCode::Lex_InvalidNumberLiteral,
-                        "exponent has no digits");
-            s.tokens.push_back(makeToken(
-                TokenType::UNKNOWN,
-                std::string(s.source.substr(startPos, s.position - startPos)),
+            reportErrorAt(s, DiagCode::Lex_InvalidNumberLiteral, startLoc,
+                          "exponent has no digits");
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, TokenType::UNKNOWN,
+                s.source.substr(startPos, s.position - startPos),
                 startLoc));
             return;
         }
         while (isDigit(currentChar(s))) advance(s);
     }
 
-    s.tokens.push_back(makeToken(
+    s.tokens.push_back(makeTokenFromLexeme(
+        s,
         isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL,
-        std::string(s.source.substr(startPos, s.position - startPos)),
+        s.source.substr(startPos, s.position - startPos),
         startLoc));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Strings
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Escape processing ────────────────────────────────────────────────────
+//
+// One function, shared by the string lexer and the char lexer. Resolves
+// the escape sequence to its actual character. The two callers diverge in
+// only one way: a string may contain a NUL (`'\0'`), which it appends to
+// its content; a char cannot contain a NUL as its *only* character and
+// still be a valid char, but the grammar does not forbid it — a NUL char
+// literal is simply a char whose value is 0. Both callers use the same
+// resolved byte.
+
+/// @brief Consume the `\` and the following escape character. Append the
+///        resolved byte to `out`. Returns false if the escape is invalid
+///        or the input ended mid-escape; in that case a diagnostic has
+///        been reported at `escapeLoc`.
+bool readEscape(LexerState& s, std::string& out, SourceLocation escapeLoc) {
+    advance(s);   // consume `\`
+
+    if (isAtEnd(s)) {
+        reportErrorAt(s, DiagCode::Lex_InvalidEscapeSequence, escapeLoc,
+                      "unterminated escape sequence");
+        return false;
+    }
+
+    const char next = currentChar(s);
+    switch (next) {
+        case 'n':  out += '\n'; advance(s); return true;
+        case 't':  out += '\t'; advance(s); return true;
+        case 'r':  out += '\r'; advance(s); return true;
+        case '\\': out += '\\'; advance(s); return true;
+        case '"':  out += '"';  advance(s); return true;
+        case '\'': out += '\''; advance(s); return true;
+        case '0':  out += '\0'; advance(s); return true;
+        default:
+            reportErrorAt(s, DiagCode::Lex_InvalidEscapeSequence, escapeLoc,
+                          std::string("unknown escape '\\") + next + "'");
+            advance(s);   // consume the offending character
+            return false;
+    }
+}
+
+// ─── Strings ──────────────────────────────────────────────────────────────
 //
 // Two forms:
 //
-//   "..."          a normal string; escapes are processed, no newlines.
-//   """..."""      a raw string; no escapes, no interpolation, newlines
-//                  allowed. The only sequence it cannot contain is `"""`.
+//   "..."        normal string; escapes processed; no literal newline.
+//   """..."""    raw string; no escapes; newlines allowed; the only
+//                forbidden sequence is """ itself.
 //
-// The grammar has no string interpolation, so a normal string is one
-// token and its content is the fully-processed text.
+// The grammar has no string interpolation. A "..." string is one token.
 
-/// @brief Lex a `"..."` normal string.
-///
-/// The cursor is on the opening `"`. On return, the cursor is past the
-/// closing `"` (or at the offending newline/EOF for a malformed string).
+/// @brief Lex a normal string. The cursor is on the opening `"`.
 void lexString(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
 
-    advance(s);  // opening `"`
+    advance(s);   // opening `"`
 
     std::string content;
 
@@ -359,37 +500,26 @@ void lexString(LexerState& s) {
         const char c = currentChar(s);
 
         if (c == '"') {
-            advance(s);  // closing `"`
-            s.tokens.push_back(makeToken(TokenType::STRING_LITERAL,
-                                         std::move(content), startLoc));
+            advance(s);   // closing `"`
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, TokenType::STRING_LITERAL, content, startLoc));
             return;
         }
 
         if (c == '\n') {
-            reportError(s, DiagCode::Lex_NewlineInString,
-                        "a normal string literal cannot contain a newline; "
-                        "use \"\"\" for a multi-line raw string");
-            s.tokens.push_back(makeToken(TokenType::UNKNOWN,
-                                         std::move(content), startLoc));
-            return;
+            reportErrorAt(s, DiagCode::Lex_NewlineInString, startLoc,
+                          "a normal string literal cannot contain a newline; "
+                          "use \"\"\" for a multi-line raw string");
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, TokenType::UNKNOWN, content, startLoc));
+            return;   // do NOT consume the newline; let the parser see it
         }
 
         if (c == '\\') {
-            const char next = peekChar(s, 1);
-            switch (next) {
-                case 'n':  content += '\n'; advance(s); advance(s); break;
-                case 't':  content += '\t'; advance(s); advance(s); break;
-                case 'r':  content += '\r'; advance(s); advance(s); break;
-                case '\\': content += '\\'; advance(s); advance(s); break;
-                case '"':  content += '"';  advance(s); advance(s); break;
-                case '\'': content += '\''; advance(s); advance(s); break;
-                case '0':  content += '\0'; advance(s); advance(s); break;
-                default:
-                    reportError(s, DiagCode::Lex_InvalidEscapeSequence,
-                                std::string("unknown escape '\\") + next + "'");
-                    advance(s);
-                    if (!isAtEnd(s)) advance(s);
-                    return;
+            if (!readEscape(s, content, currentLocation(s))) {
+                s.tokens.push_back(makeTokenFromLexeme(
+                    s, TokenType::UNKNOWN, content, startLoc));
+                return;
             }
             continue;
         }
@@ -398,202 +528,139 @@ void lexString(LexerState& s) {
         advance(s);
     }
 
-    reportError(s, DiagCode::Lex_UnterminatedString,
-                "unterminated string literal");
-    s.tokens.push_back(makeToken(TokenType::UNKNOWN,
-                                 std::move(content), startLoc));
+    reportErrorAt(s, DiagCode::Lex_UnterminatedString, startLoc,
+                  "unterminated string literal");
+    s.tokens.push_back(makeTokenFromLexeme(
+        s, TokenType::UNKNOWN, content, startLoc));
 }
 
-/// @brief Lex a `"""..."""` raw string.
-///
-/// One token, no escape processing, no newline restriction. The only
-/// sequence it cannot contain is `"""` itself.
+/// @brief Lex a raw string. The cursor is on the first `"` of `"""`.
 void lexRawString(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
 
-    advance(s); advance(s); advance(s);  // opening `"""`
+    advance(s); advance(s); advance(s);   // opening `"""`
 
     const size_t contentStart = s.position;
+
     while (!isAtEnd(s)) {
         if (currentChar(s) == '"' &&
             peekChar(s, 1) == '"' &&
             peekChar(s, 2) == '"') {
             const std::string_view content =
                 s.source.substr(contentStart, s.position - contentStart);
-            advance(s); advance(s); advance(s);  // closing `"""`
-            s.tokens.push_back(makeToken(TokenType::RAW_STRING_LITERAL,
-                                         std::string(content), startLoc));
+            advance(s); advance(s); advance(s);   // closing `"""`
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, TokenType::RAW_STRING_LITERAL, content, startLoc));
             return;
         }
         advance(s);
     }
 
-    reportError(s, DiagCode::Lex_UnterminatedRawString,
-                "unterminated raw string (expected \"\"\")");
-    s.tokens.push_back(makeToken(
-        TokenType::UNKNOWN,
-        std::string(s.source.substr(contentStart, s.position - contentStart)),
+    reportErrorAt(s, DiagCode::Lex_UnterminatedRawString, startLoc,
+                  "unterminated raw string (expected \"\"\")");
+    s.tokens.push_back(makeTokenFromLexeme(
+        s, TokenType::UNKNOWN,
+        s.source.substr(contentStart, s.position - contentStart),
         startLoc));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Character literals
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Character literals ───────────────────────────────────────────────────
+//
+// A char literal is exactly one character or one escape sequence between
+// single quotes. Escapes resolve to their actual byte, matching the
+// string lexer. `'\n'` is a CHAR_LITERAL whose value is the interned
+// one-byte string "\n" (the actual newline), not "\\n".
 
 void lexChar(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
 
-    advance(s);  // opening `'`
+    advance(s);   // opening `'`
 
     if (isAtEnd(s)) {
-        reportError(s, DiagCode::Lex_UnterminatedCharLiteral,
-                    "unterminated character literal");
-        s.tokens.push_back(makeToken(TokenType::UNKNOWN, std::string{},
-                                     startLoc));
+        reportErrorAt(s, DiagCode::Lex_UnterminatedCharLiteral, startLoc,
+                      "unterminated character literal");
+        s.tokens.push_back(makeToken(TokenType::UNKNOWN, s.pool.intern(""), startLoc));
         return;
     }
 
     std::string value;
 
     if (currentChar(s) == '\\') {
-        advance(s);
-        if (isAtEnd(s)) {
-            reportError(s, DiagCode::Lex_UnterminatedCharLiteral,
-                        "unterminated character literal");
-            s.tokens.push_back(makeToken(TokenType::UNKNOWN,
-                                         std::move(value), startLoc));
+        if (!readEscape(s, value, currentLocation(s))) {
+            s.tokens.push_back(makeTokenFromLexeme(
+                s, TokenType::UNKNOWN, value, startLoc));
             return;
         }
-        const char next = currentChar(s);
-        switch (next) {
-            case 'n':  value = "\\n";  break;
-            case 't':  value = "\\t";  break;
-            case 'r':  value = "\\r";  break;
-            case '\\': value = "\\\\"; break;
-            case '\'': value = "\\'";  break;
-            case '"':  value = "\\\""; break;
-            case '0':  value = "\\0";  break;
-            default:
-                reportError(s, DiagCode::Lex_InvalidEscapeSequence,
-                            std::string("unknown escape '\\") + next + "'");
-                advance(s);
-                s.tokens.push_back(makeToken(TokenType::UNKNOWN,
-                                             std::move(value), startLoc));
-                return;
-        }
-        advance(s);
     } else {
-        value = std::string(1, currentChar(s));
+        value += currentChar(s);
         advance(s);
     }
 
     if (isAtEnd(s) || currentChar(s) != '\'') {
-        reportError(s, DiagCode::Lex_UnterminatedCharLiteral,
-                    "unterminated character literal");
-        s.tokens.push_back(makeToken(TokenType::UNKNOWN,
-                                     std::move(value), startLoc));
+        reportErrorAt(s, DiagCode::Lex_UnterminatedCharLiteral, startLoc,
+                      "unterminated character literal (expected closing ')");
+        s.tokens.push_back(makeTokenFromLexeme(
+            s, TokenType::UNKNOWN, value, startLoc));
         return;
     }
 
-    advance(s);  // closing `'`
-    s.tokens.push_back(makeToken(TokenType::CHAR_LITERAL, std::move(value),
-                                 startLoc));
+    advance(s);   // closing `'`
+    s.tokens.push_back(makeTokenFromLexeme(
+        s, TokenType::CHAR_LITERAL, value, startLoc));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Comments
-// ─────────────────────────────────────────────────────────────────────────────
+} // namespace
+
+// =============================================================================
+// 7. Operators and punctuation
+// =============================================================================
 //
-// Line and block comments are dropped entirely; the token vector never
-// contains them. The doc-comment form `/-- ... --/` is the one
-// exception: it survives as a DOC_COMMENT token, because the parser's
-// doc-comment harvester needs to see it.
+// Every operator token's value is the operator's spelling, interned. This
+// is a deliberate uniformity choice: a token's value field is always
+// valid, so peekValue() never has to special-case "this token has no
+// spelling". The pool cost is one ID per distinct operator, not one per
+// occurrence.
+//
+// Order of checks: three-character operators first, then two-character,
+// then compound-assignment (`op=`), then single-character.
 
-/// @brief Consume to end of line (exclusive). The `--` has been consumed.
-void skipLineComment(LexerState& s) noexcept {
-    while (!isAtEnd(s) && currentChar(s) != '\n') advance(s);
-}
-
-/// @brief Consume a block comment. The `/-` has been consumed.
-///
-/// Returns the comment's text if `isDoc` is true (the caller has also
-/// consumed the extra `-` of `/--`), otherwise returns an empty string
-/// and just advances the cursor. `terminated` is set to true if a
-/// matching `-/` was found.
-std::string readBlockComment(LexerState& s, bool isDoc, bool& terminated) {
-    std::string body;
-    int depth = 1;
-    terminated = false;
-
-    while (!isAtEnd(s)) {
-        if (currentChar(s) == '/' && peekChar(s, 1) == '-') {
-            depth++;
-            if (isDoc) { body += '/'; body += '-'; }
-            advance(s); advance(s);
-            continue;
-        }
-        if (currentChar(s) == '-' && peekChar(s, 1) == '/') {
-            depth--;
-            if (depth > 0) {
-                if (isDoc) { body += '-'; body += '/'; }
-                advance(s); advance(s);
-            } else {
-                advance(s); advance(s);
-                terminated = true;
-                return body;
-            }
-            continue;
-        }
-        if (isDoc) body += currentChar(s);
-        advance(s);
-    }
-
-    return body;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Operators and punctuation
-// ─────────────────────────────────────────────────────────────────────────────
+namespace {
 
 void lexOperatorOrPunctuation(LexerState& s) {
     const SourceLocation startLoc = currentLocation(s);
     const char c    = currentChar(s);
     const char next = peekChar(s, 1);
+    const char third = peekChar(s, 2);
 
-    // Helper: consume `n` characters and emit a token of the given type
-    // with the given spelling.
-    auto emit = [&](TokenType type, const char* spelling, size_t n) {
+    // Consume `n` bytes and emit a token whose value is `spelling`.
+    auto emit = [&](TokenType type, std::string_view spelling, size_t n) {
         for (size_t i = 0; i < n; ++i) advance(s);
-        s.tokens.push_back(makeToken(type, std::string(spelling), startLoc));
+        s.tokens.push_back(makeTokenFromLexeme(s, type, spelling, startLoc));
     };
 
     // ─── Three-character operators ──────────────────────────────────────
-    if (c == '<' && next == '<' && peekChar(s, 2) == '=') {
-        emit(TokenType::SHL_ASSIGN, "<<=", 3); return;
-    }
-    if (c == '>' && next == '>' && peekChar(s, 2) == '=') {
-        emit(TokenType::SHR_ASSIGN, ">>=", 3); return;
-    }
-    if (c == '.' && next == '.' && peekChar(s, 2) == '.') {
-        emit(TokenType::VARIADIC, "...", 3); return;
-    }
-    if (c == '.' && next == '.' && peekChar(s, 2) == '<') {
-        emit(TokenType::RANGE_EXCLUSIVE, "..<", 3); return;
-    }
+    if (c == '<' && next == '<' && third == '=') { emit(TokenType::SHL_ASSIGN,      "<<=", 3); return; }
+    if (c == '>' && next == '>' && third == '=') { emit(TokenType::SHR_ASSIGN,      ">>=", 3); return; }
+    if (c == '.' && next == '.' && third == '.') { emit(TokenType::VARIADIC,        "...", 3); return; }
+    if (c == '.' && next == '.' && third == '<') { emit(TokenType::RANGE_EXCLUSIVE, "..<", 3); return; }
 
     // ─── Two-character operators ────────────────────────────────────────
-    if (c == '*' && next == '*') { emit(TokenType::POW, "**", 2); return; }
-    if (c == '<' && next == '<') { emit(TokenType::SHL, "<<", 2); return; }
-    if (c == '>' && next == '>') { emit(TokenType::SHR, ">>", 2); return; }
-    if (c == '.' && next == '.') { emit(TokenType::RANGE, "..", 2); return; }
-    if (c == '-' && next == '>') { emit(TokenType::ARROW, "->", 2); return; }
-    if (c == '=' && next == '=') { emit(TokenType::EQUAL_EQUAL, "==", 2); return; }
-    if (c == '!' && next == '=') { emit(TokenType::NOT_EQUAL, "!=", 2); return; }
-    if (c == '<' && next == '=') { emit(TokenType::LESS_EQUAL, "<=", 2); return; }
-    if (c == '>' && next == '=') { emit(TokenType::GREATER_EQUAL, ">=", 2); return; }
-    if (c == '?' && next == '?') { emit(TokenType::QUESTION_QUESTION, "??", 2); return; }
+    if (c == '*' && next == '*') { emit(TokenType::POW,                "**", 2); return; }
+    if (c == '<' && next == '<') { emit(TokenType::SHL,                "<<", 2); return; }
+    if (c == '>' && next == '>') { emit(TokenType::SHR,                ">>", 2); return; }
+    if (c == '.' && next == '.') { emit(TokenType::RANGE,              "..", 2); return; }
+    if (c == '-' && next == '>') { emit(TokenType::ARROW,              "->", 2); return; }
+    if (c == '=' && next == '=') { emit(TokenType::EQUAL_EQUAL,        "==", 2); return; }
+    if (c == '!' && next == '=') { emit(TokenType::NOT_EQUAL,          "!=", 2); return; }
+    if (c == '<' && next == '=') { emit(TokenType::LESS_EQUAL,         "<=", 2); return; }
+    if (c == '>' && next == '=') { emit(TokenType::GREATER_EQUAL,      ">=", 2); return; }
+    if (c == '?' && next == '?') { emit(TokenType::QUESTION_QUESTION,  "??", 2); return; }
 
-    // Compound assignment: single-char operator followed by `=`.
+    // ─── Compound assignment: single-char op followed by `=` ────────────
+    //
+    // Checked before single-character dispatch so `+=` is not lexed as
+    // `+` then `=`. It is checked after the two-character operators so
+    // `==` is not lexed as `=` then `=`.
     if (next == '=') {
         switch (c) {
             case '+': emit(TokenType::PLUS_ASSIGN,    "+=", 2); return;
@@ -610,54 +677,56 @@ void lexOperatorOrPunctuation(LexerState& s) {
 
     // ─── Single-character tokens ────────────────────────────────────────
     switch (c) {
-        case '+': emit(TokenType::PLUS,        "+", 1); return;
-        case '-': emit(TokenType::MINUS,       "-", 1); return;
-        case '*': emit(TokenType::MUL,         "*", 1); return;
-        case '/': emit(TokenType::DIV,         "/", 1); return;
-        case '%': emit(TokenType::MOD,         "%", 1); return;
-        case '<': emit(TokenType::LESS,        "<", 1); return;
-        case '>': emit(TokenType::GREATER,     ">", 1); return;
-        case '=': emit(TokenType::ASSIGN,      "=", 1); return;
-        case '&': emit(TokenType::BIT_AND,     "&", 1); return;
-        case '|': emit(TokenType::BIT_OR,      "|", 1); return;
-        case '^': emit(TokenType::BIT_XOR,     "^", 1); return;
-        case '~': emit(TokenType::BIT_NOT,     "~", 1); return;
-        case ':': emit(TokenType::COLON,       ":", 1); return;
-        case ',': emit(TokenType::COMMA,       ",", 1); return;
-        case ';': emit(TokenType::SEMICOLON,   ";", 1); return;
-        case '(': emit(TokenType::LPAREN,      "(", 1); return;
-        case ')': emit(TokenType::RPAREN,      ")", 1); return;
-        case '{': emit(TokenType::LBRACE,      "{", 1); return;
-        case '}': emit(TokenType::RBRACE,      "}", 1); return;
-        case '[': emit(TokenType::LBRACKET,    "[", 1); return;
-        case ']': emit(TokenType::RBRACKET,    "]", 1); return;
-        case '.': emit(TokenType::DOT,         ".", 1); return;
-        case '@': emit(TokenType::AT_SIGN,     "@", 1); return;
+        case '+': emit(TokenType::PLUS,     "+", 1); return;
+        case '-': emit(TokenType::MINUS,    "-", 1); return;
+        case '*': emit(TokenType::MUL,      "*", 1); return;
+        case '/': emit(TokenType::DIV,      "/", 1); return;
+        case '%': emit(TokenType::MOD,      "%", 1); return;
+        case '<': emit(TokenType::LESS,     "<", 1); return;
+        case '>': emit(TokenType::GREATER,  ">", 1); return;
+        case '=': emit(TokenType::ASSIGN,   "=", 1); return;
+        case '&': emit(TokenType::BIT_AND,  "&", 1); return;
+        case '|': emit(TokenType::BIT_OR,   "|", 1); return;
+        case '^': emit(TokenType::BIT_XOR,  "^", 1); return;
+        case '~': emit(TokenType::BIT_NOT,  "~", 1); return;
+        case ':': emit(TokenType::COLON,    ":", 1); return;
+        case ',': emit(TokenType::COMMA,    ",", 1); return;
+        case ';': emit(TokenType::SEMICOLON,";", 1); return;
+        case '(': emit(TokenType::LPAREN,   "(", 1); return;
+        case ')': emit(TokenType::RPAREN,   ")", 1); return;
+        case '{': emit(TokenType::LBRACE,   "{", 1); return;
+        case '}': emit(TokenType::RBRACE,   "}", 1); return;
+        case '[': emit(TokenType::LBRACKET, "[", 1); return;
+        case ']': emit(TokenType::RBRACKET, "]", 1); return;
+        case '.': emit(TokenType::DOT,      ".", 1); return;
+        case '@': emit(TokenType::AT_SIGN,  "@", 1); return;
         default:  break;
     }
 
-    // Unknown character.
-    reportError(s, DiagCode::Lex_UnknownCharacter,
-                std::string("unexpected character '") + c + "'");
+    // ─── Unknown character ──────────────────────────────────────────────
+    reportErrorAt(s, DiagCode::Lex_UnknownCharacter, startLoc,
+                  std::string("unexpected character '") + c + "'");
     advance(s);
-    s.tokens.push_back(makeToken(TokenType::UNKNOWN, std::string(1, c),
-                                 startLoc));
+    s.tokens.push_back(makeTokenFromLexeme(
+        s, TokenType::UNKNOWN, std::string_view(&c, 1), startLoc));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The main dispatch
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Lexes one token and appends it to `s.tokens`. The main loop in
-// `tokenize` calls this until the cursor reaches end-of-input, at which
-// point it appends the EOF token.
+} // namespace
 
+// =============================================================================
+// 8. The dispatch and the public entry points
+// =============================================================================
+
+namespace {
+
+/// @brief Lex one token. The main loop calls this until EOF.
 void lexOne(LexerState& s) {
     skipWhitespace(s);
 
     if (isAtEnd(s)) {
-        s.tokens.push_back(makeToken(TokenType::EOF_TOKEN, std::string{},
-                                     currentLocation(s)));
+        // Intern "" once; the pool maps it to ID 0, which is what a
+        // default-constructed InternedString holds, so this is free.
+        s.tokens.push_back(makeToken(TokenType::EOF_TOKEN, InternedString{}, currentLocation(s)));
         return;
     }
 
@@ -665,37 +734,39 @@ void lexOne(LexerState& s) {
     const char next = peekChar(s, 1);
 
     // ─── Comments ───────────────────────────────────────────────────────
-    // Order matters: `/--` is a doc comment, `/-` is a block comment, `--`
-    // is a line comment. Check the longest prefix first.
-
+    //
+    // Order matters: `/--` before `/-`. `--` is a distinct first character
+    // from either, so its position in the sequence doesn't interact with
+    // the other two.
     if (c == '/' && next == '-' && peekChar(s, 2) == '-') {
         const SourceLocation startLoc = currentLocation(s);
-        advance(s); advance(s); advance(s);  // consume `/--`
+        advance(s); advance(s); advance(s);   // consume `/--`
         bool terminated = false;
-        std::string body = readBlockComment(s, /*isDoc=*/true, terminated);
+        std::string body = readDocComment(s, terminated);
         if (!terminated) {
-            reportError(s, DiagCode::Lex_UnterminatedBlockComment,
-                        "unterminated documentation comment (expected --/)");
+            reportErrorAt(s, DiagCode::Lex_UnterminatedBlockComment, startLoc,
+                          "unterminated documentation comment (expected --/)");
             return;
         }
-        s.tokens.push_back(makeToken(TokenType::DOC_COMMENT, std::move(body),
-                                     startLoc));
+        s.tokens.push_back(makeTokenFromLexeme(
+            s, TokenType::DOC_COMMENT, body, startLoc));
         return;
     }
     if (c == '/' && next == '-') {
-        advance(s); advance(s);  // consume `/-`
+        const SourceLocation startLoc = currentLocation(s);
+        advance(s); advance(s);   // consume `/-`
         bool terminated = false;
-        (void)readBlockComment(s, /*isDoc=*/false, terminated);
+        readBlockComment(s, terminated);
         if (!terminated) {
-            reportError(s, DiagCode::Lex_UnterminatedBlockComment,
-                        "unterminated block comment (expected -/)");
+            reportErrorAt(s, DiagCode::Lex_UnterminatedBlockComment, startLoc,
+                          "unterminated block comment (expected -/)");
         }
-        return;  // ordinary block comments are dropped
+        return;   // block comments are dropped
     }
     if (c == '-' && next == '-') {
-        advance(s); advance(s);  // consume `--`
+        advance(s); advance(s);   // consume `--`
         skipLineComment(s);
-        return;  // line comments are dropped
+        return;   // line comments are dropped
     }
 
     // ─── Identifiers and keywords ───────────────────────────────────────
@@ -705,8 +776,8 @@ void lexOne(LexerState& s) {
     }
 
     // ─── Numbers ────────────────────────────────────────────────────────
-    // A `.` followed by a digit is a float literal; a `.` not followed by
-    // a digit is DOT. The check below handles both.
+    // A `.` followed by a digit starts a float; a `.` not followed by a
+    // digit is DOT, handled by the operator lexer below.
     if (isDigit(c) || (c == '.' && isDigit(next))) {
         lexNumber(s);
         return;
@@ -734,37 +805,37 @@ void lexOne(LexerState& s) {
 
 } // namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────────────────────
-
 std::vector<Token> tokenize(std::string_view source,
+                            StringPool& pool,
                             lucid::diag::DiagnosticEngine& diagnostics) {
-    LexerState s(source, diagnostics);
+    LexerState s(source, pool, diagnostics);
 
     while (true) {
         lexOne(s);
-        if (!s.tokens.empty() && s.tokens.back().type == TokenType::EOF_TOKEN) {
+        if (!s.tokens.empty() &&
+            s.tokens.back().type == TokenType::EOF_TOKEN) {
             break;
         }
     }
 
-    return std::move(s.tokens);
+    return s.tokens;
 }
 
 std::vector<Token> tokenize_n(std::string_view source,
                               size_t max_tokens,
+                              StringPool& pool,
                               lucid::diag::DiagnosticEngine& diagnostics) {
-    LexerState s(source, diagnostics);
+    LexerState s(source, pool, diagnostics);
 
     for (size_t i = 0; i < max_tokens; ++i) {
         lexOne(s);
-        if (!s.tokens.empty() && s.tokens.back().type == TokenType::EOF_TOKEN) {
+        if (!s.tokens.empty() &&
+            s.tokens.back().type == TokenType::EOF_TOKEN) {
             break;
         }
     }
 
-    return std::move(s.tokens);
+    return s.tokens;
 }
 
 } // namespace lucid::lexer

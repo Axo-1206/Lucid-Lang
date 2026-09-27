@@ -42,6 +42,7 @@
 #pragma once
 
 #include "core/SourceLocation.hpp"
+#include "core/memory/InternedString.hpp"
 
 #include <cstdint>
 #include <string>
@@ -239,34 +240,36 @@ enum class TokenType : uint16_t {
 /// @brief A single lexical token.
 ///
 /// The payload's meaning depends on the type:
-///   - IDENTIFIER and keyword types: the spelling.
-///   - literal types: the raw lexeme from the source.
-///   - operator types: the operator's spelling.
-///   - DOC_COMMENT: the comment text, with the `/--` and `--/` markers
-///     stripped.
-///   - punctuation: the punctuation character(s).
-///   - EOF_TOKEN, UNKNOWN: empty or the offending character.
+///   - IDENTIFIER:      the name, interned.
+///   - keyword types:   the keyword's spelling, interned. Uniform with
+///                      every other token: `value` is always valid.
+///   - literal types:   the literal's content, interned. For a string or
+///                      char, escapes are already resolved; for a number,
+///                      the raw lexeme is stored and Sema interprets it.
+///   - operator types:  the operator's spelling, interned.
+///   - DOC_COMMENT:     the comment body with `/--` and `--/` stripped.
+///   - EOF_TOKEN:       an invalid InternedString (id 0).
+///   - UNKNOWN:         whatever fragment the lexer could recover, interned.
+///
+/// `value` is always a valid handle. A caller that wants the text uses
+/// `pool.lookupView(tok.value)`; a caller that only needs the token type
+/// ignores it. There is no case where the field is uninitialized or holds
+/// a stale string.
 struct Token {
     TokenType      type     = TokenType::UNKNOWN;
-    std::string    value;
+    InternedString value;
     SourceLocation location;
 
     Token() = default;
 
-    Token(TokenType t, std::string v, SourceLocation loc)
-        : type(t), value(std::move(v)), location(loc) {}
-
-    /// Convenience: line and column as raw integers. The lexer uses this
-    /// form because it tracks line and column as integers.
-    Token(TokenType t, std::string v, uint32_t line, uint32_t column)
-        : type(t), value(std::move(v)), location(line, column) {}
+    Token(TokenType t, InternedString v, SourceLocation loc)
+        : type(t), value(v), location(loc) {}
 
     bool is(TokenType t)    const noexcept { return type == t; }
     bool isNot(TokenType t) const noexcept { return type != t; }
     bool isEof()            const noexcept { return type == TokenType::EOF_TOKEN; }
     bool isUnknown()        const noexcept { return type == TokenType::UNKNOWN; }
-
-    bool hasValue() const noexcept { return !value.empty(); }
+    bool hasValue()         const noexcept { return value.isValid(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
