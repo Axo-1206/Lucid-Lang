@@ -13,51 +13,67 @@ namespace lucid::parser {
 
 // The sentinel is returned by reference when the stream is exhausted. Its
 // location is the default-constructed SourceLocation (value 0), which
-// SourceLocation reports as "unknown" — a caller that formats a diagnostic
-// against it gets "<unknown location>". Its value is empty; a caller that
-// wants to name end-of-input checks `isEof()` or `peekType()`.
+// SourceLocation reports as "unknown". Its value is an invalid
+// InternedString (id 0), which is what a default-constructed handle holds.
 const Token TokenStream::EOF_TOKEN_SENTINEL =
-    Token{TokenType::EOF_TOKEN, std::string{}, SourceLocation{}};
+    Token{TokenType::EOF_TOKEN, InternedString{}, SourceLocation{}};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 
 TokenStream::TokenStream(std::vector<Token> tokens)
-    : tokens_(std::move(tokens)) {}
+    : tokens_(std::move(tokens)) {
+    // Normalize once at construction. After this, the cursor invariant
+    // holds for every public method.
+    pos_ = skipCommentsFrom(0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comment skipping
+// ─────────────────────────────────────────────────────────────────────────────
+
+size_t TokenStream::skipCommentsFrom(size_t start) const {
+    while (start < tokens_.size()) {
+        const TokenType type = tokens_[start].type;
+        // Only DOC_COMMENT survives to the stream; line and block
+        // comments are dropped by the lexer and never appear here.
+        if (type == TokenType::DOC_COMMENT) {
+            start++;
+        } else {
+            break;
+        }
+    }
+    return start;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Consumption
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Token& TokenStream::peek() {
-    // Normalize pos_ as a side effect of reading, not just of consume().
-    // Otherwise pos_ can rest on a doc-comment (at file start, or after a
-    // lookahead setPos() restore), and the next raw consume() would eat
-    // that comment instead of the token peek() just reported.
-    pos_ = skipCommentsFrom(pos_);
-
-    if (pos_ >= tokens_.size()) {
+    // normalizedPos() is idempotent and cheap; calling it on every peek
+    // makes the cursor invariant self-enforcing rather than relying on
+    // every mutating method to maintain it.
+    const size_t idx = normalizedPos();
+    if (idx >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
-    return tokens_[pos_];
+    return tokens_[idx];
 }
 
 Token TokenStream::consume() {
-    pos_ = skipCommentsFrom(pos_);
-
-    if (pos_ >= tokens_.size()) {
+    const size_t idx = normalizedPos();
+    if (idx >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
 
-    // Move the payload out of the vector entry. The vector entry's value
-    // becomes empty; only the returned Token holds it. This avoids the
-    // per-token std::string copy that returning by value would otherwise
-    // incur.
-    Token result = std::move(tokens_[pos_]);
+    // Token is trivially copyable (TokenType + InternedString +
+    // SourceLocation). Returning by value is a 16-byte copy, not the
+    // heap-moving operation the old std::string version performed.
+    Token result = tokens_[idx];
     lastConsumedLoc_ = result.location;
-    pos_++;
-    pos_ = skipCommentsFrom(pos_);
+    pos_ = skipCommentsFrom(idx + 1);
     return result;
 }
 
@@ -74,9 +90,7 @@ bool TokenStream::match(TokenType type) {
 }
 
 bool TokenStream::isAtEnd() {
-    pos_ = skipCommentsFrom(pos_);
-    return pos_ >= tokens_.size()
-        || tokens_[pos_].type == TokenType::EOF_TOKEN;
+    return normalizedPos() >= tokens_.size();
 }
 
 int TokenStream::consumeTrailing(TokenType type) {
@@ -92,64 +106,54 @@ int TokenStream::consumeTrailing(TokenType type) {
 // Location
 // ─────────────────────────────────────────────────────────────────────────────
 
-SourceLocation TokenStream::currentLoc() const {
-    const size_t p = skipCommentsFrom(pos_);
-    if (p < tokens_.size()) {
-        return tokens_[p].location;
+SourceLocation TokenStream::currentLoc() {
+    const size_t idx = normalizedPos();
+    if (idx < tokens_.size()) {
+        return tokens_[idx].location;
     }
     // Start of file. This gives a sensible location for a diagnostic
     // against an exhausted stream.
     return SourceLocation{1, 1};
 }
 
-SourceLocation TokenStream::previousLoc() const {
-    return lastConsumedLoc_;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Lookahead
 // ─────────────────────────────────────────────────────────────────────────────
-
-TokenType TokenStream::peekNextType() {
-    const size_t next = skipCommentsFrom(pos_ + 1);
-    if (next >= tokens_.size()) return TokenType::EOF_TOKEN;
-    return tokens_[next].type;
-}
+//
+// Every lookahead method normalizes `pos_` first. With the cursor always
+// on a visible token, `pos_ + 1` and `pos_ + offset` are visible tokens
+// by construction — no comment skipping needed inside these methods.
 
 const Token& TokenStream::peekNext() {
-    const size_t next = skipCommentsFrom(pos_ + 1);
-    if (next >= tokens_.size()) return EOF_TOKEN_SENTINEL;
-    return tokens_[next];
+    const size_t idx = normalizedPos() + 1;
+    if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
+    return tokens_[idx];
+}
+
+TokenType TokenStream::peekNextType() {
+    return peekNext().type;
 }
 
 const Token& TokenStream::peekAt(size_t offset) {
-    size_t idx = pos_;
-    for (size_t i = 0; i < offset; ++i) {
-        idx = skipCommentsFrom(idx);
-        if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
-        idx++;
-    }
-    idx = skipCommentsFrom(idx);
+    const size_t idx = normalizedPos() + offset;
     if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     return tokens_[idx];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Comment skipping
+// Position save / restore
 // ─────────────────────────────────────────────────────────────────────────────
 
-size_t TokenStream::skipCommentsFrom(size_t start) const {
-    while (start < tokens_.size()) {
-        const TokenType type = tokens_[start].type;
-        // Only DOC_COMMENT survives to the stream. Line and block
-        // comments are dropped by the lexer and never appear here.
-        if (type == TokenType::DOC_COMMENT) {
-            start++;
-        } else {
-            break;
-        }
-    }
-    return start;
+size_t TokenStream::getPos() {
+    // Return a normalized position so the caller can save it and later
+    // restore it without worrying about the comment-stripping rule.
+    return normalizedPos();
+}
+
+void TokenStream::setPos(size_t pos) {
+    // Normalize the argument too. This makes setPos(getPos()) exact and
+    // makes a raw unnormalized position safe to pass.
+    pos_ = skipCommentsFrom(pos);
 }
 
 } // namespace lucid::parser

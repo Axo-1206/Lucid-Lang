@@ -1,129 +1,65 @@
 /// @file ParserContext.hpp
-/// @brief Per-session parser state: the compilation session handle and the
-///        syntactic-context stack.
+///
+/// @brief Per-session parser state: the compilation session handle.
 ///
 /// ─── What this is ─────────────────────────────────────────────────────────
 /// The parser is called once per source file and produces one ModuleAST.
 /// It does not walk imports, does not resolve module paths, and does not
 /// depend on the filesystem. Those are the CLI's jobs; see the architecture
-/// document's pipeline diagram, where "ModuleResolver" precedes "Parsing"
-/// in the CLI's column.
+/// document's pipeline diagram, where ModuleResolver precedes Parsing in
+/// the CLI's column.
 ///
-/// Because the parser no longer recurses across files, this context is much
-/// smaller than the previous design's. It holds:
+/// Because the parser does not recurse across files, this context is small.
+/// It holds a reference to the session, which owns the string pool, the AST
+/// arena, and the diagnostic engine. The parser reaches all three through
+/// the session; it does not own them.
 ///
-///   1. A reference to the session, which owns the string pool, the AST
-///      arena, and the diagnostic engine. The parser reaches all three
-///      through the session; it does not own them.
+/// ─── What changed from the previous design ────────────────────────────────
+/// The previous design carried a syntactic-context stack: a std::vector of
+/// frames recording where in the grammar the parser was (top level, inside
+/// a function body, inside a struct body, ...). Error recovery consulted
+/// the top of the stack to pick a follow-set.
 ///
-///   2. The syntactic-context stack, which records where in the grammar the
-///      parser currently is (top level, inside a function body, inside a
-///      struct body, ...). Error recovery consults it to pick a follow-set.
-///
-/// That is the whole of it. There is no module resolver, no "current module"
-/// pointer, and no cross-file state.
+/// The new grammar does not need it. There are no structs, no enums, no
+/// traits, no DEF — the enum's variants named constructs that do not exist
+/// in the language. And the new parser does not do context-dependent
+/// recovery: it recovers by shape (the next declaration keyword, the next
+/// statement keyword, a closing brace) rather than by consulting a stack of
+/// pushed frames. Removing the stack removes the machinery whose only job
+/// was to keep itself consistent — the two AST_ASSERT_MSG calls that
+/// checked "the stack is empty at file entry / exit" existed to catch a
+/// push without a pop, and there are no pushes left.
 ///
 /// ─── What this is NOT ─────────────────────────────────────────────────────
 /// It is not a session. A CompilationSession owns the pool, the diagnostic
 /// engine, and the arena, and lives for the duration of a whole compilation.
-/// A ParserContext borrows a session and adds the parser's own state on top.
+/// A ParserContext borrows a session; it does not extend its lifetime.
 ///
 /// It is not per-file in the sense of "one context per file". One
 /// ParserContext is constructed per session, and every file parsed by that
-/// session uses the same one. The context stack is asserted empty at the
-/// start and end of each file's parse; see parseOneFile in Parser.cpp.
+/// session uses the same one.
 ///
 /// It is not a place to stash data that some other pass wants. A field
-/// that is written by the parser and read by Sema does not belong here; it
-/// belongs on the AST node the parser produced.
+/// that is written by the parser and read by Sema does not belong here;
+/// it belongs on the AST node the parser produced.
 
 #pragma once
 
 #include "core/CompilationSession.hpp"
 #include "core/SourceLocation.hpp"
-#include "core/ast/BaseAST.hpp"
-
-#include <vector>
+#include "core/memory/InternedString.hpp"
 
 namespace lucid::parser {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SyntacticContext
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief The kind of construct the parser is currently inside.
-///
-/// Pushed when the parser enters a construct and popped when it leaves.
-/// Error recovery reads the top of the stack to decide which tokens can
-/// safely end the current production — for example, a top-level declaration
-/// can be terminated by any declaration keyword, but a `switch` case can
-/// only be terminated by `case`, `default`, or `}`.
-///
-/// The set reflects the frames the grammar actually has. Adding a frame is
-/// a grammar change; every frame here is one the parser pushes somewhere.
-enum class SyntacticContext {
-    TopLevel,       // File-level declarations
-    Attribute,      // @[ ... ]
-    GenericParams,  // < ... > (declaration site: struct<T>, fn<T>)
-    GenericArgs,    // < ... > (use site: Map<int, string>)
-    FuncParams,     // ( ... ) parameter list
-    FuncBody,       // { ... } function body
-    FieldBody,      // function-typed struct field's block default
-    StructBody,     // struct { ... } — a `TYPE X = struct` target
-    EnumBody,       // enum { ... } — a `TYPE X = enum` target
-    TraitBody,      // trait { ... }
-    DefBody,        // DEF ... = { ... } — the DEF's block implementation
-    SwitchBody,     // switch { ... } — special recovery: stop at case/default/RBRACE
-};
-
-inline const char* syntacticContextName(SyntacticContext kind) noexcept {
-    switch (kind) {
-        case SyntacticContext::TopLevel:      return "top level";
-        case SyntacticContext::Attribute:     return "attribute list";
-        case SyntacticContext::GenericParams: return "generic parameter list";
-        case SyntacticContext::GenericArgs:   return "generic argument list";
-        case SyntacticContext::FuncParams:    return "function parameter list";
-        case SyntacticContext::FuncBody:      return "function body";
-        case SyntacticContext::FieldBody:     return "field body";
-        case SyntacticContext::StructBody:    return "struct body";
-        case SyntacticContext::EnumBody:      return "enum body";
-        case SyntacticContext::TraitBody:     return "trait body";
-        case SyntacticContext::DefBody:       return "DEF body";
-        case SyntacticContext::SwitchBody:    return "switch body";
-    }
-    return "unknown context";
-}
-
-/// @brief One frame on the context stack.
-struct ContextFrame {
-    SyntacticContext kind;
-    SourceLocation   openedAt;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ParserContext
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief The parser's view of the compilation session, plus its own state.
+/// @brief The parser's view of the compilation session.
 ///
 /// Constructed once per session and passed by reference to every parser
-/// function. See the file's top-of-file comment for the design rationale.
+/// function. Holds no state of its own beyond the session reference; the
+/// accessors forward to the session's members.
 struct ParserContext {
-    // ─── The session ───────────────────────────────────────────────────
-    //
-    // Owns the pool, the diagnostic engine, and the arena. The parser
-    // reaches them through the accessors below; it does not hold them
-    // directly, so there is no chance of the parser's view of the session
-    // drifting from the session itself.
+    /// The session. Owns the pool, the diagnostic engine, and the arena.
+    /// The parser reaches them through the accessors below.
     CompilationSession& session;
-
-    // ─── The syntactic-context stack ───────────────────────────────────
-    //
-    // Pushed on entering a construct and popped on leaving. The stack is
-    // asserted empty at the start and end of each parseOneFile call, so
-    // an unbalanced push/pop is caught immediately rather than leaking
-    // into the next file.
-    std::vector<ContextFrame> contextStack;
 
     // ─── Construction ──────────────────────────────────────────────────
 
@@ -143,62 +79,15 @@ struct ParserContext {
     // The three names every parser function reaches for. They forward to
     // the session; there is no duplicate storage.
 
-    StringPool&             pool()  noexcept { return session.pool; }
-    ASTArena&               arena() noexcept { return session.arena; }
+    StringPool& pool()  noexcept { return session.pool; }
+    ASTArena& arena() noexcept { return session.arena; }
     lucid::diag::DiagnosticEngine& diag() noexcept { return session.diagnostics; }
 
-    /// True if the parser should keep going. The threshold is the diagnostic
-    /// engine's error cap; past it, every construct produces an error and
-    /// the recovery paths cascade. Stopping early gives a cleaner report.
-    bool canContinue(int maxErrors = 100) const {
-        return session.diagnostics.canContinue(maxErrors);
-    }
-
-    // ─── Context-stack operations ──────────────────────────────────────
-
-    void pushContext(SyntacticContext kind, const SourceLocation& loc) {
-        contextStack.push_back(ContextFrame{kind, loc});
-    }
-
-    void popContext() {
-        if (!contextStack.empty()) {
-            contextStack.pop_back();
-        }
-    }
-
-    /// The innermost open construct. A fresh context is at TopLevel.
-    SyntacticContext currentContext() const noexcept {
-        return contextStack.empty() ? SyntacticContext::TopLevel
-                                    : contextStack.back().kind;
-    }
-
-    /// True if any frame on the stack is `kind`.
-    bool isInsideContext(SyntacticContext kind) const noexcept {
-        for (const auto& frame : contextStack) {
-            if (frame.kind == kind) return true;
-        }
-        return false;
-    }
-
-    /// The source location where the innermost construct opened. Used by
-    /// diagnostics that want to say "the unclosed '{' opened here".
-    SourceLocation currentContextOpenedAt() const noexcept {
-        return contextStack.empty() ? SourceLocation{}
-                                    : contextStack.back().openedAt;
-    }
-
-    size_t contextDepth() const noexcept { return contextStack.size(); }
-
-    /// True when the parser is at the top level of a file.
-    bool isTopLevel() const noexcept {
-        return currentContext() == SyntacticContext::TopLevel;
-    }
-
-    /// True when the parser is inside a function body. A function-typed
-    /// field's block default is a body too, so it counts.
-    bool isInsideFuncBody() const noexcept {
-        return isInsideContext(SyntacticContext::FuncBody)
-            || isInsideContext(SyntacticContext::FieldBody);
+    /// True if the parser should keep going. The error cap is the
+    /// diagnostic engine's; this wrapper exists so call sites read
+    /// `ctx.canContinue()` rather than reaching through to the engine.
+    bool canContinue() const {
+        return session.diagnostics.canContinue();
     }
 };
 
@@ -218,12 +107,6 @@ struct ParserContext {
 /// analysis runs on a background file while the user is looking at another,
 /// and the engine's current file has to return to whatever it was after
 /// the analysis completes.
-///
-/// This is the only RAII guard the parser needs. The old `ScopedFileContext`
-/// (which saved and restored the context stack across recursive parses) is
-/// gone — under the one-file-per-call design there is no recursion to save
-/// state across, and the context stack's emptiness at file boundaries is
-/// asserted directly in parseOneFile.
 struct ScopedDiagnosticFile {
     ScopedDiagnosticFile(ParserContext& ctx, InternedString file)
         : ctx_(ctx)

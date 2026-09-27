@@ -1,50 +1,60 @@
 /// @file TokenStream.hpp
-/// @brief A forward-only view of one source file's token vector, with lookahead.
-/// 
-/// ─── Per-file ──────────────────────────────────────────────────────────────
+///
+/// @brief A forward-only view of one source file's token vector, with
+///        arbitrary lookahead.
+///
+/// ─── Per-file ─────────────────────────────────────────────────────────────
 /// A TokenStream wraps one file's tokens. It is constructed by the CLI's
 /// per-file parse step from the output of the lexer, and consumed by the
 /// parser. It outlives a single parse function but not the file.
-/// 
-/// ─── The tape ──────────────────────────────────────────────────────────────
-/// The stream provides forward navigation (consume, match), arbitrary
-/// lookahead (peek, peekNext, peekAt), and position save/restore for
-/// backtracking (getPos, setPos). The parser uses the save/restore pair
-/// only in the two disambiguation sites that need it — distinguishing
-/// `Arena::method` from `Arena` followed by `::`, and detecting a slice
-/// expression versus an index expression.
-/// 
-/// ─── Comments ──────────────────────────────────────────────────────────────
-/// Line and block comments are dropped by the lexer; the stream never sees
-/// them. The one exception is the doc-comment form `/-- ... --/`, which the
-/// lexer emits as a DOC_COMMENT token. The stream skips DOC_COMMENT tokens
-/// in its peek/consume/match accessors so the parser never accidentally
-/// sees one, but it keeps them in the underlying token vector so the
-/// doc-comment harvester can scan backward from a declaration's start
-/// position and recover the comment that preceded it.
-/// 
-/// ─── No primitive-type predicate ───────────────────────────────────────────
-/// The old stream had an `isPrimitiveTypeToken(TokenType)` method. That
-/// predicate has no place in the new design: `int`, `float`, `bool`,
-/// `string`, `char`, and their sized variants are ordinary identifiers,
-/// resolved by Sema against the core scripts' declarations. The parser
-/// cannot distinguish a primitive type name from any other identifier at
-/// the token level, and it does not need to.
+///
+/// ─── The cursor invariant ─────────────────────────────────────────────────
+/// The lexer emits DOC_COMMENT tokens alongside the visible tokens. The
+/// parser never wants to see a DOC_COMMENT through the cursor; it reads
+/// comments through the raw-token-vector accessors when it harvests a
+/// doc comment for a declaration.
+///
+/// The stream enforces one invariant: after any public method returns,
+/// `pos_` is on a visible token (or on the EOF sentinel). Every method
+/// that reads `pos_` normalizes it first, and `setPos` normalizes its
+/// argument before storing. This makes `peekNext()`, `peekNextType()`,
+/// and `peekAt(offset)` trivially correct: `pos_ + 1` and `pos_ + offset`
+/// are visible tokens by construction, with no additional comment
+/// skipping inside those methods.
+///
+/// The bug the previous version had was that `peekNext()` and
+/// `peekNextType()` skipped comments starting from `pos_ + 1` without
+/// first normalizing `pos_`, so if `pos_` happened to be on a comment,
+/// they skipped one token too far. The normalization-on-entry rule makes
+/// that class of bug impossible.
+///
+/// ─── Comments ─────────────────────────────────────────────────────────────
+/// Line and block comments are dropped by the lexer and never appear in
+/// the token vector at all. Only DOC_COMMENT survives, and the cursor
+/// skips it. The raw vector, DOC_COMMENT tokens included, is exposed for
+/// the doc-comment harvester through `getTokens()`, `getTokenAt()`, and
+/// `getTokenCount()`.
+///
+/// ─── The sentinel ─────────────────────────────────────────────────────────
+/// When the stream is exhausted, `peek()` and `peekNext()` return a
+/// reference to a single static Token whose type is EOF_TOKEN and whose
+/// value is an invalid InternedString. Callers check `isAtEnd()` or
+/// `peekType() == TokenType::EOF_TOKEN`; they never compare against the
+/// sentinel directly.
 
 #pragma once
 
 #include "core/Tokens.hpp"
+#include "core/memory/InternedString.hpp"
+#include "core/memory/StringPool.hpp"
 
 #include <cstddef>
-#include <string>
+#include <string_view>
 #include <vector>
 
 namespace lucid::parser {
 
 /// @brief A forward-only view of one file's tokens, with lookahead.
-///
-/// The stream is per-file: one instance per source file. It owns the
-/// token vector (moved in at construction) and the current position.
 class TokenStream {
 public:
     // ─── Construction ───────────────────────────────────────────────────
@@ -69,10 +79,6 @@ public:
     const Token& peek();
 
     /// @brief Consume and return the current token.
-    ///
-    /// The returned Token's string payload is moved out of the token
-    /// vector entry, not copied. After this call, the vector entry's
-    /// value is empty; only the returned Token holds the payload.
     Token consume();
 
     /// @brief True if the current token has the given type.
@@ -101,24 +107,27 @@ public:
 
     /// @brief The location of the current token.
     ///
-    /// Returns `SourceLocation{1, 1}` (the conventional "start of file")
-    /// if the stream is exhausted.
-    SourceLocation currentLoc() const;
+    /// Returns `SourceLocation{1, 1}` if the stream is exhausted.
+    SourceLocation currentLoc();
 
     /// @brief The location of the most recently consumed token.
-    ///
-    /// Reads a stored value rather than indexing back into the token
-    /// vector, because the position can rest on a skipped doc-comment
-    /// rather than the token that was actually consumed.
-    SourceLocation previousLoc() const;
+    SourceLocation previousLoc() const { return lastConsumedLoc_; }
 
     // ─── Lookahead ──────────────────────────────────────────────────────
 
     /// @brief The type of the current token.
     TokenType peekType() { return peek().type; }
 
-    /// @brief The value of the current token. Returns a copy.
-    std::string peekValue() { return peek().value; }
+    /// @brief The current token's value handle.
+    InternedString peekValue() { return peek().value; }
+
+    /// @brief The current token's value as a view into `pool`.
+    ///
+    /// The caller supplies the pool; the stream holds no reference to it.
+    /// Returns an empty view for the EOF sentinel.
+    std::string_view peekValueView(const StringPool& pool) {
+        return pool.lookupView(peek().value);
+    }
 
     /// @brief The type of the token after the current one.
     TokenType peekNextType();
@@ -134,55 +143,61 @@ public:
 
     // ─── Position save / restore ────────────────────────────────────────
     //
-    // Used by the two parser sites that need to backtrack: distinguishing
-    // `Arena::method` from `Arena` followed by `::`, and distinguishing a
-    // slice from an index. Both save the position, consume speculatively,
-    // then either commit or restore.
+    // Used by the parser's lookahead helpers, which save the position,
+    // scan speculatively, and restore.
 
-    /// @brief The current position in the underlying token vector.
+    /// @brief The current position, normalized to a visible token.
     ///
-    /// This is a raw index into the token vector, including DOC_COMMENT
-    /// tokens. Passing it back to `setPos` restores the exact state.
-    size_t getPos() const noexcept { return pos_; }
+    /// Passing the result back to `setPos` restores the exact state.
+    size_t getPos();
 
     /// @brief Restore a position previously returned by `getPos`.
-    void setPos(size_t pos) noexcept { pos_ = pos; }
+    ///
+    /// The argument is normalized: if it points at a DOC_COMMENT, the
+    /// cursor advances to the next visible token. This makes the
+    /// round-trip `setPos(getPos())` exact and makes it safe for a
+    /// caller to pass an unnormalized position.
+    void setPos(size_t pos);
 
     // ─── Underlying storage ─────────────────────────────────────────────
     //
     // Exposed so the doc-comment harvester can scan backward from a
     // declaration's start position. The harvester needs the raw token
-    // vector, including the DOC_COMMENT tokens the parser never sees.
+    // vector, DOC_COMMENT tokens included.
 
-    /// @brief The full token vector, comments included.
+    /// @brief The full token vector, DOC_COMMENT tokens included.
     const std::vector<Token>& getTokens() const noexcept { return tokens_; }
 
-    /// @brief The token at a raw index, comments included.
+    /// @brief The token at a raw index, DOC_COMMENT tokens included.
     const Token& getTokenAt(size_t idx) const { return tokens_[idx]; }
 
-    /// @brief The number of tokens, comments included.
+    /// @brief The number of tokens, DOC_COMMENT tokens included.
     size_t getTokenCount() const noexcept { return tokens_.size(); }
 
 private:
     std::vector<Token> tokens_;
-    size_t             pos_ = 0;
+
+    /// The cursor. Invariant: after any public method returns, this is
+    /// the index of a visible token, or `tokens_.size()` if the stream
+    /// is exhausted.
+    size_t pos_ = 0;
+
+    /// The location of the most recently consumed token. `previousLoc()`
+    /// reads this rather than `tokens_[pos_ - 1]`, because `pos_` walks
+    /// forward past comments.
+    SourceLocation lastConsumedLoc_{1, 1};
 
     /// The sentinel returned when the stream is exhausted. A single
     /// static instance, so `peek()` can return a reference without
     /// allocating a fresh token each time.
     static const Token EOF_TOKEN_SENTINEL;
 
-    /// The location of the most recently consumed token. `previousLoc()`
-    /// reads this rather than `tokens_[pos_ - 1]`, because `pos_` walks
-    /// forward past any comments trailing the consumed token.
-    SourceLocation lastConsumedLoc_{1, 1};
-
-    /// @brief Advance `start` past any DOC_COMMENT tokens.
-    ///
-    /// Line and block comments are dropped by the lexer and never appear
-    /// in `tokens_`. Only DOC_COMMENT survives, and the stream skips it
-    /// in every accessor except the raw-vector methods.
+    /// Advance `start` past any DOC_COMMENT tokens.
     size_t skipCommentsFrom(size_t start) const;
+
+    /// The cursor position, normalized to a visible token. Every public
+    /// method that reads `pos_` calls this first.
+    size_t normalizedPos() const { return skipCommentsFrom(pos_); }
 };
 
 } // namespace lucid::parser
