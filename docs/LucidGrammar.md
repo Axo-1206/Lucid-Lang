@@ -203,9 +203,11 @@ host_target  ::= '=' 'host' '(' STRING_LIT ')'
 const_expr   ::= literal
              | const_expr binary_op const_expr    -- primitive operands only
              | unary_op const_expr
-             | IDENTIFIER '.' IDENTIFIER          -- T.Member on another FIXED table only
+             | qualified_table '.' IDENTIFIER     -- T.Member, or module.T.Member, on another FIXED table only
              | IDENTIFIER                         -- a top-level FN name, for function-typed columns
 ```
+
+`qualified_table` (§5) is deliberately reused here rather than repeating a narrower two-level form: a fixed-table member reference inside another module's rows needs the same one-level module qualification a `&T` type does, e.g. `directions.Direction.North` inside a `table_init` in a module that `import`s `directions`.
 
 A table is a named, global container of rows. Its shape (column names and types, in source order) is fixed at declaration.
 
@@ -540,14 +542,26 @@ primitive_type ::= 'bool' | 'char' | 'string'
                  -- sized aliases: int=int32, long=int64, uint=uint32,
                  --                ulong=uint64, float=float32, double=float64
 
-table_type     ::= IDENTIFIER                -- a sheet
-row_ref_type   ::= '&' IDENTIFIER             -- a reference to one row
+table_type     ::= qualified_table            -- a sheet
+row_ref_type   ::= '&' qualified_table         -- a reference to one row
+qualified_table ::= [ IDENTIFIER '.' ] IDENTIFIER   -- optional module alias, then table name
 
 array_type     ::= '[' ']' type               -- dynamic array
                  | '[' INT_LIT ']' type       -- fixed-size array
 
 function_type  ::= '(' [ type { ',' type } ] ')' '->' type
 ```
+
+**Table names are unique only within their own module**, the same as every other declaration (§3.3) — two modules can each declare a `TABLE Item` with no conflict. This is why `table_type`/`row_ref_type` need a `qualified_table` form: expressions could already reach another module's table through ordinary chained field access (`weapons.Item.ADD(...)` — §3.1's alias, then the table name, then any table operation), but a *type* position (a column, a parameter, a return type, a `let` annotation) had no way to say "a row reference into that specific module's table" until now:
+
+```
+import weapons
+import consumables
+
+FN repairAll(kit: &weapons.RepairKit, target: &weapons.Item) { ... }
+```
+
+One level of qualification is as deep as this ever needs to go — a module only ever reaches another module through its own local alias (§3.1), never by re-spelling a full `module_path`, so `weapons.Item` is already the fully-qualified form from the referencing module's point of view.
 
 ### 5.0 Function types
 
