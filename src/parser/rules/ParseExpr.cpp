@@ -1,150 +1,184 @@
 /**
  * @file ParseExpr.cpp
- * @brief The expression parser's core: Pratt loop and dispatch.
+ * @brief The expression parsers.
  *
  * ─── What this file implements ────────────────────────────────────────────
- *   - parseExpr            the entry point
- *   - parseRequiredExpr    "parse or placeholder" helper
- *   - parsePrattExpr       the Pratt loop (precedence climbing)
- *   - parsePrefixExpr      prefix forms: unary, literal, identifier, paren
- *   - parsePrimaryExpr     the primary forms that are not unary
- *   - parsePostfixExpr     postfix forms: call, index, slice, field, `::`,
- *                          pipeline
- *
- * The specific parsers for the primary forms (literal, array, struct,
- * if-expression, identifier, function literal, pipeline) are declared in
- * Parser.hpp and implemented in ParseExprLiterals.cpp and
- * ParseExprFuncLit.cpp. This file calls them.
+ *   - parseExpr              entry point for the Pratt loop
+ *   - parseRequiredExpr      parse or produce a marked UnknownExprAST
+ *   - parsePrattExpr         the Pratt loop
+ *   - parsePrefixExpr        unary operators and the primary dispatcher
+ *   - parsePrimaryExpr       literals, identifiers, array literals,
+ *                            parenthesized, lambdas, `start`
+ *   - parsePostfixExpr       call, index, field access
+ *   - parseLiteralExpr
+ *   - parseIdentifierExpr
+ *   - parseArrayLiteralExpr
+ *   - parseParenExpr
+ *   - parseLambdaExpr
+ *   - parseStartExpr
+ *   - parseCallExpr
+ *   - parseIndexExpr
+ *   - parseFieldAccessExpr
+ *   - parseUnaryExpr
+ *   - parseInfixBinary
+ *   - looksLikeLambda
  *
  * ─── Design: the Pratt loop ───────────────────────────────────────────────
- * The Pratt loop is the standard top-down operator-precedence parser. It
- * works by:
+ * The Pratt loop is the standard top-down operator-precedence parser.
+ * Each call parses a prefix form, then repeatedly:
  *
- *   1. Parsing a prefix form (a literal, an identifier, a unary operator
- *      applied to a prefix form, a parenthesized expression, ...).
- *
- *   2. Looping: look at the next token. If it is a postfix operator
- *      (call, index, field access), parse the postfix and update the
- *      left-hand side. If it is an infix operator whose precedence is at
- *      least the loop's minimum, consume the operator and parse the
- *      right-hand side. Otherwise break out of the loop.
+ *   - consumes a postfix operator (call, index, field access) if one is
+ *     next, extending the left-hand side;
+ *   - consumes an infix operator whose precedence is at least the loop's
+ *     `minPrec`, parsing its right-hand side recursively.
  *
  * The "minimum precedence" is what makes precedence climbing work: each
- * recursive call to `parsePrattExpr` sets a floor, and operators whose
- * precedence is below the floor are left for the enclosing call.
+ * recursive call sets a floor, and operators below the floor are left
+ * for the enclosing call.
  *
- * ─── Design: assignment and `??` are handled before the precedence cutoff
- * ────────────────────────────────────────────────────────────────────────
- * Assignment (`=`, `+=`, ...) and null-coalescing (`??`) have two
- * properties that differ from the standard binary operators:
+ * ─── Design: assignment is not here ───────────────────────────────────────
+ * §12: assignment is a statement, not an expression. The assignment
+ * operators are not in the Pratt table; parseExpr stops cleanly before
+ * them and the caller (parseAssignOrExprStmt in ParseStmt.cpp) handles
+ * them. This is why this file has no parseInfixAssign.
  *
- *   - They are right-associative: `a = b = c` parses as `a = (b = c)`.
- *   - Their precedence is looser than any binary operator, but they are
- *     not part of `infixPrec`'s standard table.
+ * ─── Design: ranges are infix ─────────────────────────────────────────────
+ * `..` and `..<` are infix operators. `parseInfixBinary` handles the whole
+ * range construct: `lo..hi`, `lo..<hi`, `lo..hi..step`, and
+ * `lo..<hi..step`. All four produce a single RangeExprAST whose `step`
+ * field is null when no step was written.
  *
- * The Pratt loop handles both specially: it checks for assignment and
- * `??` *before* the precedence cutoff, so the operator is always
- * consumed regardless of `minPrec`. The right-associativity comes from
- * the recursive call inside the infix handler using the operator's own
- * precedence level, which lets the inner call consume another instance
- * of the same operator.
+ * The grammar restricts where a range may appear — §6.12 says it is legal
+ * only as a `for` iterable and as a `switch` case value. That is a Sema
+ * check, not a parser check. The parser produces the shape; Sema enforces
+ * the position. A range written in an illegal position (as a variable
+ * initializer, say) is a range node that Sema rejects on type grounds.
  *
- * ─── Design: `and`/`or` are identifiers, not keywords ─────────────────────
- * The grammar lists `and` and `or` as operators with precedence, but
- * they are not boot-set keywords — they are identifiers. The Pratt loop
- * has to detect them by checking an identifier token's *value* rather
- * than its type.
+ * The optional step is written with a second range operator. A chained
+ * range at general expression position (`0..10..2..3`) is parsed as
+ * `((0..10..2)..3)` — a range whose lower bound is itself a range — and
+ * rejected by Sema because a range is not a valid range bound.
  *
- * This file's `parsePrattExpr` checks for `and`/`or` in the identifier
- * case: when the current token is an IDENTIFIER and its value is "and"
- * or "or", the loop treats it as a binary operator with the appropriate
- * precedence. If a future design promotes them to keywords, this check
- * becomes a normal token-type dispatch.
+ * ─── Design: `and`/`or`/`not` are keywords ────────────────────────────────
+ * They are keywords (§6.10), so the Pratt loop dispatches on their
+ * token types like any other operator. No value-based dispatch is
+ * needed.
  *
- * ─── Design: `!` on a call inside a pipeline ──────────────────────────────
- * The `!` argument-pack marker (`f(args)!`) is only valid inside a
- * pipeline step. The parser accepts it at any call and marks the call's
- * `hasArgPack` field; Sema rejects a `hasArgPack` call outside a
- * pipeline step. The parser does not distinguish pipeline context from
- * call context; that distinction is a semantic one.
+ * ─── Design: `**` is right-associative ────────────────────────────────────
+ * `2 ** 3 ** 4` parses as `2 ** (3 ** 4)`. Every other binary operator is
+ * left-associative. The infix handler for `**` recurses at the operator's
+ * own precedence; every other operator recurses at precedence + 1.
  */
 
 #include "parser/Parser.hpp"
+#include "parser/support/ErrorRecovery.hpp"
+
 #include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
-#include "core/ast/StmtAST.hpp"
+#include "core/ast/TypeAST.hpp"
+
+#include <string>
+#include <vector>
 
 using namespace lucid::diag;
 
 namespace lucid::parser {
 
 // =============================================================================
-// Local predicates
+// File-local operator tables
 // =============================================================================
+//
+// These live here because the Pratt loop is their only consumer. They are
+// not part of the parser's public interface and do not appear in
+// Parser.hpp.
 
 namespace {
 
-/// @brief True if the token can start a postfix operator.
+/// @brief The binding power of prefix unary operators.
 ///
-/// Postfix operators extend the current left-hand side without introducing
-/// a new prefix form. They bind tighter than any infix operator:
-/// `f(x).field[0]` parses as `(((f(x)).field)[0])`.
-///
-/// The postfix forms are:
-///
-///   - `(`       a call
-///   - `[`       an index or a slice
-///   - `.`       a field access or an enum variant access
-///   - `::`      a module access or a static struct member access
-///   - `|>`      a pipeline step
-///
-/// `|>` is listed here because the pipeline extends the current
-/// expression to the right as a sequence of steps, which is a postfix
-/// operation on the seed. It is handled by `parsePipelineExpr` in
-/// ParseExprFuncLit.cpp.
-bool isPostfixStart(TokenType t) {
-    return t == TokenType::LPAREN
-        || t == TokenType::LBRACKET
-        || t == TokenType::DOT
-        || t == TokenType::DOUBLE_COLON
-        || t == TokenType::PIPELINE;
-}
+/// The grammar's §6.11 table puts unary operators at level 7. The operand
+/// of a unary is parsed at this precedence, which lets a unary nest
+/// (`- - x`) but stops it from consuming any infix operator (all of
+/// which are below 7).
+constexpr int kUnaryPrec = 7;
 
-/// @brief True if the token is an assignment operator.
+/// @brief The binding power of an infix operator, or -1 for a non-operator.
 ///
-/// Assignment operators are handled specially by the Pratt loop: they
-/// are checked before the precedence cutoff, because their precedence is
-/// not a value in `infixPrec`.
-bool isAssignmentOp(TokenType t) {
+/// Higher numbers bind tighter. The values come directly from §6.11's
+/// table. The two range operators (`..`, `..<`) are not in the table;
+/// they get precedence 0, the same as `??`, because both are the loosest
+/// operators and cannot meaningfully compose with each other.
+int infixPrec(TokenType t) noexcept {
     switch (t) {
-        case TokenType::ASSIGN:
-        case TokenType::PLUS_ASSIGN:
-        case TokenType::MINUS_ASSIGN:
-        case TokenType::MUL_ASSIGN:
-        case TokenType::DIV_ASSIGN:
-        case TokenType::MOD_ASSIGN:
-        case TokenType::POW_ASSIGN:
-        case TokenType::BIT_AND_ASSIGN:
-        case TokenType::BIT_OR_ASSIGN:
-        case TokenType::BIT_XOR_ASSIGN:
-        case TokenType::SHL_ASSIGN:
-        case TokenType::SHR_ASSIGN:
-            return true;
+        case TokenType::POW:
+            return 6;
+
+        case TokenType::MUL:
+        case TokenType::DIV:
+        case TokenType::MOD:
+            return 5;
+
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+            return 4;
+
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:
+        case TokenType::GREATER_EQUAL:
+            return 3;
+
+        case TokenType::KW_AND:
+            return 2;
+
+        case TokenType::KW_OR:
+            return 1;
+
+        case TokenType::QUESTION_QUESTION:
+        case TokenType::RANGE:
+        case TokenType::RANGE_EXCLUSIVE:
+            return 0;
+
         default:
-            return false;
+            return -1;
     }
 }
 
-/// @brief True if the current token is the identifier `and` or `or`.
+/// @brief Map an infix-operator token to its `BinaryOp`.
 ///
-/// `and` and `or` are not keywords; they are ordinary identifiers whose
-/// meaning the Pratt loop recognizes by value. This predicate is used by
-/// `parsePrattExpr` to decide whether an IDENTIFIER token should be
-/// treated as a binary operator.
-bool isAndOrIdentifier(TokenStream& stream) {
-    if (!stream.check(TokenType::IDENTIFIER)) return false;
-    const std::string& v = stream.peek().value;
-    return v == "and" || v == "or";
+/// Precondition: the token is an infix operator other than the range
+/// operators. The range operators are handled by `parseInfixBinary`
+/// directly and never reach this function.
+BinaryOp tokenToBinaryOp(TokenType t) noexcept {
+    switch (t) {
+        case TokenType::PLUS:              return BinaryOp::Add;
+        case TokenType::MINUS:             return BinaryOp::Sub;
+        case TokenType::MUL:               return BinaryOp::Mul;
+        case TokenType::DIV:               return BinaryOp::Div;
+        case TokenType::MOD:               return BinaryOp::Mod;
+        case TokenType::POW:               return BinaryOp::Pow;
+        case TokenType::EQUAL_EQUAL:       return BinaryOp::Eq;
+        case TokenType::NOT_EQUAL:         return BinaryOp::Ne;
+        case TokenType::LESS:              return BinaryOp::Lt;
+        case TokenType::LESS_EQUAL:        return BinaryOp::Le;
+        case TokenType::GREATER:           return BinaryOp::Gt;
+        case TokenType::GREATER_EQUAL:     return BinaryOp::Ge;
+        case TokenType::KW_AND:            return BinaryOp::And;
+        case TokenType::KW_OR:             return BinaryOp::Or;
+        case TokenType::BIT_AND:           return BinaryOp::BitAnd;
+        case TokenType::BIT_OR:            return BinaryOp::BitOr;
+        case TokenType::BIT_XOR:           return BinaryOp::BitXor;
+        case TokenType::SHL:               return BinaryOp::Shl;
+        case TokenType::SHR:               return BinaryOp::Shr;
+        case TokenType::QUESTION_QUESTION: return BinaryOp::NullCoalesce;
+
+        default:
+            // Unreachable: the caller dispatches range operators first,
+            // and `infixPrec` returns -1 for everything else.
+            return BinaryOp::Add;
+    }
 }
 
 } // namespace
@@ -161,26 +195,24 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    // The Pratt loop's minimum precedence is -1, which lets the loop
-    // consume every infix operator it encounters (its own precedence
-    // floor is only used to terminate recursion, not to filter the
-    // outermost call's operators).
-    return parsePrattExpr(stream, ctx, -1);
+    return parsePrattExpr(stream, ctx, /*minPrec=*/-1);
 }
 
 // =============================================================================
-// parseRequiredExpr — parse-or-placeholder
+// parseRequiredExpr — parse or produce a marked placeholder
 // =============================================================================
 
 ExprAST* parseRequiredExpr(TokenStream& stream,
                            ParserContext& ctx,
                            const char* expectedWhat) {
     ExprAST* expr = parseExpr(stream, ctx);
-    if (expr) return expr;
+    if (expr != nullptr) return expr;
 
-    // parseExpr already reported a diagnostic. Produce an
+    // parseExpr already reported a diagnostic. Produce a marked
     // UnknownExprAST so the caller can continue without a null check at
     // every use site.
+    (void)expectedWhat;
+
     auto* placeholder = ctx.arena().make<UnknownExprAST>();
     placeholder->loc = stream.currentLoc();
     placeholder->hasSyntaxError = true;
@@ -191,15 +223,12 @@ ExprAST* parseRequiredExpr(TokenStream& stream,
 // parsePrattExpr — the loop
 // =============================================================================
 
-ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
+ExprAST* parsePrattExpr(TokenStream& stream,
+                        ParserContext& ctx,
+                        int minPrec) {
     // ─── Prefix ───────────────────────────────────────────────────────────
-    //
-    // The prefix form is where an expression starts. Everything that can
-    // begin an expression is handled here (or by parsePrimaryExpr, which
-    // this function calls). A prefix that fails returns nullptr and the
-    // loop returns nullptr to its caller.
     ExprAST* lhs = parsePrefixExpr(stream, ctx);
-    if (!lhs) return nullptr;
+    if (lhs == nullptr) return nullptr;
 
     // ─── Loop over postfix and infix operators ────────────────────────────
     while (!stream.isAtEnd()) {
@@ -208,104 +237,24 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         // ─── Postfix ──────────────────────────────────────────────────────
         //
         // Postfix operators bind tighter than any infix. They extend the
-        // current left-hand side: a call, an index, a field access, a
-        // pipeline step. They are always consumed regardless of
-        // `minPrec`, because their binding power is higher than any
-        // infix operator.
-        if (isPostfixStart(current)) {
+        // current left-hand side: a call, an index, or a field access.
+        if (current == TokenType::LPAREN ||
+            current == TokenType::LBRACKET ||
+            current == TokenType::DOT) {
             lhs = parsePostfixExpr(stream, ctx, lhs);
-            if (!lhs) return nullptr;
+            if (lhs == nullptr) return nullptr;
             continue;
         }
 
-        // ─── Assignment ───────────────────────────────────────────────────
-        //
-        // Assignment is right-associative and its precedence is looser
-        // than any binary operator. It is checked before the precedence
-        // cutoff so it is always consumed. The infix handler for
-        // assignment parses the RHS at the assignment's own precedence,
-        // which produces right-associativity.
-        if (isAssignmentOp(current)) {
-            const TokenType opTok = stream.peekType();
-            stream.consume();
-            lhs = parseInfixAssign(stream, ctx, lhs, opTok);
-            if (!lhs) return nullptr;
-            continue;
-        }
-
-        // ─── Null coalescing ──────────────────────────────────────────────
-        //
-        // `??` is right-associative. Like assignment, it is checked
-        // before the precedence cutoff.
-        if (current == TokenType::QUESTION_QUESTION) {
-            stream.consume();
-            lhs = parseInfixNullCoalesce(stream, ctx, lhs);
-            if (!lhs) return nullptr;
-            continue;
-        }
-
-        // ─── `and` / `or` as identifiers ──────────────────────────────────
-        //
-        // These are not keywords in the current grammar; the parser
-        // recognizes them by value. Their precedences are:
-        //
-        //   `and`   2
-        //   `or`    1
-        //
-        // The check happens before the standard infix dispatch, because
-        // an identifier that is not `and` or `or` is not an operator at
-        // all — the loop breaks and the caller sees the identifier as
-        // the next token.
-        if (isAndOrIdentifier(stream)) {
-            const int prec = (stream.peek().value == "and") ? 2 : 1;
-            if (prec < minPrec) break;
-
-            const std::string opValue = stream.peek().value;
-            stream.consume();
-
-            // Build the BinaryOp for the operator.
-            const BinaryOp op = (opValue == "and") ? BinaryOp::And
-                                                   : BinaryOp::Or;
-
-            // Parse the RHS at the operator's own precedence plus one,
-            // producing left-associativity (the same rule as for other
-            // left-associative binary operators).
-            ExprAST* rhs = parsePrattExpr(stream, ctx, prec + 1);
-            if (!rhs) {
-                ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
-                                   stream.currentLoc(),
-                                   "expected right-hand side of '",
-                                   opValue, "'");
-                return nullptr;
-            }
-
-            auto* binary = ctx.arena().make<BinaryExprAST>(op);
-            binary->loc = lhs->loc;
-            binary->left = lhs;
-            binary->right = rhs;
-            lhs = binary;
-            continue;
-        }
-
-        // ─── Standard binary operators ────────────────────────────────────
-        //
-        // Arithmetic, comparison, bitwise, and range operators. The
-        // precedence comes from `infixPrec`. If the precedence is below
-        // the loop's floor, the operator belongs to an enclosing
-        // recursive call; break out and let the caller handle it.
+        // ─── Infix operators ──────────────────────────────────────────────
         const int prec = infixPrec(current);
-        if (prec < minPrec) break;
+        if (prec < 0 || prec < minPrec) break;
 
-        if (prec >= 0) {
-            const TokenType opTok = stream.peekType();
-            stream.consume();
-            lhs = parseInfixBinary(stream, ctx, lhs, opTok, prec);
-            if (!lhs) return nullptr;
-            continue;
-        }
+        const TokenType opTok = current;
+        stream.consume();
 
-        // Not an infix operator at this precedence. Break out.
-        break;
+        lhs = parseInfixBinary(stream, ctx, lhs, opTok, prec);
+        if (lhs == nullptr) return nullptr;
     }
 
     return lhs;
@@ -316,78 +265,24 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
 // =============================================================================
 
 ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
-    const SourceLocation loc = stream.currentLoc();
     const TokenType current = stream.peekType();
 
-    // ─── Unary operators ──────────────────────────────────────────────────
-    //
-    // `-`, `not`, `~`. The `not` operator is a keyword? No — under the
-    // clean-model design, `not` is not a boot-set keyword. It is an
-    // identifier that names an operator, resolved through the DEF table.
-    //
-    // So the unary operator tokens here are only `-` and `~`. The
-    // identifier `not` is handled by the primary parser as an
-    // identifier; Sema recognizes it as a unary operator name during
-    // overload resolution.
-    //
-    // This means `not x` at the parser level is an identifier expression
-    // followed by another expression, which is a syntax error at the
-    // standard parse. To support `not x`, the parser has to recognize
-    // `not` as a prefix operator here.
-    //
-    // We do recognize it: an IDENTIFIER whose value is `not` and which
-    // is in a prefix position is treated as a unary operator. The
-    // alternative — making `not` a keyword — is a grammar change that
-    // would promote `not`, `and`, `or` to keywords together. For now,
-    // this file handles all three by value.
-    if (current == TokenType::MINUS || current == TokenType::BIT_NOT) {
-        stream.consume();   // `-` or `~`
+    switch (current) {
+        case TokenType::MINUS:
+            stream.consume();
+            return parseUnaryExpr(stream, ctx, UnaryOp::Neg);
 
-        const UnaryOp op = (current == TokenType::MINUS) ? UnaryOp::Neg
-                                                         : UnaryOp::BitNot;
+        case TokenType::BIT_NOT:
+            stream.consume();
+            return parseUnaryExpr(stream, ctx, UnaryOp::BitNot);
 
-        // Parse the operand at the unary precedence plus one. Unary
-        // operators are right-associative: `- - x` parses as `-(-x)`.
-        // The precedence for a unary operator is the highest (7 in the
-        // grammar's table); using 7 for the recursion ensures the
-        // operand parse consumes another unary if one follows.
-        constexpr int kUnaryPrec = 7;
-        ExprAST* operand = parsePrattExpr(stream, ctx, kUnaryPrec);
-        if (!operand) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
-                               stream.currentLoc(),
-                               "expected an operand for unary operator");
-            return nullptr;
-        }
+        case TokenType::KW_NOT:
+            stream.consume();
+            return parseUnaryExpr(stream, ctx, UnaryOp::Not);
 
-        auto* unary = ctx.arena().make<UnaryExprAST>(op);
-        unary->loc = loc;
-        unary->operand = operand;
-        return unary;
+        default:
+            return parsePrimaryExpr(stream, ctx);
     }
-
-    // `not x` — the identifier `not` in prefix position.
-    if (current == TokenType::IDENTIFIER &&
-        stream.peek().value == "not") {
-        stream.consume();   // `not`
-
-        constexpr int kUnaryPrec = 7;
-        ExprAST* operand = parsePrattExpr(stream, ctx, kUnaryPrec);
-        if (!operand) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
-                               stream.currentLoc(),
-                               "expected an operand for 'not'");
-            return nullptr;
-        }
-
-        auto* unary = ctx.arena().make<UnaryExprAST>(UnaryOp::Not);
-        unary->loc = loc;
-        unary->operand = operand;
-        return unary;
-    }
-
-    // ─── Not a unary operator: fall through to the primary parser ─────────
-    return parsePrimaryExpr(stream, ctx);
 }
 
 // =============================================================================
@@ -403,245 +298,533 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return parseLiteralExpr(stream, ctx);
     }
 
-    // ─── Array literal: `[` ───────────────────────────────────────────────
+    // ─── Array literal ────────────────────────────────────────────────────
     if (current == TokenType::LBRACKET) {
         return parseArrayLiteralExpr(stream, ctx);
     }
 
-    // ─── If-expression: `if cond ?? then else else` ───────────────────────
-    if (current == TokenType::KW_IF) {
-        return parseIfExpr(stream, ctx);
-    }
-
-    // ─── Anonymous function: `fn (...) -> ... { ... }` ────────────────────
-    //
-    // The literal begins with `fn`. The parser checks this before
-    // anything else, because a function literal's `fn` is unambiguous.
-    if (current == TokenType::KW_FN_MARKER) {
-        return parseAnonFuncExpr(stream, ctx);
-    }
-
-    // ─── Parenthesized expression or a function literal with a bare group
-    //
-    // A bare `(` at expression position could be:
-    //   - a parenthesized expression `(a + b)`
-    //   - a function literal whose leading marker was omitted
-    //     `(a int) -> int { ... }`
-    //
-    // looksLikeAnonFunc distinguishes them by scanning past the group
-    // and checking whether a `{ ... }` body follows.
-    if (current == TokenType::LPAREN) {
-        if (looksLikeAnonFunc(stream, ctx)) {
-            return parseAnonFuncExpr(stream, ctx);
-        }
-
-        // Parenthesized expression.
-        stream.consume();   // `(`
-        if (stream.check(TokenType::RPAREN)) {
-            ctx.diag().errorAt(DiagCode::Syntax_EmptyGroup,
-                               stream.currentLoc(),
-                               "empty parenthesized expression");
-            stream.consume();   // `)`
-            return nullptr;
-        }
-
-        ExprAST* inner = parseExpr(stream, ctx);
-        if (!inner) {
-            return nullptr;
-        }
-
-        if (!stream.match(TokenType::RPAREN)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
-                               stream.currentLoc(),
-                               "expected ')' to close parenthesized "
-                               "expression, got '", stream.peekValue(), "'");
-            return nullptr;
-        }
-        return inner;
-    }
-
     // ─── Identifier ───────────────────────────────────────────────────────
-    //
-    // A bare identifier. This covers:
-    //   - local variables and parameters
-    //   - function names
-    //   - enum type names used before `.Variant`
-    //   - generic specialization references (`identity<int>`)
-    //   - module names used before `::member`
-    //   - struct type names used before a literal (`Point { ... }`)
-    //
-    // parseIdentifierExpr handles the identifier and its optional generic
-    // arguments. It does not consume a following `.`, `::`, `(`, or
-    // `{`; those are postfix operators or literal-introducers handled
-    // by the caller or by the postfix dispatcher.
     if (current == TokenType::IDENTIFIER) {
-        // Peek past the identifier and any generic arguments to see if a
-        // struct literal follows.
-        const size_t savedPos = stream.getPos();
-
-        Token nameTok = stream.peek();
-        InternedString name = ctx.pool().intern(nameTok.value);
-        stream.consume();   // identifier
-
-        ArenaSpan<TypeAST*> genericArgs;
-        if (stream.check(TokenType::LESS)) {
-            genericArgs = parseGenericArgs(stream, ctx);
-        }
-
-        const bool isStructLiteral = stream.check(TokenType::LBRACE);
-        stream.setPos(savedPos);   // restore for the actual parse
-
-        if (isStructLiteral) {
-            // Consume the identifier and generic args for real, then call
-            // parseStructLiteralExpr.
-            stream.consume();   // identifier
-            ArenaSpan<TypeAST*> args;
-            if (stream.check(TokenType::LESS)) {
-                args = parseGenericArgs(stream, ctx);
-            }
-            return parseStructLiteralExpr(stream, ctx, name, args);
-        }
         return parseIdentifierExpr(stream, ctx);
     }
 
-    // ─── Not a primary form ───────────────────────────────────────────────
-    ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
-                       loc,
+    // ─── `(` — parenthesized expression or lambda ─────────────────────────
+    if (current == TokenType::LPAREN) {
+        if (looksLikeLambda(stream, ctx)) {
+            return parseLambdaExpr(stream, ctx);
+        }
+        return parseParenExpr(stream, ctx);
+    }
+
+    // ─── `start` expression ───────────────────────────────────────────────
+    if (current == TokenType::KW_START) {
+        return parseStartExpr(stream, ctx);
+    }
+
+    // ─── Not a primary ────────────────────────────────────────────────────
+    ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                        "expected an expression, got '",
-                       stream.peekValue(), "'");
+                       stream.peekValueView(ctx.pool()), "'");
     return nullptr;
 }
 
 // =============================================================================
-// parsePostfixExpr — the postfix forms
+// parsePostfixExpr — call, index, field access
 // =============================================================================
 
 ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx,
                           ExprAST* lhs) {
-    if (!lhs) return nullptr;
+    if (lhs == nullptr) return nullptr;
 
     const TokenType current = stream.peekType();
 
-    // ─── Call: `f(args)` or `f(args)!` ────────────────────────────────────
     if (current == TokenType::LPAREN) {
         return parseCallExpr(stream, ctx, lhs);
     }
-
-    // ─── Index or slice: `a[i]`, `a[lo..hi]` ──────────────────────────────
-    //
-    // The two forms share a starting `[`. The parser peeks past the `[`
-    // to determine whether the contents are a single index or a range
-    // (a slice). The peek is bounded and non-recursive: it scans tokens
-    // at bracket depth 0 inside the `[ ... ]` looking for `..` or `..<`.
-    // If it finds one at the top level of the bracket pair, the form is
-    // a slice.
     if (current == TokenType::LBRACKET) {
-        const bool isSlice = looksLikeSliceStart(stream);
-        if (isSlice) {
-            return parseSliceExpr(stream, ctx, lhs);
-        }
         return parseIndexExpr(stream, ctx, lhs);
     }
-
-    // ─── Field access: `a.b` ──────────────────────────────────────────────
     if (current == TokenType::DOT) {
         return parseFieldAccessExpr(stream, ctx, lhs);
     }
 
-    // ─── Module access or static member access: `a::b` ────────────────────
-    //
-    // `::` extends an expression with a member of a module or a static
-    // member of a struct. The parser does not distinguish the two; it
-    // produces a ModuleAccessExprAST, and Sema resolves whether the
-    // left-hand side is a module name or a struct name.
-    //
-    // The left-hand side of `::` must be an identifier (a module name or
-    // a struct name). If the source writes `expr::member` with a
-    // non-identifier `expr`, that's a syntax error; the current
-    // dispatch does not check because parsePrimaryExpr already produced
-    // an IdentifierExprAST for the module/struct name in the common
-    // case, and a non-identifier left-hand side is rare enough that
-    // Sema will catch it.
-    if (current == TokenType::DOUBLE_COLON) {
-        return parseModuleAccessExpr(stream, ctx);
-    }
-
-    // ─── Pipeline: `seed |> step |> step` ─────────────────────────────────
-    if (current == TokenType::PIPELINE) {
-        return parsePipelineExpr(stream, ctx, lhs);
-    }
-
-    // ─── Not a postfix operator ───────────────────────────────────────────
-    // The Pratt loop checks `isPostfixStart` before calling this function,
-    // so this branch is unreachable. Return `lhs` unchanged as a
-    // defensive fallback.
+    // The Pratt loop checks the postfix-start set before calling, so this
+    // branch is unreachable. Return lhs unchanged as a defensive fallback.
     return lhs;
 }
 
 // =============================================================================
-// Local helper — slice detection
+// parseLiteralExpr
 // =============================================================================
 
-namespace {
+LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+    const TokenType current = stream.peekType();
 
-/// @brief Peek past a `[` to decide whether the form is a slice or an index.
-///
-/// A slice's bracket pair contains a top-level `..` or `..<`. An index's
-/// does not. The check walks tokens inside the bracket pair at depth 0
-/// (bracket depth only; paren depth is not relevant because the
-/// expression inside the brackets is not being parsed here — just
-/// scanned for a top-level range operator).
-///
-/// The scan is bounded by the closing `]`. If the bracket pair is
-/// malformed (missing the closer), the scan stops at EOF and returns
-/// false. The caller (parseIndexExpr or parseSliceExpr) will report the
-/// malformed bracket.
-///
-/// Precondition: the current token is `[`. The stream position is
-/// restored before returning.
-bool looksLikeSliceStart(TokenStream& stream) {
+    LiteralKind kind;
+    switch (current) {
+        case TokenType::INT_LITERAL:        kind = LiteralKind::Int;       break;
+        case TokenType::FLOAT_LITERAL:      kind = LiteralKind::Float;     break;
+        case TokenType::HEX_LITERAL:        kind = LiteralKind::Hex;       break;
+        case TokenType::BINARY_LITERAL:     kind = LiteralKind::Binary;    break;
+        case TokenType::OCTAL_LITERAL:      kind = LiteralKind::Octal;     break;
+        case TokenType::CHAR_LITERAL:       kind = LiteralKind::Char;      break;
+        case TokenType::STRING_LITERAL:     kind = LiteralKind::String;    break;
+        case TokenType::RAW_STRING_LITERAL: kind = LiteralKind::RawString; break;
+        case TokenType::KW_TRUE:            kind = LiteralKind::True;      break;
+        case TokenType::KW_FALSE:           kind = LiteralKind::False;     break;
+        case TokenType::KW_NIL:             kind = LiteralKind::Nil;       break;
+        default:
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
+                               "expected a literal, got '",
+                               stream.peekValueView(ctx.pool()), "'");
+            return nullptr;
+    }
+
+    Token litTok = stream.consume();
+    auto* lit = ctx.arena().make<LiteralExprAST>(kind, litTok.value);
+    lit->loc = loc;
+    return lit;
+}
+
+// =============================================================================
+// parseIdentifierExpr
+// =============================================================================
+
+IdentifierExprAST* parseIdentifierExpr(TokenStream& stream,
+                                       ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
+                           "expected an identifier, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    Token nameTok = stream.consume();
+    auto* id = ctx.arena().make<IdentifierExprAST>(nameTok.value);
+    id->loc = loc;
+    return id;
+}
+
+// =============================================================================
+// parseArrayLiteralExpr
+// =============================================================================
+
+ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream,
+                                           ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '[' for an array literal, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    // Empty array: `[]`.
+    if (stream.match(TokenType::RBRACKET)) {
+        auto* lit = ctx.arena().make<ArrayLiteralExprAST>(
+            ctx.arena().makeBuilder<ExprAST*>().build());
+        lit->loc = loc;
+        return lit;
+    }
+
+    std::vector<ExprAST*> elements;
+
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET) &&
+           ctx.canContinue()) {
+        ExprAST* e = parseRequiredExpr(stream, ctx, "array element");
+        elements.push_back(e);
+
+        if (stream.match(TokenType::COMMA)) {
+            if (stream.check(TokenType::RBRACKET)) {
+                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                                   stream.currentLoc(),
+                                   "trailing comma in array literal");
+                break;
+            }
+            continue;
+        }
+        if (stream.check(TokenType::RBRACKET)) break;
+
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ',' or ']' in array literal, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+
+        synchronizeUntil(stream, [](TokenType t) {
+            return t == TokenType::COMMA || t == TokenType::RBRACKET;
+        });
+        if (stream.match(TokenType::COMMA)) continue;
+        break;
+    }
+
+    if (!stream.match(TokenType::RBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ']' to close the array literal, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+    }
+
+    auto b = ctx.arena().makeBuilder<ExprAST*>(elements.size());
+    for (ExprAST* e : elements) b.push_back(e);
+
+    auto* lit = ctx.arena().make<ArrayLiteralExprAST>(b.build());
+    lit->loc = loc;
+    return lit;
+}
+
+// =============================================================================
+// parseParenExpr
+// =============================================================================
+
+ParenExprAST* parseParenExpr(TokenStream& stream, ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '(', got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    ExprAST* inner = parseRequiredExpr(stream, ctx, "parenthesized expression");
+
+    if (!stream.match(TokenType::RPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ')' to close the parenthesized "
+                           "expression, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+    }
+
+    auto* paren = ctx.arena().make<ParenExprAST>(inner);
+    paren->loc = loc;
+    if (inner != nullptr && inner->hasSyntaxError) {
+        paren->hasSyntaxError = true;
+    }
+    return paren;
+}
+
+// =============================================================================
+// looksLikeLambda
+// =============================================================================
+
+bool looksLikeLambda(TokenStream& stream, ParserContext& ctx) {
+    (void)ctx;
     const size_t savedPos = stream.getPos();
 
-    if (!stream.check(TokenType::LBRACKET)) {
+    if (!stream.check(TokenType::LPAREN)) {
         stream.setPos(savedPos);
         return false;
     }
-    stream.consume();   // `[`
+    stream.consume();   // `(`
 
-    int bracketDepth = 0;
+    // Skip to the matching `)`. Track depth so nested parentheses (in
+    // parameter types, like a function-typed parameter) do not confuse
+    // the scan.
+    int depth = 1;
     while (!stream.isAtEnd()) {
         const TokenType t = stream.peekType();
-
-        if (t == TokenType::LBRACKET) {
-            bracketDepth++;
+        if (t == TokenType::LPAREN) {
+            depth++;
             stream.consume();
             continue;
         }
-        if (t == TokenType::RBRACKET) {
-            if (bracketDepth == 0) {
-                // Reached the closing `]` of the outer bracket pair
-                // without seeing a range operator. Not a slice.
-                stream.setPos(savedPos);
-                return false;
-            }
-            bracketDepth--;
+        if (t == TokenType::RPAREN) {
+            depth--;
             stream.consume();
+            if (depth == 0) break;
             continue;
         }
-        if (bracketDepth == 0 &&
-            (t == TokenType::RANGE || t == TokenType::RANGE_EXCLUSIVE)) {
-            stream.setPos(savedPos);
-            return true;
-        }
-
         stream.consume();
     }
 
-    // Reached EOF without seeing a closing `]` or a range operator.
+    const bool result = !stream.isAtEnd() &&
+                        stream.check(TokenType::ARROW);
+
     stream.setPos(savedPos);
-    return false;
+    return result;
 }
 
-} // namespace
+// =============================================================================
+// parseLambdaExpr
+// =============================================================================
+
+LambdaExprAST* parseLambdaExpr(TokenStream& stream, ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '(' to open the lambda parameters, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    // parseParamList consumes the `( params )` group itself.
+    std::vector<ParamAST*> params = parseParamList(stream, ctx);
+
+    auto* lambda = ctx.arena().make<LambdaExprAST>();
+    lambda->loc = loc;
+
+    if (!params.empty()) {
+        auto b = ctx.arena().makeBuilder<ParamAST*>(params.size());
+        for (ParamAST* p : params) b.push_back(p);
+        lambda->params = b.build();
+    }
+
+    if (!stream.match(TokenType::ARROW)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '->' after the lambda parameters, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        lambda->hasSyntaxError = true;
+        return lambda;
+    }
+
+    ExprAST* body = parseRequiredExpr(stream, ctx, "lambda body");
+    lambda->body = body;
+    if (body != nullptr && body->hasSyntaxError) {
+        lambda->hasSyntaxError = true;
+    }
+    return lambda;
+}
+
+// =============================================================================
+// parseStartExpr
+// =============================================================================
+
+StartExprAST* parseStartExpr(TokenStream& stream, ParserContext& ctx) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::KW_START)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected 'start', got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    ExprAST* operand = parseRequiredExpr(stream, ctx, "call expression");
+
+    if (operand == nullptr || !operand->isa<CallExprAST>()) {
+        if (operand != nullptr && !operand->hasSyntaxError) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, operand->loc,
+                               "'start' must be followed by a call "
+                               "expression");
+        }
+        auto* start = ctx.arena().make<StartExprAST>(nullptr);
+        start->loc = loc;
+        start->hasSyntaxError = true;
+        return start;
+    }
+
+    auto* start = ctx.arena().make<StartExprAST>(operand->as<CallExprAST>());
+    start->loc = loc;
+    return start;
+}
+
+// =============================================================================
+// parseCallExpr
+// =============================================================================
+
+CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
+                           ExprAST* callee) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LPAREN)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '(' to open the argument list, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
+
+    auto* call = ctx.arena().make<CallExprAST>();
+    call->loc = loc;
+    call->callee = callee;
+    call->args = args;
+    return call;
+}
+
+// =============================================================================
+// parseIndexExpr
+// =============================================================================
+
+IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx,
+                             ExprAST* target) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::LBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '[' to open the index, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    ExprAST* index = parseRequiredExpr(stream, ctx, "index expression");
+
+    if (!stream.match(TokenType::RBRACKET)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected ']' to close the index, got '",
+                           stream.peekValueView(ctx.pool()), "'");
+    }
+
+    auto* idx = ctx.arena().make<IndexExprAST>(target, index);
+    idx->loc = loc;
+    return idx;
+}
+
+// =============================================================================
+// parseFieldAccessExpr
+// =============================================================================
+
+FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream,
+                                         ParserContext& ctx,
+                                         ExprAST* object) {
+    const SourceLocation loc = stream.currentLoc();
+
+    if (!stream.match(TokenType::DOT)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                           "expected '.', got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+                           stream.currentLoc(),
+                           "expected a field name after '.', got '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    Token fieldTok = stream.consume();
+
+    auto* access = ctx.arena().make<FieldAccessExprAST>(fieldTok.value);
+    access->loc = loc;
+    access->object = object;
+    return access;
+}
+
+// =============================================================================
+// parseUnaryExpr
+// =============================================================================
+
+UnaryExprAST* parseUnaryExpr(TokenStream& stream, ParserContext& ctx,
+                             UnaryOp op) {
+    // The operator itself has already been consumed by parsePrefixExpr;
+    // previousLoc() is its location.
+    const SourceLocation loc = stream.previousLoc();
+
+    // The operand is parsed at unary precedence. It can be another unary
+    // (`- - x`), a primary, or a postfix chain. It cannot consume any
+    // infix operator, because every infix operator's precedence is below
+    // unary precedence.
+    ExprAST* operand = parsePrattExpr(stream, ctx, kUnaryPrec);
+
+    if (operand == nullptr) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
+                           stream.currentLoc(),
+                           "expected an operand for the unary operator");
+
+        auto* unk = ctx.arena().make<UnknownExprAST>();
+        unk->loc = stream.currentLoc();
+        unk->hasSyntaxError = true;
+
+        auto* unary = ctx.arena().make<UnaryExprAST>(op);
+        unary->loc = loc;
+        unary->operand = unk;
+        unary->hasSyntaxError = true;
+        return unary;
+    }
+
+    auto* unary = ctx.arena().make<UnaryExprAST>(op);
+    unary->loc = loc;
+    unary->operand = operand;
+    if (operand->hasSyntaxError) unary->hasSyntaxError = true;
+    return unary;
+}
+
+// =============================================================================
+// parseInfixBinary
+// =============================================================================
+
+ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx,
+                          ExprAST* lhs, TokenType opTok, int prec) {
+    // ─── Range operators ──────────────────────────────────────────────────
+    //
+    // A range is `lo..hi`, `lo..<hi`, `lo..hi..step`, or
+    // `lo..<hi..step`. The step, if written, uses a second range operator.
+    // All four forms produce a single RangeExprAST with `step` null when
+    // no step was written.
+    //
+    // The bounds (and the step) are parsed at `prec + 1`, so they do not
+    // themselves consume the next range operator. That is what lets
+    // `parseInfixBinary` see the second range operator and attach it as
+    // the step.
+    if (opTok == TokenType::RANGE || opTok == TokenType::RANGE_EXCLUSIVE) {
+        const bool isExclusive = (opTok == TokenType::RANGE_EXCLUSIVE);
+
+        // Upper bound.
+        ExprAST* hi = parsePrattExpr(stream, ctx, prec + 1);
+        if (hi == nullptr) {
+            ctx.diag().errorAt(DiagCode::Syntax_ExpectedRangeBound,
+                               stream.currentLoc(),
+                               "expected an upper bound for the range");
+            hi = ctx.arena().make<UnknownExprAST>();
+            hi->loc = stream.currentLoc();
+            hi->hasSyntaxError = true;
+        }
+
+        auto* range = ctx.arena().make<RangeExprAST>(isExclusive);
+        range->loc = lhs->loc;
+        range->lo = lhs;
+        range->hi = hi;
+
+        // Optional step: a second range operator.
+        if (stream.check(TokenType::RANGE) ||
+            stream.check(TokenType::RANGE_EXCLUSIVE)) {
+            stream.consume();
+
+            ExprAST* step = parsePrattExpr(stream, ctx, prec + 1);
+            if (step == nullptr) {
+                ctx.diag().errorAt(
+                    DiagCode::Syntax_ExpectedRangeBound,
+                    stream.currentLoc(),
+                    "expected a step expression after the range");
+                step = ctx.arena().make<UnknownExprAST>();
+                step->loc = stream.currentLoc();
+                step->hasSyntaxError = true;
+            }
+            range->step = step;
+        }
+
+        return range;
+    }
+
+    // ─── Every other infix operator ───────────────────────────────────────
+    const BinaryOp op = tokenToBinaryOp(opTok);
+    const bool rightAssoc = (op == BinaryOp::Pow);
+
+    ExprAST* rhs = parsePrattExpr(stream, ctx,
+                                  rightAssoc ? prec : prec + 1);
+    if (rhs == nullptr) {
+        ctx.diag().errorAt(DiagCode::Syntax_ExpectedExpression,
+                           stream.currentLoc(),
+                           "expected the right-hand side of '",
+                           stream.peekValueView(ctx.pool()), "'");
+        return nullptr;
+    }
+
+    auto* binary = ctx.arena().make<BinaryExprAST>(op);
+    binary->loc = lhs->loc;
+    binary->left = lhs;
+    binary->right = rhs;
+    return binary;
+}
 
 } // namespace lucid::parser
