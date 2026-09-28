@@ -125,7 +125,7 @@ and or not
 
 ### 2.7 Whitespace
 
-Whitespace is not significant except as a token separator. Commas and semicolons are required where the grammar says so; elsewhere they may appear freely for readability.
+Whitespace is not significant except as a token separator. Commas are required where the grammar says so. **Semicolons are never required**: a statement or declaration ends at the first token that cannot continue it (§12.6), and a `;` may be written after any statement or declaration, for readability or to put two on one line.
 
 ---
 
@@ -139,6 +139,7 @@ module_path    ::= IDENTIFIER { '.' IDENTIFIER }
 top_level_decl ::= table_decl
                  | fn_decl
                  | var_decl
+                 | ';'          -- empty declaration (§12.6)
 ```
 
 The top level contains only declarations (imports included). There are no top-level statements — nothing runs at module load time.
@@ -256,7 +257,7 @@ A `&T` into a growing table is a pair `{slot, generation}`. It is **valid** when
 - **`ADD`** takes a slot from the free list, or appends a new slot if the free list is empty. It stamps the slot with a fresh generation drawn from the table's counter, writes the row's data, and marks the slot live. The uniqueness checks of §4.1.5 run here.
 - **`REMOVE(i)`** marks slot `i` dead and pushes it onto the free list. It is O(1). Every `&T` to the removed row is now stale (§7.6).
 - **Slot reuse.** A reused slot receives a new generation from the table's counter, and generations are never reissued, so a stale reference can never alias the slot's next occupant. If a table's generation counter is exhausted, the next `ADD` panics rather than wrap around.
-- **`CLEAR()`** resets the table to empty: no live rows, every slot free, the `@primary` index emptied, and the reset floor raised above every generation issued so far, so every existing reference into the table is stale. Invalidating the references is O(1) regardless of how many rows or references exist. Storage owned by the rows themselves (strings, arrays in cells, host handles) is released by the runtime, which may take time proportional to the row count. The slot array keeps its allocated capacity (§4.1.1d).
+- **`CLEAR()`** resets the table to empty: no live rows, every slot free, the `@primary` index emptied, and the reset floor raised above every generation issued so far, so every existing reference into the table is stale. Invalidating the references is O(1) regardless of how many rows or references exist. Storage owned by the rows themselves (strings, arrays in cells, host handles) is released by the runtime, which may take time proportional to the row count. The slot array keeps its allocated capacity (§4.1.1d). **After `CLEAR`, slots are handed out in ascending order** (0, 1, 2, ...), so a table that is cleared and refilled iterates in the order its rows were added; this is what makes a cleared-and-refilled display table (§7.1) safe to read in slot order.
 
 **Iteration order is slot order.** Rows are visited in the order of their slot indices, not in the order they were added. This order may change after a `REMOVE` and subsequent `ADD`. Rows never move between slots, so a table has no built-in sorted order; a program that needs one builds it from an array of row references and `arr.SORT` (§8.3).
 
@@ -604,7 +605,7 @@ The one narrow exception is the lambda form (§6.9), which is sugar for a compil
 ### 4.3 Variable declarations
 
 ```
-var_decl ::= ( 'let' | 'const' ) IDENTIFIER ':' type '=' expr ';'
+var_decl ::= ( 'let' | 'const' ) IDENTIFIER ':' type '=' expr
 ```
 
 A variable holds a value: a primitive (copied), or a row/table reference (shared), or an array (copied on assignment; §5.5).
@@ -626,7 +627,7 @@ b.age = 31       -- error: b is const
 
 `const` on a primitive and `const` on a reference are the same construct — both are read-only bindings; the grammar does not distinguish them.
 
-**A `;` terminates every `let`/`const`, whether at top level or inside a block.** §3's `top_level_decl` and §12's `statement` both route through `var_decl`, which carries its own `;`.
+**A `let`/`const` needs no terminator, whether at top level or inside a block.** §3's `top_level_decl` and §12's `statement` both route through `var_decl`. An optional `;` after it is an empty statement (§12.6), not part of the declaration.
 
 ---
 
@@ -700,7 +701,7 @@ Removing value references (`&int`) — see 5.1.1 below — leaves exactly two re
 
 `Person` names the sheet; `&Person` names a reference to one of its rows. Both are references under the hood, but they refer to different things, and the type name makes that explicit at every use site.
 
-The runtime representation of a `&T` reference is a row index, not a pointer — see the storage model document for details. The language guarantees only that a `&T` is comparable, may be `nil`, and is invalidated by `REMOVE` of the target row.
+The runtime representation of a `&T` reference is a row index, not a pointer — see the storage model document for details. The language guarantees only that a `&T` is comparable, may be `nil`, and becomes stale when its row is removed or the table is cleared (§7.6).
 
 #### 5.1.1 No value references
 
@@ -805,7 +806,7 @@ Array literals are first-class expressions: `[1, 2, 3]`. An empty `[]` requires 
 
 ### 5.6 Column views have no storable type
 
-`T.column` (§7.4) produces a live view over a column's values, usable only inline in a `for` loop or an aggregation call (`.SUM()`, `.AVG()`). It cannot be assigned to a variable or passed as an argument — it is not a value of any type in this grammar, dynamic array included, because unlike an array it is a live view rather than a copy. To obtain a real, storable `[T]` copy of a column, call `.TOARRAY()` on it.
+`T.column` (§7.4) produces a live view over a column's values, usable only inline in a `for` loop or a `.TOARRAY()` call. It cannot be assigned to a variable or passed as an argument — it is not a value of any type in this grammar, dynamic array included, because unlike an array it is a live view rather than a copy. To obtain a real, storable `[T]` copy of a column, call `.TOARRAY()` on it.
 
 ### 5.7 Host types
 
@@ -1083,16 +1084,57 @@ FN compute() -> int {
 | `T.VERSION()`         | `uint64`     | Structural version: increases on every `ADD`, `REMOVE`, and `CLEAR`, and never decreases. Cell writes do not change it, so a consumer that reads cell values must still re-read them; use it to skip work when the set of rows is unchanged. Available on every table; always 0 on a `FIXED` table. |
 | `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` or `CLEAR` on the parent table.                                                                                                                                  |
 | `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); O(1) expected via the primary index; `nil` if no row matches. The index representation is a runtime choice (§4.1.5).                                                                                                                          |
-| `T.column`            | (view, §5.6) | Iterable/aggregable view over one column's values across all rows.                                                                                                                                                                                                                                  |
+| `T.column`            | (view, §5.6) | Iterable view over one column's values across all rows; `.TOARRAY()` copies it into an array (§7.4).                                                                                                                                                                                                |
 | `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                                                                                                                                                              |
 
-**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. A program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
+**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. Until a `REMOVE` frees a slot, slot order is insertion order, and `CLEAR` starts it over: refilling a cleared table gives slot order equal to the order of the `ADD`s (§4.1.1a). Once removals and reuse have happened, a program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
 
 **Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table that is not `@immutable`, `@readonly`, or `@packed` (the last two imply `@immutable`). `VERSION`, `COUNT`, `AT`, `FIND`, and `by<Column>` are available on every table.
 
-**Method naming.** Built-in methods on a table, array, or column view are always spelled in ALLCAPS (`ADD`, `REMOVE`, `CLEAR`, `SHRINK`, `AT`, `COUNT`, `VERSION`, `FIND`, `SORT`, `CONTAINS`, `SUM`, `AVG`, `TOARRAY`), with no exceptions. This keeps them from colliding with the other names reachable after a table's dot: columns are lowercase or camelCase (`Person.count`) and fixed-table members are PascalCase (`Direction.North`), and identifiers are case-sensitive (§2.3). A column or fixed-table member whose name equals a built-in method name (for example a column named `COUNT`) is a semantic error. The one generated method name, `by<Column>` (§4.1.5), is built from the column's own name and follows its casing. Ordinary functions (`println`, `waitFrames`) stay lowercase camelCase.
+**Method naming.** Built-in methods on a table, array, or column view are always spelled in ALLCAPS (`ADD`, `REMOVE`, `CLEAR`, `SHRINK`, `AT`, `COUNT`, `VERSION`, `FIND`, `SORT`, `CONTAINS`, `TOARRAY`), with no exceptions. This keeps them from colliding with the other names reachable after a table's dot: columns are lowercase or camelCase (`Person.count`) and fixed-table members are PascalCase (`Direction.North`), and identifiers are case-sensitive (§2.3). A column or fixed-table member whose name equals a built-in method name (for example a column named `COUNT`) is a semantic error. The one generated method name, `by<Column>` (§4.1.5), is built from the column's own name and follows its casing. Ordinary functions (`println`, `waitFrames`) stay lowercase camelCase.
 
-**There is deliberately no table sort and no compaction.** Both would move rows between slots, and `&T` references name slots, so any reference held in a local variable, another table's cell, or an array element would silently point at a different row. Sorted order comes from an array of references (§8.3); memory comes back through reuse, `CLEAR`, and `SHRINK` (§4.1.1d).
+**There is deliberately no table sort and no compaction.** Both would move rows between slots, and `&T` references name slots, so any reference held in a local variable, another table's cell, or an array element would silently point at a different row. Sorted order comes from an array of references (§8.3); memory comes back through reuse, `CLEAR`, and `SHRINK` (§4.1.1d). Views have no `SORT` either: `SORT` exists only on arrays (§8.3). To sort the rows a `FIND` view selects, copy its row references into an array and sort that.
+
+**Building an ordered display.** A table is storage with stable row identity; presentation order is built on demand from copies. There are two patterns, and both use only the operations above.
+
+- **A sorted `[&T]` array (the default).** Select rows with `FIND` or a `for` loop, copy the row references into an array, and `SORT` it with a comparator (§8.3). Nothing is copied but references, the array is always current (a removed row reads as `nil`), and the renderer iterates the array.
+- **A hot display table.** When the host reads a whole table in bulk (a batched draw, a GPU upload), or the display values are derived (screen coordinates, an animation frame) and should be computed once, rebuild a second table each time: `CLEAR` it, then `ADD` the rows in display order. `CLEAR` keeps the table's capacity, so a rebuild allocates nothing after warm-up, and `@reserve(N)` can size it up front. `@columnar` stores each column contiguously, which suits a bulk reader.
+
+```
+TABLE Unit {
+    spriteId: int
+    x: int
+    y: int
+    hp: int
+}
+
+@reserve(256)
+TABLE Display {
+    spriteId: int
+    x: int
+    y: int
+}
+
+FN rebuildDisplay() {
+    -- 1. select: references only, nothing is copied yet
+    let visible: [&Unit] = []
+    let alive: Unit = Unit.FIND((u) -> u.hp > 0)
+    for u: &Unit in alive {
+        visible.ADD(u)
+    }
+
+    -- 2. order: sorts the reference list, never the table (back to front)
+    visible.SORT((a, b) -> a.y < b.y)
+
+    -- 3. write: refill the hot table in display order
+    Display.CLEAR()
+    for u: &Unit in visible {
+        Display.ADD(u.spriteId, u.x, u.y)
+    }
+}
+```
+
+`ADD` takes one argument per column (§7.1), not a row, so copying between tables is written cell by cell; the two tables usually have different columns anyway. `Unit` is never reordered, so references to units stay valid. If the renderer can simply loop over `visible` and call a draw function per item, the hot table is unnecessary. How a `host(...)` function reads a whole table is up to the host and is not specified here (§11.2).
 
 ### 7.2 Row-level operations
 
@@ -1107,15 +1149,24 @@ FN compute() -> int {
 
 **Returns `nil`** (an expected, checkable absence): `T.AT(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a reference whose row was removed (a stale reference, §7.6).
 
-### 7.4 Column views and aggregation
+### 7.4 Column views
 
 ```
 for n: string in Person.name { println(n) }
 
-let totalAge: int   = Person.age.SUM()
-let avgAge:   float = Person.age.AVG()
-let names:    [string] = Person.name.TOARRAY()
+let names: [string] = Person.name.TOARRAY()
 ```
+
+A column view supports two uses: iteration in a `for` loop, and `.TOARRAY()`, which copies the column into a new `[T]` (an O(n) allocation). There are deliberately no built-in aggregation methods such as `SUM` or `AVG` (§13): they only make sense for numeric columns, and the language does not put type-specific rules on column views. To aggregate, accumulate in a loop, which allocates nothing:
+
+```
+let total: int = 0
+for a: int in Person.age { total += a }
+```
+
+or copy the column with `TOARRAY` and pass the array to a library function that takes an array.
+
+**A column view cannot be sorted.** `SORT` exists only on arrays (§8.3). Sorting a column in place would reorder that column's cells alone, tearing every row apart from its other columns, and a column view is not a value that could hold a sorted result (§5.6). To sort the column's values, copy them first (`let ages: [int] = Person.age.TOARRAY()`, then `ages.SORT()`), but the result is a sorted copy of the values only: the table is untouched, and each value no longer knows which row it came from. To order *rows* by a column, sort an array of row references with a comparator (§8.3).
 
 ### 7.5 `FIND` and views
 
@@ -1242,7 +1293,7 @@ So a bare `T` binding is correct for an array (matching its element type) but al
 
 **`arr.CLEAR()`** removes every element of a dynamic array `[T]` and returns `unit`. The array keeps its allocated capacity, as `T.CLEAR()` does for a table; to release the memory, assign a fresh `[]`. It is not available on a fixed-size `[N, T]`, whose length cannot change.
 
-**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `unit`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not tables, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
+**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `unit`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not on tables or views, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
 
 `arr.SORT()` sorts ascending in the element type's natural order. It is available only when the element type is an integer type, a `float` type, `bool`, `char`, or `string`; any other element type is a semantic error that asks for a comparator. Numbers sort numerically (a `float` NaN sorts last), `false` sorts before `true`, `char` sorts by code point, and `string` sorts by its UTF-8 bytes, independent of locale.
 
@@ -1501,24 +1552,25 @@ A game module does `import core.input` and calls `input.isDown(Key.W)`, or write
 
 ```
 statement     ::= var_decl
-                | assign_stmt ';'
-                | return_stmt ';'
-                | break_stmt ';'
-                | continue_stmt ';'
-                | suspend_stmt ';'
+                | assign_stmt
+                | return_stmt
+                | break_stmt
+                | continue_stmt
+                | suspend_stmt
                 | if_stmt
                 | switch_stmt
                 | while_stmt
                 | for_stmt
-                | expr_stmt ';'
+                | expr_stmt
                 | block
+                | ';'                          -- empty statement (§12.6)
 
 block         ::= '{' { statement } '}'
 
 assign_stmt   ::= lvalue assign_op expr
 lvalue        ::= IDENTIFIER
                 | expr '.' IDENTIFIER
-                | expr '[' expr ']'
+                | expr '[' expr ']'          -- the leftmost token must be an IDENTIFIER (§12.6)
 assign_op     ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
                 | '&=' | '|=' | '^=' | '<<=' | '>>='
 
@@ -1541,7 +1593,7 @@ for_stmt      ::= [ label ] 'for' binding { ',' binding } 'in' expr block
 label         ::= IDENTIFIER ':'
 binding       ::= IDENTIFIER ':' type | '_'
 
-expr_stmt     ::= expr
+expr_stmt     ::= call_expr | start_expr    -- only a call has an effect worth a statement (§12.6)
 ```
 
 An `assign_stmt` is a statement only — there is no assignment form in the `expr` grammar (§6), so `let y: int = (x = 5)` is a syntax error; assignment must be its own statement, never nested inside an expression.
@@ -1644,6 +1696,42 @@ A label is its own small namespace: it never collides with a variable, function,
 
 `var_decl` may appear inside a block; its scope is the block. `FN` and `TABLE` may only appear at module (top) level — no nested declarations of either kind.
 
+### 12.6 Statement boundaries: why `;` is optional
+
+A statement or declaration ends at the first token that cannot continue it. `;` is an **empty statement** (and, at module level, an empty declaration): it may follow any statement or declaration and does nothing, so two lines with a `;` after each and the same two lines without are the same program. A `;` is not accepted between an `if`'s block and its `else`.
+
+This is safe because the tokens that can **begin** a statement and the tokens that can **continue** an expression never overlap:
+
+- A statement begins with an identifier, `start`, `{`, or one of `let`, `const`, `if`, `switch`, `for`, `while`, `return`, `break`, `continue`, `wait`, `waitFrames`, `waitUntil`, `waitForEvent`, `waitForRequest`. A top-level declaration begins with `FN`, `TABLE`, `FIXED`, `import`, `let`, `const`, `@`, or a doc comment.
+- An expression is continued by `(`, `[`, `.`, `??`, `..`, `..<`, `->`, `and`, `or`, and every binary and assignment operator.
+
+Three rules keep the two sets apart:
+
+1. **A statement never begins with `(`, `[`, or an operator.** The leftmost token of an `lvalue` or an `expr_stmt` is an identifier (or `start`), and an `expr_stmt` is only a call or a `start` expression. A line that begins with `(`, `[`, or an operator therefore always continues the line above it. To assign through, or call on, a parenthesized or computed expression, bind it to a `let` first.
+2. **`break` and `continue` take an identifier only if it names an enclosing label** (§12.4). Otherwise the identifier begins the next statement.
+3. **`return` takes an operand if the next token can begin an expression.** `return`, `break`, and `continue` end the live code of a block, so the next token is normally `}`; a statement written after one is unreachable and Sema flags it.
+
+A doc comment between statements inside a body attaches to nothing and is ignored.
+
+### 12.7 Error recovery (informative)
+
+Because `;` is optional, the parser cannot rely on it to find the next statement after a syntax error. It recovers in two levels. This section is guidance for implementations, not part of the language: a parser may recover differently, but should report at most one error per broken construct.
+
+**Declaration level.** After an error while parsing a top-level declaration, skip tokens until one of these, tracking `{`/`}` depth as tokens are consumed:
+
+- a **strong** declaration start, at any brace depth: `TABLE`, `FIXED`, `import`, or `FN` followed by an identifier. None of these can appear inside a body, so reaching one means a `}` is missing; report it at the unmatched `{` and reset the depth to zero. (Function types are written `(T) -> R` with no `FN`, so `FN` followed by an identifier always begins a declaration.)
+- a **weak** declaration start, only at brace depth 0: `let`, `const`, `@`, a doc comment, or `FN`. These are legal inside bodies (`let`, and `@` in table column attributes), so they count only at the top.
+
+**Statement level.** After an error inside a block, skip tokens, starting with the parentheses and brackets that were open at the error and counting new ones, until one of these:
+
+- a `;`: consume it and stop;
+- a statement keyword or `{`: stop before it (a broken `if (x + )` thus resumes at its body, which is parsed as a block);
+- an identifier, but only when nothing is open and the previous token can end a statement (an identifier, a literal, `)`, `]`, `}`, `?`, or a bare `return`, `break`, `continue`), because an identifier also appears mid-statement;
+- `}`, `case`, or `default`: stop before it without consuming it. They belong to the enclosing block or `switch`;
+- a strong declaration start: stop, abandon every enclosing block as unterminated, and continue with declaration-level recovery.
+
+`else` is skipped through; the `{` or `if` that follows resynchronizes. Recovery must consume at least one token if the parser has not advanced since the previous error, and further errors are suppressed until recovery completes.
+
 ---
 
 ## 13. What this grammar deliberately excludes
@@ -1657,6 +1745,7 @@ A label is its own small namespace: it never collides with a variable, function,
 - `@sorted(column)` and any in-place table sort (§7.1) — rows never move between slots, so sorted order comes from an array of row references and `arr.SORT` (§8.3).
 - Table compaction (`T.compact()`) (§4.1.1d) — it would move rows and silently retarget references; memory comes back through slot reuse, `CLEAR`, and `SHRINK`.
 - Auto-generated `@primary` values (§4.1.5) — the caller supplies every key.
+- Built-in aggregation on column views (`SUM`, `AVG`) (§7.4) — it would need a numeric-only rule on column views; aggregation is a loop or a library function over an array.
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
