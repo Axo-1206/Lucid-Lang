@@ -1066,6 +1066,27 @@ FN compute() -> int {
 
 **Narrowing is per-expression, not per-variable.** A narrowed `x` in one branch does not narrow `x` in another. A narrowed `x` at one use site does not narrow it at another. The compiler tracks the narrowed state through the control flow within a single function body; it does not track it across function calls.
 
+### 6.14 Conditions are `bool`
+
+**Wherever the language tests a condition, the value must be a `bool`.** There is no truthiness: no other type converts to `true` or `false`, and no value is implicitly "empty" or "zero". This applies to:
+
+- the condition of an `if` and of a `while` (§12);
+- both operands of `and` and `or`, and the operand of `not` (§6.11);
+- a predicate function's return value, where a `bool` is required (`FIND`'s `pred`, `SORT`'s `less`, `waitUntil`'s `pred`).
+
+Anything else, an `int`, a `&T`, a `T?` (including `bool?`), an array, a string, is a type mismatch error at compile time. There is no coercion, the same rule as everywhere else in the type system (§5.8). The intended forms are explicit:
+
+```
+if found != nil { ... }              -- not `if found`
+while remaining > 0 { ... }          -- not `while remaining`
+if Person.COUNT() > 0 { ... }        -- not `if Person.COUNT()`
+if (flag ?? false) { ... }           -- a `bool?` must be defaulted or narrowed first
+```
+
+**`and`, `or`, and `not` yield a `bool`, not one of their operands.** `a or b` is `true` when either is `true`; it is never `a` or `b` themselves. To supply a default for a `nil`, use `??` (§6.11), which tests only for `nil` and so cannot replace a legitimate `0`, `""`, or `false`.
+
+**Why.** A language that lets non-`bool` values act as conditions must choose which values count as false, and every choice is a trap. If `0` is truthy (Lua, Ruby), `while n { n -= 1 }` never ends. If `0`, `""`, and empty arrays are falsy (Python, JavaScript), a legitimate empty value is confused with a missing one. Lucid also has `bool?`, where `false` and `nil` are different states that truthiness would merge. Requiring `bool` removes the choice at the cost of a few extra tokens.
+
 ---
 
 ## 7. Table operations
@@ -1595,6 +1616,8 @@ binding       ::= IDENTIFIER ':' type | '_'
 
 expr_stmt     ::= call_expr | start_expr    -- only a call has an effect worth a statement (§12.6)
 ```
+
+The condition of an `if` or `while` must be a `bool` (§6.14); there is no truthiness.
 
 An `assign_stmt` is a statement only — there is no assignment form in the `expr` grammar (§6), so `let y: int = (x = 5)` is a syntax error; assignment must be its own statement, never nested inside an expression.
 
