@@ -44,6 +44,23 @@
  * (`isBlockBoundary`) so the dispatch set and the recovery set stay
  * aligned.
  *
+ * ─── Design: top-level declarations inside a block ───────────────────────
+ * §12.5 forbids `TABLE` and `FN` inside a block. When `parseStmt` sees one,
+ * it reports "not allowed inside a block" at the declaration's own
+ * location and then consumes the whole declaration — via `parseTableDecl`
+ * or `parseFnDecl` — so the block's brace balance is preserved.
+ *
+ * Consuming only the keyword would leave the declaration's body in the
+ * stream, and the block loop would parse the body as statements, producing
+ * one cascading diagnostic per token. Discard-and-report keeps the count
+ * at one.
+ *
+ * This rule is reported by the parser rather than deferred to Sema
+ * because the parser is the only layer that sees the misplaced `TABLE`/`FN`
+ * token before recovery discards it. Once the declaration is parsed, its
+ * AST shape is indistinguishable from a correctly-placed declaration, so
+ * Sema cannot tell the two cases apart.
+ *
  * ─── Design: the switch's mandatory default ───────────────────────────────
  * §12.2 requires `default` in every `switch`. The parser enforces this at
  * parse time (unusual for this parser, but justified: the missing default
@@ -161,33 +178,66 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     // ─── Constructs that are not allowed inside a block ───────────────────
-    if (current == TokenType::KW_FIXED) {
-        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                        "a FIXED TABLE declaration is not allowed inside "
-                        "a block; move it to the top level");
-        stream.consume();
-        return nullptr;
-    }
-    if (current == TokenType::KW_TABLE) {
-        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                           "a TABLE declaration is not allowed inside a "
-                           "block; move it to the top level");
-        // Consume the keyword and sync; the block loop will pick up after.
-        stream.consume();
+    //
+    // A `TABLE` or `FN` inside a block is a top-level declaration in the
+    // wrong place. The parser reports it here, at the declaration's own
+    // location, and then *consumes the whole declaration* — body and all —
+    // so the block's brace balance is preserved and the block loop
+    // continues with the next statement.
+    //
+    // Consuming only the keyword (the previous behavior) left the body in
+    // the stream. The block loop then parsed the body's tokens as
+    // statements, producing one cascading diagnostic per token. Discard-
+    // and-report keeps the diagnostic count at one: the misplaced
+    // declaration, reported once, at the right location.
+    //
+    // This is a rare case where the parser reports a rule that §12.5
+    // would otherwise leave to Sema. The parser has to, because it is the
+    // only layer that sees the `TABLE`/`FN` token *before* recovery
+    // discards it. Once the declaration is parsed into the AST, the
+    // shape it produces is indistinguishable from a correctly-placed
+    // declaration reached through an unwind — so Sema cannot tell the
+    // two cases apart. The parser can, and does.
+    if (current == TokenType::KW_FIXED || current == TokenType::KW_TABLE) {
+        ctx.diag.errorAt(
+            DiagCode::Syntax_UnexpectedToken, loc,
+            current == TokenType::KW_FIXED
+                ? "a FIXED TABLE declaration is not allowed inside a block; "
+                  "move it to the top level"
+                : "a TABLE declaration is not allowed inside a block; "
+                  "move it to the top level");
+
+        // Consume the whole declaration. parseTableDecl reports its own
+        // errors if the declaration is malformed; those are independent
+        // of the misplacement, so letting them fire is correct. The
+        // result is discarded — the block has no place for it.
+        (void)parseTableDecl(stream, ctx);
         return nullptr;
     }
     if (current == TokenType::KW_FN) {
-        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                           "an FN declaration is not allowed inside a block; "
-                           "move it to the top level");
-        stream.consume();
+        ctx.diag.errorAt(
+            DiagCode::Syntax_UnexpectedToken, loc,
+            "an FN declaration is not allowed inside a block; "
+            "move it to the top level");
+
+        // Consume the whole function. Same reasoning as the table case.
+        (void)parseFnDecl(stream, ctx);
         return nullptr;
     }
     if (current == TokenType::AT_SIGN) {
-        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                           "an attribute is not allowed on a statement; "
-                           "attributes precede only TABLE, FN, and column "
-                           "declarations");
+        ctx.diag.errorAt(
+            DiagCode::Syntax_UnexpectedToken, loc,
+            "an attribute is not allowed on a statement; "
+            "attributes precede only TABLE, FN, and column declarations");
+
+        // An `@` at statement level is always misplaced. Consuming just
+        // the `@` is correct here: the attribute's own tokens (its name
+        // and argument list) are not a construct the block loop can
+        // mistake for a statement, and the declaration the attribute
+        // belonged to — if there was one — begins with `TABLE`/`FN` and
+        // is handled by the branches above. Consume the `@` and let the
+        // block loop report the next token if it is not a declaration
+        // keyword.
         stream.consume();
         return nullptr;
     }
@@ -275,9 +325,10 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
 VarDeclStmtAST* parseVarDeclStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
-    // parseVarDecl consumes the declaration's own `;` (Rule 1's
-    // reconciliation: var_decl embeds its terminator in both its top-level
-    // and statement positions). The wrapper does not consume anything.
+    // parseVarDecl parses the declaration and stops at the first token
+    // that cannot continue it (§12.6). It does not consume a `;`; a
+    // stray `;` after the declaration is an empty statement the block
+    // loop skips.
     VarDeclAST* decl = parseVarDecl(stream, ctx);
     if (decl == nullptr) {
         return nullptr;
@@ -347,9 +398,10 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
     auto* ret = ctx.arena.make<ReturnStmtAST>();
     ret->loc = loc;
 
-    // A bare `return;` is legal. A value-returning `return` is followed
-    // by an expression.
-    if (!stream.check(TokenType::SEMICOLON)) {
+    // A bare `return` is legal. A value-returning `return` is followed
+    // by an expression. §12.6: the operand is present when the next
+    // token can begin an expression.
+    if (canStartExpression(stream.peekType())) {
         ExprAST* value = parseRequiredExpr(stream, ctx, "return value");
         ret->value = value;
         if (value != nullptr && value->hasSyntaxError) {

@@ -26,10 +26,22 @@
  * `nullptr` from a nested parse, to skip over the broken construct and
  * land on the next thing it knows how to parse.
  *
- * ─── Design: two functions, one scan ──────────────────────────────────────
- * `synchronizeUntil` is the scanning primitive. It takes a predicate and
- * stops when the predicate matches a token at bracket depth zero (or when
- * a foreign closer or end-of-input ends the scan).
+ * ─── Design: two scans, one primitive ────────────────────────────────────
+ * `synchronizeUntil` is the depth-blind scan: its predicate is
+ * `bool(TokenType)` and is consulted only at bracket depth zero.
+ *
+ * `synchronizeUntilDepth` is the depth-aware scan: its predicate is
+ * `bool(TokenStream&, int)` and is consulted at every token. Use it when
+ * the recovery decision depends on whether the scan is inside a lost
+ * block, or when the predicate needs to look ahead (`FN` followed by an
+ * identifier is a strong declaration start; a bare `FN` is not).
+ *
+ * `synchronizeTo` is a variadic convenience over `synchronizeUntil`.
+ *
+ * The two named stop sets (`isTopLevelRecoveryStop`,
+ * `isFunctionDeclRecoveryStop`) live here rather than in each .cpp that
+ * needs them, because two translation units share them. A stop set that
+ * is used by one caller stays local to that caller.
  *
  * `synchronizeTo` is a variadic convenience over it: pass TokenTypes, get
  * a predicate that matches any of them.
@@ -71,6 +83,7 @@
 
 #include "core/Tokens.hpp"
 #include "parser/context/TokenStream.hpp"
+#include "parser/support/GrammarPositions.hpp"
 
 #include <vector>
 
@@ -171,6 +184,131 @@ SyncResult synchronizeUntil(TokenStream& stream, Predicate stopAt) {
     }
 
     return SyncResult::ReachedEnd;
+}
+
+/// @brief Skip tokens until `stopAt` matches, passing the current
+///        bracket depth and the stream to the predicate.
+///
+/// Identical scanning to `synchronizeUntil`, with two differences:
+///
+///   - The predicate is `bool(TokenStream&, int depth)`. The stream is
+///     passed so the predicate can look ahead (e.g. to distinguish
+///     `FN <ident>` from a bare `FN`); the depth is passed so the
+///     predicate can distinguish "a declaration start at the top level"
+///     from "a declaration start inside a lost block".
+///
+///   - The predicate is consulted at every token, not only at depth
+///     zero. A caller that wants depth-aware behavior is by definition
+///     interested in tokens at depth > 0.
+///
+/// The scan still stops *on* a matched token, without consuming it.
+/// `ForeignCloser` and `ReachedEnd` have the same meanings as in the
+/// single-argument form.
+///
+/// @tparam Predicate  A callable `bool(TokenStream&, int)`.
+/// @param stream      The token stream to scan.
+/// @param stopAt      The predicate.
+/// @return Why the scan stopped.
+template <typename Predicate>
+SyncResult synchronizeUntilDepth(TokenStream& stream, Predicate stopAt) {
+    std::vector<TokenType> expectedClosers;
+
+    while (!stream.isAtEnd()) {
+        const TokenType current = stream.peekType();
+        const int depth = static_cast<int>(expectedClosers.size());
+
+        if (isClosingDelimiter(current)) {
+            if (!expectedClosers.empty() &&
+                expectedClosers.back() == current) {
+                expectedClosers.pop_back();
+                stream.consume();
+                continue;
+            }
+            if (expectedClosers.empty() && stopAt(stream, depth)) {
+                return SyncResult::Matched;
+            }
+            return SyncResult::ForeignCloser;
+        }
+
+        if (stopAt(stream, depth)) {
+            return SyncResult::Matched;
+        }
+
+        if (isOpeningDelimiter(current)) {
+            expectedClosers.push_back(detail::matchingCloserFor(current));
+        }
+        stream.consume();
+    }
+
+    return SyncResult::ReachedEnd;
+}
+
+// =============================================================================
+// Named stop sets
+// =============================================================================
+//
+// A stop set is a predicate passed to `synchronizeUntilDepth`. Two are
+// shared across more than one translation unit, so they live here rather
+// than being duplicated in each .cpp that needs them.
+
+/// @brief The stop set for the top-level recovery scan.
+///
+/// Stops on any token that can begin a declaration at the current brace
+/// depth, and on a `;` (a legal empty declaration the caller's loop will
+/// skip).
+///
+/// The depth matters: a strong declaration start is legal only at the
+/// top level, so meeting one at depth > 0 means a `}` is missing and the
+/// scan should stop so the caller can resume at the declaration. A weak
+/// declaration start (`let`, `const`, `@`) is legal inside a body, so it
+/// stops the scan only at depth 0.
+///
+/// The stream is passed so the predicate can do the `FN` lookahead:
+/// `FN <ident>` is a strong start, a bare `FN` is not.
+inline bool isTopLevelRecoveryStop(TokenStream& stream, int depth) {
+    const TokenType current = stream.peekType();
+
+    if (current == TokenType::SEMICOLON) {
+        return true;
+    }
+
+    if (isStrongDeclarationStart(current, stream.peekNextType())) {
+        return true;
+    }
+
+    if (depth == 0 && isWeakDeclarationStart(current)) {
+        return true;
+    }
+
+    return false;
+}
+
+/// @brief The stop set for the function-declaration recovery scan.
+///
+/// Stops on the function body's opener (`{`), the host-target `=`, or
+/// any declaration start at the current brace depth. Used by
+/// `parseFnDecl` when the parameter list is malformed and the scan is
+/// looking for either the body or the next declaration.
+///
+/// Unlike `isTopLevelRecoveryStop`, this predicate does not stop on `;`:
+/// a `;` between a broken `FN` signature and the next declaration is an
+/// empty declaration the enclosing loop will skip, not a boundary the
+/// scan needs to find.
+inline bool isFunctionDeclRecoveryStop(TokenStream& stream, int depth) {
+    const TokenType current = stream.peekType();
+
+    if (current == TokenType::LBRACE) return true;
+    if (current == TokenType::ASSIGN) return true;
+
+    if (isStrongDeclarationStart(current, stream.peekNextType())) {
+        return true;
+    }
+
+    if (depth == 0 && isWeakDeclarationStart(current)) {
+        return true;
+    }
+
+    return false;
 }
 
 // =============================================================================

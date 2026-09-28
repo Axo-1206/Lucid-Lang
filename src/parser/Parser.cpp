@@ -147,11 +147,12 @@ ModuleAST* parseFile(std::string_view path,
                 "expected a declaration, got '",
                 stream.peekValueView(ctx.pool), "'");
 
-            // Synchronize to the next plausible declaration start. The
-            // scan stops on any declaration-start token or a `;`; the loop
-            // then skips a stray `;` on its next iteration or dispatches
-            // the declaration it landed on.
-            synchronizeUntil(stream, isDeclStart);
+            // Synchronize to the next plausible declaration start.
+            // The scan is depth-aware: a strong declaration start at
+            // depth > 0 means an enclosing block lost its `}` and the
+            // scan should stop there so the caller can resume at the
+            // declaration.
+            synchronizeUntilDepth(stream, isTopLevelRecoveryStop);
 
             if (stream.isAtEnd()) break;
             continue;
@@ -208,7 +209,7 @@ ModuleAST* parseFile(std::string_view path,
                 stream.currentLoc(),
                 "parser could not recover from the previous error");
 
-            synchronizeUntil(stream, isDeclStart);
+            synchronizeUntilDepth(stream, isTopLevelRecoveryStop);
 
             if (stream.isAtEnd()) break;
         }

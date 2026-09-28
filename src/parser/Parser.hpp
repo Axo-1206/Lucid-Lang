@@ -138,6 +138,9 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx);
 ///   - a jump keyword → the matching parser
 ///   - a suspend keyword (`wait`, `waitFrames`, ...) → the matching parser
 ///   - an expression start → parseAssignOrExprStmt (see below)
+///   - a top-level declaration keyword (`TABLE`, `FIXED`, `FN`) or `@`
+///     → reports "not allowed inside a block" and consumes the whole
+///       declaration, then returns nullptr
 ///   - anything else → "expected a statement" and nullptr
 ///
 /// The caller (`parseBlock`) has established that the current token can
@@ -145,7 +148,9 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx);
 ///
 /// Error behavior: returns nullptr for a token that cannot begin a
 /// statement. Individual statement parsers may partial-parse; see their
-/// declarations below.
+/// declarations below. The `TABLE`/`FN`/`@` case returns nullptr *after*
+/// consuming the declaration, so the block loop's recovery sees the token
+/// after the declaration, not the declaration itself.
 StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx);
 
 // =============================================================================

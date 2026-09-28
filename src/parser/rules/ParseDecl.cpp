@@ -37,6 +37,16 @@
  * or absence of an inline `= [ ... ]` initializer does not affect
  * `isFixed`.
  *
+ * ─── Design: `;` is optional ─────────────────────────────────────────────
+ * A declaration ends at the first token that cannot continue it (§12.6).
+ * `;` is an optional empty declaration, skipped by the enclosing loop
+ * (`parseFile`'s top-level loop, or `parseBlock`'s statement loop). No
+ * parser function in this file consumes a `;`.
+ *
+ * `parseFile`'s loop and `parseBlock`'s loop are the only places a `;`
+ * is consumed. A declaration parser stops before one, and the loop's
+ * next iteration skips it.
+ *
  * ─── Design: loc points at the first attribute ────────────────────────────
  * parseDecl captures the declaration's `loc` before reading the attribute
  * sequence, so a declaration with `@export` in front has its `loc`
@@ -125,9 +135,7 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
 
             // Synchronize to the next declaration so the loop does not
             // immediately re-report the same problem.
-            synchronizeUntil(stream, [](TokenType t) {
-                return isDeclarationStart(t) || t == TokenType::SEMICOLON;
-            });
+            synchronizeUntilDepth(stream, isTopLevelRecoveryStop);
             break;
     }
 
@@ -474,9 +482,7 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
         stream.peekValueView(ctx.pool), "'");
 
     // Synchronize to the next declaration.
-    synchronizeUntil(stream, [](TokenType t) {
-        return isDeclarationStart(t) || t == TokenType::SEMICOLON;
-    });
+    synchronizeUntilDepth(stream, isTopLevelRecoveryStop);
 
     table->hasSyntaxError = true;
     return table;   // partial-parse: the name and FIXED survive
@@ -656,11 +662,7 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
                            stream.peekValueView(ctx.pool), "'");
 
         // Synchronize to the body or the next declaration.
-        synchronizeUntil(stream, [](TokenType t) {
-            return t == TokenType::LBRACE
-                || t == TokenType::ASSIGN
-                || isDeclarationStart(t);
-        });
+        synchronizeUntilDepth(stream, isFunctionDeclRecoveryStop);
 
         fn->hasSyntaxError = true;
     } else {
