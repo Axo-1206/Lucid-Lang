@@ -400,6 +400,8 @@ TABLE LoadRequest = host("LoadRequest")
 
 **Index representation is a runtime choice.** The contract is that `by<Column>` is O(1) expected. The runtime may use a direct array, a hash map, or anything else that meets it.
 
+**Generated names must not collide.** It is a semantic error if the generated `by<Column>` name equals the name of an existing column or fixed-table member of the same table (for example, a column that is itself named `byId` alongside `@primary id`).
+
 **No `@default(expr)` attribute.** `T.ADD(args...)` has exactly one calling rule: argument count must equal column count, in order (§7.1) — no exceptions. A default-value attribute would carve an exception into that rule (some trailing columns optional, others not), for something that's already fully achievable as domain logic rather than storage — an ordinary wrapper function, the same pattern already used for every other table convenience (`FIND` predicates, lookups, aggregations):
 
 ```
@@ -803,7 +805,7 @@ Array literals are first-class expressions: `[1, 2, 3]`. An empty `[]` requires 
 
 ### 5.6 Column views have no storable type
 
-`T.column` (§7.4) produces a live view over a column's values, usable only inline in a `for` loop or an aggregation call (`.SUM()`, `.AVG()`). It cannot be assigned to a variable or passed as an argument — it is not a value of any type in this grammar, dynamic array included, because unlike an array it is a live view rather than a copy. To obtain a real, storable `[T]` copy of a column, call `.toArray()` on it.
+`T.column` (§7.4) produces a live view over a column's values, usable only inline in a `for` loop or an aggregation call (`.SUM()`, `.AVG()`). It cannot be assigned to a variable or passed as an argument — it is not a value of any type in this grammar, dynamic array included, because unlike an array it is a live view rather than a copy. To obtain a real, storable `[T]` copy of a column, call `.TOARRAY()` on it.
 
 ### 5.7 Host types
 
@@ -1076,7 +1078,7 @@ FN compute() -> int {
 | `T.CLEAR()`           | `unit`       | Remove every row and keep the allocated storage. Every `&T` into the table becomes stale in O(1); the `@primary` index is emptied (§4.1.1a, §4.1.1d). Growing mutable tables only.                                                                                                                  |
 | `T.SHRINK()`          | `unit`       | Best-effort release of unused trailing storage. Rows never move and no reference changes. The amount released is not guaranteed (§4.1.1d). Growing mutable tables only.                                                                                                                             |
 | `T[i]`                | `&T`         | Row at slot `i`. **Panics** if `i` is out of bounds or refers to a removed slot.                                                                                                                                                                                                                    |
-| `T.at(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                                                                                                                                                                |
+| `T.AT(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                                                                                                                                                                |
 | `T.COUNT()`           | `uint`       | Number of live rows.                                                                                                                                                                                                                                                                                |
 | `T.VERSION()`         | `uint64`     | Structural version: increases on every `ADD`, `REMOVE`, and `CLEAR`, and never decreases. Cell writes do not change it, so a consumer that reads cell values must still re-read them; use it to skip work when the set of rows is unchanged. Available on every table; always 0 on a `FIXED` table. |
 | `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` or `CLEAR` on the parent table.                                                                                                                                  |
@@ -1086,7 +1088,9 @@ FN compute() -> int {
 
 **Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. A program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
 
-**Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table that is not `@immutable`, `@readonly`, or `@packed` (the last two imply `@immutable`). `VERSION`, `COUNT`, `at`, `FIND`, and `by<Column>` are available on every table.
+**Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table that is not `@immutable`, `@readonly`, or `@packed` (the last two imply `@immutable`). `VERSION`, `COUNT`, `AT`, `FIND`, and `by<Column>` are available on every table.
+
+**Method naming.** Built-in methods on a table, array, or column view are always spelled in ALLCAPS (`ADD`, `REMOVE`, `CLEAR`, `SHRINK`, `AT`, `COUNT`, `VERSION`, `FIND`, `SORT`, `CONTAINS`, `SUM`, `AVG`, `TOARRAY`), with no exceptions. This keeps them from colliding with the other names reachable after a table's dot: columns are lowercase or camelCase (`Person.count`) and fixed-table members are PascalCase (`Direction.North`), and identifiers are case-sensitive (§2.3). A column or fixed-table member whose name equals a built-in method name (for example a column named `COUNT`) is a semantic error. The one generated method name, `by<Column>` (§4.1.5), is built from the column's own name and follows its casing. Ordinary functions (`println`, `waitFrames`) stay lowercase camelCase.
 
 **There is deliberately no table sort and no compaction.** Both would move rows between slots, and `&T` references name slots, so any reference held in a local variable, another table's cell, or an array element would silently point at a different row. Sorted order comes from an array of references (§8.3); memory comes back through reuse, `CLEAR`, and `SHRINK` (§4.1.1d).
 
@@ -1101,7 +1105,7 @@ FN compute() -> int {
 
 **Panics** (bugs, not recoverable in-language — see §10): `T[i]` out of bounds or on a dead slot, a duplicate `@unique`/`@primary` value on `ADD` or on a cell write, and dereferencing a `nil` row reference (`"attempt to access a nil value"`).
 
-**Returns `nil`** (an expected, checkable absence): `T.at(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a reference whose row was removed (a stale reference, §7.6).
+**Returns `nil`** (an expected, checkable absence): `T.AT(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a reference whose row was removed (a stale reference, §7.6).
 
 ### 7.4 Column views and aggregation
 
@@ -1110,7 +1114,7 @@ for n: string in Person.name { println(n) }
 
 let totalAge: int   = Person.age.SUM()
 let avgAge:   float = Person.age.AVG()
-let names:    [string] = Person.name.toArray()
+let names:    [string] = Person.name.TOARRAY()
 ```
 
 ### 7.5 `FIND` and views
@@ -1437,7 +1441,7 @@ A `@sequence` function is lowered by the compiler into a small generated state m
 Lucid has exactly two failure channels and no `try`/`catch`:
 
 - **Panics** — programmer bugs: out-of-bounds `T[i]`, a `@unique`/`@primary` violation, dereferencing `nil`. Not recoverable inside the script.
-- **`nil`** — a legitimately absent result: `T.at(i)`, `T.by<Column>(...)`, a reference whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
+- **`nil`** — a legitimately absent result: `T.AT(i)`, `T.by<Column>(...)`, a reference whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
 
 A panic unwinds only as far as the host call boundary: the specific `@export`ed function the engine invoked (directly, or via `@on(...)`) returns an error to the engine instead of crashing the whole process. There is no in-script exception handling beyond that.
 
