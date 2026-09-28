@@ -85,7 +85,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream,
                 // The body is the token's interned value; the lexer
                 // already stripped the `--/` closer and the leading
                 // `/--`.
-                blockText = std::string(ctx.pool().lookupView(t.value));
+                blockText = std::string(ctx.pool.lookupView(t.value));
             }
             break;
         }
@@ -105,7 +105,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream,
     // comments. In today's grammar, they are never populated, so the
     // block branch is the only one that can fire.
     if (blockText.has_value()) {
-        return DocComment{ctx.pool().intern(*blockText)};
+        return DocComment{ctx.pool.intern(*blockText)};
     }
 
     if (!stackedLines.empty()) {
@@ -116,11 +116,11 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream,
             if (!combined.empty()) combined += '\n';
             combined += *it;
         }
-        return DocComment{ctx.pool().intern(combined)};
+        return DocComment{ctx.pool.intern(combined)};
     }
 
     if (trailingText.has_value()) {
-        return DocComment{ctx.pool().intern(*trailingText)};
+        return DocComment{ctx.pool.intern(*trailingText)};
     }
 
     return std::nullopt;
@@ -135,11 +135,11 @@ void consumeSemicolon(TokenStream& stream,
                       const char* constructKind) {
     if (stream.match(TokenType::SEMICOLON)) return;
 
-    ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+    ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                        stream.currentLoc(),
                        "expected ';' after the ", constructKind,
                        ", got '",
-                       stream.peekValueView(ctx.pool()), "'");
+                       stream.peekValueView(ctx.pool), "'");
 }
 
 // =============================================================================
@@ -149,7 +149,7 @@ void consumeSemicolon(TokenStream& stream,
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     // Caller has consumed the opening `(`.
     if (stream.match(TokenType::RPAREN)) {
-        return ctx.arena().makeBuilder<ExprAST*>().build();
+        return ctx.arena.makeBuilder<ExprAST*>().build();
     }
 
     std::vector<ExprAST*> args;
@@ -161,7 +161,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
 
         if (stream.match(TokenType::COMMA)) {
             if (stream.check(TokenType::RPAREN)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in argument list");
                 break;
@@ -170,10 +170,10 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         }
         if (stream.check(TokenType::RPAREN)) break;
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or ')' in argument list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA || t == TokenType::RPAREN;
@@ -183,13 +183,13 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close the argument list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
-    auto builder = ctx.arena().makeBuilder<ExprAST*>(args.size());
+    auto builder = ctx.arena.makeBuilder<ExprAST*>(args.size());
     for (ExprAST* a : args) builder.push_back(a);
     return builder.build();
 }
@@ -216,7 +216,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream,
 
         if (stream.match(TokenType::COMMA)) {
             if (stream.check(TokenType::RPAREN)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in parameter list");
                 break;
@@ -225,10 +225,10 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream,
         }
         if (stream.check(TokenType::RPAREN)) break;
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or ')' in parameter list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA || t == TokenType::RPAREN;
@@ -238,10 +238,10 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream,
     }
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close the parameter list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
     return params;
@@ -255,7 +255,7 @@ ArenaSpan<TypeAST*> parseFunctionTypeParamList(TokenStream& stream,
                                                ParserContext& ctx) {
     // Caller has consumed the opening `(`.
     if (stream.match(TokenType::RPAREN)) {
-        return ctx.arena().makeBuilder<TypeAST*>().build();
+        return ctx.arena.makeBuilder<TypeAST*>().build();
     }
 
     std::vector<TypeAST*> params;
@@ -264,12 +264,12 @@ ArenaSpan<TypeAST*> parseFunctionTypeParamList(TokenStream& stream,
            ctx.canContinue()) {
         TypeAST* param = parseType(stream, ctx);
         if (param == nullptr) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                                stream.currentLoc(),
                                "expected a parameter type, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
 
-            param = ctx.arena().make<UnknownTypeAST>();
+            param = ctx.arena.make<UnknownTypeAST>();
             param->loc = stream.currentLoc();
             param->hasSyntaxError = true;
         }
@@ -277,7 +277,7 @@ ArenaSpan<TypeAST*> parseFunctionTypeParamList(TokenStream& stream,
 
         if (stream.match(TokenType::COMMA)) {
             if (stream.check(TokenType::RPAREN)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in function type's "
                                    "parameter list");
@@ -287,11 +287,11 @@ ArenaSpan<TypeAST*> parseFunctionTypeParamList(TokenStream& stream,
         }
         if (stream.check(TokenType::RPAREN)) break;
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or ')' in function type's "
                            "parameter list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA || t == TokenType::RPAREN;
@@ -301,14 +301,14 @@ ArenaSpan<TypeAST*> parseFunctionTypeParamList(TokenStream& stream,
     }
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close the function type's "
                            "parameter list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
-    auto builder = ctx.arena().makeBuilder<TypeAST*>(params.size());
+    auto builder = ctx.arena.makeBuilder<TypeAST*>(params.size());
     for (TypeAST* p : params) builder.push_back(p);
     return builder.build();
 }
@@ -334,11 +334,11 @@ std::vector<InternedString> parseImportPath(TokenStream& stream,
         }
 
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                                stream.currentLoc(),
                                "expected an identifier after '.' in import "
                                "path, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             break;
         }
     }

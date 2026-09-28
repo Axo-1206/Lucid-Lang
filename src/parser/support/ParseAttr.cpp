@@ -92,7 +92,7 @@ ExprAST* parseAttributeArgIdent(TokenStream& stream,
     }
 
     Token firstTok = stream.consume();
-    ExprAST* expr = ctx.arena().make<IdentifierExprAST>(firstTok.value);
+    ExprAST* expr = ctx.arena.make<IdentifierExprAST>(firstTok.value);
     expr->loc = loc;
 
     // Dotted chain.
@@ -100,18 +100,18 @@ ExprAST* parseAttributeArgIdent(TokenStream& stream,
         stream.consume();   // `.`
 
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                                stream.currentLoc(),
                                "expected an identifier after '.' in an "
                                "attribute argument, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             expr->hasSyntaxError = true;
             break;
         }
 
         Token fieldTok = stream.consume();
 
-        auto* access = ctx.arena().make<FieldAccessExprAST>(fieldTok.value);
+        auto* access = ctx.arena.make<FieldAccessExprAST>(fieldTok.value);
         access->loc = expr->loc;
         access->object = expr;
         expr = access;
@@ -131,7 +131,7 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream,
     // If the current token is not `@`, the declaration has no
     // attributes. Return an empty span and consume nothing.
     if (!stream.check(TokenType::AT_SIGN)) {
-        return ctx.arena().makeBuilder<AttributeAST*>().build();
+        return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
 
     std::vector<AttributeAST*> attrs;
@@ -157,10 +157,10 @@ ArenaSpan<AttributeAST*> parseAttributes(TokenStream& stream,
     }
 
     if (attrs.empty()) {
-        return ctx.arena().makeBuilder<AttributeAST*>().build();
+        return ctx.arena.makeBuilder<AttributeAST*>().build();
     }
 
-    auto builder = ctx.arena().makeBuilder<AttributeAST*>(attrs.size());
+    auto builder = ctx.arena.makeBuilder<AttributeAST*>(attrs.size());
     for (AttributeAST* a : attrs) builder.push_back(a);
     return builder.build();
 }
@@ -173,21 +173,21 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::AT_SIGN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected '@' to start an attribute, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected an attribute name after '@', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         // Partial-parse: produce an attribute with an empty name, marked.
-        auto* placeholder = ctx.arena().make<AttributeAST>();
+        auto* placeholder = ctx.arena.make<AttributeAST>();
         placeholder->loc = loc;
         placeholder->name = InternedString{};   // invalid
         placeholder->hasSyntaxError = true;
@@ -196,7 +196,7 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
 
     Token nameTok = stream.consume();
 
-    auto* attr = ctx.arena().make<AttributeAST>();
+    auto* attr = ctx.arena.make<AttributeAST>();
     attr->loc = loc;
     attr->name = nameTok.value;
 
@@ -223,7 +223,7 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
 
         if (stream.match(TokenType::COMMA)) {
             if (stream.check(TokenType::RPAREN)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in attribute arguments");
                 break;
@@ -232,10 +232,10 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
         }
         if (stream.check(TokenType::RPAREN)) break;
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or ')' in attribute arguments, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA || t == TokenType::RPAREN;
@@ -245,16 +245,16 @@ AttributeAST* parseAttribute(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close the attribute arguments, "
                            "got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         attr->hasSyntaxError = true;
     }
 
     if (!args.empty()) {
-        auto builder = ctx.arena().makeBuilder<ExprAST*>(args.size());
+        auto builder = ctx.arena.makeBuilder<ExprAST*>(args.size());
         for (ExprAST* a : args) builder.push_back(a);
         attr->args = builder.build();
     }
@@ -290,23 +290,23 @@ ExprAST* parseAttributeArg(TokenStream& stream, ParserContext& ctx) {
             return parseAttributeArgIdent(stream, ctx);
 
         default:
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
                                "expected a literal or identifier as an "
                                "attribute argument, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
 
             // Consume the offending token so the argument loop can make
             // progress, and return a marked placeholder.
             stream.consume();
 
-            auto* unk = ctx.arena().make<UnknownExprAST>();
+            auto* unk = ctx.arena.make<UnknownExprAST>();
             unk->loc = loc;
             unk->hasSyntaxError = true;
             return unk;
     }
 
     Token litTok = stream.consume();
-    auto* lit = ctx.arena().make<LiteralExprAST>(kind, litTok.value);
+    auto* lit = ctx.arena.make<LiteralExprAST>(kind, litTok.value);
     lit->loc = loc;
     return lit;
 }

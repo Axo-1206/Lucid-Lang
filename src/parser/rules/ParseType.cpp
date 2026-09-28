@@ -123,9 +123,9 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
             return parseFunctionType(stream, ctx);
 
         default:
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType, loc,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType, loc,
                                "expected a type, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             return nullptr;
     }
 }
@@ -162,7 +162,7 @@ TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
 
     // Optional `?` suffix.
     if (stream.match(TokenType::QUESTION)) {
-        auto* nullable = ctx.arena().make<NullableTypeAST>(base);
+        auto* nullable = ctx.arena.make<NullableTypeAST>(base);
         nullable->loc = loc;
         return nullable;
     }
@@ -207,15 +207,15 @@ PrimitiveTypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
         default:
             // The caller (parseType) checked isPrimitiveTypeKeyword
             // before dispatching, so this is unreachable.
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType, loc,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType, loc,
                                "expected a primitive type name, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             return nullptr;
     }
 
     stream.consume();
 
-    auto* prim = ctx.arena().make<PrimitiveTypeAST>(kind);
+    auto* prim = ctx.arena.make<PrimitiveTypeAST>(kind);
     prim->loc = loc;
     return prim;
 }
@@ -228,9 +228,9 @@ NamedTypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
                            "expected a type name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -247,14 +247,14 @@ NamedTypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         stream.consume();   // `.`
 
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                                stream.currentLoc(),
                                "expected a type name after '.', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
 
             // Partial-parse: keep the first identifier as the name, mark
             // the node. The qualifier is left invalid.
-            auto* nt = ctx.arena().make<NamedTypeAST>(firstName);
+            auto* nt = ctx.arena.make<NamedTypeAST>(firstName);
             nt->loc = loc;
             nt->hasSyntaxError = true;
             return nt;
@@ -263,14 +263,14 @@ NamedTypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         Token secondTok = stream.consume();
         InternedString secondName = secondTok.value;
 
-        auto* nt = ctx.arena().make<NamedTypeAST>(secondName);
+        auto* nt = ctx.arena.make<NamedTypeAST>(secondName);
         nt->loc = loc;
         nt->qualifier = firstName;
         return nt;
     }
 
     // ─── Unqualified ──────────────────────────────────────────────────────
-    auto* nt = ctx.arena().make<NamedTypeAST>(firstName);
+    auto* nt = ctx.arena.make<NamedTypeAST>(firstName);
     nt->loc = loc;
     return nt;
 }
@@ -283,9 +283,9 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::LBRACKET)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected '[', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -297,7 +297,7 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     // uint64_t directly.
     if (stream.check(TokenType::INT_LITERAL)) {
         Token sizeTok = stream.consume();
-        const std::string_view lexeme = ctx.pool().lookupView(sizeTok.value);
+        const std::string_view lexeme = ctx.pool.lookupView(sizeTok.value);
 
         uint64_t fixedSize = 0;
         const auto [ptr, ec] = std::from_chars(
@@ -307,7 +307,7 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
                            (ptr == lexeme.data() + lexeme.size());
 
         if (!sizeIsValid) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedLiteral,
                                sizeTok.location,
                                "array size is not a valid unsigned "
                                "integer");
@@ -316,35 +316,35 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
 
         // `,` between the size and the element type.
         if (!stream.match(TokenType::COMMA)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                                stream.currentLoc(),
                                "expected ',' after the array size, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             sizeIsValid = false;
         }
 
         // Element type.
         TypeAST* element = parseType(stream, ctx);
         if (element == nullptr) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                                stream.currentLoc(),
                                "expected an element type after ',', got '",
-                               stream.peekValueView(ctx.pool()), "'");
-            element = ctx.arena().make<UnknownTypeAST>();
+                               stream.peekValueView(ctx.pool), "'");
+            element = ctx.arena.make<UnknownTypeAST>();
             element->loc = stream.currentLoc();
             element->hasSyntaxError = true;
         }
 
         // Closing `]`.
         if (!stream.match(TokenType::RBRACKET)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                                stream.currentLoc(),
                                "expected ']' to close the array type, got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             sizeIsValid = false;
         }
 
-        auto* arr = ctx.arena().make<ArrayTypeAST>(
+        auto* arr = ctx.arena.make<ArrayTypeAST>(
             ArrayKind::Fixed, fixedSize, element);
         arr->loc = loc;
         if (!sizeIsValid || element->hasSyntaxError) {
@@ -359,23 +359,23 @@ ArrayTypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     // `[&Person]`.
     TypeAST* element = parseType(stream, ctx);
     if (element == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected an element type inside '[...]', got '",
-                           stream.peekValueView(ctx.pool()), "'");
-        element = ctx.arena().make<UnknownTypeAST>();
+                           stream.peekValueView(ctx.pool), "'");
+        element = ctx.arena.make<UnknownTypeAST>();
         element->loc = stream.currentLoc();
         element->hasSyntaxError = true;
     }
 
     if (!stream.match(TokenType::RBRACKET)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ']' to close the array type, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
-    auto* arr = ctx.arena().make<ArrayTypeAST>(
+    auto* arr = ctx.arena.make<ArrayTypeAST>(
         ArrayKind::Dynamic, /*fixedSize=*/0, element);
     arr->loc = loc;
     if (element->hasSyntaxError) arr->hasSyntaxError = true;
@@ -390,9 +390,9 @@ RowRefTypeAST* parseRowRefType(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::BIT_AND)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected '&', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -400,26 +400,26 @@ RowRefTypeAST* parseRowRefType(TokenStream& stream, ParserContext& ctx) {
     // grammar: `row_ref_type ::= '&' qualified_table`.
     NamedTypeAST* inner = parseNamedType(stream, ctx);
     if (inner == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected a table name after '&', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         // Partial-parse: an inner named type with a placeholder name.
         // Actually, we need a TypeAST for `RowRefTypeAST::inner`. If we
         // have no name, we can't build a NamedTypeAST. Use an
         // UnknownTypeAST.
-        auto* unk = ctx.arena().make<UnknownTypeAST>();
+        auto* unk = ctx.arena.make<UnknownTypeAST>();
         unk->loc = stream.currentLoc();
         unk->hasSyntaxError = true;
 
-        auto* ref = ctx.arena().make<RowRefTypeAST>(unk);
+        auto* ref = ctx.arena.make<RowRefTypeAST>(unk);
         ref->loc = loc;
         ref->hasSyntaxError = true;
         return ref;
     }
 
-    auto* ref = ctx.arena().make<RowRefTypeAST>(inner);
+    auto* ref = ctx.arena.make<RowRefTypeAST>(inner);
     ref->loc = loc;
     if (inner->hasSyntaxError) ref->hasSyntaxError = true;
     return ref;
@@ -433,10 +433,10 @@ FunctionTypeAST* parseFunctionType(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected '(' to open the function type's "
                            "parameters, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -445,7 +445,7 @@ FunctionTypeAST* parseFunctionType(TokenStream& stream, ParserContext& ctx) {
     // not a binding).
     ArenaSpan<TypeAST*> params = parseFunctionTypeParamList(stream, ctx);
 
-    auto* ft = ctx.arena().make<FunctionTypeAST>();
+    auto* ft = ctx.arena.make<FunctionTypeAST>();
     ft->loc = loc;
     ft->params = params;
 
@@ -454,21 +454,21 @@ FunctionTypeAST* parseFunctionType(TokenStream& stream, ParserContext& ctx) {
     // The arrow is required: a function type is `(T, U) -> R`, and there
     // is no default return. A bare `(T, U)` is not a function type.
     if (!stream.match(TokenType::ARROW)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '->' after the function type's "
                            "parameters, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         ft->hasSyntaxError = true;
         return ft;
     }
 
     TypeAST* ret = parseType(stream, ctx);
     if (ret == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected a return type after '->', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         ft->hasSyntaxError = true;
         return ft;
     }

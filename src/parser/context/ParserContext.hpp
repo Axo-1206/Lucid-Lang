@@ -10,9 +10,8 @@
 /// the CLI's column.
 ///
 /// Because the parser does not recurse across files, this context is small.
-/// It holds a reference to the session, which owns the string pool, the AST
-/// arena, and the diagnostic engine. The parser reaches all three through
-/// the session; it does not own them.
+/// It holds references to the string pool, the AST arena, and the
+/// diagnostic engine. The parser does not own any of them.
 ///
 /// ─── What changed from the previous design ────────────────────────────────
 /// The previous design carried a syntactic-context stack: a std::vector of
@@ -31,9 +30,9 @@
 /// push without a pop, and there are no pushes left.
 ///
 /// ─── What this is NOT ─────────────────────────────────────────────────────
-/// It is not a session. A CompilationSession owns the pool, the diagnostic
-/// engine, and the arena, and lives for the duration of a whole compilation.
-/// A ParserContext borrows a session; it does not extend its lifetime.
+/// It is not a session. The resources it references are owned by the
+/// session (or by whatever constructed the context), and outlive the
+/// parse. A ParserContext borrows them; it does not extend their lifetime.
 ///
 /// It is not per-file in the sense of "one context per file". One
 /// ParserContext is constructed per session, and every file parsed by that
@@ -45,25 +44,38 @@
 
 #pragma once
 
-#include "core/CompilationSession.hpp"
 #include "core/SourceLocation.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
+#include "core/memory/ASTArena.hpp"
 #include "core/memory/InternedString.hpp"
+#include "core/memory/StringPool.hpp"
 
 namespace lucid::parser {
 
 /// @brief The parser's view of the compilation session.
 ///
 /// Constructed once per session and passed by reference to every parser
-/// function. Holds no state of its own beyond the session reference; the
-/// accessors forward to the session's members.
+/// function. Holds references to the resources the parser needs; the
+/// parser reaches them as plain fields.
 struct ParserContext {
-    /// The session. Owns the pool, the diagnostic engine, and the arena.
-    /// The parser reaches them through the accessors below.
-    CompilationSession& session;
+    /// Canonical string storage for the session.
+    StringPool& pool;
+
+    /// Bump-allocated storage for the session's AST.
+    ASTArena& arena;
+
+    /// Collected diagnostics for the session.
+    lucid::diag::DiagnosticEngine& diag;
 
     // ─── Construction ──────────────────────────────────────────────────
 
-    explicit ParserContext(CompilationSession& s) : session(s) {}
+    ParserContext(StringPool& p,
+                  ASTArena& a,
+                  lucid::diag::DiagnosticEngine& d)
+        : pool(p)
+        , arena(a)
+        , diag(d)
+    {}
 
     // Non-copyable, non-movable: the parser holds a reference to it, and
     // the reference must remain valid for the whole parse. Making this
@@ -74,20 +86,11 @@ struct ParserContext {
     ParserContext(ParserContext&&)                 = delete;
     ParserContext& operator=(ParserContext&&)      = delete;
 
-    // ─── Session accessors ─────────────────────────────────────────────
-    //
-    // The three names every parser function reaches for. They forward to
-    // the session; there is no duplicate storage.
-
-    StringPool& pool()  noexcept { return session.pool; }
-    ASTArena& arena() noexcept { return session.arena; }
-    lucid::diag::DiagnosticEngine& diag() noexcept { return session.diagnostics; }
-
     /// True if the parser should keep going. The error cap is the
     /// diagnostic engine's; this wrapper exists so call sites read
     /// `ctx.canContinue()` rather than reaching through to the engine.
     bool canContinue() const {
-        return session.diagnostics.canContinue();
+        return diag.canContinue();
     }
 };
 
@@ -110,13 +113,13 @@ struct ParserContext {
 struct ScopedDiagnosticFile {
     ScopedDiagnosticFile(ParserContext& ctx, InternedString file)
         : ctx_(ctx)
-        , saved_(ctx.session.diagnostics.currentFile())
+        , saved_(ctx_.diag.currentFile())
     {
-        ctx_.session.diagnostics.setCurrentFile(file);
+        ctx_.diag.setCurrentFile(file);
     }
 
     ~ScopedDiagnosticFile() {
-        ctx_.session.diagnostics.setCurrentFile(saved_);
+        ctx_.diag.setCurrentFile(saved_);
     }
 
     ScopedDiagnosticFile(const ScopedDiagnosticFile&)            = delete;

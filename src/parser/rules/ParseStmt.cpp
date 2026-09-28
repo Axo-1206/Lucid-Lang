@@ -172,14 +172,14 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Constructs that are not allowed inside a block ───────────────────
     if (current == TokenType::KW_FIXED) {
-        ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                         "a FIXED TABLE declaration is not allowed inside "
                         "a block; move it to the top level");
         stream.consume();
         return nullptr;
     }
     if (current == TokenType::KW_TABLE) {
-        ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                            "a TABLE declaration is not allowed inside a "
                            "block; move it to the top level");
         // Consume the keyword and sync; the block loop will pick up after.
@@ -187,14 +187,14 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     if (current == TokenType::KW_FN) {
-        ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                            "an FN declaration is not allowed inside a block; "
                            "move it to the top level");
         stream.consume();
         return nullptr;
     }
     if (current == TokenType::AT_SIGN) {
-        ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                            "an attribute is not allowed on a statement; "
                            "attributes precede only TABLE, FN, and column "
                            "declarations");
@@ -208,9 +208,9 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     // ─── Not a statement ──────────────────────────────────────────────────
-    ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+    ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                        "expected a statement, got '",
-                       stream.peekValueView(ctx.pool()), "'");
+                       stream.peekValueView(ctx.pool), "'");
     stream.consume();
     return nullptr;
 }
@@ -223,9 +223,9 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::LBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock, loc,
                            "expected '{' to open a block, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -262,16 +262,16 @@ BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::RBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '}' to close the block, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
-    auto* block = ctx.arena().make<BlockStmtAST>();
+    auto* block = ctx.arena.make<BlockStmtAST>();
     block->loc = loc;
     if (!stmts.empty()) {
-        auto builder = ctx.arena().makeBuilder<StmtAST*>(stmts.size());
+        auto builder = ctx.arena.makeBuilder<StmtAST*>(stmts.size());
         for (StmtAST* s : stmts) builder.push_back(s);
         block->stmts = builder.build();
     }
@@ -293,7 +293,7 @@ VarDeclStmtAST* parseVarDeclStmt(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<VarDeclStmtAST>(decl);
+    auto* stmt = ctx.arena.make<VarDeclStmtAST>(decl);
     stmt->loc = loc;
     if (decl->hasSyntaxError) stmt->hasSyntaxError = true;
     return stmt;
@@ -321,7 +321,7 @@ StmtAST* parseAssignOrExprStmt(TokenStream& stream, ParserContext& ctx) {
 
         ExprAST* rhs = parseRequiredExpr(stream, ctx, "assignment value");
 
-        auto* stmt = ctx.arena().make<AssignStmtAST>(op);
+        auto* stmt = ctx.arena.make<AssignStmtAST>(op);
         stmt->loc = loc;
         stmt->lhs = lhs;
         stmt->rhs = rhs;
@@ -334,7 +334,7 @@ StmtAST* parseAssignOrExprStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     // Otherwise: an expression statement.
-    auto* stmt = ctx.arena().make<ExprStmtAST>(lhs);
+    auto* stmt = ctx.arena.make<ExprStmtAST>(lhs);
     stmt->loc = loc;
     if (lhs->hasSyntaxError) stmt->hasSyntaxError = true;
 
@@ -350,13 +350,13 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_RETURN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'return', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* ret = ctx.arena().make<ReturnStmtAST>();
+    auto* ret = ctx.arena.make<ReturnStmtAST>();
     ret->loc = loc;
 
     // A bare `return;` is legal. A value-returning `return` is followed
@@ -381,13 +381,13 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_BREAK)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'break', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<BreakStmtAST>();
+    auto* stmt = ctx.arena.make<BreakStmtAST>();
     stmt->loc = loc;
 
     if (stream.check(TokenType::IDENTIFIER)) {
@@ -407,13 +407,13 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_CONTINUE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'continue', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<ContinueStmtAST>();
+    auto* stmt = ctx.arena.make<ContinueStmtAST>();
     stmt->loc = loc;
 
     if (stream.check(TokenType::IDENTIFIER)) {
@@ -433,9 +433,9 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_IF)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'if', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -447,13 +447,13 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::LBRACE)) {
         thenBranch = parseBlock(stream, ctx);
     } else {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '{' for the then-branch, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         // Partial-parse: an empty marked block.
-        thenBranch = ctx.arena().make<BlockStmtAST>();
+        thenBranch = ctx.arena.make<BlockStmtAST>();
         thenBranch->loc = stream.currentLoc();
         thenBranch->hasSyntaxError = true;
 
@@ -465,7 +465,7 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
         });
     }
 
-    auto* ifStmt = ctx.arena().make<IfStmtAST>();
+    auto* ifStmt = ctx.arena.make<IfStmtAST>();
     ifStmt->loc = loc;
     ifStmt->condition = condition;
     ifStmt->thenBranch = thenBranch;
@@ -481,12 +481,12 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
             BlockStmtAST* elseBlock = parseBlock(stream, ctx);
             ifStmt->elseBranch = elseBlock;
         } else {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                                stream.currentLoc(),
                                "expected 'if' or '{' after 'else', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
 
-            auto* placeholder = ctx.arena().make<BlockStmtAST>();
+            auto* placeholder = ctx.arena.make<BlockStmtAST>();
             placeholder->loc = stream.currentLoc();
             placeholder->hasSyntaxError = true;
             ifStmt->elseBranch = placeholder;
@@ -511,9 +511,9 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_SWITCH)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'switch', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -522,14 +522,14 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
 
     // ─── `{` ──────────────────────────────────────────────────────────────
     if (!stream.match(TokenType::LBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '{' after the switch subject, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* switchStmt = ctx.arena().make<SwitchStmtAST>();
+    auto* switchStmt = ctx.arena.make<SwitchStmtAST>();
     switchStmt->loc = loc;
     switchStmt->subject = subject;
 
@@ -556,7 +556,7 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
             stream.consume();   // `default`
 
             if (defaultBody != nullptr) {
-                ctx.diag().errorAt(DiagCode::Syntax_MultipleDefaults,
+                ctx.diag.errorAt(DiagCode::Syntax_MultipleDefaults,
                                    defaultLoc,
                                    "duplicate 'default' clause in switch");
                 // Consume the duplicate's body if it's a block.
@@ -569,21 +569,21 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
             }
 
             if (!stream.match(TokenType::COLON)) {
-                ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+                ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                                    stream.currentLoc(),
                                    "expected ':' after 'default', got '",
-                                   stream.peekValueView(ctx.pool()), "'");
+                                   stream.peekValueView(ctx.pool), "'");
             }
 
             if (stream.check(TokenType::LBRACE)) {
                 defaultBody = parseBlock(stream, ctx);
             } else {
-                ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+                ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                                    stream.currentLoc(),
                                    "expected '{' for the default body, got '",
-                                   stream.peekValueView(ctx.pool()), "'");
+                                   stream.peekValueView(ctx.pool), "'");
                 // Partial-parse: an empty marked block.
-                defaultBody = ctx.arena().make<BlockStmtAST>();
+                defaultBody = ctx.arena.make<BlockStmtAST>();
                 defaultBody->loc = defaultLoc;
                 defaultBody->hasSyntaxError = true;
             }
@@ -592,10 +592,10 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
             continue;
         }
 
-        ctx.diag().errorAt(DiagCode::Syntax_UnexpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_UnexpectedToken,
                            stream.currentLoc(),
                            "expected 'case' or 'default' inside switch, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::KW_CASE
@@ -605,24 +605,24 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::RBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '}' to close the switch, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
     // ─── Mandatory default ────────────────────────────────────────────────
     if (defaultBody == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "every 'switch' must have a 'default' clause");
-        defaultBody = ctx.arena().make<BlockStmtAST>();
+        defaultBody = ctx.arena.make<BlockStmtAST>();
         defaultBody->loc = stream.currentLoc();
         defaultBody->hasSyntaxError = true;
     }
 
     if (!cases.empty()) {
-        auto builder = ctx.arena().makeBuilder<SwitchCaseAST*>(cases.size());
+        auto builder = ctx.arena.makeBuilder<SwitchCaseAST*>(cases.size());
         for (SwitchCaseAST* c : cases) builder.push_back(c);
         switchStmt->cases = builder.build();
     }
@@ -639,13 +639,13 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_CASE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'case', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* caseNode = ctx.arena().make<SwitchCaseAST>();
+    auto* caseNode = ctx.arena.make<SwitchCaseAST>();
     caseNode->loc = loc;
 
     // ─── Case values ──────────────────────────────────────────────────────
@@ -659,7 +659,7 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
         if (stream.match(TokenType::COMMA)) {
             // Trailing comma before `:` is not permitted.
             if (stream.check(TokenType::COLON)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in case value list");
                 break;
@@ -670,10 +670,10 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
             break;
         }
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or ':' after a case value, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA
@@ -684,15 +684,15 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::COLON)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ':' after the case value(s), got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         caseNode->hasSyntaxError = true;
     }
 
     if (!values.empty()) {
-        auto builder = ctx.arena().makeBuilder<ExprAST*>(values.size());
+        auto builder = ctx.arena.makeBuilder<ExprAST*>(values.size());
         for (ExprAST* v : values) builder.push_back(v);
         caseNode->values = builder.build();
     }
@@ -704,10 +704,10 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
             caseNode->hasSyntaxError = true;
         }
     } else {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '{' for the case body, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         caseNode->hasSyntaxError = true;
 
@@ -739,9 +739,9 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::KW_WHILE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'while', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -751,12 +751,12 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::LBRACE)) {
         body = parseBlock(stream, ctx);
     } else {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '{' for the while body, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
-        body = ctx.arena().make<BlockStmtAST>();
+        body = ctx.arena.make<BlockStmtAST>();
         body->loc = stream.currentLoc();
         body->hasSyntaxError = true;
 
@@ -765,7 +765,7 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
         });
     }
 
-    auto* whileStmt = ctx.arena().make<WhileStmtAST>();
+    auto* whileStmt = ctx.arena.make<WhileStmtAST>();
     whileStmt->loc = loc;
     whileStmt->label = label;
     whileStmt->condition = condition;
@@ -792,13 +792,13 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::KW_FOR)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'for', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* forStmt = ctx.arena().make<ForStmtAST>();
+    auto* forStmt = ctx.arena.make<ForStmtAST>();
     forStmt->loc = loc;
     forStmt->label = label;
 
@@ -824,10 +824,10 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
 
     // ─── `in` ─────────────────────────────────────────────────────────────
     if (!stream.match(TokenType::KW_IN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected 'in' after the loop binding(s), got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         forStmt->hasSyntaxError = true;
 
         synchronizeUntil(stream, [](TokenType t) {
@@ -846,12 +846,12 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::LBRACE)) {
         forStmt->body = parseBlock(stream, ctx);
     } else {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '{' for the for body, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
-        auto* body = ctx.arena().make<BlockStmtAST>();
+        auto* body = ctx.arena.make<BlockStmtAST>();
         body->loc = stream.currentLoc();
         body->hasSyntaxError = true;
         forStmt->body = body;
@@ -878,17 +878,17 @@ ParamAST* parseForBinding(TokenStream& stream, ParserContext& ctx) {
     // alone is a valid identifier, used as a discard binding"). The
     // parser recognizes it by value, not by token type.
     if (stream.check(TokenType::IDENTIFIER) &&
-        stream.peekValueView(ctx.pool()) == "_") {
+        stream.peekValueView(ctx.pool) == "_") {
         stream.consume();   // `_`
         return nullptr;     // a discard has no ParamAST
     }
 
     // ─── Named binding ────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedForBinding,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedForBinding,
                            stream.currentLoc(),
                            "expected a loop binding name or '_', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -896,17 +896,17 @@ ParamAST* parseForBinding(TokenStream& stream, ParserContext& ctx) {
     InternedString name = nameTok.value;
 
     if (!stream.match(TokenType::COLON)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ':' after loop binding '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
-        auto* unkType = ctx.arena().make<UnknownTypeAST>();
+        auto* unkType = ctx.arena.make<UnknownTypeAST>();
         unkType->loc = stream.currentLoc();
         unkType->hasSyntaxError = true;
 
-        auto* param = ctx.arena().make<ParamAST>(
+        auto* param = ctx.arena.make<ParamAST>(
             name, unkType, /*isVariadic=*/false, /*isConst=*/false);
         param->loc = loc;
         param->hasSyntaxError = true;
@@ -915,18 +915,18 @@ ParamAST* parseForBinding(TokenStream& stream, ParserContext& ctx) {
 
     TypeAST* type = parseType(stream, ctx);
     if (type == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected a type for loop binding '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
-        type = ctx.arena().make<UnknownTypeAST>();
+        type = ctx.arena.make<UnknownTypeAST>();
         type->loc = stream.currentLoc();
         type->hasSyntaxError = true;
     }
 
-    auto* param = ctx.arena().make<ParamAST>(
+    auto* param = ctx.arena.make<ParamAST>(
         name, type, /*isVariadic=*/false, /*isConst=*/false);
     param->loc = loc;
     if (type->hasSyntaxError) param->hasSyntaxError = true;
@@ -948,11 +948,11 @@ ExprAST* readSuspendArg(TokenStream& stream,
                         ParserContext& ctx,
                         const char* keyword) {
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '(' after '", keyword, "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
-        auto* unk = ctx.arena().make<UnknownExprAST>();
+                           stream.peekValueView(ctx.pool), "'");
+        auto* unk = ctx.arena.make<UnknownExprAST>();
         unk->loc = stream.currentLoc();
         unk->hasSyntaxError = true;
         return unk;
@@ -961,11 +961,11 @@ ExprAST* readSuspendArg(TokenStream& stream,
     ExprAST* arg = parseRequiredExpr(stream, ctx, "argument");
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close '", keyword,
                            "' arguments, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         arg->hasSyntaxError = true;
     }
 
@@ -977,13 +977,13 @@ ExprAST* readSuspendArg(TokenStream& stream,
 WaitStmtAST* parseWaitStmt(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     if (!stream.match(TokenType::KW_WAIT)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'wait', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<WaitStmtAST>();
+    auto* stmt = ctx.arena.make<WaitStmtAST>();
     stmt->loc = loc;
     stmt->seconds = readSuspendArg(stream, ctx, "wait");
     if (stmt->seconds->hasSyntaxError) stmt->hasSyntaxError = true;
@@ -996,13 +996,13 @@ WaitFramesStmtAST* parseWaitFramesStmt(TokenStream& stream,
                                        ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     if (!stream.match(TokenType::KW_WAIT_FRAMES)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'waitFrames', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<WaitFramesStmtAST>();
+    auto* stmt = ctx.arena.make<WaitFramesStmtAST>();
     stmt->loc = loc;
     stmt->frames = readSuspendArg(stream, ctx, "waitFrames");
     if (stmt->frames->hasSyntaxError) stmt->hasSyntaxError = true;
@@ -1015,20 +1015,20 @@ WaitUntilStmtAST* parseWaitUntilStmt(TokenStream& stream,
                                      ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     if (!stream.match(TokenType::KW_WAIT_UNTIL)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'waitUntil', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<WaitUntilStmtAST>();
+    auto* stmt = ctx.arena.make<WaitUntilStmtAST>();
     stmt->loc = loc;
 
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '(' after 'waitUntil', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         consumeSemicolon(stream, ctx, "waitUntil");
         stmt->hasSyntaxError = true;
         return stmt;
@@ -1037,21 +1037,21 @@ WaitUntilStmtAST* parseWaitUntilStmt(TokenStream& stream,
     stmt->predicate = parseRequiredExpr(stream, ctx, "predicate");
 
     if (!stream.match(TokenType::COMMA)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' between waitUntil's predicate and "
                            "argument, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         stmt->hasSyntaxError = true;
     } else {
         stmt->arg = parseRequiredExpr(stream, ctx, "waitUntil argument");
     }
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close 'waitUntil' arguments, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         stmt->hasSyntaxError = true;
     }
 
@@ -1063,13 +1063,13 @@ WaitForEventStmtAST* parseWaitForEventStmt(TokenStream& stream,
                                            ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     if (!stream.match(TokenType::KW_WAIT_FOR_EVENT)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'waitForEvent', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<WaitForEventStmtAST>();
+    auto* stmt = ctx.arena.make<WaitForEventStmtAST>();
     stmt->loc = loc;
     stmt->event = readSuspendArg(stream, ctx, "waitForEvent");
     if (stmt->event->hasSyntaxError) stmt->hasSyntaxError = true;
@@ -1082,13 +1082,13 @@ WaitForRequestStmtAST* parseWaitForRequestStmt(TokenStream& stream,
                                                ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
     if (!stream.match(TokenType::KW_WAIT_FOR_REQUEST)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'waitForRequest', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
-    auto* stmt = ctx.arena().make<WaitForRequestStmtAST>();
+    auto* stmt = ctx.arena.make<WaitForRequestStmtAST>();
     stmt->loc = loc;
     stmt->request = readSuspendArg(stream, ctx, "waitForRequest");
     if (stmt->request->hasSyntaxError) stmt->hasSyntaxError = true;

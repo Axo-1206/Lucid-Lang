@@ -127,11 +127,11 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
             // The caller (parseFile's loop) checked isDeclarationStart
             // before calling us. If we reach this case, the source had
             // attributes and no declaration keyword followed them.
-            ctx.diag().errorAt(
+            ctx.diag.errorAt(
                 DiagCode::Syntax_ExpectedDeclTarget,
                 stream.currentLoc(),
                 "expected a declaration after the attribute(s), got '",
-                stream.peekValueView(ctx.pool()), "'");
+                stream.peekValueView(ctx.pool), "'");
 
             // Synchronize to the next declaration so the loop does not
             // immediately re-report the same problem.
@@ -150,7 +150,7 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     // declaration here, it had these attributes, and the declaration
     // itself was unrecoverable".
     if (decl == nullptr) {
-        auto* unk = ctx.arena().make<UnknownDeclAST>();
+        auto* unk = ctx.arena.make<UnknownDeclAST>();
         unk->loc = declLoc;
         unk->attributes = attrs;
         unk->hasSyntaxError = true;
@@ -178,16 +178,16 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_IMPORT)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'import', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
     // Dotted module path: `a`, `a.b`, `a.b.c`.
     std::vector<InternedString> parts = parseImportPath(stream, ctx);
     if (parts.empty()) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedModulePath,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedModulePath,
                            stream.currentLoc(),
                            "expected a module path after 'import'");
         return nullptr;
@@ -199,19 +199,19 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     std::string combined;
     for (size_t i = 0; i < parts.size(); ++i) {
         if (i > 0) combined += '.';
-        combined += std::string(ctx.pool().lookupView(parts[i]));
+        combined += std::string(ctx.pool.lookupView(parts[i]));
     }
-    InternedString path = ctx.pool().intern(combined);
+    InternedString path = ctx.pool.intern(combined);
 
     // The alias. If `as` is present, the next token must be an
     // identifier. Otherwise, the alias is the last path segment.
     InternedString alias;
     if (stream.match(TokenType::KW_AS)) {
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                                stream.currentLoc(),
                                "expected an alias name after 'as', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
             return nullptr;
         }
         Token aliasTok = stream.consume();
@@ -222,7 +222,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
 
     // No `;`: the grammar's import_decl production has no terminator.
 
-    auto* importDecl = ctx.arena().make<ImportDeclAST>(path, alias);
+    auto* importDecl = ctx.arena.make<ImportDeclAST>(path, alias);
     importDecl->loc = loc;
     return importDecl;
 }
@@ -249,9 +249,9 @@ void parseTableBody(TokenStream& stream,
     const SourceLocation openLoc = stream.currentLoc();
 
     if (!stream.match(TokenType::LBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock, openLoc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock, openLoc,
                            "expected '{' to open the table body, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return;
     }
 
@@ -264,11 +264,11 @@ void parseTableBody(TokenStream& stream,
         }
 
         if (!isColumnStart(stream.peekType())) {
-            ctx.diag().errorAt(
+            ctx.diag.errorAt(
                 DiagCode::Syntax_ExpectedColumn,
                 stream.currentLoc(),
                 "expected a column declaration, got '",
-                stream.peekValueView(ctx.pool()), "'");
+                stream.peekValueView(ctx.pool), "'");
 
             synchronizeUntil(stream, [](TokenType t) {
                 return isColumnStart(t)
@@ -299,10 +299,10 @@ void parseTableBody(TokenStream& stream,
     }
 
     if (!stream.match(TokenType::RBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedBlock,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedBlock,
                            stream.currentLoc(),
                            "expected '}' to close the table body, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 }
 
@@ -324,10 +324,10 @@ void parseTableInit(TokenStream& stream,
     }
 
     if (!stream.match(TokenType::LBRACKET)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '[' to open the table's row list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return;
     }
 
@@ -340,11 +340,11 @@ void parseTableInit(TokenStream& stream,
         }
 
         if (!isRowStart(stream.peekType())) {
-            ctx.diag().errorAt(
+            ctx.diag.errorAt(
                 DiagCode::Syntax_ExpectedRow,
                 stream.currentLoc(),
                 "expected a row '{ ... }', got '",
-                stream.peekValueView(ctx.pool()), "'");
+                stream.peekValueView(ctx.pool), "'");
 
             synchronizeUntil(stream, [](TokenType t) {
                 return isRowStart(t)
@@ -373,10 +373,10 @@ void parseTableInit(TokenStream& stream,
     }
 
     if (!stream.match(TokenType::RBRACKET)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ']' to close the table's row list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 }
 
@@ -400,29 +400,29 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
 
     if (!stream.match(TokenType::KW_TABLE)) {
         if (isFixed) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                "expected 'TABLE' after 'FIXED', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
         } else {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                "expected 'TABLE', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
         }
         return nullptr;
     }
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected a table name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no name, no table
     }
     Token nameTok = stream.consume();
     InternedString name = nameTok.value;
 
-    auto* table = ctx.arena().make<TableDeclAST>(name);
+    auto* table = ctx.arena.make<TableDeclAST>(name);
     table->loc = loc;
     table->isFixed = isFixed;
 
@@ -446,14 +446,14 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
         // Build the column span.
         if (!columns.empty()) {
             auto colBuilder =
-                ctx.arena().makeBuilder<ColumnDeclAST*>(columns.size());
+                ctx.arena.makeBuilder<ColumnDeclAST*>(columns.size());
             for (ColumnDeclAST* c : columns) colBuilder.push_back(c);
             table->columns = colBuilder.build();
         }
 
         // Build the row span.
         if (!rows.empty()) {
-            auto rowBuilder = ctx.arena().makeBuilder<RowAST*>(rows.size());
+            auto rowBuilder = ctx.arena.makeBuilder<RowAST*>(rows.size());
             for (RowAST* r : rows) rowBuilder.push_back(r);
             table->rows = rowBuilder.build();
         }
@@ -477,11 +477,11 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
     }
 
     // Neither `{` nor `=`: the table has no body and no target.
-    ctx.diag().errorAt(
+    ctx.diag.errorAt(
         DiagCode::Syntax_ExpectedTableBody,
         stream.currentLoc(),
         "expected '{' or '=' after the table name, got '",
-        stream.peekValueView(ctx.pool()), "'");
+        stream.peekValueView(ctx.pool), "'");
 
     // Synchronize to the next declaration.
     synchronizeUntil(stream, [](TokenType t) {
@@ -507,10 +507,10 @@ ColumnDeclAST* parseColumnDecl(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected a column name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no name, no column
     }
     Token nameTok = stream.consume();
@@ -518,18 +518,18 @@ ColumnDeclAST* parseColumnDecl(TokenStream& stream, ParserContext& ctx) {
 
     // ─── `:` ──────────────────────────────────────────────────────────────
     if (!stream.match(TokenType::COLON)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ':' after column name '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
         // Partial-parse: produce the column with an unknown type.
-        auto* unkType = ctx.arena().make<UnknownTypeAST>();
+        auto* unkType = ctx.arena.make<UnknownTypeAST>();
         unkType->loc = stream.currentLoc();
         unkType->hasSyntaxError = true;
 
-        auto* column = ctx.arena().make<ColumnDeclAST>(name, unkType);
+        auto* column = ctx.arena.make<ColumnDeclAST>(name, unkType);
         column->loc = loc;
         column->attributes = attrs;
         column->hasSyntaxError = true;
@@ -539,20 +539,20 @@ ColumnDeclAST* parseColumnDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── Type ─────────────────────────────────────────────────────────────
     TypeAST* type = parseType(stream, ctx);
     if (type == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected a type for column '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
-        type = ctx.arena().make<UnknownTypeAST>();
+        type = ctx.arena.make<UnknownTypeAST>();
         type->loc = stream.currentLoc();
         type->hasSyntaxError = true;
     }
 
     // No `;`: columns are juxtaposed inside a table body.
 
-    auto* column = ctx.arena().make<ColumnDeclAST>(name, type);
+    auto* column = ctx.arena.make<ColumnDeclAST>(name, type);
     column->loc = loc;
     column->attributes = attrs;
     if (type->hasSyntaxError) column->hasSyntaxError = true;
@@ -567,9 +567,9 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::LBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected '{' to open a row, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no row at all
     }
 
@@ -577,8 +577,8 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx) {
 
     // Empty row: `{}`.
     if (stream.match(TokenType::RBRACE)) {
-        auto* row = ctx.arena().make<RowAST>();
-        row->cells = ctx.arena().makeBuilder<ExprAST*>().build();
+        auto* row = ctx.arena.make<RowAST>();
+        row->cells = ctx.arena.makeBuilder<ExprAST*>().build();
         return row;
     }
 
@@ -589,7 +589,7 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx) {
 
         if (stream.match(TokenType::COMMA)) {
             if (stream.check(TokenType::RBRACE)) {
-                ctx.diag().errorAt(DiagCode::Syntax_TrailingComma,
+                ctx.diag.errorAt(DiagCode::Syntax_TrailingComma,
                                    stream.currentLoc(),
                                    "trailing comma in row");
                 break;
@@ -600,10 +600,10 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx) {
             break;
         }
 
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ',' or '}' in row, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         synchronizeUntil(stream, [](TokenType t) {
             return t == TokenType::COMMA
@@ -614,15 +614,15 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx) {
     }
 
     if (!stream.match(TokenType::RBRACE)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '}' to close the row, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
     }
 
-    auto* row = ctx.arena().make<RowAST>();
+    auto* row = ctx.arena.make<RowAST>();
     if (!cells.empty()) {
-        auto builder = ctx.arena().makeBuilder<ExprAST*>(cells.size());
+        auto builder = ctx.arena.makeBuilder<ExprAST*>(cells.size());
         for (ExprAST* c : cells) builder.push_back(c);
         row->cells = builder.build();
     }
@@ -638,32 +638,32 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_FN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'FN', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected a function name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no name, no function
     }
     Token nameTok = stream.consume();
     InternedString name = nameTok.value;
 
-    auto* fn = ctx.arena().make<FnDeclAST>(name);
+    auto* fn = ctx.arena.make<FnDeclAST>(name);
     fn->loc = loc;
 
     // ─── Parameters ───────────────────────────────────────────────────────
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '(' for the parameter list, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
 
         // Synchronize to the body or the next declaration.
         synchronizeUntil(stream, [](TokenType t) {
@@ -676,7 +676,7 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
     } else {
         std::vector<ParamAST*> params = parseParamList(stream, ctx);
         if (!params.empty()) {
-            auto builder = ctx.arena().makeBuilder<ParamAST*>(params.size());
+            auto builder = ctx.arena.makeBuilder<ParamAST*>(params.size());
             for (ParamAST* p : params) builder.push_back(p);
             fn->params = builder.build();
         }
@@ -686,12 +686,12 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::ARROW)) {
         TypeAST* ret = parseType(stream, ctx);
         if (ret == nullptr) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                                stream.currentLoc(),
                                "expected a return type after '->', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               stream.peekValueView(ctx.pool), "'");
 
-            ret = ctx.arena().make<UnknownTypeAST>();
+            ret = ctx.arena.make<UnknownTypeAST>();
             ret->loc = stream.currentLoc();
             ret->hasSyntaxError = true;
             fn->hasSyntaxError = true;
@@ -721,11 +721,11 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
     }
 
     // Neither `{` nor `=`: no body.
-    ctx.diag().errorAt(
+    ctx.diag.errorAt(
         DiagCode::Syntax_ExpectedBlock,
         stream.currentLoc(),
         "expected '{' or '=' for the function body, got '",
-        stream.peekValueView(ctx.pool()), "'");
+        stream.peekValueView(ctx.pool), "'");
 
     fn->hasSyntaxError = true;
     return fn;   // partial-parse: the signature survives
@@ -743,24 +743,24 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::KW_CONST)) {
         isConst = true;
     } else if (!stream.match(TokenType::KW_LET)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                            "expected 'let' or 'const', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected a variable name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no name, no variable
     }
     Token nameTok = stream.consume();
     InternedString name = nameTok.value;
 
-    auto* decl = ctx.arena().make<VarDeclAST>(
+    auto* decl = ctx.arena.make<VarDeclAST>(
         name, /*type=*/nullptr, isConst, /*init=*/nullptr);
     decl->loc = loc;
 
@@ -768,22 +768,22 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     //
     // The type annotation is required.
     if (!stream.match(TokenType::COLON)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ':' after variable name '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
         decl->hasSyntaxError = true;
     } else {
         TypeAST* type = parseType(stream, ctx);
         if (type == nullptr) {
-            ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+            ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                                stream.currentLoc(),
                                "expected a type for variable '",
-                               ctx.pool().lookupView(name), "', got '",
-                               stream.peekValueView(ctx.pool()), "'");
+                               ctx.pool.lookupView(name), "', got '",
+                               stream.peekValueView(ctx.pool), "'");
 
-            type = ctx.arena().make<UnknownTypeAST>();
+            type = ctx.arena.make<UnknownTypeAST>();
             type->loc = stream.currentLoc();
             type->hasSyntaxError = true;
         }
@@ -793,11 +793,11 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Initializer ──────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '=' for the initializer of '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
         decl->hasSyntaxError = true;
     } else {
         ExprAST* init = parseRequiredExpr(stream, ctx, "initializer");
@@ -828,10 +828,10 @@ ParamAST* parseParam(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Name ─────────────────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedIdentifier,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
                            stream.currentLoc(),
                            "expected a parameter name, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return nullptr;   // no name, no parameter
     }
     Token nameTok = stream.consume();
@@ -839,17 +839,17 @@ ParamAST* parseParam(TokenStream& stream, ParserContext& ctx) {
 
     // ─── `:` ──────────────────────────────────────────────────────────────
     if (!stream.match(TokenType::COLON)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ':' after parameter name '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
-        auto* unkType = ctx.arena().make<UnknownTypeAST>();
+        auto* unkType = ctx.arena.make<UnknownTypeAST>();
         unkType->loc = stream.currentLoc();
         unkType->hasSyntaxError = true;
 
-        auto* param = ctx.arena().make<ParamAST>(
+        auto* param = ctx.arena.make<ParamAST>(
             name, unkType, /*isVariadic=*/false, isConst);
         param->loc = loc;
         param->hasSyntaxError = true;
@@ -866,13 +866,13 @@ ParamAST* parseParam(TokenStream& stream, ParserContext& ctx) {
     // ─── Type ─────────────────────────────────────────────────────────────
     TypeAST* type = parseType(stream, ctx);
     if (type == nullptr) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedType,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,
                            stream.currentLoc(),
                            "expected a type for parameter '",
-                           ctx.pool().lookupView(name), "', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           ctx.pool.lookupView(name), "', got '",
+                           stream.peekValueView(ctx.pool), "'");
 
-        type = ctx.arena().make<UnknownTypeAST>();
+        type = ctx.arena.make<UnknownTypeAST>();
         type->loc = stream.currentLoc();
         type->hasSyntaxError = true;
     }
@@ -880,7 +880,7 @@ ParamAST* parseParam(TokenStream& stream, ParserContext& ctx) {
     // For a variadic parameter, ParamAST stores the element type and the
     // isVariadic flag. Sema synthesizes the `[T]` array type; the parser
     // does not.
-    auto* param = ctx.arena().make<ParamAST>(
+    auto* param = ctx.arena.make<ParamAST>(
         name, type, isVariadic, isConst);
     param->loc = loc;
     if (type->hasSyntaxError) param->hasSyntaxError = true;
@@ -897,28 +897,28 @@ bool parseHostTarget(TokenStream& stream,
     const SourceLocation loc = stream.currentLoc();
 
     if (!stream.match(TokenType::KW_HOST)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedHostTarget, loc,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedHostTarget, loc,
                            "expected 'host', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return false;
     }
 
     if (!stream.match(TokenType::LPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected '(' after 'host', got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return false;
     }
 
     // The target name is a string literal. A raw string is not accepted:
     // a host target is an identifier-like token, not a block of text.
     if (!stream.check(TokenType::STRING_LITERAL)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedLiteral,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedLiteral,
                            stream.currentLoc(),
                            "expected a string literal for the host target, "
                            "got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return false;
     }
 
@@ -926,10 +926,10 @@ bool parseHostTarget(TokenStream& stream,
     targetName = nameTok.value;
 
     if (!stream.match(TokenType::RPAREN)) {
-        ctx.diag().errorAt(DiagCode::Syntax_ExpectedToken,
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
                            stream.currentLoc(),
                            "expected ')' to close the host target, got '",
-                           stream.peekValueView(ctx.pool()), "'");
+                           stream.peekValueView(ctx.pool), "'");
         return false;
     }
 

@@ -68,7 +68,7 @@ ModuleAST* parseFile(std::string_view path,
     // value on destruction. It restores the *previous* value rather than
     // clearing, because a caller (the CLI, the LSP) may have set a current
     // file before calling us and may still be using it after we return.
-    const InternedString filePath = ctx.pool().intern(path);
+    const InternedString filePath = ctx.pool.intern(path);
     ScopedDiagnosticFile fileTag(ctx, filePath);
 
     // ─── Build the ModuleAST up front ─────────────────────────────────────
@@ -80,7 +80,7 @@ ModuleAST* parseFile(std::string_view path,
     // Creating the module before parsing means the return value is never
     // null. A file that fails to lex entirely still produces a real
     // ModuleAST with no declarations and hasErrors == true.
-    auto* module = ctx.arena().make<ModuleAST>();
+    auto* module = ctx.arena.make<ModuleAST>();
     module->filePath = filePath;
     module->hasErrors = false;
 
@@ -90,7 +90,7 @@ ModuleAST* parseFile(std::string_view path,
     // through the pool. It reports lexer errors through the same diagnostic
     // engine. Its output always ends in an EOF_TOKEN, even on error, so the
     // parse loop always has a well-defined final token.
-    std::vector<Token> tokens = lexer::tokenize(source, ctx.pool(), ctx.diag());
+    std::vector<Token> tokens = lexer::tokenize(source, ctx.pool, ctx.diag);
 
     // Defensive: the lexer's contract says the vector is never empty (it
     // always appends an EOF token). If that contract ever changes, this
@@ -141,11 +141,11 @@ ModuleAST* parseFile(std::string_view path,
         // attribute list. isDeclarationStart (GrammarPositions.hpp) is the
         // source of truth for that set.
         if (!isDeclarationStart(stream.peekType())) {
-            ctx.diag().errorAt(
+            ctx.diag.errorAt(
                 DiagCode::Syntax_UnexpectedToken,
                 stream.currentLoc(),
                 "expected a declaration, got '",
-                stream.peekValueView(ctx.pool()), "'");
+                stream.peekValueView(ctx.pool), "'");
 
             // Synchronize to the next plausible declaration start. The
             // scan stops on any declaration-start token or a `;`; the loop
@@ -203,7 +203,7 @@ ModuleAST* parseFile(std::string_view path,
         // did advance, the next iteration will handle whatever token we
         // are on.
         if (stream.getPos() == posBefore) {
-            ctx.diag().errorAt(
+            ctx.diag.errorAt(
                 DiagCode::Syntax_IncompleteDeclaration,
                 stream.currentLoc(),
                 "parser could not recover from the previous error");
@@ -219,7 +219,7 @@ ModuleAST* parseFile(std::string_view path,
     // The declarations are moved into an arena-allocated span. The span is
     // immutable once built; the ModuleAST holds it as `decls`.
     if (!allDecls.empty()) {
-        auto declsBuilder = ctx.arena().makeBuilder<DeclAST*>(allDecls.size());
+        auto declsBuilder = ctx.arena.makeBuilder<DeclAST*>(allDecls.size());
         for (DeclAST* decl : allDecls) {
             declsBuilder.push_back(decl);
         }
@@ -234,7 +234,7 @@ ModuleAST* parseFile(std::string_view path,
     // errors in the engine, this file's module has hasErrors == true even
     // if this file is clean. Callers that want the per-file answer check
     // the diagnostics raised between the start and end of this call.
-    module->hasErrors = ctx.diag().hasErrors();
+    module->hasErrors = ctx.diag.hasErrors();
 
     return module;
 }
