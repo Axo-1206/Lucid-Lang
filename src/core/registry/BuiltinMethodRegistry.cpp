@@ -106,21 +106,6 @@ const BuiltinMethodInfo METHOD_TABLE[] = {
 
     // ─── Column-view methods ───────────────────────────────────────────
 
-    // `SUM`, `AVG`: aggregations over a column view. Result type is
-    // derived from the element type.
-    {
-        "SUM",
-        { ReceiverKind::ColumnView },
-        MethodArgShape::None,
-        MethodResultShape::Primitive,
-    },
-    {
-        "AVG",
-        { ReceiverKind::ColumnView },
-        MethodArgShape::None,
-        MethodResultShape::Primitive,
-    },
-
     // `TOARRAY`: converts a column view to a real `[T]` copy.
     {
         "TOARRAY",
