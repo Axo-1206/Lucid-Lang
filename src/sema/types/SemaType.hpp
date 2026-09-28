@@ -1,292 +1,243 @@
-/// @file SemaType.hpp
-/// @brief Type resolution, predicates, equality, assignability, and validation.
-/// 
-/// This file consolidates all type-related functionality into one header.
-/// 
-/// # Quick Reference
-/// 
-/// ## Type Resolution
-///   - resolveType()              - Main entry point
-///   - resolveNamedType()         - Resolve named types (including built-ins)
-///   - resolveFuncType()          - Resolve function types
-///   - resolveTraitRef()          - Resolve trait references
-/// 
-/// ## Type Predicates
-///   - isIntegerType(), isFloatType(), isNumericType()
-///   - isNullableType(), isFallibleType()
-///   - isReferenceType(), isPointerType(), isBorrowedType()
-///   - isStructType(), isEnumType(), isTraitType()
-///   - isArenaType(), isArenaDescriptorType()
-/// 
-/// ## Type Equality & Assignability
-///   - typesEqual()               - Structural equality
-///   - isAssignable()             - Type compatibility for assignment
-/// 
-/// ## Type Unwrapping
-///   - unwrapNullable(), unwrapFallible()
-/// 
-/// ## Self-Reference Detection
-///   - checkLetSelfReference()
-///   - isValidStructSelfReference()
-/// 
-/// ## Validation
-///   - validateConstType()
-///   - validateGenericArguments()
-///   - validateBorrowedContext()
-///   - validateForeignFunction()
-///   - validateArenaInitializer()
+/**
+ * @file SemaType.hpp
+ *
+ * @responsibility The type subsystem's surface: resolving a syntactic
+ *                 type to a semantic one, asking what kind of type a
+ *                 node is, comparing two types, and validating a
+ *                 declaration's type against the rules.
+ *
+ * ─── Design: this header is for other Sema files ──────────────────────────
+ * The callers of this file are the other Sema translation units:
+ * `SemaDecl.cpp`, `SemaStmt.cpp`, `SemaExpr.cpp`, `AttributeValidator.cpp`,
+ * `ConstEvaluator.cpp`, and the table/sequence checkers. Each of them
+ * needs some subset of "resolve this type", "is this a primitive", "are
+ * these two types the same", "is this assignable".
+ *
+ * The caller is not the pipeline. The pipeline uses `Sema.hpp`. The
+ * split matters: `Sema.hpp` changes when the driver wants a new pass
+ * shape; `SemaType.hpp` changes when the type system grows a new
+ * predicate or a new comparison rule. Two different reasons to change.
+ *
+ * ─── Design: the per-form resolvers are internal ──────────────────────────
+ * `resolvePrimitiveType`, `resolveNamedType`, `resolveArrayType`, and the
+ * others are cases inside `resolveType`'s dispatch. No caller outside
+ * `SemaType.cpp` needs them. They are `static` in the `.cpp`; only
+ * `resolveType` is public.
+ *
+ * ─── Design: what is deliberately not here ────────────────────────────────
+ * Expression-level rules — is this expression an lvalue, is this
+ * expression a `const_expr`, is this expression assignable *in this
+ * context* — belong in `SemaRules.hpp`. They take an `ExprAST*`, walk
+ * it, and emit diagnostics. This file is about `TypeAST*` and nothing
+ * else.
+ *
+ * Attribute argument validation (`validateStringArg`, `validateIntArg`,
+ * `validateDottedNameArg`) lives in `ArgTypeValidators.hpp`. It is
+ * type-adjacent but a different concern.
+ *
+ * ─── Design: everything takes a canonicalized type ────────────────────────
+ * The predicates and `typesEqual` assume their arguments came from
+ * `resolveType` or from a `SemaContext::get*Type` accessor. A
+ * non-canonical `TypeAST*` — one built by hand without going through
+ * the cache — will still work, but the pointer-equality fast path in
+ * `typesEqual` will miss more often than it should. Do not build types
+ * by hand; go through the accessors.
+ */
 
 #pragma once
 
-#include "core/ast/BaseAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "core/ast/DeclAST.hpp"
-#include "core/ast/ExprAST.hpp"
-#include "core/memory/ArenaSpan.hpp"
-#include "../context/SemaContext.hpp"
+#include "core/memory/InternedString.hpp"
+#include "core/memory/StringPool.hpp"
 
-#include <vector>
-#include <unordered_set>
-#include <functional>
+#include <cstdint>
 
-namespace sema {
+namespace lucid::sema {
 
-// =============================================================================
-// TYPE RESOLUTION
-// =============================================================================
+struct SemaContext;   // forward declaration; defined in SemaContext.hpp
 
-/// @brief Main entry point for type resolution.
+// ─────────────────────────────────────────────────────────────────────────────
+// Type resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Resolve a syntactic type to a semantic one.
+///
+/// The input is a `TypeAST*` as the parser produced it. The output is a
+/// canonicalized `TypeAST*` — the same pointer for structurally identical
+/// types, obtained from the context's `TypeCache` — with every
+/// `NamedTypeAST::resolvedDecl` filled in.
+///
+/// On error (an undefined table name, a `&` applied to a non-table type,
+/// a `T?` applied to a bare table), emits a diagnostic and returns the
+/// unknown-type singleton. The caller should test for `UnknownTypeAST`
+/// before using the result.
+///
+/// Resolves recursively: an `ArrayTypeAST` has its element resolved; a
+/// `RowRefTypeAST` has its inner resolved; a `FunctionTypeAST` has each
+/// parameter type and its return type resolved.
 TypeAST* resolveType(TypeAST* type, SemaContext& ctx);
 
-/// @brief Resolve a primitive type (always succeeds).
-TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Type predicates
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every predicate is a pure function of the node's shape. None of them
+// consults the context; none of them emits a diagnostic. A predicate on
+// the unknown-type singleton returns false for every kind — callers that
+// need to distinguish "unknown" from "some other type" test for
+// `UnknownTypeAST` directly.
 
-/// @brief Resolve a named type (including built-ins like Arena/ArenaDescriptor).
-TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
+bool isBoolType     (TypeAST* type);
+bool isCharType     (TypeAST* type);
+bool isStringType   (TypeAST* type);
+bool isUnitType     (TypeAST* type);
 
-/// @brief Resolve built-in types (Arena, ArenaDescriptor, Simd).
-TypeAST* resolveBuiltinType(TypeAST* type, SemaContext& ctx);
+bool isIntegerType  (TypeAST* type);   // any signed or unsigned width
+bool isFloatType    (TypeAST* type);   // float32 or float64
+bool isNumericType  (TypeAST* type);   // isIntegerType || isFloatType
 
-/// @brief Resolve a qualified type access: module:Type.
-TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx);
+bool isPrimitiveType(TypeAST* type);   // any PrimitiveTypeAST
+bool isArrayType    (TypeAST* type);   // dynamic or fixed
+bool isRowRefType   (TypeAST* type);   // &T
+bool isFunctionType (TypeAST* type);   // (T, U) -> R
+bool isNamedType    (TypeAST* type);   // a table or host-backed table name
+bool isNullableType (TypeAST* type);   // T?
 
-/// @brief Resolve an array type.
-TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Type classification
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These consult the context because they need to follow a `NamedTypeAST`
+// to its `resolvedDecl`.
 
-/// @brief Resolve a nullable type (T?).
-TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx);
+/// True if `type` names a table that was declared with columns
+/// (`TABLE X { ... }`). False for a host-backed table.
+bool isColumnedTableType(TypeAST* type, SemaContext& ctx);
 
-/// @brief Resolve a fallible type (T!).
-TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx);
+/// True if `type` names a host-backed table (`TABLE X = host("...")`).
+/// False for a columned table. This replaces the old design's
+/// `isValidFFIType` — a host-backed table *is* the FFI-visible type.
+bool isHostBackedTableType(TypeAST* type, SemaContext& ctx);
 
-/// @brief Resolve a combined type (T?!).
-TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx);
+/// True if `type` names a table of any kind (columned or host-backed).
+bool isTableType(TypeAST* type, SemaContext& ctx);
 
-/// @brief Resolve a reference type (&T).
-TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Type equality and assignability
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Resolve a pointer type (*T).
-TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx);
-
-/// @brief Resolve a function type.
-TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx);
-
-/// @brief Resolve a trait reference to its declaration.
-TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx);
-
-/// @brief Resolve a call expression's callee to the FuncDeclAST it names.
-FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx);
-
-// =============================================================================
-// TYPE PREDICATES
-// =============================================================================
-
-// ─── Primitive Type Predicates ──────────────────────────────────────────
-
-bool isBoolType(TypeAST* type);
-bool isIntegerType(TypeAST* type);
-bool isFloatType(TypeAST* type);
-bool isNumericType(TypeAST* type);
-bool isStringType(TypeAST* type);
-bool isCharType(TypeAST* type);
-bool isPrimitiveType(TypeAST* type);
-
-// ─── Wrapper Type Predicates ────────────────────────────────────────────
-
-bool isNullableType(TypeAST* type);
-bool isFallibleType(TypeAST* type);
-bool isReferenceType(TypeAST* type);
-bool isPointerType(TypeAST* type);
-bool isBorrowedType(TypeAST* type);
-
-// ─── Named Type Predicates ──────────────────────────────────────────────
-
-bool isStructType(TypeAST* type, SemaContext& ctx);
-bool isEnumType(TypeAST* type, SemaContext& ctx);
-bool isTraitType(TypeAST* type, SemaContext& ctx);
-
-// ─── Built-in Type Predicates ────────────────────────────────────────────
-
-bool isArenaType(TypeAST* type); // Arena? type is not allowed, use Arena::empty()
-bool isArenaDescriptorType(TypeAST* type);
-bool isArenaBinding(VarDeclAST* decl);
-
-/// Does NOT accept:
-///   - Simd<T, N>? (nullable Simd is not allowed)
-///   - Simd<T, N>! (fallible Simd is not allowed)
-bool isSimdType(TypeAST* type);
-
-/// Valid element types are:
-///   - Signed integers: int8, int16, int32, int64
-///   - Unsigned integers: uint8, uint16, uint32, uint64
-///   - Floating point: float32, float64
-bool isValidSimdElementType(TypeAST* type);
-TypeAST* getSimdElementType(TypeAST* simdType);
-uint64_t getSimdLaneCount(TypeAST* simdType);
-
-// ─── Switch Type Checks ──────────────────────────────────────────────────
-
-bool isValidSwitchType(TypeAST* type, SemaContext& ctx);
-EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx);
-bool isSwitchCaseCompatible(ExprAST* value, 
-                             TypeAST* subjectType, 
-                             SemaContext& ctx);
-
-// ─── FFI Compatibility ──────────────────────────────────────────────────
-
-bool isValidFFIType(TypeAST* type, SemaContext& ctx);
-
-// ─── Numeric Helpers ─────────────────────────────────────────────────────
-
-size_t getIntegerBitWidth(TypeAST* type);
-TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx);
-bool isIntegerPromotionSafe(TypeAST* target, TypeAST* source, SemaContext& ctx);
-
-// ─── Type Unwrapping ─────────────────────────────────────────────────────
-
-TypeAST* unwrapNullable(TypeAST* type);
-TypeAST* unwrapFallible(TypeAST* type);
-
-// =============================================================================
-// TYPE EQUALITY & ASSIGNABILITY
-// =============================================================================
-
-/// @brief Compare two types for structural equality.
+/// @brief Structural equality.
+///
+/// Fast path: `a == b` (pointer equality). Because `TypeCache`
+/// canonicalizes, this hits whenever both types came through the cache.
+///
+/// Slow path: structural comparison. Handles the cases the cache cannot
+/// reach:
+///   - two `NamedTypeAST` nodes for the same source name but resolved to
+///     different declarations (the `weapons.Item` vs. `consumables.Item`
+///     case of §5) are *not* equal;
+///   - two `FunctionTypeAST` nodes whose parameter lists were built
+///     independently compare element-wise.
 bool typesEqual(TypeAST* a, TypeAST* b);
 
-/// @brief Check if a source type can be assigned to a target type.
+/// @brief Can a value of type `source` be assigned to a location of type
+///        `target`?
+///
+/// The rules, in order:
+///
+///   1. `typesEqual(target, source)` → true.
+///   2. `target` is a nullable type `T?` and `source` is `T` → true.
+///      (`T` widens to `T?`; the reverse does not hold — a `T?` is not
+///      assignable to a `T` without narrowing.)
+///   3. `source` is an untyped integer literal and `target` is an integer
+///      primitive → true. This is the §5.8 literal-adaptation rule.
+///   4. `source` is an untyped float literal and `target` is a float
+///      primitive → true.
+///   5. `source` is `nil` and `target` is a row-reference or nullable
+///      type → true.
+///   6. `source` is a function value (a named `FN` or a lambda) and
+///      `target` is a function type with the same signature → true.
+///
+/// Everything else → false. In particular, `int + float` is a mismatch:
+/// no implicit coercion between two already-typed values.
+///
+/// The `source`'s literal-ness is read from the expression, not the type
+/// — this function only sees the type. Call sites that need rules 3 and
+/// 4 must call the expression-level form in `SemaRules.hpp`, which knows
+/// the literal kinds. `isAssignable` here covers rules 1, 2, 5, and 6;
+/// the literal cases are handled by `resolveExprWithTarget` before it
+/// calls this.
 bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx);
 
-// =============================================================================
-// SELF-REFERENCE DETECTION
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// Unwrapping
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Check if a let initializer references the variable being declared.
-void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& ctx);
+/// @brief `T?` → `T`. Any other type → itself.
+///
+/// Used by the narrowing resolver and by `??`. Only `T?` is unwrapped;
+/// `&T` is already nilable at the type level and is not touched.
+TypeAST* unwrapNullable(TypeAST* type);
 
-/// @brief Check if a field type is a valid self-reference to the current struct.
-bool isValidStructSelfReference(TypeAST* fieldType,
-                                 StructDeclAST* currentStruct,
-                                 SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Primitive-name lookup
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The parser recognizes primitive type names lexically and produces a
+// `PrimitiveTypeAST` directly. These helpers exist for the two places
+// that need to ask "is this identifier a primitive type name?" without
+// going through the parser: the type resolver, when a `NamedTypeAST`
+// turns out to name a primitive; and diagnostics, when reporting a
+// primitive-kind name back to the user.
 
-// =============================================================================
-// SEMANTIC VALIDATION
-// =============================================================================
+/// True if `name` spells one of the primitive type keywords (§2.2).
+bool isPrimitiveTypeName(InternedString name, StringPool& pool);
 
-// ─── Const Validation ────────────────────────────────────────────────────
+/// The `PrimitiveKind` for a primitive type name. The name must be a
+/// primitive type name; the caller has already checked with
+/// `isPrimitiveTypeName`. Precondition: `isPrimitiveTypeName(name, pool)`.
+PrimitiveKind primitiveKindFromName(InternedString name, StringPool& pool);
 
-/// @brief Validate that a const declaration has a definite type.
-bool validateConstType(TypeAST* type,
-                        InternedString name,
-                        const char* kind,
-                        SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Numeric helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── Trait Validation ────────────────────────────────────────────────────
+/// The bit width of a numeric primitive (`int8` → 8, `float64` → 64).
+/// Precondition: `isNumericType(type)`.
+size_t getNumericBitWidth(TypeAST* type);
 
-bool validateTraitImplementation(StructDeclAST* structDecl,
-                                  TraitDeclAST* traitDecl,
-                                  SemaContext& ctx);
+/// @brief The result type of a binary arithmetic or bitwise operation
+///        on two numeric operands of different types.
+///
+/// The rule is the usual one: if either side is a float, the result is
+/// a float; otherwise the result is the wider integer. Both sides must
+/// be numeric — the caller has already checked with `isNumericType`.
+///
+/// The returned type is canonicalized through `ctx`, so a caller may
+/// rely on pointer equality against a type from the cache.
+TypeAST* getLargerNumericType(TypeAST* a, TypeAST* b, SemaContext& ctx);
 
-bool validateAllTraitImplementations(StructDeclAST* structDecl,
-                                      SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Validation
+// ─────────────────────────────────────────────────────────────────────────────
 
-bool checkTraitFieldConflicts(StructDeclAST* structDecl,
-                               SemaContext& ctx);
+/// @brief Validate a declaration's type against the rules for a `const`.
+///
+/// A `const` binding, `const` parameter, `const` field, or `const`
+/// column must have a definite type: not `T?`, not a row reference.
+/// The rule is one-directional — `let` accepts any type, `const`
+/// narrows the set.
+///
+/// @param type   The declaration's resolved type.
+/// @param name   The declared name, for the diagnostic message.
+/// @param kind   A short noun phrase ("variable", "parameter", "field"),
+///               used in the message: "const <kind> '<name>' must have
+///               a definite type".
+///
+/// @return true if the type is acceptable. On false, a diagnostic has
+///         been emitted and the caller should skip the declaration's
+///         remaining checks.
+bool validateConstType(TypeAST* type, InternedString name,
+                       const char* kind, SemaContext& ctx);
 
-// ─── Generic Validation ──────────────────────────────────────────────────
-
-bool validateGenericArguments(ArenaSpan<TypeAST*> args,
-                               ArenaSpan<GenericParamDeclAST*> params,
-                               BaseAST* useSite,
-                               SemaContext& ctx);
-
-bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
-                                    const std::vector<TypeAST*>& types,
-                                    BaseAST* useSite,
-                                    SemaContext& ctx);
-
-// ─── Downward Flow Rule ──────────────────────────────────────────────────
-
-bool validateBorrowedContext(TypeAST* type, SemaContext& ctx);
-
-// ─── FFI Validation ──────────────────────────────────────────────────────
-
-bool validateForeignFunction(FuncDeclAST* decl,
-                              AttributeAST* foreignAttr,
-                              SemaContext& ctx);
-
-// ─── Arena Validation ────────────────────────────────────────────────────
-
-bool validateArenaInitializer(ExprAST* init, SemaContext& ctx);
-
-// ─── Simd Validation ────────────────────────────────────────────────────
-
-bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx);
-
-
-// ─── Other helpers ────────────────────────────────────────────────────
-
-/// @brief Check if a name is a primitive type name.
-inline bool isPrimitiveTypeName(InternedString name, StringPool& pool) {
-    std::string_view view = pool.lookupView(name);
-    static const std::unordered_set<std::string_view> primitiveNames = {
-        "bool", "int8", "int16", "int32", "int64",
-        "uint8", "uint16", "uint32", "uint64",
-        "byte", "short", "int", "long",
-        "ubyte", "ushort", "uint", "ulong",
-        "float", "double", "decimal",
-        "string", "char"
-    };
-    return primitiveNames.find(view) != primitiveNames.end();
-}
-
-/// @brief Convert a primitive type name to its PrimitiveKind.
-inline PrimitiveKind primitiveKindFromName(InternedString name, StringPool& pool) {
-    std::string_view view = pool.lookupView(name);
-    // This is the same mapping as in the lexer/parser
-    if (view == "bool")     return PrimitiveKind::Bool;
-    if (view == "int8")     return PrimitiveKind::Int8;
-    if (view == "int16")    return PrimitiveKind::Int16;
-    if (view == "int32")    return PrimitiveKind::Int32;
-    if (view == "int64")    return PrimitiveKind::Int64;
-    if (view == "uint8")    return PrimitiveKind::Uint8;
-    if (view == "uint16")   return PrimitiveKind::Uint16;
-    if (view == "uint32")   return PrimitiveKind::Uint32;
-    if (view == "uint64")   return PrimitiveKind::Uint64;
-    if (view == "byte")     return PrimitiveKind::Byte;
-    if (view == "short")    return PrimitiveKind::Short;
-    if (view == "int")      return PrimitiveKind::Int;
-    if (view == "long")     return PrimitiveKind::Long;
-    if (view == "ubyte")    return PrimitiveKind::Ubyte;
-    if (view == "ushort")   return PrimitiveKind::Ushort;
-    if (view == "uint")     return PrimitiveKind::Uint;
-    if (view == "ulong")    return PrimitiveKind::Ulong;
-    if (view == "float")    return PrimitiveKind::Float;
-    if (view == "double")   return PrimitiveKind::Double;
-    if (view == "decimal")  return PrimitiveKind::Decimal;
-    if (view == "string")   return PrimitiveKind::String;
-    if (view == "char")     return PrimitiveKind::Char;
-    return PrimitiveKind::Int;  // Fallback
-}
-
-} // namespace sema
+} // namespace lucid::sema

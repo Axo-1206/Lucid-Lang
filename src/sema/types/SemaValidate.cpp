@@ -1,998 +1,109 @@
 /// @file SemaValidate.cpp
-/// @brief Implementation of semantic validation rules.
+/// @brief Semantic validation rules that are neither predicates nor
+///        equality checks.
+///
+/// ─── What lives here ──────────────────────────────────────────────────────
+/// Rules that take a resolved type (or a declaration) and a context, and
+/// emit a diagnostic if the combination is illegal. They are distinct from
+/// `SemaTypePredicates.cpp` (which asks what a type is) and
+/// `SemaTypeEquality.cpp` (which asks whether two types are the same or
+/// assignable).
+///
+/// The largest family of validations in the new grammar — the table
+/// constraint checks of §4.1.3–§4.1.5 — will live in `TableConstraintChecker`,
+/// not here. This file is for the small, cross-cutting rules that don't
+/// have a natural home elsewhere.
+///
+/// ─── What is deliberately not here ────────────────────────────────────────
+/// No trait conformance, no generic-argument checks, no struct
+/// self-reference checks, no borrowed-context checks, no FFI checks, no
+/// Arena/SIMD checks. Every one of those corresponded to a feature the
+/// new grammar does not have.
 
 #include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
-#include "core/ast/TypeAST.hpp"
 #include "core/ASTStrings.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
-#include <unordered_map>
-#include <unordered_set>
-#include <functional>
+using namespace lucid::diag;
 
-namespace sema {
+namespace lucid::sema {
 
-// ─── Internal Helper: Check if a type implements a trait ─────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Const-binding validation
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Check if a type satisfies a single trait constraint.
-/// 
-/// This is the core trait conformance check. It verifies that the source type
-/// (which must be a struct) implements the target trait by checking its traitRefs.
-static bool satisfiesTraitConstraint(TypeAST* actualType,
-                                      NamedTypeAST* requiredTrait,
-                                      SemaContext& ctx) {
-    if (!actualType || !requiredTrait) return false;
-
-    // ─── Generic parameter as the actual type ───────────────────────────
-    //
-    // A generic parameter is a placeholder for a concrete type that will
-    // only be known at instantiation time. Whether T satisfies the trait
-    // cannot be decided here — it depends on which concrete type T is
-    // bound to at each call site, and that check happens during
-    // `validateGenericArguments` against the concrete argument.
-    //
-    // The two ways this node can be a generic parameter reference:
-    //
-    //   1. `resolvedDecl` is already set to a GenericParamDeclAST. This
-    //      happens when `resolveType` has run on the node — the resolver
-    //      stores the parameter decl directly on the reference.
-    //
-    //   2. `resolvedDecl` is not yet set, but the name resolves through
-    //      the current scope stack to a generic parameter. This covers a
-    //      parser-produced type node that has not been through
-    //      `resolveType` yet.
-    //
-    // Only a NamedTypeAST can be a generic parameter — primitives, arrays,
-    // function types, and everything else are always concrete.
-    if (actualType && actualType->isa<NamedTypeAST>()) {
-        NamedTypeAST* namedActual = actualType->as<NamedTypeAST>();
-
-        // ─── Fast path: already resolved to a generic parameter ────────
-        if (namedActual->resolvedDecl
-            && namedActual->resolvedDecl->isa<GenericParamDeclAST>()) {
-            return true;
-        }
-
-        // ─── Slow path: unresolved, check the scope stack ──────────────
-        if (ctx.isGenericParam(namedActual->name)) {
-            return true;
-        }
-    }
-
-    // Actual type must be a named type
-    if (!actualType->isa<NamedTypeAST>()) return false;
-    NamedTypeAST* namedActual = actualType->as<NamedTypeAST>();
-    TypeDeclAST* typeDecl = ctx.lookupType(namedActual->name);
-    if (!typeDecl) return false;
-
-    // Only structs can implement traits
-    if (!typeDecl->isa<StructDeclAST>()) return false;
-    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-
-    // Resolve the required trait
-    TraitDeclAST* traitDecl = resolveTraitRef(requiredTrait, ctx);
-    if (!traitDecl) return false;
-
-    // Check if the struct implements the trait by looking at its traitRefs
-    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
-        TraitDeclAST* resolved = resolveTraitRef(traitRef, ctx);
-        if (resolved == traitDecl) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/// @brief Validate a single generic parameter's constraints.
-static bool validateParamConstraints(TypeAST* actualType,
-                                      GenericParamDeclAST* param,
-                                      SemaContext& ctx) {
-    if (!param || !actualType) return true;
-    if (param->constraints.empty()) return true;
-
-    for (NamedTypeAST* constraint : param->constraints) {
-        if (!satisfiesTraitConstraint(actualType, constraint, ctx)) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericConstraint, actualType,
-                                  "type does not implement trait '", 
-                                  ctx.pool.lookup(constraint->name), "'");
-            ctx.diagnostics.note(param, "parameter '", ctx.pool.lookup(param->name), 
-                                 "' requires this trait");
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// ─── Variable Self-Reference Detection ──────────────────────────────────
-
-void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& ctx) {
-    if (!expr) return;
-
-    // Walk the expression tree looking for references to varName
-    // Uses a recursive visitor pattern with early termination on error
-
-    switch (expr->kind) {
-        case ASTKind::IdentifierExpr: {
-            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            if (id->name == varName) {
-                ctx.diagnostics.error(DiagCode::Sem_SelfReferentialInit, expr,
-                                      "let variable '", ctx.pool.lookup(varName),
-                                      "' cannot be used in its own initializer");
-            }
-            return;
-        }
-
-        case ASTKind::BinaryExpr: {
-            BinaryExprAST* bin = expr->as<BinaryExprAST>();
-            checkLetSelfReference(bin->left, varName, ctx);
-            checkLetSelfReference(bin->right, varName, ctx);
-            return;
-        }
-
-        case ASTKind::UnaryExpr: {
-            UnaryExprAST* unary = expr->as<UnaryExprAST>();
-            checkLetSelfReference(unary->operand, varName, ctx);
-            return;
-        }
-
-        case ASTKind::CallExpr: {
-            CallExprAST* call = expr->as<CallExprAST>();
-            checkLetSelfReference(call->callee, varName, ctx);
-            for (ExprAST* arg : call->args) {
-                checkLetSelfReference(arg, varName, ctx);
-            }
-            return;
-        }
-
-        case ASTKind::FieldAccessExpr: {
-            FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-            checkLetSelfReference(field->object, varName, ctx);
-            return;
-        }
-
-        case ASTKind::IndexExpr: {
-            IndexExprAST* index = expr->as<IndexExprAST>();
-            checkLetSelfReference(index->target, varName, ctx);
-            checkLetSelfReference(index->index, varName, ctx);
-            return;
-        }
-
-        case ASTKind::ArrayLiteralExpr: {
-            ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
-            for (ExprAST* elem : arr->elements) {
-                checkLetSelfReference(elem, varName, ctx);
-            }
-            return;
-        }
-
-        case ASTKind::StructLiteralExpr: {
-            StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
-            for (FieldInitAST* init : st->inits) {
-                checkLetSelfReference(init->value, varName, ctx);
-            }
-            return;
-        }
-
-        case ASTKind::NullCoalesceExpr: {
-            NullCoalesceExprAST* coalesce = expr->as<NullCoalesceExprAST>();
-            checkLetSelfReference(coalesce->value, varName, ctx);
-            checkLetSelfReference(coalesce->fallback, varName, ctx);
-            return;
-        }
-
-        case ASTKind::AssignExpr: {
-            AssignExprAST* assign = expr->as<AssignExprAST>();
-            checkLetSelfReference(assign->lhs, varName, ctx);
-            checkLetSelfReference(assign->rhs, varName, ctx);
-            return;
-        }
-
-        case ASTKind::PipelineExpr: {
-            PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
-            checkLetSelfReference(pipeline->seed, varName, ctx);
-            for (PipelineStepAST* step : pipeline->steps) {
-                checkLetSelfReference(step->callable, varName, ctx);
-                for (ExprAST* arg : step->packArgs) {
-                    checkLetSelfReference(arg, varName, ctx);
-                }
-            }
-            return;
-        }
-
-        case ASTKind::AnonFuncExpr: {
-            // An anonymous function's body may reference the variable
-            // But the variable is in scope, so we check the body
-            AnonFuncExprAST* anon = expr->as<AnonFuncExprAST>();
-            // We need to traverse the body statement
-            // For simplicity, we check the body if it's a block
-            if (anon->body && anon->body->isa<BlockStmtAST>()) {
-                BlockStmtAST* block = anon->body->as<BlockStmtAST>();
-                for (StmtAST* stmt : block->stmts) {
-                    // Check each statement for references
-                    // This is a simplified check - a full implementation would
-                    // need to traverse all statement types
-                    if (stmt->isa<ExprStmtAST>()) {
-                        checkLetSelfReference(stmt->as<ExprStmtAST>()->expr, varName, ctx);
-                    } else if (stmt->isa<ReturnStmtAST>()) {
-                        checkLetSelfReference(stmt->as<ReturnStmtAST>()->value, varName, ctx);
-                    }
-                }
-            }
-            return;
-        }
-
-        case ASTKind::IfExpr: {
-            IfExprAST* ifExpr = expr->as<IfExprAST>();
-            checkLetSelfReference(ifExpr->condition, varName, ctx);
-            checkLetSelfReference(ifExpr->thenBranch, varName, ctx);
-            checkLetSelfReference(ifExpr->elseBranch, varName, ctx);
-            return;
-        }
-
-        case ASTKind::RangeExpr: {
-            RangeExprAST* range = expr->as<RangeExprAST>();
-            checkLetSelfReference(range->lo, varName, ctx);
-            checkLetSelfReference(range->hi, varName, ctx);
-            return;
-        }
-
-        // These expression types cannot contain variable references
-        case ASTKind::LiteralExpr:
-        case ASTKind::IntrinsicCallExpr:
-        case ASTKind::SliceExpr:
-        case ASTKind::ModuleAccessExpr:
-        default:
-            return;
-    }
-}
-
-// ─── Struct Self-Reference Validation ───────────────────────────────────
-
-/// @brief Validate that a self-referential struct field is legal.
+/// Validate a `const` binding's type.
 ///
-/// A field whose type refers to the enclosing struct creates an
-/// infinite-size type unless the recursion is broken by a nullable or
-/// raw-pointer indirection. This function is the check for that rule.
+/// A `const` binding — a `const` variable, a `const` parameter, a
+/// `@readonly` column, a `const` field in a fixed-table row — must have a
+/// *definite* type. The rule is one-directional: `let` accepts any type,
+/// `const` narrows the set.
 ///
-/// Called from `resolveStructFieldDeclarations`, which runs on concrete
-/// field types — either the fields of a non-generic struct or the
-/// substituted fields of a specialization. At this point `fieldType` is
-/// always a concrete `TypeAST*`, and `currentStruct->name` is the
-/// *source* name of the struct (`"Node"`, not the mangled form).
+/// The types a `const` cannot have:
 ///
-/// @return true if the field is a legal self-reference (or not a
-///         self-reference at all); false if it violates the rule, in
-///         which case a diagnostic has been emitted.
-bool isValidStructSelfReference(TypeAST* fieldType,
-                                 StructDeclAST* currentStruct,
-                                 SemaContext& ctx)
-{
-    if (!fieldType || !currentStruct) return false;
-
-    // ─── Step 1: Unwrap nullable and pointer layers ────────────────────
-    bool isNullable = false;
-    bool isPointer = false;
-    TypeAST* innerType = fieldType;
-
-    if (fieldType->isa<NullableTypeAST>()) {
-        isNullable = true;
-        innerType = fieldType->as<NullableTypeAST>()->inner;
-    }
-
-    if (innerType->isa<PtrTypeAST>()) {
-        isPointer = true;
-        innerType = innerType->as<PtrTypeAST>()->inner;
-    }
-
-    // ─── Step 2: Must be a NamedType to be a self-reference ────────────
-    if (!innerType->isa<NamedTypeAST>()) {
-        return true;   // Not a self-reference; nothing to check
-    }
-
-    NamedTypeAST* named = innerType->as<NamedTypeAST>();
-
-    // ─── Step 3: Match by source name only ─────────────────────────────
-    //
-    // `Node<int>` inside a specialization of `Node<T>` is a
-    // self-reference by any reasonable definition — it is the same
-    // struct family, and a non-nullable field of that family creates
-    // infinite size regardless of which concrete type arguments are
-    // supplied. The rule is expressed in terms of the struct, not the
-    // instantiation, so the comparison is by source name.
-    //
-    // The former generic-argument comparison was a bug: it exempted
-    // `Node<int>`, `Node<Box<int>>`, and bare `Node` from the
-    // infinite-size check below by returning early. Those are all
-    // self-references and must reach the check.
-    if (named->name != currentStruct->name) {
-        return true;   // Not a self-reference
-    }
-
-    // ─── Step 4: Enforce the infinite-size rule ────────────────────────
-    if (!isNullable && !isPointer) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, fieldType,
-                              "non-nullable self-reference in struct '",
-                              ctx.pool.lookup(currentStruct->name),
-                              "' (use '?', '*', or '*?' to allow recursion)");
-        return false;
-    }
-
-    return true;
-}
-
-// ─── Trait Validation ────────────────────────────────────────────────────
-
-/// @brief Validate that a struct implements a single trait.
-static bool validateSingleTraitImplementationInternal(
-    StructDeclAST* structDecl,
-    TraitDeclAST* traitDecl,
-    SemaContext& ctx) {
-    
-    if (!structDecl || !traitDecl) return false;
-
-    // Build a map of struct fields for quick lookup
-    std::unordered_map<InternedString, FieldDeclAST*> structFields;
-    for (FieldDeclAST* field : structDecl->fields) {
-        if (field->hasSyntaxError) continue;
-        structFields[field->name] = field;
-    }
-
-    bool isValid = true;
-
-    // Check each trait field
-    for (TraitFieldDeclAST* traitField : traitDecl->fields) {
-        if (traitField->hasSyntaxError) continue;
-
-        bool hasBrokenStructField = false;
-        for (FieldDeclAST* field : structDecl->fields) {
-            if (field->name == traitField->name && field->hasSyntaxError) {
-                hasBrokenStructField = true;
-                break;
-            }
-        }
-        if (hasBrokenStructField) continue;
-
-        // ─── 1. Check: Field exists in struct ──────────────────────────
-        auto it = structFields.find(traitField->name);
-        if (it == structFields.end()) {
-            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
-                                  "struct '", ctx.pool.lookup(structDecl->name),
-                                  "' is missing field '", ctx.pool.lookup(traitField->name),
-                                  "' required by trait '", ctx.pool.lookup(traitDecl->name), "'");
-            isValid = false;
-            continue;
-        }
-
-        FieldDeclAST* structField = it->second;
-
-        // ─── 2. Check: Const-ness compatibility ────────────────────────
-        if (traitField->isConst() && !structField->isConst()) {
-            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
-                                  "trait '", ctx.pool.lookup(traitDecl->name),
-                                  "' requires field '", ctx.pool.lookup(traitField->name),
-                                  "' to be const, but struct declares it as mutable");
-            isValid = false;
-            continue;
-        }
-
-        // ─── 3. Check: Type compatibility ──────────────────────────────
-        if (!structField->type || !traitField->type) {
-            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
-                                  "field '", ctx.pool.lookup(traitField->name),
-                                  "' has missing type information");
-            isValid = false;
-            continue;
-        }
-
-        // ─── Downward Flow Rule: Trait fields cannot be borrowed types ─────
-        // A trait is a contract for struct fields, and struct fields cannot
-        // contain borrowed types (&T or [_]T)
-        if (isBorrowedType(traitField->type)) {
-            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
-                                  "trait '", ctx.pool.lookup(traitDecl->name),
-                                  "' has field '", ctx.pool.lookup(traitField->name),
-                                  "' of borrowed type (", 
-                                  typeToString(traitField->type, ctx.pool),
-                                  ") — traits cannot require borrowed types");
-            isValid = false;
-            continue;
-        }
-
-        if (traitField->isConst()) {
-            // Const fields: types must match exactly
-            if (!typesEqual(structField->type, traitField->type)) {
-                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
-                                      "const field '", ctx.pool.lookup(traitField->name),
-                                      "' type mismatch: trait expects ",
-                                      typeToString(traitField->type, ctx.pool),
-                                      ", struct has ",
-                                      typeToString(structField->type, ctx.pool));
-                isValid = false;
-                continue;
-            }
-        } else {
-            // Non-const fields: allow assignable types
-            if (!isAssignable(traitField->type, structField->type, ctx)) {
-                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
-                                      "field '", ctx.pool.lookup(traitField->name),
-                                      "' type mismatch: trait expects ",
-                                      typeToString(traitField->type, ctx.pool),
-                                      ", struct has ",
-                                      typeToString(structField->type, ctx.pool));
-                isValid = false;
-                continue;
-            }
-        }
-
-        // ─── 4. Check: Const trait field type restrictions ─────────────
-        if (traitField->isConst()) {
-            if (isNullableType(traitField->type) || isFallibleType(traitField->type)) {
-                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
-                                      "trait '", ctx.pool.lookup(traitDecl->name),
-                                      "' has const field '", ctx.pool.lookup(traitField->name),
-                                      "' that is nullable or fallible (must be definite)");
-                isValid = false;
-                continue;
-            }
-        }
-    }
-
-    return isValid;
-}
-
-/// @brief Check for conflicting field names across multiple traits.
-static bool checkTraitFieldConflictsInternal(
-    StructDeclAST* structDecl,
-    SemaContext& ctx) {
-    
-    if (!structDecl) return true;
-
-    struct FieldRequirement {
-        TraitDeclAST* trait;
-        bool isConst;
-        TypeAST* type;
-    };
-    
-    std::unordered_map<InternedString, std::vector<FieldRequirement>> requirements;
-
-    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
-        TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
-        if (!trait) continue;
-
-        for (TraitFieldDeclAST* field : trait->fields) {
-            if (field->hasSyntaxError) continue;
-            requirements[field->name].push_back({
-                trait,
-                field->isConst(),
-                field->type
-            });
-        }
-    }
-
-    bool hasConflict = false;
-    for (const auto& [fieldName, reqs] : requirements) {
-        if (reqs.size() <= 1) continue;
-
-        const FieldRequirement* first = &reqs[0];
-        
-        for (size_t i = 1; i < reqs.size(); ++i) {
-            const FieldRequirement* other = &reqs[i];
-
-            if (first->isConst != other->isConst) {
-                ctx.diagnostics.error(DiagCode::Sem_TraitConflict, structDecl,
-                                      "field '", ctx.pool.lookup(fieldName),
-                                      "' has conflicting const requirements: ",
-                                      "trait '", ctx.pool.lookup(first->trait->name),
-                                      "' requires ", first->isConst ? "const" : "mutable",
-                                      ", but trait '", ctx.pool.lookup(other->trait->name),
-                                      "' requires ", other->isConst ? "const" : "mutable");
-                hasConflict = true;
-                continue;
-            }
-
-            if (first->type && other->type) {
-                if (!typesEqual(first->type, other->type)) {
-                    ctx.diagnostics.error(DiagCode::Sem_TraitConflict, structDecl,
-                                          "field '", ctx.pool.lookup(fieldName),
-                                          "' has conflicting types: ",
-                                          "trait '", ctx.pool.lookup(first->trait->name),
-                                          "' expects ",
-                                          typeToString(first->type, ctx.pool),
-                                          ", but trait '", ctx.pool.lookup(other->trait->name),
-                                          "' expects ",
-                                          typeToString(other->type, ctx.pool));
-                    hasConflict = true;
-                }
-            }
-        }
-    }
-
-    return !hasConflict;
-}
-
-// ─── Const Validation ────────────────────────────────────────────────────
-
-bool validateConstType(TypeAST* type,
-                        InternedString name,
-                        const char* kind,
-                        SemaContext& ctx) {
+///   - `T?` — a nullable type has a value that can become `nil`, and a
+///     `const` binding must be readable as `T` without a narrowing check.
+///     If a program wants a nullable value that is never reassigned, it
+///     declares `let x: T? = ...` and simply does not reassign it.
+///
+///   - `&T` — a row reference is nilable by construction (§5.2). A `&T`
+///     that is "const" means "this binding may not be reassigned", but the
+///     row it points to can be removed, at which point the reference reads
+///     as `nil`. That is not a definite value, so `const x: &Person = ...`
+///     is rejected.
+///
+///     The exception: a `const` *parameter* of type `&T` is legal, because
+///     `const` on a parameter means "the callee cannot mutate through this
+///     parameter", not "the value is definite". The caller's binding is
+///     what has to be `let`/`const`; the parameter's own const-ness is a
+///     different rule and is enforced at the call site, not here. This
+///     function is called for the *binding* form, not the parameter form.
+///
+/// @param type   The declaration's resolved type.
+/// @param name   The declared name, for the diagnostic.
+/// @param kind   A short noun phrase ("variable", "field"), interpolated
+///               into the message.
+///
+/// @return true if the type is acceptable for a `const` binding. On false,
+///         a diagnostic has been emitted and the caller skips the rest of
+///         the declaration's checks.
+bool validateConstType(TypeAST* type, InternedString name,
+                       const char* kind, SemaContext& ctx) {
     if (!type) return false;
 
-    if (isNullableType(type) || isFallibleType(type)) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+    // A resolve failure upstream already reported its own diagnostic.
+    // Do not pile on.
+    if (type->isa<UnknownTypeAST>()) return true;
+
+    // ─── Nullable: no ──────────────────────────────────────────────────
+    if (isNullableType(type)) {
+        ctx.diagnostics.error(DiagCode::Mut_ConstAssignment, type,
                               "const ", kind, " '", ctx.pool.lookup(name),
-                              "' must be definite (not nullable or fallible)");
+                              "' cannot have a nullable type (",
+                              typeToString(type, ctx.pool), ")");
+        ctx.diagnostics.note(type,
+                             "A const binding must have a definite value. "
+                             "Use 'let' if the value may be nil, or "
+                             "narrow it with '?\?' to a non-nil value first.");
         return false;
     }
 
-    // Combined type (T?!) is also not allowed for const
-    if (type->isa<CombinedTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+    // ─── Row reference: no ─────────────────────────────────────────────
+    if (isRowRefType(type)) {
+        ctx.diagnostics.error(DiagCode::Mut_ConstAssignment, type,
                               "const ", kind, " '", ctx.pool.lookup(name),
-                              "' cannot be combined (T?!). Use a definite type.");
-        return false;
-    }
-
-    // ─── Const cannot be a borrowed type ───────────────────────────────────
-    // const values must be definite and owned - &T and [_]T are borrowed
-    if (isBorrowedType(type)) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
-                              "const ", kind, " '", ctx.pool.lookup(name),
-                              "' cannot be a borrowed type (",
-                              typeToString(type, ctx.pool),
-                              ") — const values must be owned");
+                              "' cannot have a row-reference type (",
+                              typeToString(type, ctx.pool), ")");
+        ctx.diagnostics.note(type,
+                             "A row reference is inherently nilable — the "
+                             "referenced row may be removed. Use 'let' for "
+                             "a row reference.");
         return false;
     }
 
     return true;
 }
 
-// ─── Public Trait Validation ────────────────────────────────────────────
-
-bool validateTraitImplementation(StructDeclAST* structDecl,
-                                  TraitDeclAST* traitDecl,
-                                  SemaContext& ctx) {
-    return validateSingleTraitImplementationInternal(structDecl, traitDecl, ctx);
-}
-
-bool validateAllTraitImplementations(StructDeclAST* structDecl,
-                                      SemaContext& ctx) {
-    if (!structDecl) return true;
-    if (structDecl->traitRefs.empty()) return true;
-
-    bool conflicts = checkTraitFieldConflictsInternal(structDecl, ctx);
-    bool allValid = true;
-
-    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
-        TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
-        if (!trait) {
-            // Broken trait declarations should already have produced the parser's
-            // diagnostic; semantic validation should stay silent and continue.
-            continue;
-        }
-
-        if (!validateSingleTraitImplementationInternal(structDecl, trait, ctx)) {
-            allValid = false;
-            continue;
-        }
-        // No cache needed - traitRefs already stores the information
-    }
-
-    return allValid && !conflicts;
-}
-
-bool checkTraitFieldConflicts(StructDeclAST* structDecl,
-                               SemaContext& ctx) {
-    return checkTraitFieldConflictsInternal(structDecl, ctx);
-}
-
-// ─── Generic Validation ──────────────────────────────────────────────────
-
-bool validateGenericArguments(ArenaSpan<TypeAST*> args,
-                               ArenaSpan<GenericParamDeclAST*> params,
-                               BaseAST* useSite,
-                               SemaContext& ctx) {
-    if (args.size() != params.size()) {
-        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, useSite,
-                              "expected ", params.size(),
-                              " generic arguments, got ", args.size());
-        return false;
-    }
-
-    bool allValid = true;
-
-    for (size_t i = 0; i < args.size(); ++i) {
-        TypeAST* resolvedArg = resolveType(args[i], ctx);
-        if (!resolvedArg) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
-                                  "invalid generic argument at position ", i + 1);
-            allValid = false;
-            continue;
-        }
-
-        // ─── Generic arguments cannot be borrowed types ─────────────────────
-        // T in <T> must be an owned type - borrowed types (&T and [_]T)
-        // cannot be used as generic arguments
-        if (isBorrowedType(resolvedArg)) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
-                                  "generic argument at position ", i + 1,
-                                  " cannot be a borrowed type (",
-                                  typeToString(resolvedArg, ctx.pool),
-                                  ") — generic parameters must be owned types");
-            allValid = false;
-            continue;
-        }
-
-        if (!validateParamConstraints(resolvedArg, params[i], ctx)) {
-            allValid = false;
-        }
-    }
-
-    return allValid;
-}
-
-bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
-                                    const std::vector<TypeAST*>& types,
-                                    BaseAST* useSite,
-                                    SemaContext& ctx) {
-    if (params.empty()) return true;   // nothing to check
-
-    std::unordered_set<InternedString> usedParams;
-
-    std::function<void(TypeAST*)> findParams = [&](TypeAST* type) {
-        if (!type) return;
-
-        switch (type->kind) {
-            case ASTKind::NamedType: {
-                NamedTypeAST* named = static_cast<NamedTypeAST*>(type);
-                // Check against the declared parameters directly, not
-                // ctx.isGenericParam — the function's contract is
-                // "does this field type use any of MY parameters?",
-                // and ctx.isGenericParam also returns true for
-                // parameters of any enclosing scope (a struct nested
-                // inside a generic function, for instance). Using the
-                // ctx-wide lookup would silently mark an enclosing
-                // function's T as "used" by this struct, which is
-                // wrong.
-                for (GenericParamDeclAST* p : params) {
-                    if (p->name == named->name) {
-                        usedParams.insert(named->name);
-                        break;
-                    }
-                }
-                for (TypeAST* arg : named->genericArgs) {
-                    findParams(arg);
-                }
-                return;
-            }
-            case ASTKind::NullableType:
-                findParams(static_cast<NullableTypeAST*>(type)->inner);
-                return;
-            case ASTKind::FallibleType:
-                findParams(static_cast<FallibleTypeAST*>(type)->inner);
-                return;
-            case ASTKind::CombinedType:
-                findParams(static_cast<CombinedTypeAST*>(type)->inner);
-                return;
-            case ASTKind::RefType:
-                findParams(static_cast<RefTypeAST*>(type)->inner);
-                return;
-            case ASTKind::PtrType:
-                findParams(static_cast<PtrTypeAST*>(type)->inner);
-                return;
-            case ASTKind::ArrayType:
-                findParams(static_cast<ArrayTypeAST*>(type)->element);
-                return;
-            case ASTKind::FuncType: {
-                FuncTypeAST* func = static_cast<FuncTypeAST*>(type);
-                for (ParamAST* param : func->params) {
-                    findParams(param->type);
-                }
-                findParams(func->returnType);
-                return;
-            }
-            case ASTKind::SimdType:
-                findParams(static_cast<SimdTypeAST*>(type)->elementType);
-                return;
-            case ASTKind::FutureType:
-                findParams(static_cast<FutureTypeAST*>(type)->inner);
-                return;
-            case ASTKind::ThreadType:
-                findParams(static_cast<ThreadTypeAST*>(type)->inner);
-                return;
-            case ASTKind::PrimitiveType:
-            case ASTKind::ArenaType:
-            case ASTKind::ArenaDescriptorType:
-            case ASTKind::ModuleTypeAccess:
-            default:
-                // Leaf nodes: no generic parameter can appear inside.
-                // ArenaType and ArenaDescriptorType reach here only if a
-                // caller constructs them directly (getArenaType returns
-                // a NamedTypeAST). ModuleTypeAccess is a fully-qualified
-                // reference to a concrete type.
-                return;
-        }
-    };
-
-    for (TypeAST* type : types) {
-        findParams(type);
-    }
-
-    bool allUsed = true;
-    for (GenericParamDeclAST* param : params) {
-        if (usedParams.find(param->name) == usedParams.end()) {
-            ctx.diagnostics.error(DiagCode::Sem_GenericParamUnused, useSite,
-                                  "generic parameter '", ctx.pool.lookup(param->name),
-                                  "' is not used in the declaration");
-            allUsed = false;
-        }
-    }
-
-    return allUsed;
-}
-
-// ─── Downward Flow Rule ──────────────────────────────────────────────────
-
-bool validateRefContext(RefTypeAST* type, SemaContext& ctx) {
-    // Delegate to the unified borrowed context validation
-    return validateBorrowedContext(type, ctx);
-}
-
-// ─── FFI Validation ──────────────────────────────────────────────────────
-
-bool validateForeignFunction(FuncDeclAST* decl,
-                              AttributeAST* foreignAttr,
-                              SemaContext& ctx) {
-    if (!decl || !foreignAttr) return false;
-
-    // ─── 1. Validate ABI ─────────────────────────────────────────────────────
-    if (foreignAttr->args.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, foreignAttr,
-                              "@[foreign] requires an ABI argument");
-        return false;
-    }
-
-    const LiteralExprAST* abiLiteral = foreignAttr->args[0];
-    if (!abiLiteral || abiLiteral->kind != LiteralKind::String) {
-        ctx.diagnostics.error(DiagCode::Sem_ForeignABI, foreignAttr,
-                              "@[foreign] ABI must be a string literal");
-        return false;
-    }
-
-    std::string abi = ctx.pool.lookup(abiLiteral->value);
-    if (abi != "C") {
-        ctx.diagnostics.error(DiagCode::Sem_ForeignABI, foreignAttr,
-                              "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
-        return false;
-    }
-
-    // ─── 2. Check: Function must have no body ────────────────────────────────
-    if (decl->init) {
-        ctx.diagnostics.error(DiagCode::Sem_ForeignInvalid, decl,
-                              "foreign function '", ctx.pool.lookup(decl->name),
-                              "' must have no body (implementation is external)");
-        return false;
-    }
-
-    // ─── 3. Validate parameter types ─────────────────────────────────────────
-    FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
-    if (!funcType) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, decl,
-                              "foreign function '", ctx.pool.lookup(decl->name),
-                              "' has no function type");
-        return false;
-    }
-
-    bool allValid = true;
-
-    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
-        for (ParamAST* param : group->params) {
-            // ─── Arena cannot be passed to FFI ─────────────────────────────
-            if (isArenaType(param->type)) {
-                ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, param,
-                                      "foreign function parameter '", 
-                                      ctx.pool.lookup(param->name),
-                                      "' cannot be of type Arena");
-                ctx.diagnostics.note(param,
-                                     "Arena is scope-confined and cannot cross the FFI boundary");
-                allValid = false;
-            }
-
-            if (!isValidFFIType(param->type, ctx)) {
-                ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
-                                      "parameter '", ctx.pool.lookup(param->name),
-                                      "' type is not FFI-compatible");
-                allValid = false;
-            }
-        }
-    }
-
-    // ─── 4. Validate return type ─────────────────────────────────────────────
-    TypeAST* returnType = funcType->returnType;
-    if (returnType) {
-        // ─── Arena cannot be returned from FFI ─────────────────────────────
-        if (isArenaType(returnType)) {
-            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
-                                  "foreign function cannot return Arena");
-            ctx.diagnostics.note(decl,
-                                 "Arena is scope-confined and cannot cross the FFI boundary");
-            allValid = false;
-        }
-
-        if (!isValidFFIType(returnType, ctx)) {
-            ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
-                                  "return type of foreign function '",
-                                  ctx.pool.lookup(decl->name), "' is not FFI-compatible");
-            allValid = false;
-        }
-    }
-
-    // ─── 5. Validate no generic parameters ──────────────────────────────────
-    if (!decl->genericParams.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_ForeignInvalid, decl,
-                              "foreign function '", ctx.pool.lookup(decl->name),
-                              "' cannot have generic parameters");
-        allValid = false;
-    }
-
-    return allValid;
-}
-
-// ─── Downward Flow Rule Validation ──────────────────────────────────────
-
-bool validateBorrowedContext(TypeAST* type, SemaContext& ctx) {
-    if (!type || !isBorrowedType(type)) {
-        return true;
-    }
-
-    // ─── Rule 1: No Struct Storage ─────────────────────────────────────────
-    // A borrowed type cannot be stored in a struct field
-    TypeDeclAST* currentType = ctx.currentDefiningType();
-    if (currentType && currentType->isa<StructDeclAST>()) {
-        const char* typeName = type->isa<RefTypeAST>() ? "reference (&T)" : "slice ([_]T)";
-        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
-                              "borrowed type ", typeName,
-                              " cannot be stored in struct fields");
-        return false;
-    }
-
-    // Array/slice elements, function returns, and closure captures are
-    // validated by their owning resolution and capture-analysis paths.
-    
-    return true;
-}
-
-// ─── Arena Initializer Validation ─────────────────────────────────────────
-
-bool validateArenaInitializer(ExprAST* init, SemaContext& ctx) {
-    if (!init) {
-        return false;
-    }
-    
-    // Must be an ArenaAccessExprAST
-    if (!init->isa<ArenaAccessExprAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
-                              "Arena binding must be initialized with "
-                              "Arena::create(size) or Arena::empty()");
-        ctx.diagnostics.note(init,
-                              "Copying an existing Arena is not allowed. "
-                              "Use 'const ref &Arena = existing' to borrow "
-                              "a reference to an existing Arena.");
-        return false;
-    }
-    
-    ArenaAccessExprAST* access = init->as<ArenaAccessExprAST>();
-    
-    // Must be static form (Arena::method)
-    if (!access->isStatic) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
-                              "Arena binding must be initialized with "
-                              "Arena::create(size) or Arena::empty(), "
-                              "not an existing arena");
-        return false;
-    }
-    
-    // Method must be "create" or "empty"
-    std::string_view methodName = lookupStringView(access->methodName);
-    if (methodName != "create" && methodName != "empty") {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidArenaInit, init,
-                              "Arena binding must be initialized with "
-                              "Arena::create(size) or Arena::empty()");
-        ctx.diagnostics.note(init,
-                              "Found: Arena::", methodName, 
-                              " - only create and empty are valid");
-        return false;
-    }
-    
-    // create(size) requires exactly one argument
-    if (methodName == "create") {
-        if (access->args.size() != 1) {
-            ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, init,
-                                  "Arena::create expects exactly 1 argument (size), got ",
-                                  access->args.size());
-            return false;
-        }
-    }
-    
-    // empty() requires no arguments
-    if (methodName == "empty") {
-        if (access->args.size() != 0) {
-            ctx.diagnostics.error(DiagCode::Sem_ArenaMethodArgCount, init,
-                                  "Arena::empty takes no arguments");
-            return false;
-        }
-    }
-    
-    return true;
-}
-
-// ─── Simd Validation ────────────────────────────────────────────────────
-
-bool validateSimdType(SimdTypeAST* simdType, SemaContext& ctx) {
-    if (!simdType) return true;
-    
-    // ─── Validate lane count ──────────────────────────────────────────────────
-    if (simdType->laneCount == 0) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdLaneCount, simdType,
-                              "Simd lane count must be > 0");
-        return false;
-    }
-    
-    // ─── Validate element type ───────────────────────────────────────────────
-    if (!simdType->elementType) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
-                              "Simd element type is missing");
-        return false;
-    }
-    
-    TypeAST* elemType = simdType->elementType;
-    
-    // ─── Check if element type is a generic parameter ─────────────
-    // Simd<T,N> requires T to be a CONCRETE numeric primitive.
-    // Generic parameters (e.g., T in struct Wrapper<T> { vec Simd<T, 4> })
-    // are not allowed because the concrete type is unknown until instantiation.
-    if (elemType->isa<NamedTypeAST>()) {
-        NamedTypeAST* named = elemType->as<NamedTypeAST>();
-        if (ctx.isGenericParam(named->name)) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
-                                  "Simd element type cannot be a generic parameter '",
-                                  ctx.pool.lookup(named->name),
-                                  "' - Simd requires a concrete numeric primitive type");
-            ctx.diagnostics.note(simdType,
-                                 "Simd<T,N> requires T to be a concrete type. "
-                                 "Consider using a concrete numeric primitive like int32, "
-                                 "or add a numeric constraint to the generic parameter "
-                                 "(not yet supported)");
-            return false;
-        }
-    }
-    
-    // ─── Check if element type is another Simd type (nested Simd) ──────────
-    if (elemType->isa<SimdTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType,
-                              "Simd element type cannot be another Simd type - "
-                              "Simd requires a numeric primitive element type");
-        ctx.diagnostics.note(simdType,
-                             "Simd<T,N> requires T to be a numeric primitive, "
-                             "not a vector type");
-        return false;
-    }
-    
-    // ─── Validate element type is a numeric primitive ───────────────────────
-    if (!isValidSimdElementType(elemType)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSimdElementType, simdType->elementType,
-                              "Simd element type must be a numeric primitive "
-                              "(int8, int16, int32, int64, uint8, uint16, uint32, "
-                              "uint64, float32, or float64)");
-        ctx.diagnostics.note(simdType,
-                             "Got: ", typeToString(elemType, ctx.pool));
-        return false;
-    }
-    
-    return true;
-}
-
-} // namespace sema
+} // namespace lucid::sema
