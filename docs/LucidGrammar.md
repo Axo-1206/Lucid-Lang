@@ -224,7 +224,7 @@ TABLE Person {
 
 A table is either **growing** or **fixed**. The `FIXED` keyword determines which:
 
-- **Growing** (`TABLE X { ... }`): rows are added at runtime with `T.ADD(...)` and removed with `T.REMOVE(i)`. A growing table's storage is managed by the runtime; slots are reused after a `REMOVE` (§4.1.1a).
+- **Growing** (`TABLE X { ... }`): rows are added at runtime with `T.ADD(...)` and removed with `T.REMOVE(i)`. A growing table's storage is managed by the runtime; slots are reused after a `REMOVE`, and `CLEAR`/`SHRINK` reset or release storage (§4.1.1a, §4.1.1d).
 - **Fixed** (`FIXED TABLE X { ... }`): the row set is decided at declaration. `.ADD` and `.REMOVE` are not available. This is the enum replacement:
 
 ```
@@ -241,7 +241,7 @@ switch d {
 }
 ```
 
-**The presence of a `= [ ... ]` initializer does not determine fixedness.** A growing table may have an initializer, in which case the rows are its initial contents. A `FIXED` table has an initializer (its rows are its only rows), but the grammar does not require it — a `FIXED` table with no initializer is a zero-row table. Sema warns on a `FIXED` table with no rows (§4.1.1b).
+**The presence of a `= [ ... ]` initializer does not determine fixedness.** A growing table may have an initializer, in which case the rows are its initial contents. A `FIXED` table has an initializer (its rows are its only rows), The parser does not require one, but Sema rejects a `FIXED` table with no rows (§4.1.1b).
 
 **A `FIXED` table's row set is decided at declaration.** Its cells are writeable unless the table is also marked `@readonly`. The `FIXED` keyword does not by itself forbid cell writes.
 
@@ -249,21 +249,24 @@ switch d {
 
 #### 4.1.1a Slot reclamation in growing tables
 
-A growing table's storage is a **slot array**: a fixed-capacity buffer of rows, plus a free list of available slots, plus a generation counter per slot.
+A growing table's storage is a **slot array**: a buffer of rows, plus a free list of dead slots, plus a generation stamp per slot. The table also keeps a monotonically increasing **generation counter** and a **reset floor** (used by `CLEAR`, below).
 
-- **`ADD`** pops a slot from the free list, or appends a new slot if the free list is empty. It writes the row's data and marks the slot live.
-- **`REMOVE(i)`** marks slot `i` dead and pushes it onto the free list. Every `&T` reference to the removed row becomes `nil` (the null-out rule, §7.6).
-- **Slot reuse.** When a slot is reused for a new row, its generation counter is incremented. A stale `&T` reference (one whose generation doesn't match the slot's current generation) reads as `nil`. This makes a reference to a removed-and-reused row safely `nil` instead of silently aliasing a different row.
+A `&T` into a growing table is a pair `{slot, generation}`. It is **valid** when the slot is live, the slot's generation equals the reference's generation, and that generation is not below the table's reset floor. Otherwise it is **stale**, and reading a stale reference yields `nil` (§7.6). There is no reference index: no other table, local variable, or array is rewritten when a row is removed, and the check happens when a reference is read.
 
-**Iteration order is slot order.** Rows are visited in the order of their slot indices, not in the order they were added. This order may change after a `REMOVE` and subsequent `ADD`. A program that needs a specific order must sort the table explicitly.
+- **`ADD`** takes a slot from the free list, or appends a new slot if the free list is empty. It stamps the slot with a fresh generation drawn from the table's counter, writes the row's data, and marks the slot live. The uniqueness checks of §4.1.5 run here.
+- **`REMOVE(i)`** marks slot `i` dead and pushes it onto the free list. It is O(1). Every `&T` to the removed row is now stale (§7.6).
+- **Slot reuse.** A reused slot receives a new generation from the table's counter, and generations are never reissued, so a stale reference can never alias the slot's next occupant. If a table's generation counter is exhausted, the next `ADD` panics rather than wrap around.
+- **`CLEAR()`** resets the table to empty: no live rows, every slot free, the `@primary` index emptied, and the reset floor raised above every generation issued so far, so every existing reference into the table is stale. Invalidating the references is O(1) regardless of how many rows or references exist. Storage owned by the rows themselves (strings, arrays in cells, host handles) is released by the runtime, which may take time proportional to the row count. The slot array keeps its allocated capacity (§4.1.1d).
+
+**Iteration order is slot order.** Rows are visited in the order of their slot indices, not in the order they were added. This order may change after a `REMOVE` and subsequent `ADD`. Rows never move between slots, so a table has no built-in sorted order; a program that needs one builds it from an array of row references and `arr.SORT` (§8.3).
 
 **A `FIXED` table has no slot array, no free list, and no generation counters.** Its rows are indexed 0..N-1 in declaration order, and its `&T` references are simple indices. A `FIXED` table's references are therefore smaller than a growing table's.
 
-#### 4.1.1b Fixed tables: initializer and warnings
+#### 4.1.1b Fixed tables: initializer and errors
 
-A `FIXED` table's row set is decided at declaration. The `= [ ... ]` initializer, if present, supplies those rows. A `FIXED` table without an initializer has zero rows.
+A `FIXED` table's row set is decided at declaration. The `= [ ... ]` initializer supplies those rows. The parser accepts a `FIXED` table without an initializer, but **Sema rejects a `FIXED` table with no rows** — one with no initializer, or with an empty `[]`.
 
-**Sema warns on a `FIXED` table with no rows.** A table whose row set can never change and is empty is almost always a mistake. The warning is not a compile error: a zero-row fixed table is technically valid, and the program might use it as a placeholder.
+A table whose row set can never change cannot hold any data if it starts empty, so a zero-row `FIXED` table is always a mistake and is a semantic error, not a warning.
 
 **A `FIXED` table's rows are baked into the compiled artifact** (§4.1.1c). Their cells must be constant expressions.
 
@@ -287,6 +290,29 @@ This isn't an arbitrary restriction — it's what makes fixed-table construction
 - **A cross-reference between two fixed tables is a compile-time dependency**, resolved by the compiler the same way it already resolves `Direction.North` to a specific row. A genuine cycle between two fixed tables' constant rows (`A`'s row referencing `B.SomeMember` while `B`'s row references `A.SomeMember`) is a **compile error**, not a runtime problem — unlike the type-level cycles in §3.3, a *value* cycle between constants has no pointer trick to fall back on, so it's simply rejected.
 
 **A growing table's `= [ ... ]` initializer is also evaluated at compile time.** Its rows are the same as `const_expr` rows in a fixed table; the difference is only that a growing table may add more rows at runtime. A growing table's initializer is a compile-time constant block, seeded into the runtime's storage at startup.
+
+#### 4.1.1d Reclaiming memory: `CLEAR` and `SHRINK`
+
+Rows never move between slots, because `&T` references name slots (§4.1.1a). That one rule decides how a growing table gives memory back, and it is worth understanding before relying on `SHRINK`.
+
+**Removing rows reuses memory; it does not return it.** `REMOVE` leaves a dead slot wherever the row was, and a later `ADD` reuses a dead slot before growing the array. A table's storage is therefore bounded by its peak row count, not its current one. Removing half the rows leaves the storage at its peak, with the holes scattered through the slot array, to be refilled by later `ADD`s.
+
+**`T.CLEAR()`** removes every row and keeps the allocated capacity. It is the right tool for a table that is refilled repeatedly (per-frame scratch data, per-level data): the next fill reuses the same memory with no allocation.
+
+**`T.SHRINK()`** is a best-effort release of unused storage, with these limits:
+
+- It releases only the **trailing run of dead slots** at the end of the slot array. A single live row near the end prevents everything before it from being reclaimed, so after removing half of a table's rows at random, `SHRINK` typically frees little or nothing.
+- The amount released is **not guaranteed**. The runtime decides how to release it (in place or by reallocating) and may keep spare capacity to avoid repeated reallocation. A program cannot depend on the capacity after a shrink.
+- It may release storage below the `@reserve(N)` figure, which is only a hint for the initial allocation.
+- **Nothing moves and no reference changes.** Live rows stay in their slots, so `SHRINK` is always safe to call and does not invalidate views. A reference to a trimmed dead slot was already stale, and later growth issues fresh generations (§4.1.1a), so it stays stale.
+- It may cost time proportional to the number of free slots or live rows, and on a `@columnar` table it trims every column's buffer.
+- A table that repeatedly shrinks and regrows pays the reallocation each time. Call `SHRINK` at natural boundaries (unloading a level), not every frame.
+
+**To free a table's memory completely, call `T.CLEAR()` and then `T.SHRINK()`.** After `CLEAR` every slot is dead, so `SHRINK` can release the whole slot array. This is the one case where `SHRINK` reliably has something to release.
+
+**There is no compaction.** No operation moves live rows to fill holes: doing so would change slot numbers, and any `&T` held in a local variable, another table's cell, or an array element would silently point at a different row (§13). A program that needs a denser table builds a new table, or clears and refills it.
+
+`CLEAR` and `SHRINK` are available on growing tables that are not `@immutable`, `@readonly`, or `@packed` (§7.1). Neither exists on a `FIXED` table.
 
 #### 4.1.2 Host-backed tables
 
@@ -336,30 +362,43 @@ TABLE LoadRequest = host("LoadRequest")
 
 #### 4.1.4 Table attributes
 
-| Attribute         | Meaning                                                                                                                                                                                                                                                              |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@export`         | Visible outside the module.                                                                                                                                                                                                                                          |
-| `@readonly`       | No mutation at all: no `ADD`, `REMOVE`, or cell write. Implies `@immutable`.                                                                                                                                                                                         |
-| `@immutable`      | No `ADD`/`REMOVE` after initialization; cells may still be written. Redundant on a `FIXED` table (whose row set is already fixed at declaration); Sema warns when `FIXED` and `@immutable` appear together. Mutually exclusive with `@readonly` (which is stricter). |
-| `@packed`         | Contiguous storage with no slack. Implies `@immutable`.                                                                                                                                                                                                              |
-| `@reserve(N)`     | A storage hint: reserve room for N rows. Not a policy limit.                                                                                                                                                                                                         |
-| `@columnar`       | Store the table's columns in separate contiguous buffers, rather than row-major.                                                                                                                                                                                     |
-| `@sorted(column)` | Rows are kept sorted by `column`; `.ADD` inserts in order.                                                                                                                                                                                                           |
-| `@request`        | Only valid on a `host(...)`-backed table (§4.1.2); marks it as a single-operation async handle usable with `waitForRequest` (§9.2.3).                                                                                                                                |
+| Attribute     | Meaning                                                                                                                                                                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@export`     | Visible outside the module.                                                                                                                                                                                                                                          |
+| `@readonly`   | No mutation at all: no `ADD`, `REMOVE`, or cell write. Implies `@immutable`.                                                                                                                                                                                         |
+| `@immutable`  | No `ADD`/`REMOVE` after initialization; cells may still be written. Redundant on a `FIXED` table (whose row set is already fixed at declaration); Sema warns when `FIXED` and `@immutable` appear together. Mutually exclusive with `@readonly` (which is stricter). |
+| `@packed`     | Contiguous storage with no slack. Implies `@immutable`.                                                                                                                                                                                                              |
+| `@reserve(N)` | A storage hint: reserve room for at least N rows before the first `ADD`. Not a policy limit.                                                                                                                                                                         |
+| `@columnar`   | Store the table's columns in separate contiguous buffers, rather than row-major.                                                                                                                                                                                     |
+| `@request`    | Only valid on a `host(...)`-backed table (§4.1.2); marks it as a single-operation async handle usable with `waitForRequest` (§9.2.3).                                                                                                                                |
 
-**`@reserve(N)` is a storage hint, not a policy limit.** A table declared `@reserve(10)` has room reserved for 10 rows at startup; it can still grow past 10 (with reallocation), and it can have fewer than 10 rows. A policy limit ("the game allows at most 10 inventory slots") is expressed as ordinary code — a wrapper function that checks `InventorySlot.COUNT()` before calling `.ADD`. This mirrors the design's treatment of `@default` (there is no `@default` attribute; a default value is domain logic, expressed as a wrapper function).
+**`@reserve(N)` is a storage hint, not a policy limit.** A table declared `@reserve(10)` has room for at least 10 rows allocated before its first `ADD`; it can still grow past 10 (the runtime reallocates using its own growth policy, typically doubling), it can hold fewer than 10 rows, and it is not required to shrink back to 10. The exact capacity is a runtime detail — the runtime may round up, and a program cannot depend on it. `N` must be a non-negative integer literal; `@reserve(0)` means no reservation. A table has at most one `@reserve`. On a table with an initializer, the initial rows count toward the reservation (`@reserve(100)` with 3 initial rows reserves room for 100 rows in total). A policy limit ("the game allows at most 10 inventory slots") is expressed as ordinary code — a wrapper function that checks `InventorySlot.COUNT()` before calling `.ADD`. This mirrors the design's treatment of `@default` (there is no `@default` attribute; a default value is domain logic, expressed as a wrapper function).
 
-**`@packed` implies `@immutable`.** A packed table's storage is finalized at initialization and never grows, shrinks, or reallocates. `ADD` and `REMOVE` are unavailable. Cell writes are allowed unless the table is also `@readonly`.
+**`@reserve` is valid only on a table that can grow.** It is a semantic error on a `FIXED` table (the row set is decided at declaration, so there is nothing to reserve), on an `@immutable` table — including one made so by `@readonly` or `@packed` (no `ADD` after initialization, so no growth) — and on a host-backed table.
+
+**`@packed` implies `@immutable`.** A packed table's storage is finalized at initialization and never grows, shrinks, or reallocates. `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` are unavailable, and `@reserve` is an error (there is no slack to reserve). Cell writes are allowed unless the table is also `@readonly`.
 
 **`@packed` and `@readonly` are not mutually exclusive.** A `@packed @readonly` table is a fixed-layout, read-only lookup table, which is a common case (a constants table).
 
 #### 4.1.5 Column attributes
 
-| Attribute   | Meaning                                                                                                                                                                                                                                  |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@unique`   | No two rows share a value in this column. Checked on `ADD`; a duplicate panics.                                                                                                                                                          |
-| `@primary`  | Implies `@unique`; also generates a `T.by<Column>(value) -> &T` lookup (e.g. `@primary id:` generates `Person.byId(...)`). At most one `@primary` column per table. The runtime builds an index over the column, making the lookup O(1). |
-| `@readonly` | The column's cells cannot be written after the row is added.                                                                                                                                                                             |
+| Attribute   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@unique`   | No two rows share a value in this column. Checked on `ADD` and on every write to the column; a duplicate panics. Writing a cell the value it already holds is not a duplicate.                                                                                                                                                                                                                                                                               |
+| `@primary`  | Implies `@unique`; also generates a `T.by<Column>(value) -> &T` lookup (e.g. `@primary id:` generates `Person.byId(...)`). The method name is `by` plus the column's name with its first letter uppercased. At most one `@primary` column per table. The runtime keeps an index over the column, making the lookup O(1) expected. Valid only on a non-nilable column of an integer type, `bool`, `char`, `string`, or a host type with equality and hashing. |
+| `@readonly` | The column's cells cannot be written after the row is added. Combined with `@primary`, it gives a key that can never change.                                                                                                                                                                                                                                                                                                                                 |
+
+**`@primary` never generates values.** The caller supplies every key: every `ADD` and every inline initializer row provides one, exactly like any other column (§7.1), and it can never be `nil` because the column type may not be nilable. A program that wants sequential ids keeps its own counter in a wrapper function. A `&T` already identifies a row while the program runs; a key is for identity that outlives it (ids from data files, network ids).
+
+**Key types.** `@primary` is valid on a column whose type is an integer type, `bool`, `char`, `string`, or a host type whose registration provides equality and hashing. `float` types are excluded because NaN and -0.0 make equality and hashing unreliable. A `@primary` on a nilable, row-reference, array, function-typed, or `unit` column is a semantic error.
+
+**Keys are writable.** A write to a `@primary` cell removes the old key from the index and inserts the new one; writing the value the cell already holds does nothing. A write that would duplicate another row's key panics, exactly as `ADD` does (§7.3). Only writes to the `@primary` column pay this check. Because the check is per write, two rows cannot swap keys directly (the first write would create a duplicate); go through a temporary unused value. A key that must never change is declared `@primary @readonly`. `REMOVE` and `CLEAR` remove keys from the index.
+
+**Duplicates in an initializer.** Two initializer rows with the same `@unique` or `@primary` value are a compile-time error, for `FIXED` and growing tables alike.
+
+**`@primary` on a `FIXED` table.** Valid; `by<Column>` behaves the same way there.
+
+**Index representation is a runtime choice.** The contract is that `by<Column>` is O(1) expected. The runtime may use a direct array, a hash map, or anything else that meets it.
 
 **No `@default(expr)` attribute.** `T.ADD(args...)` has exactly one calling rule: argument count must equal column count, in order (§7.1) — no exceptions. A default-value attribute would carve an exception into that rule (some trailing columns optional, others not), for something that's already fully achievable as domain logic rather than storage — an ordinary wrapper function, the same pattern already used for every other table convenience (`FIND` predicates, lookups, aggregations):
 
@@ -371,17 +410,6 @@ FN addPerson(name: string) -> &Person {
 
 This is a closed decision, not a deferral.
 
-**No `@optional` attribute.** A column that may hold `nil` is written with the `?` type suffix (§5.3):
-
-```
-TABLE Person {
-    name: string
-    nick: string?      -- an optional nickname
-    age:  int?         -- an optional age
-}
-```
-
-Reading an `@optional` column's cell produces a `T?` value, which is narrowed by the usual rules (§6.13).
 
 #### 4.1.6 Worked example: reading, writing, adding, and looking up rows
 
@@ -681,7 +709,7 @@ There is no `&int`, `&string`, etc. Primitives are always copied. If a function 
 **Every row-reference type (`&T`) is inherently nilable** — `nil` is an ordinary value of any `&T` type, the same way a null pointer is an ordinary value of a pointer type. This is a property `&T` already has, not a second type layered on top of it.
 
 - `T.by<Column>(...)`-style lookups (`@primary`, §4.1.5) return `&T`, and are `nil` when nothing matches.
-- A row reference stored in a cell becomes `nil` if the row it pointed to is removed (§7.6).
+- A row reference whose row has been removed reads as `nil`, wherever it is stored — a cell, a local variable, an array element (§7.6).
 - `nil` is compared with `==`/`!=` (§6.8) and defaulted with `??` (§5.4).
 
 Bare table types are never nilable.
@@ -764,8 +792,8 @@ There is no `if cond ?? a else b` ternary form — that reused `??` for an unrel
 
 ### 5.5 Arrays
 
-- `[T]` — dynamic; grows and shrinks via `.ADD`/`.REMOVE` (§8).
-- `[N, T]` — fixed-size, `N` a compile-time constant; supports indexing, `.COUNT()`, `.CONTAINS()`, and iteration, but not `.ADD`/`.REMOVE`.
+- `[T]` — dynamic; grows and shrinks via `.ADD`/`.REMOVE`, and is emptied by `.CLEAR()` (§8).
+- `[N, T]` — fixed-size, `N` a compile-time constant; supports indexing, `.COUNT()`, `.CONTAINS()`, `.SORT()`, and iteration, but not `.ADD`/`.REMOVE`/`.CLEAR`.
 
 Array literals are first-class expressions: `[1, 2, 3]`. An empty `[]` requires a type context to infer the element type.
 
@@ -1041,19 +1069,26 @@ FN compute() -> int {
 
 ### 7.1 Sheet-level operations
 
-| Operation             | Result       | Notes                                                                                                                                                   |
-| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `T.ADD(args...)`      | `&T`         | Append a row. Not available on fixed or `@readonly` tables.                                                                                             |
-| `T.REMOVE(i)`         | `unit`       | Remove row `i`. Not available on fixed or `@readonly` tables. Rows after `i` are not shifted; slot `i` is reused by a future `ADD`.                     |
-| `T[i]`                | `&T`         | Row at slot `i`. **Panics** if `i` is out of bounds or refers to a removed slot.                                                                        |
-| `T.at(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                    |
-| `T.COUNT()`           | `uint`       | Number of live rows.                                                                                                                                    |
-| `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` on the parent table. |
-| `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); O(1) via the primary index; `nil` if no row matches.                                              |
-| `T.column`            | (view, §5.6) | Iterable/aggregable view over one column's values across all rows.                                                                                      |
-| `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                  |
+| Operation             | Result       | Notes                                                                                                                                                                                                                                                                                               |
+| --------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T.ADD(args...)`      | `&T`         | Append a row (§4.1.1a). Panics on a duplicate `@unique`/`@primary` value. Growing mutable tables only (see Availability below).                                                                                                                                                                     |
+| `T.REMOVE(i)`         | `unit`       | Remove row `i`. O(1); every `&T` to the row becomes stale (§7.6). Rows after `i` are not shifted; slot `i` is reused by a future `ADD`. Growing mutable tables only.                                                                                                                                |
+| `T.CLEAR()`           | `unit`       | Remove every row and keep the allocated storage. Every `&T` into the table becomes stale in O(1); the `@primary` index is emptied (§4.1.1a, §4.1.1d). Growing mutable tables only.                                                                                                                  |
+| `T.SHRINK()`          | `unit`       | Best-effort release of unused trailing storage. Rows never move and no reference changes. The amount released is not guaranteed (§4.1.1d). Growing mutable tables only.                                                                                                                             |
+| `T[i]`                | `&T`         | Row at slot `i`. **Panics** if `i` is out of bounds or refers to a removed slot.                                                                                                                                                                                                                    |
+| `T.at(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                                                                                                                                                                |
+| `T.COUNT()`           | `uint`       | Number of live rows.                                                                                                                                                                                                                                                                                |
+| `T.VERSION()`         | `uint64`     | Structural version: increases on every `ADD`, `REMOVE`, and `CLEAR`, and never decreases. Cell writes do not change it, so a consumer that reads cell values must still re-read them; use it to skip work when the set of rows is unchanged. Available on every table; always 0 on a `FIXED` table. |
+| `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` or `CLEAR` on the parent table.                                                                                                                                  |
+| `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); O(1) expected via the primary index; `nil` if no row matches. The index representation is a runtime choice (§4.1.5).                                                                                                                          |
+| `T.column`            | (view, §5.6) | Iterable/aggregable view over one column's values across all rows.                                                                                                                                                                                                                                  |
+| `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                                                                                                                                                              |
 
-**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. A program that needs insertion order must maintain it explicitly.
+**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. A program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
+
+**Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table that is not `@immutable`, `@readonly`, or `@packed` (the last two imply `@immutable`). `VERSION`, `COUNT`, `at`, `FIND`, and `by<Column>` are available on every table.
+
+**There is deliberately no table sort and no compaction.** Both would move rows between slots, and `&T` references name slots, so any reference held in a local variable, another table's cell, or an array element would silently point at a different row. Sorted order comes from an array of references (§8.3); memory comes back through reuse, `CLEAR`, and `SHRINK` (§4.1.1d).
 
 ### 7.2 Row-level operations
 
@@ -1064,9 +1099,9 @@ FN compute() -> int {
 
 ### 7.3 Panic vs. nil — which operations do which
 
-**Panics** (bugs, not recoverable in-language — see §10): `T[i]` out of bounds or on a dead slot, a duplicate `@unique`/`@primary` value on `ADD`, and dereferencing a `nil` row reference (`"attempt to access a nil value"`).
+**Panics** (bugs, not recoverable in-language — see §10): `T[i]` out of bounds or on a dead slot, a duplicate `@unique`/`@primary` value on `ADD` or on a cell write, and dereferencing a `nil` row reference (`"attempt to access a nil value"`).
 
-**Returns `nil`** (an expected, checkable absence): `T.at(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a cell whose referenced row was removed.
+**Returns `nil`** (an expected, checkable absence): `T.at(i)` out of range or on a dead slot, `T.by<Column>(value)` with no match, a reference whose row was removed (a stale reference, §7.6).
 
 ### 7.4 Column views and aggregation
 
@@ -1085,13 +1120,17 @@ let minors: Person = Person.FIND((p) -> p.age < 18)
 for p: &Person in minors { println(p.name) }
 ```
 
-The view is an index list into the parent table — cheap, no allocation of row data. **A `REMOVE` on the parent table invalidates any view taken before it**; re-`FIND` after removing rows if you need a fresh view.
+The view is an index list into the parent table — cheap, no allocation of row data. **A `REMOVE` or `CLEAR` on the parent table invalidates any view taken before it**; re-`FIND` after removing rows if you need a fresh view. `SHRINK` does not invalidate a view, because rows never move.
 
-### 7.6 Row removal and reference null-out
+### 7.6 Row removal and stale references
 
-When `T.REMOVE(i)` runs, every cell across every table that held a `&T` reference to that specific row becomes `nil`. The compiler tracks which columns are row-reference-typed at compile time; the runtime maintains a small reference index (row → referencing cells) so this is proportional to the number of live references, not to the size of any table.
+A row reference into a growing table is a slot index plus a generation stamp (§4.1.1a). A reference is **stale** once its row is gone: removed by `REMOVE`, swept away by `CLEAR`, or displaced because the slot was reused for a new row. **Reading a stale reference yields `nil`**, wherever the reference is stored — a table cell, a local variable, a function parameter, or an array element. Staleness is detected when the reference is read, not when the row is removed, so `REMOVE` does not touch any other table or variable: it is O(1), with no reference index to maintain.
 
-A slot reused by a subsequent `ADD` gets a new row; any `&T` value that referred to the *old* occupant of the slot is now `nil` (its generation counter doesn't match), so the reference is safe even though the slot is occupied.
+- A stale reference compares equal to `nil` (`== nil`) and is replaced by the default under `??` (§5.4), like any other `nil`.
+- Dereferencing a stale reference panics, exactly as dereferencing `nil` does (§5.2). A program that may hold a reference across a removal checks `!= nil` first.
+- A slot reused by a subsequent `ADD` gets a new generation, so a reference to the old occupant stays stale and never aliases the new row.
+- `CLEAR` makes every reference into the table stale at once, in O(1) regardless of how many references exist.
+- References into a `FIXED` table are never stale: its rows are never removed (§4.1.1a).
 
 ### 7.7 Iteration
 
@@ -1112,7 +1151,7 @@ for p: Person in Person { ... }     -- error: iterating Person yields &Person, n
 
 A column whose type is `[T]` holds one array per row. The runtime stores the arrays' data in a shared flat buffer with per-row offsets (a compressed-sparse-array layout). Reading `r.col[i]` looks up the row's `(offset, length)` and reads from the shared buffer.
 
-**A row's array cell may be reassigned.** `r.col = [1, 2, 3]` replaces the row's array. The runtime stores the new array in the shared buffer (at a new offset), and the row's cell is updated to point at it. Old data may leave holes; a table marked `@packed` cannot have holes, so `@packed` forbids reassigning an array cell after initialization.
+**A row's array cell may be reassigned.** `r.col = [1, 2, 3]` replaces the row's array. The runtime stores the new array in the shared buffer (at a new offset), and the row's cell is updated to point at it. Old data may leave holes; a table marked `@packed` cannot have holes, so `@packed` forbids reassigning an array cell after initialization. For the same reason, the length-changing operations `ADD`, `REMOVE`, and `CLEAR` (§8) are forbidden on an array cell of a `@packed` table; `SORT` and element writes keep the length and are allowed unless the table or column is `@readonly`.
 
 **Array-typed columns may be nested:** `[[int]]` holds one array-of-arrays per row. The layout is the same, with an extra level of offsets.
 
@@ -1120,15 +1159,18 @@ A column whose type is `[T]` holds one array per row. The runtime stores the arr
 
 ## 8. Array operations
 
-| Operation         | Result | Available on                  |
-| ----------------- | ------ | ----------------------------- |
-| `arr[i]`          | `T`    | `[T]`, `[N, T]`               |
-| `arr.ADD(x)`      | `unit` | `[T]` only                    |
-| `arr.REMOVE(i)`   | `unit` | `[T]` only                    |
-| `arr.COUNT()`     | `uint` | `[T]`, `[N, T]`               |
-| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan) |
+| Operation         | Result | Available on                                             |
+| ----------------- | ------ | -------------------------------------------------------- |
+| `arr[i]`          | `T`    | `[T]`, `[N, T]`                                          |
+| `arr.ADD(x)`      | `unit` | `[T]` only                                               |
+| `arr.REMOVE(i)`   | `unit` | `[T]` only                                               |
+| `arr.COUNT()`     | `uint` | `[T]`, `[N, T]`                                          |
+| `arr.CLEAR()`     | `unit` | `[T]` only                                               |
+| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan)                            |
+| `arr.SORT()`      | `unit` | `[T]`, `[N, T]` (element type must have a natural order) |
+| `arr.SORT(less)`  | `unit` | `[T]`, `[N, T]`                                          |
 
-These reuse the table's own vocabulary (`ADD`/`REMOVE`/`COUNT`) rather than a second naming convention, so every collection in the language looks the same from the outside.
+These reuse the table's own vocabulary (`ADD`/`REMOVE`/`COUNT`/`CLEAR`) rather than a second naming convention, so every collection in the language looks the same from the outside.
 
 ### 8.1 Worked example: reading, writing, adding, and mutating in a loop
 
@@ -1191,6 +1233,47 @@ for p: Person in people { ... }   -- error: people's element type is &Person, no
 ```
 
 So a bare `T` binding is correct for an array (matching its element type) but always wrong for a table or view (§7.7) — the two rules look similar but resolve against different things: the array's declared element type versus the table's fixed "iterating always yields `&T`" rule.
+
+### 8.3 `CLEAR` and `SORT`
+
+**`arr.CLEAR()`** removes every element of a dynamic array `[T]` and returns `unit`. The array keeps its allocated capacity, as `T.CLEAR()` does for a table; to release the memory, assign a fresh `[]`. It is not available on a fixed-size `[N, T]`, whose length cannot change.
+
+**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `unit`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not tables, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
+
+`arr.SORT()` sorts ascending in the element type's natural order. It is available only when the element type is an integer type, a `float` type, `bool`, `char`, or `string`; any other element type is a semantic error that asks for a comparator. Numbers sort numerically (a `float` NaN sorts last), `false` sorts before `true`, `char` sorts by code point, and `string` sorts by its UTF-8 bytes, independent of locale.
+
+`arr.SORT(less)` takes a function `less: (T, T) -> bool` over the element type `T`, where `less(a, b)` is true when `a` must come before `b`. Any function value is accepted, a lambda or a named `FN` (§6.9):
+
+```
+FN olderFirst(a: &Person, b: &Person) -> bool {
+    return a.age > b.age
+}
+
+-- A ranked list of row references. The table itself never reorders.
+let ranked: [&Person] = []
+for p: &Person in Person {
+    ranked.ADD(p)
+}
+
+ranked.SORT(olderFirst)                       -- named function
+ranked.SORT((a, b) -> a.age > b.age)          -- equivalent lambda
+
+for p: &Person in ranked {
+    if p != nil {                             -- a removed row reads as nil
+        println(p.name)
+    }
+}
+```
+
+**Type checking.** The argument is checked against `(T, T) -> bool` at compile time, and any difference is a type mismatch error: the wrong number of parameters, the wrong parameter types (for a `[&Person]`, `(Person, Person)` instead of `(&Person, &Person)`), a return type other than `bool`, or an argument that is not a function. There is no coercion. In particular a C-style comparator that returns -1/0/1 is rejected, not silently misread. A `@sequence` function is not a function value (§9.2) and cannot be passed, and a lambda cannot capture local variables, as with every function value.
+
+**Behavior.**
+
+- The sort is **stable**: elements that compare equal keep their relative order. To sort by several keys, sort by the least significant key first and the most significant key last.
+- It performs O(n log n) comparisons.
+- **`nil` elements go last**, in their original order, and `less` is never called with `nil`. For a `[&Person]` this places the stale references of removed rows at the end instead of panicking inside the comparator; the same rule applies to nilable element types such as `[int?]`.
+- A comparator that is not a consistent ordering produces an unspecified order but cannot corrupt the array or crash the runtime. A comparator that modifies the array being sorted also produces an unspecified order. A comparator that panics propagates the panic.
+- On an array stored in a table cell, `SORT` and `CLEAR` are writes: they are rejected on `@readonly` tables and columns, and `CLEAR` is also rejected on `@packed` tables (§7.8).
 
 ---
 
@@ -1354,7 +1437,7 @@ A `@sequence` function is lowered by the compiler into a small generated state m
 Lucid has exactly two failure channels and no `try`/`catch`:
 
 - **Panics** — programmer bugs: out-of-bounds `T[i]`, a `@unique`/`@primary` violation, dereferencing `nil`. Not recoverable inside the script.
-- **`nil`** — a legitimately absent result: `T.at(i)`, `T.by<Column>(...)`, a cell whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
+- **`nil`** — a legitimately absent result: `T.at(i)`, `T.by<Column>(...)`, a reference whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
 
 A panic unwinds only as far as the host call boundary: the specific `@export`ed function the engine invoked (directly, or via `@on(...)`) returns an error to the engine instead of crashing the whole process. There is no in-script exception handling beyond that.
 
@@ -1567,7 +1650,9 @@ A label is its own small namespace: it never collides with a variable, function,
 - Generics.
 - Value references (`&int`) — primitives are always copied.
 - `@default(expr)` on a column (§4.1.5) — a default value is domain logic, expressed as an ordinary wrapper function, not storage metadata.
-- `@optional` on a column (§4.1.5) — nilability is a type-level property, expressed with the `?` suffix (§5.3).
+- `@sorted(column)` and any in-place table sort (§7.1) — rows never move between slots, so sorted order comes from an array of row references and `arr.SORT` (§8.3).
+- Table compaction (`T.compact()`) (§4.1.1d) — it would move rows and silently retarget references; memory comes back through slot reuse, `CLEAR`, and `SHRINK`.
+- Auto-generated `@primary` values (§4.1.5) — the caller supplies every key.
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
@@ -1586,8 +1671,7 @@ This is still a narrow, single-purpose addition, not general concurrency: `@sequ
 
 1. Direct sequence-to-sequence composition (today, a `@sequence` composes another only via `start` + `waitUntil(isDone, handle)`, §9.2.5 — a nested-composition form, if ever needed, is a bigger compiler change and deliberately not attempted yet).
 2. Registry-scoping tooling for Tier 2 mods (the *policy* — one-way dependency, Tier-1-only registration — is settled in §3.4; the concrete host-side API for defining a mod's registry view is not part of this document).
-3. `T.compact()` for growing tables, to reclaim dead slots after many `REMOVE`s. v1 accepts the memory waste of unused slots; a future `compact()` would shift live rows and rewrite all references.
-4. Non-nil reference types (e.g. a type that means "a `&T` that is never `nil`"), which would let a constructor like `ADD` return a value that the caller can use without a nil-check. v1 has no such type; the caller checks.
+3. Non-nil reference types (e.g. a type that means "a `&T` that is never `nil`"), which would let a constructor like `ADD` return a value that the caller can use without a nil-check. v1 has no such type; the caller checks.
 
 ---
 
