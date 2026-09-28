@@ -1,127 +1,224 @@
 /// @file registry/AttributeRegistry.cpp
-/// @brief Implementation of attribute registry.
+/// @brief Implementation of the attribute registry.
 
 #include "AttributeRegistry.hpp"
-#include "core/memory/StringPool.hpp"
+
 #include <algorithm>
+#include <array>
 
-// ─── Data Table ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// The attribute table
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// One entry per attribute in the language. The set is fixed: the table
+// is the source of truth for "which attributes exist", and it is
+// reflected in the grammar's attribute lists (§4.1.4, §4.1.5, §4.2.6).
+//
+// Adding an attribute to the language means:
+//
+//   1. Adding an entry here.
+//   2. Teaching Sema to decode it (into whatever field on the declaration
+//      it corresponds to).
+//   3. Updating the grammar's attribute list for the relevant declaration
+//      form.
+//
+// The order of the entries is not significant; the registry sorts names
+// when asked to enumerate.
 
-// AttributeEntry is defined at namespace scope in AttributeRegistry.hpp
-static const AttributeEntry ATTRIBUTE_TABLE[] = {
-    // Export works on any top-level declaration
-    {"export",     false, true, 0, 0, {
-        ASTKind::FuncDecl,
-        ASTKind::StructDecl,
-        ASTKind::EnumDecl,
-        ASTKind::TraitDecl,
-        ASTKind::VarDecl,
-        ASTKind::ImportDecl
-    }},
-    
-    // Foreign only on functions
-    {"foreign",    true,  true, 1, 1, {
-        ASTKind::FuncDecl
-    }},
-    
-    // Link on functions or module-level
-    {"link",       true,  true, 1, 0, {
-        ASTKind::FuncDecl,
-        ASTKind::ImportDecl
-    }},
-    
-    // Deprecated on most declarations
-    {"deprecated", true,  true, 0, 1, {
-        ASTKind::FuncDecl,
-        ASTKind::StructDecl,
-        ASTKind::EnumDecl,
-        ASTKind::TraitDecl,
-        ASTKind::VarDecl,
-        ASTKind::ImportDecl,
-        ASTKind::FieldDecl,
-        ASTKind::EnumVariant
-    }},
-    
-    // Inline/Noinline only on functions
-    {"inline",     false, true, 0, 0, {
-        ASTKind::FuncDecl
-    }},
-    {"noinline",   false, true, 0, 0, {
-        ASTKind::FuncDecl
-    }},
-    
+namespace {
+
+const AttributeInfo ATTRIBUTE_TABLE[] = {
+    // ─── Attributes usable on any top-level declaration ────────────────
+    //
+    // `@export` marks a declaration as visible outside its module. It
+    // applies to tables, functions, and top-level variables. It does not
+    // apply to imports (an import is a directive, not a declaration that
+    // introduces a name into the exporting namespace).
+    {
+        "export",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+            ASTKind::FnDecl,
+            ASTKind::VarDecl,
+        }
+    },
+
+    // ─── Table attributes ──────────────────────────────────────────────
+
+    // `@readonly`: no ADD, no REMOVE, no cell writes.
+    {
+        "readonly",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+            ASTKind::ColumnDecl,
+        }
+    },
+
+    // `@immutable`: no ADD/REMOVE after initialization; cell writes
+    // allowed. On a FIXED table it is redundant; Sema warns.
+    {
+        "immutable",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // `@packed`: contiguous storage with no slack; implies @immutable.
+    {
+        "packed",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // `@reserve(N)`: a storage hint. Not a policy limit.
+    {
+        "reserve",
+        AttrArgShape::OneInteger,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // `@columnar`: store columns in separate contiguous buffers.
+    {
+        "columnar",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // `@request`: a host-backed table that represents a single async
+    // operation, usable with waitForRequest.
+    {
+        "request",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // ─── Column attributes ─────────────────────────────────────────────
+
+    // `@unique`: no two rows share a value in this column.
+    {
+        "unique",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::ColumnDecl,
+        }
+    },
+
+    // `@primary`: implies @unique; generates a by<Column> lookup.
+    {
+        "primary",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::ColumnDecl,
+        }
+    },
+
+    // ─── Function attributes ───────────────────────────────────────────
+
+    // `@deprecated("message")`: using the declaration produces a warning.
+    {
+        "deprecated",
+        AttrArgShape::OneString,
+        /*repeatable=*/false,
+        {
+            ASTKind::FnDecl,
+            ASTKind::TableDecl,
+            ASTKind::VarDecl,
+        }
+    },
+
+    // `@on(EventKind.Member)`: registers the function as a callback for
+    // the named event kind. Requires @export.
+    {
+        "on",
+        AttrArgShape::OneDottedName,
+        /*repeatable=*/false,
+        {
+            ASTKind::FnDecl,
+        }
+    },
+
+    // `@sequence`: declares a suspension-capable function.
+    {
+        "sequence",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::FnDecl,
+        }
+    },
 };
 
-static constexpr size_t ATTRIBUTE_COUNT = sizeof(ATTRIBUTE_TABLE) / sizeof(ATTRIBUTE_TABLE[0]);
+constexpr size_t ATTRIBUTE_COUNT =
+    sizeof(ATTRIBUTE_TABLE) / sizeof(ATTRIBUTE_TABLE[0]);
 
-// ─── Singleton ──────────────────────────────────────────────────────────────
+} // namespace
 
-AttributeRegistry& AttributeRegistry::getInstance(StringPool& pool) {
-    static AttributeRegistry instance(pool);
-    return instance;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Construction
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── Constructor ────────────────────────────────────────────────────────────
+AttributeRegistry::AttributeRegistry() {
+    m_attributes.reserve(ATTRIBUTE_COUNT);
 
-AttributeRegistry::AttributeRegistry(StringPool& pool) : m_pool(pool) {
-    for (const auto& entry : ATTRIBUTE_TABLE) {
-        InternedString name = m_pool.intern(entry.name);
-        m_attributes[name] = AttributeInfo(
-            name,
-            entry.canHaveArgs,
-            entry.requiresStringArgs,
-            entry.minArgs,
-            entry.maxArgs,
-            entry.allowedKinds
-        );
+    for (size_t i = 0; i < ATTRIBUTE_COUNT; ++i) {
+        const AttributeInfo& info = ATTRIBUTE_TABLE[i];
+        // The key is a view into the static table, which has static
+        // storage duration. The registry never owns the strings, so a
+        // string_view key is safe for as long as the table exists
+        // (which is the program's lifetime).
+        m_attributes.emplace(info.name, &info);
     }
 }
 
-// ─── Query Methods ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Lookup
+// ─────────────────────────────────────────────────────────────────────────────
 
-const AttributeInfo* AttributeRegistry::getInfo(InternedString name) const {
+const AttributeInfo* AttributeRegistry::getInfo(std::string_view name) const {
     auto it = m_attributes.find(name);
-    if (it != m_attributes.end()) {
-        return &it->second;
+    return it != m_attributes.end() ? it->second : nullptr;
+}
+
+bool AttributeRegistry::isAllowedOnDecl(std::string_view name,
+                                        ASTKind declKind) const {
+    const AttributeInfo* info = getInfo(name);
+    if (info == nullptr) return false;
+
+    for (ASTKind allowed : info->allowedKinds) {
+        if (allowed == declKind) return true;
     }
-    return nullptr;
+    return false;
 }
 
-bool AttributeRegistry::canHaveArgs(InternedString name) const {
-    auto* info = getInfo(name);
-    return info ? info->canHaveArgs : false;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Enumeration
+// ─────────────────────────────────────────────────────────────────────────────
 
-size_t AttributeRegistry::getMinArgs(InternedString name) const {
-    auto* info = getInfo(name);
-    return info ? info->minArgs : 0;
-}
-
-size_t AttributeRegistry::getMaxArgs(InternedString name) const {
-    auto* info = getInfo(name);
-    return info ? info->maxArgs : 0;
-}
-
-bool AttributeRegistry::requiresStringArgs(InternedString name) const {
-    auto* info = getInfo(name);
-    return info ? info->requiresStringArgs : false;
-}
-
-std::vector<InternedString> AttributeRegistry::getAllNames() const {
-    std::vector<InternedString> names;
+std::vector<std::string_view> AttributeRegistry::getAllNames() const {
+    std::vector<std::string_view> names;
     names.reserve(m_attributes.size());
     for (const auto& pair : m_attributes) {
         names.push_back(pair.first);
-    }
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-std::vector<std::string> AttributeRegistry::getAllNamesAsStrings() const {
-    std::vector<std::string> names;
-    names.reserve(m_attributes.size());
-    for (const auto& pair : m_attributes) {
-        names.push_back(m_pool.lookup(pair.first));
     }
     std::sort(names.begin(), names.end());
     return names;
