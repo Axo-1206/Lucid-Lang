@@ -1,409 +1,245 @@
 /// @file ContextStack.hpp
-/// @brief Semantic context tracking - manages what we're analyzing and type narrowing.
+/// @brief Traversal-level state: where are we, and what is narrowed here?
 ///
-/// # What This File Contains
+/// ─── Role ─────────────────────────────────────────────────────────────────
+/// `ContextStack` answers two questions during a recursive descent through
+/// the AST:
 ///
-/// The ContextStack tracks the current semantic state during AST analysis.
-/// It answers three key questions:
+///   1. **Where are we?** — inside a function? a sequence? a loop? an
+///      if-condition? a block? The context stack tracks this as a stack
+///      of `ContextFrame`s.
+///   2. **What is narrowed here?** — a `T?` value that has been proven
+///      non-nil by an enclosing `if x != nil` (or `x == nil` with an
+///      early exit). The narrowing stack tracks this.
 ///
-/// 1. **Where are we?** - What context are we in (function, loop, if, switch, block)?
-/// 2. **What symbols are in scope?** - Variables, types, and generic parameters.
-/// 3. **What types have been narrowed?** - Flow-sensitive type refinement.
+/// It emits **no diagnostics** and enforces **no rules**. It is a query
+/// surface: call sites (`SemaStmt.cpp`, `SemaExpr.cpp`, `SequenceChecker`)
+/// ask it what is true here, then decide what to do. This separation is
+/// deliberate — the stack must be usable by any pass that needs flow
+/// information, not just by a diagnostic-emitting one.
 ///
-/// # The Three Stacks
+/// ─── What is not here (vs. the previous design) ───────────────────────────
+/// No generics context, no async/spawn pending lists, no return stack.
+/// The return stack is gone because a function body has exactly one
+/// return type, read from the current frame's `expectedReturnType`. The
+/// curried/nested return types that required a stack are not in the new
+/// grammar.
+///
+/// ─── The three sub-stacks ─────────────────────────────────────────────────
 ///
 /// ```
-/// ┌────────────────────────────────────────────────────────────────────────────┐
-/// │                          ContextStack                                      │
-/// │                                                                            │
-/// │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐  │
-/// │  │  Context Stack   │  │ Narrowing Stack  │  │  Return Stack            │  │
-/// │  │  (where are we?) │  │ (what's narrow?) │  │  (what's expected RT?)   │  │
-/// │  ├──────────────────┤  ├──────────────────┤  ├──────────────────────────┤  │
-/// │  │ FuncBody         │  │ { x → int }      │  │ int                      │  │
-/// │  │ LoopBody         │  │ { }              │  │ (int) → int              │  │
-/// │  │ IfStmt           │  │ { }              │  └──────────────────────────┘  │
-/// │  │ Block            │  └──────────────────┘                                │
-/// │  └──────────────────┘                                                      │
-/// └────────────────────────────────────────────────────────────────────────────┘
+/// ┌──────────────────────────────────────────────────────────────────────┐
+/// │                         ContextStack                                 │
+/// │                                                                      │
+/// │  ┌────────────────┐  ┌─────────────────┐                             │
+/// │  │ Context stack  │  │ Narrowing stack │                             │
+/// │  │ (where are we) │  │ (what's narrow) │                             │
+/// │  ├────────────────┤  ├─────────────────┤                             │
+/// │  │ SequenceBody   │  │ { x → int }     │                             │
+/// │  │ LoopBody       │  │ { }             │                             │
+/// │  │ IfStmt         │  │                 │                             │
+/// │  │ Block          │  │                 │                             │
+/// │  └────────────────┘  └─────────────────┘                             │
+/// └──────────────────────────────────────────────────────────────────────┘
 /// ```
 ///
-/// ## 1. Context Stack
+/// ## Context stack
 ///
-/// Tracks the syntactic context for validation rules:
-/// - `FuncBody`: `return` is allowed
-/// - `LoopBody`: `break` and `continue` are allowed
-/// - `SwitchBody`: `case` and `default` are allowed
-/// - `IfStmt`: Type narrowing is being tracked
-/// - `Block`: Pending inverse narrowing can be applied
+/// Tracks the syntactic construct for validation rules:
+///   - `FuncBody`     — `return` is allowed; `wait*` is not.
+///   - `SequenceBody` — `return` is allowed; `wait*` is allowed.
+///   - `LoopBody`     — `break`/`continue` are allowed.
+///   - `SwitchBody`   — `case`/`default` are allowed.
+///   - `IfStmt`       — narrowing detection runs during condition analysis.
+///   - `Block`        — pending inverse narrowing can be applied on entry.
 ///
-/// ## 2. Narrowing Stack
+/// ## Narrowing stack
 ///
-/// Tracks flow-sensitive type refinements from:
-/// - `if x != nil` → `T?` becomes `T` in the then branch
-/// - `if x == nil` with early exit → `T?` becomes `T` in the rest of the block
-/// - `await x` → `Future<T>` becomes `T`
-/// - `join x` → `Thread<T>` becomes `T`
+/// Tracks flow-sensitive refinements of `T?` values:
+///   - `if x != nil { ... }` narrows `x` to `T` inside the then-branch.
+///   - `if x == nil { return }` narrows `x` to `T` in the rest of the block.
 ///
-/// ## 3. Return Stack
+/// `&T` is not narrowed by the type system — it is already nilable, and
+/// dereferencing a `nil` `&T` is a runtime panic (§5.2). A user who wants
+/// to avoid the panic checks `!= nil` before dereferencing, but the check
+/// does not narrow the type; it just guards a runtime operation.
 ///
-/// Tracks expected return types for nested functions (currying support):
-/// - `(a int) -> (int) -> int` has nested return types: `(int) -> int` then `int`
-///
-/// # Quick Reference
-///
-/// | What You Need                     | Method                        |
-/// | --------------------------------- | ----------------------------- |
-/// | Are we inside a function?         | `insideFunction()`            |
-/// | Are we inside a loop?             | `insideLoop()`                |
-/// | Are we inside a switch?           | `insideSwitch()`              |
-/// | Are we analyzing an if condition? | `isIfConditionCtx()`          |
-/// | What's the narrowed type of `x`?  | `getNarrowedType(x)`          |
-/// | Current expected return type      | `currentReturnType()`         |
-/// | Narrow `x` to `T`                 | `narrowVariable(x, T)`        |
-/// | Push a narrowing level            | `pushNarrowingLevel()`        |
-/// | Pop a narrowing level             | `popNarrowingLevel()`         |
+/// ─── Mixed conditions ─────────────────────────────────────────────────────
+/// A single condition may mix `!=` and `==` checks against `nil` only if
+/// all checks use the same operator. `if x != nil and y != nil` is fine;
+/// `if x != nil and y == nil` is rejected by the caller before a
+/// `NarrowingInfo` is built. `NarrowingInfo::isEquality` is a single flag
+/// for the whole condition, which is why mixing is not representable.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "core/ast/ExprAST.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/memory/InternedString.hpp"
 
-#include <vector>
+#include <cstdint>
 #include <unordered_map>
+#include <vector>
 
-namespace sema {
+namespace lucid::sema {
 
 // ─── ContextKind ──────────────────────────────────────────────────────────
 
-/// @brief Types of semantic contexts.
+/// @brief The kinds of syntactic context the stack tracks.
 enum class ContextKind : uint8_t {
-    TopLevel,           ///< Module-level declarations
-    FuncBody,           ///< Inside a function body (return allowed)
-    LoopBody,           ///< Inside a loop body (break/continue allowed)
-    SwitchBody,         ///< Inside a switch body (case/default allowed)
-    IfStmt,             ///< Inside an if statement (for type narrowing)
-    Block,              ///< Inside a block statement (for pending inverse narrowing)
-    GenericConstraint   ///< Inside a generic constraint list (<T : Trait>)
+    TopLevel,      ///< Module level.
+    FuncBody,      ///< Inside an ordinary `FN` body.
+    SequenceBody,  ///< Inside a `@sequence` body (`wait*` allowed).
+    LoopBody,      ///< Inside a loop body (`break`/`continue` allowed).
+    SwitchBody,    ///< Inside a `switch` body (`case`/`default` allowed).
+    IfStmt,        ///< Inside an if-statement (narrowing detection).
+    Block,         ///< Inside a block (pending inverse narrowing).
 };
 
-// ─── NarrowingInfo ──────────────────────────────────────────────────────
+// ─── NarrowingInfo ────────────────────────────────────────────────────────
 
-/// @brief Information about type narrowing from a condition or operation.
+/// @brief The narrowing effect of a condition.
 ///
-/// Captures the narrowing effect of:
-/// - `if x != nil` → `x` narrowed to non-nullable
-/// - `if x == nil` with early exit → `x` narrowed to non-nullable in rest of block
-/// - `await x` → `x` narrowed from `Future<T>` to `T`
-/// - `join x` → `x` narrowed from `Thread<T>` to `T`
+/// A condition of the form `x != nil` narrows `x` to its non-nil type in
+/// the then-branch. `x == nil` narrows `x` in the else-branch. The
+/// `isEquality` flag records which operator the condition used, so the
+/// resolver knows whether the narrowing applies directly or inversely.
 ///
-/// @example
-///   if x != nil { ... }  → NarrowingInfo { x→T, isEquality: false }
-///   if x == nil { return } → NarrowingInfo { x→T, isEquality: true }
-///   await result         → NarrowingInfo { result→T, isEquality: false }
+/// `narrowings` maps a variable name to the type it takes once narrowed.
+/// For `x: int?`, the entry is `{ x → int }`.
 struct NarrowingInfo {
-    /// True if this struct contains valid narrowing info.
     bool hasNarrowing = false;
-    
-    /// Map from variable name to its narrowed type.
     std::unordered_map<InternedString, TypeAST*> narrowings;
-    
-    /// True for `==`, `await`, `join` (narrowing applies to the rest of block)
-    /// False for `!=`, `is` checks (narrowing applies to then branch only)
     bool isEquality = false;
 };
-// ─── Narrowing Limitations ─────────────────────────────────────────────────
 
-/// @note **IMPORTANT: Mixed Conditions Are Not Supported**
-///
-/// The current narrowing system only handles conditions where ALL checks
-/// use the SAME operator:
-///
-/// ✅ Supported:
-/// ```lucid
-/// if x != nil and y != nil { ... }    -- All != checks (direct narrowing)
-/// if x == nil or y == nil { ... }     -- All == checks (inverse narrowing)
-/// if x != nil { ... }                 -- Single check
-/// ```
-///
-/// ❌ NOT Supported (will be rejected):
-/// ```lucid
-/// if x != nil and y == nil { ... }    -- Mixed != and == in same condition
-/// if x != nil or y == nil { ... }     -- Mixed != and == in same condition
-/// ```
-///
-/// ## Why This Restriction Exists
-///
-/// 1. **Control Flow Ambiguity**: For `x != nil AND y == nil`, the narrowing
-///    semantics are not well-defined:
-///    - `x != nil` → narrows `x` in THEN branch
-///    - `y == nil` → narrows `y` in ELSE branch (inverse)
-///    - These contradict each other - no single `NarrowingInfo` can represent both.
-///
-/// 2. **`isEquality` Flag**: `NarrowingInfo` has only one `isEquality` flag.
-///    Mixed conditions would require per-variable flags, which the current
-///    implementation does not support.
-///
-/// 3. **Control Flow Graph Complexity**: Supporting mixed operators would
-///    require a full control flow graph with SSA-style φ-nodes, which is
-///    beyond the scope of the current narrowing implementation.
-///
-/// ## Workaround
-///
-/// Use nested if statements to handle mixed conditions:
-///
-/// ```lucid
-/// if x != nil {
-///     if y == nil {
-///         return
-///     }
-///     // x is int, y is not nil
-/// }
-/// ```
-///
-/// ## Future Enhancement
-///
-/// If mixed conditions become a common need, consider:
-/// - Replacing `isEquality` with a per-variable operator map
-/// - Using a control flow graph for precise narrowing
-/// - Adding a more sophisticated dataflow analysis
-
-// ─── Pending Concurrency Operations ─────────────────────────────────────
-
-/// @brief Represents a pending async operation that must be awaited.
-struct PendingAsync {
-    InternedString name;
-    ExprAST* call;
-    SourceLocation loc;
-};
-
-/// @brief Represents a pending spawn operation that must be joined.
-struct PendingSpawn {
-    InternedString name;
-    ExprAST* call;
-    SourceLocation loc;
-};
-
-// ─── Scope ──────────────────────────────────────────────────────────────
-
-/// @brief A single lexical scope containing symbols.
-///
-/// Scopes are pushed when entering function bodies, blocks, if/else branches,
-/// loop bodies, and switch bodies.
-///
-/// Each scope has three namespaces:
-/// - **Values**: Variables, functions, parameters, fields, enum variants
-/// - **Types**: Structs, enums, traits
-/// - **Generic Parameters**: `<T>` parameters (shadow type lookups)
-struct Scope {
-    std::unordered_map<InternedString, ValueDeclAST*> values;
-    std::unordered_map<InternedString, TypeDeclAST*> types;
-    std::unordered_map<InternedString, GenericParamDeclAST*> genericParams;
-    std::unordered_map<InternedString, PendingAsync> pendingAsync;
-    std::unordered_map<InternedString, PendingSpawn> pendingSpawn;
-};
-
-// ─── ReturnStack ─────────────────────────────────────────────────────────
-
-/// @brief Stack for tracking expected return types in nested functions.
-///
-/// For curried functions like `(a int) -> (int) -> int`, each `->` creates
-/// a new function body with its own expected return type.
-///
-/// @example
-/// ```lucid
-/// const add (a int) -> (int) -> int = {
-///     -- Stack: [ (int) -> int ]
-///     return (b int) -> int {
-///         -- Stack: [ (int) -> int, int ]
-///         return a + b          -- Check: int matches int ✅
-///     }                         -- Pop int
-/// }                             -- Pop (int) -> int
-/// ```
-class ReturnStack {
-public:
-    void push(TypeAST* returnType) { m_stack.push_back(returnType); }
-    void pop() { if (!m_stack.empty()) m_stack.pop_back(); }
-    TypeAST* current() const { return m_stack.empty() ? nullptr : m_stack.back(); }
-    bool empty() const { return m_stack.empty(); }
-    size_t size() const { return m_stack.size(); }
-
-private:
-    std::vector<TypeAST*> m_stack;
-};
-
-// ─── ContextFrame ──────────────────────────────────────────────────────
+// ─── ContextFrame ─────────────────────────────────────────────────────────
 
 /// @brief One frame on the context stack.
-///
-/// Each frame tracks a semantic construct and stores context-specific data.
 struct ContextFrame {
     ContextKind kind;
-    BaseAST* node = nullptr;
+    BaseAST*    node = nullptr;
 
-    // ─── Return Type (FuncBody) ──────────────────────────────────────────
+    // FuncBody / SequenceBody
     TypeAST* expectedReturnType = nullptr;
 
-    // ─── Loop/Switch Tracking ──────────────────────────────────────────
-    StmtAST* loopStmt = nullptr;
+    // LoopBody / SwitchBody
+    StmtAST*       loopStmt   = nullptr;
     SwitchStmtAST* switchStmt = nullptr;
 
-    // ─── Type Narrowing (IfStmt) ────────────────────────────────────────
-    bool isIfConditionCtx = false;
-    bool hasElse = false;
+    // IfStmt
+    bool          isIfConditionCtx = false;
+    bool          hasElse          = false;
     NarrowingInfo pendingNarrowing;
 
-    // ─── Pending Inverse Narrowing (Block) ──────────────────────────────
-    bool hasPendingInverseNarrowing = false;
+    // Block
+    bool          hasPendingInverseNarrowing = false;
     NarrowingInfo pendingInverseNarrowing;
 };
 
-// ─── ContextStack ──────────────────────────────────────────────────────
+// ─── ContextStack ─────────────────────────────────────────────────────────
 
-/// @brief Unified context manager for semantic analysis.
-///
-/// ## Type Narrowing Flow
-///
-/// ### Then Branch (Direct Narrowing)
-/// ```lucid
-/// if x != nil {    ← Condition analyzed
-///     // x is int  ← ScopedNarrowing applies direct narrowing
-/// }
-/// ```
-///
-/// ### Else Branch (Inverse Narrowing)
-/// ```lucid
-/// if x != nil {
-///     // x is int
-/// } else {
-///     // x is nil  ← ScopedNarrowing applies inverse narrowing
-/// }
-/// ```
-///
-/// ### Standalone If (Pending Inverse Narrowing)
-/// ```lucid
-/// if x == nil { return }  ← Early exit
-/// // x is int             ← Applied to the rest of the block
-/// ```
-///
-/// ### Await/Join Narrowing (Linear Types)
-/// ```lucid
-/// async result int = fetch()   ← result is Future<int>
-/// await result                 ← Narrow Future<int> → int
-/// // result is int here
-/// ```
-///
-/// ## How Narrowing Works
-///
-/// 1. **Condition Analysis**: `extractNarrowingsFromCondition()` examines
-///    the if condition and produces a `NarrowingInfo` map.
-///
-/// 2. **Then Branch**: `ScopedNarrowing` applies the narrowings directly.
-///    `narrowVariable()` stores the narrowed type in the current level.
-///
-/// 3. **Else Branch**: Inverse narrowing is applied (e.g., `x != nil` in
-///    then means `x == nil` in else).
-///
-/// 4. **Standalone If**: If the then branch exits (return/break/continue),
-///    the inverse narrowing is stored as pending and applied when the
-///    enclosing block is entered.
-///
-/// 5. **Lookup**: `getNarrowedType()` checks the narrowing stack first
-///    before falling back to the declaration's type.
 class ContextStack {
 public:
-
-    // ─── Push/Pop ────────────────────────────────────────────────────────
+    // ─── Push / pop ─────────────────────────────────────────────────────
+    //
+    // Prefer the RAII guards in SemaContext.hpp (`ScopedContext`,
+    // `ScopedFunction`, etc.) over calling push/pop directly. The raw
+    // push/pop pair exists so the guards have something to call.
 
     void push(ContextKind kind, BaseAST* node);
-    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType);
-    void pushLoop(StmtAST* loopStmt);
-    void pushSwitch(SwitchStmtAST* switchStmt);
-    void pushBlock(BlockStmtAST* block);
+
+    /// Push a function frame. `kind` must be `FuncBody` or
+    /// `SequenceBody`; the caller (`ScopedFunction`) chooses it from
+    /// `FnDeclAST::isSequence`. A null `returnType` means the function
+    /// returns `unit`.
+    void pushFunction(FnDeclAST* decl, ContextKind kind, TypeAST* returnType);
+
     void pop();
 
-    // ─── Context Queries ──────────────────────────────────────────────────
+    // ─── Context queries ────────────────────────────────────────────────
 
     ContextKind current() const;
-    bool isInside(ContextKind kind) const;
-    BaseAST* currentNode() const;
+    bool        isInside(ContextKind kind) const;
+    BaseAST*    currentNode() const;
 
+    /// True inside an ordinary function body or a sequence body.
     bool insideFunction() const;
-    bool insideLoop() const;
+
+    /// True inside a `@sequence` body only. This is the check the
+    /// sequence-restriction rules use to allow `wait*` statements.
+    bool insideSequence() const;
+
+    bool insideLoop()   const;
     bool insideSwitch() const;
 
-    StmtAST* currentLoop() const;
+    StmtAST*       currentLoop()   const;
     SwitchStmtAST* currentSwitch() const;
-    BlockStmtAST* currentBlock() const;
+    BlockStmtAST*  currentBlock()  const;
 
-    // ─── Return Type Tracking ──────────────────────────────────────────
+    /// The expected return type of the innermost function or sequence
+    /// body. Null means `unit`.
+    TypeAST* currentReturnType() const;
 
-    void pushReturnType(TypeAST* returnType) { m_returnStack.push(returnType); }
-    void popReturnType() { m_returnStack.pop(); }
-    TypeAST* currentReturnType() const { return m_returnStack.current(); }
-    bool hasReturnRequirements() const { return !m_returnStack.empty(); }
+    // ─── If-condition context ───────────────────────────────────────────
+    //
+    // Set by `ScopedIfCondition` for the duration of condition analysis.
+    // Narrowing detection reads it to know when a `==`/`!=` against
+    // `nil` is a narrowing site rather than an ordinary comparison.
 
-    // ─── Type Narrowing ──────────────────────────────────────────────────
-
-    // ─── If Condition Context ──────────────────────────────────────────
     bool isIfConditionCtx() const;
-    void setIfConditionCtx(bool isIfCtx);
-    void setHasElse(bool hasElse);
+    void setIfConditionCtx(bool value);
+    void setHasElse(bool value);
     bool hasElse() const;
 
-    // ─── Pending Narrowing (from condition) ────────────────────────────
+    // ─── Pending narrowing ──────────────────────────────────────────────
+    //
+    // Set during condition analysis, read by the branch resolvers. Cleared
+    // by `ScopedIfCondition`'s constructor.
+
     void setPendingNarrowing(const NarrowingInfo& info);
     const NarrowingInfo& getPendingNarrowing() const;
     void clearPendingNarrowing();
 
-    // ─── Narrowing Stack ────────────────────────────────────────────────
-    void pushNarrowingLevel(bool isInverse = false);
-    void popNarrowingLevel();
-    void narrowVariable(InternedString name, TypeAST* type);
-    TypeAST* getNarrowedType(InternedString name) const;
-    bool isNarrowingInverse() const;
+    // ─── Narrowing stack ────────────────────────────────────────────────
 
-    // ─── Pending Inverse Narrowing (for standalone if) ─────────────────
+    void     pushNarrowingLevel(bool isInverse = false);
+    void     popNarrowingLevel();
+    void     narrowVariable(InternedString name, TypeAST* type);
+    TypeAST* getNarrowedType(InternedString name) const;
+    bool     isNarrowingInverse() const;
+
+    // ─── Pending inverse narrowing ──────────────────────────────────────
+    //
+    // For a standalone `if x == nil { return }`, the inverse narrowing
+    // (`x` is non-nil after the `if`) is stored on the enclosing block
+    // frame and applied when the block resumes.
+
     void setPendingInverseNarrowing(const NarrowingInfo& info);
     bool hasPendingInverseNarrowing() const;
     const NarrowingInfo& getPendingInverseNarrowing() const;
     void clearPendingInverseNarrowing();
 
-    // ─── Closure Helpers ──────────────────────────────────────────────────
-
-    /// @brief Get the current closure nesting depth.
-    size_t getClosureDepth() const;
-
-    /// @brief Check if we're inside a nested function.
-    bool insideNestedFunction() const;
-
 private:
-    // ─── Members ──────────────────────────────────────────────────────────
-
-    /// Context stack - tracks what we're analyzing.
+    // ─── Members ────────────────────────────────────────────────────────
     std::vector<ContextFrame> m_stack;
 
-    /// Return stack - tracks expected return types for nested functions.
-    ReturnStack m_returnStack;
-
-    /// Narrowing stack - tracks flow-sensitive type refinements.
     struct NarrowingLevel {
         std::unordered_map<InternedString, TypeAST*> narrowedTypes;
         bool isInverse = false;
     };
     std::vector<NarrowingLevel> m_narrowing;
 
-    // ─── Helpers ──────────────────────────────────────────────────────────
+    // ─── Frame search helpers ───────────────────────────────────────────
 
-    ContextFrame* findInnermostIfContext();
+    ContextFrame*       findInnermostIfContext();
     const ContextFrame* findInnermostIfContext() const;
-    ContextFrame* findInnermostBlock();
+    ContextFrame*       findInnermostBlock();
     const ContextFrame* findInnermostBlock() const;
 };
 
-} // namespace sema
+} // namespace lucid::sema

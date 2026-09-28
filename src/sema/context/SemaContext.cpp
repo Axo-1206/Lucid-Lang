@@ -1,81 +1,33 @@
 /// @file SemaContext.cpp
-/// @brief Implementation of SemaContext - semantic context management.
-///
-/// This file contains all concrete implementations for SemaContext,
-/// keeping the header clean and focused on declarations.
+/// @brief Implementation of SemaContext and its RAII guards.
 
 #include "SemaContext.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
-namespace sema {
+using namespace lucid::diag;
 
-// ─── TypeCache Key Operators ─────────────────────────────────────────────
+namespace lucid::sema {
 
-// NamedTypeKey
-bool TypeCache::NamedTypeKey::operator==(const NamedTypeKey& other) const {
-    if (name != other.name) return false;
-    if (genericArgs.size() != other.genericArgs.size()) return false;
-    for (size_t i = 0; i < genericArgs.size(); ++i) {
-        if (genericArgs[i] != other.genericArgs[i]) return false;
-    }
-    return true;
-}
-
-size_t TypeCache::NamedTypeKeyHash::operator()(const NamedTypeKey& key) const {
-    size_t h = std::hash<uint32_t>{}(key.name.id);
-    for (TypeAST* arg : key.genericArgs) {
-        h ^= std::hash<TypeAST*>{}(arg) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    }
-    return h;
-}
-
-// ArrayTypeKey
-bool TypeCache::ArrayTypeKey::operator==(const ArrayTypeKey& other) const {
-    return kind == other.kind && 
-           size == other.size && 
-           element == other.element;
-}
-
-size_t TypeCache::ArrayTypeKeyHash::operator()(const ArrayTypeKey& key) const {
-    return std::hash<int>{}(static_cast<int>(key.kind)) ^
-           std::hash<uint64_t>{}(key.size) ^
-           std::hash<TypeAST*>{}(key.element);
-}
-
-// PtrTypeKey
-bool TypeCache::PtrTypeKey::operator==(const PtrTypeKey& other) const {
-    return inner == other.inner;
-}
-
-size_t TypeCache::PtrTypeKeyHash::operator()(const PtrTypeKey& key) const {
-    return std::hash<TypeAST*>{}(key.inner);
-}
-
-// RefTypeKey
-bool TypeCache::RefTypeKey::operator==(const RefTypeKey& other) const {
-    return inner == other.inner;
-}
-
-size_t TypeCache::RefTypeKeyHash::operator()(const RefTypeKey& key) const {
-    return std::hash<TypeAST*>{}(key.inner);
-}
-
-// ─── SemaContext Constructor ─────────────────────────────────────────────
+// ─── Construction ─────────────────────────────────────────────────────────
 
 SemaContext::SemaContext(StringPool& p, ASTArena& a, DiagnosticEngine& d)
     : pool(p)
     , arena(a)
-    , diagnostics(d) {
-    for (ModuleAST* m : modules) {
-        if (m) modulesByPath[m->filePath] = m;
+    , diagnostics(d) {}
+
+// ─── Module management ────────────────────────────────────────────────────
+
+void SemaContext::addModule(ModuleAST* module) {
+    if (!module) return;
+    modules.push_back(module);
+    if (module->filePath.isValid()) {
+        modulesByPath[module->filePath] = module;
     }
 }
 
-// ─── Module Management ────────────────────────────────────────────────────
-
 void SemaContext::enterModule(ModuleAST* module) {
-    currentModule = module;
+    currentModule      = module;
     currentModuleTable = &getOrCreateModuleTable(module);
 }
 
@@ -99,20 +51,7 @@ ModuleAST* SemaContext::findModuleByPath(InternedString path) const {
     return it != modulesByPath.end() ? it->second : nullptr;
 }
 
-// ─── Generic Type Instantiations ────────────────────────────────────────
-
-StructDeclAST* SemaContext::getGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs) const {
-    GenericTypeKey key{name, canonicalArgs};
-    auto it = genericTypeInstantiations.find(key);
-    return it != genericTypeInstantiations.end() ? it->second : nullptr;
-}
-
-void SemaContext::registerGenericTypeInstantiation(InternedString name, const ArenaSpan<TypeAST*>& canonicalArgs, StructDeclAST* instantiated) {
-    GenericTypeKey key{name, canonicalArgs};
-    genericTypeInstantiations[key] = instantiated;
-}
-
-// ─── Scope Management ────────────────────────────────────────────────────
+// ─── Scope management ─────────────────────────────────────────────────────
 
 bool SemaContext::isAtModuleLevel() const {
     return scopes.empty();
@@ -129,16 +68,16 @@ void SemaContext::popScope() {
 }
 
 Scope& SemaContext::currentScope() {
-    assert(!scopes.empty() && "No scope open");
+    assert(!scopes.empty() && "no scope open");
     return scopes.back();
 }
 
 const Scope& SemaContext::currentScope() const {
-    assert(!scopes.empty() && "No scope open");
+    assert(!scopes.empty() && "no scope open");
     return scopes.back();
 }
 
-// ─── Scope Queries ────────────────────────────────────────────────────────
+// ─── Scope queries ────────────────────────────────────────────────────────
 
 bool SemaContext::isInCurrentScope(InternedString name) const {
     if (scopes.empty()) return false;
@@ -147,100 +86,69 @@ bool SemaContext::isInCurrentScope(InternedString name) const {
 
 bool SemaContext::isModuleMember(InternedString name) const {
     if (!currentModuleTable) return false;
-    return currentModuleTable->values.find(name) != currentModuleTable->values.end();
+    return currentModuleTable->values.find(name) != currentModuleTable->values.end()
+        || currentModuleTable->types .find(name) != currentModuleTable->types .end();
 }
 
-bool SemaContext::isTypeInCurrentScope(InternedString name) const {
-    if (scopes.empty()) return false;
-    return currentScope().types.find(name) != currentScope().types.end();
-}
-
-bool SemaContext::isModuleTypeMember(InternedString name) const {
-    if (!currentModuleTable) return false;
-    return currentModuleTable->types.find(name) != currentModuleTable->types.end();
-}
-
-bool SemaContext::isGenericParamInCurrentScope(InternedString name) const {
-    if (scopes.empty()) return false;
-    return currentScope().genericParams.find(name) != currentScope().genericParams.end();
-}
-
-// ─── Symbol Insertion ─────────────────────────────────────────────────────
+// ─── Symbol insertion ─────────────────────────────────────────────────────
 
 bool SemaContext::insertValue(ValueDeclAST* decl) {
+    if (!decl) return false;
+
     if (isAtModuleLevel()) {
-        if (currentModuleTable->values.find(decl->name) != currentModuleTable->values.end()) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, decl,
-                              "redeclaration of '", pool.lookup(decl->name), 
-                              "' in the same scope");
+        if (!currentModuleTable) return false;
+        if (currentModuleTable->values.count(decl->name)) {
+            diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                              "redeclaration of '", pool.lookup(decl->name),
+                              "' in module '",
+                              pool.lookup(currentModule->filePath), "'");
             return false;
         }
         currentModuleTable->values[decl->name] = decl;
         return true;
-    } else {
-        if (currentScope().values.find(decl->name) != currentScope().values.end()) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, decl,
-                              "redeclaration of '", pool.lookup(decl->name), 
-                              "' in the same scope");
-            return false;
-        }
-        currentScope().values[decl->name] = decl;
-        return true;
     }
-}
 
-bool SemaContext::insertType(TypeDeclAST* decl) {
-    if (isAtModuleLevel()) {
-        if (currentModuleTable->types.find(decl->name) != currentModuleTable->types.end()) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, decl,
-                              "redeclaration of '", pool.lookup(decl->name), 
-                              "' in the same scope");
-            return false;
-        }
-        currentModuleTable->types[decl->name] = decl;
-        return true;
-    } else {
-        if (currentScope().types.find(decl->name) != currentScope().types.end()) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, decl,
-                              "redeclaration of '", pool.lookup(decl->name), 
-                              "' in the same scope");
-            return false;
-        }
-        currentScope().types[decl->name] = decl;
-        return true;
-    }
-}
-
-bool SemaContext::insertGenericParam(GenericParamDeclAST* param) {
-    // A generic parameter is lexically scoped to the declaration that
-    // introduces it — struct/trait/func — and must be registered in the
-    // scope belonging to that declaration, not in an enclosing scope.
-    // Registering it in an enclosing scope would leak it: two declarations
-    // both writing `<T>` would collide, and a `T` in one declaration would
-    // shadow a `T` in an unrelated declaration for the rest of its scope.
-    //
-    // Every caller must push the declaration's own scope *before* calling
-    // this. See resolveFuncDecl's Scope A, resolveStructDecl's structScope,
-    // and resolveTraitDecl's traitScope.
-    AST_ASSERT_MSG(!isAtModuleLevel(),
-                   "insertGenericParam() called with no open scope — "
-                   "the declaring struct/trait/func did not push its own "
-                   "scope before resolving its generic parameters");
-    if (currentScope().genericParams.find(param->name) != currentScope().genericParams.end()) {
-        diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, param,
-                          "redeclaration of generic parameter '", 
-                          pool.lookup(param->name), "' in the same scope");
+    if (currentScope().values.count(decl->name)) {
+        diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                          "redeclaration of '", pool.lookup(decl->name),
+                          "' in the same scope");
         return false;
     }
-    currentScope().genericParams[param->name] = param;
+    currentScope().values[decl->name] = decl;
     return true;
 }
 
-bool SemaContext::addImportAlias(InternedString alias, ModuleAST* module, BaseAST* node) {
+bool SemaContext::insertType(TypeDeclAST* decl) {
+    if (!decl) return false;
+
+    // Types are module-level only (grammar §12.5). A local TABLE, FN, or
+    // any future TypeDeclAST is a parser/Sema bug, not a user error —
+    // the parser should have rejected it. The assert fires on the bug;
+    // the diagnostic below is a defensive belt-and-suspenders for a
+    // release build where NDEBUG turns the assert into a no-op.
+    AST_ASSERT_MSG(isAtModuleLevel(),
+                   "insertType() called from a non-module scope; "
+                   "local type declarations are forbidden by the grammar");
+
     if (!currentModuleTable) return false;
-    if (currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end()) {
-        diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node ? node : module,
-                          "redeclaration of import alias '", 
+    if (currentModuleTable->types.count(decl->name)) {
+        diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                          "redeclaration of type '", pool.lookup(decl->name),
+                          "' in module '",
+                          pool.lookup(currentModule->filePath), "'");
+        return false;
+    }
+    currentModuleTable->types[decl->name] = decl;
+    return true;
+}
+
+bool SemaContext::addImportAlias(InternedString alias, ModuleAST* module,
+                                 BaseAST* node) {
+    if (!currentModuleTable) return false;
+    if (currentModuleTable->importAliases.count(alias)) {
+        diagnostics.error(DiagCode::Name_ImportAliasRedeclaration,
+                          node ? node : module,
+                          "redeclaration of import alias '",
                           pool.lookup(alias), "'");
         return false;
     }
@@ -248,32 +156,7 @@ bool SemaContext::addImportAlias(InternedString alias, ModuleAST* module, BaseAS
     return true;
 }
 
-// ─── Symbol Lookup ────────────────────────────────────────────────────────
-
-TypeAST* SemaContext::getEffectiveType(ValueDeclAST* decl, InternedString name) const {
-    if (!decl) return nullptr;
-    
-    TypeAST* narrowedType = stack.getNarrowedType(name);
-    if (narrowedType) {
-        return narrowedType;
-    }
-    
-    return decl->type;
-}
-
-GenericParamDeclAST* SemaContext::lookupGenericParam(InternedString name) const {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto found = it->genericParams.find(name);
-        if (found != it->genericParams.end()) {
-            return found->second;
-        }
-    }
-    return nullptr;
-}
-
-bool SemaContext::isGenericParam(InternedString name) const {
-    return lookupGenericParam(name) != nullptr;
-}
+// ─── Symbol lookup ────────────────────────────────────────────────────────
 
 ValueDeclAST* SemaContext::lookupValue(InternedString name) const {
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
@@ -291,22 +174,15 @@ ValueDeclAST* SemaContext::lookupValue(InternedString name) const {
     return nullptr;
 }
 
-FuncDeclAST* SemaContext::lookupFunction(InternedString name) const {
+FnDeclAST* SemaContext::lookupFunction(InternedString name) const {
     ValueDeclAST* v = lookupValue(name);
-    return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
+    return (v && v->isa<FnDeclAST>()) ? v->as<FnDeclAST>() : nullptr;
 }
 
 TypeDeclAST* SemaContext::lookupType(InternedString name) const {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto gen = it->genericParams.find(name);
-        if (gen != it->genericParams.end()) {
-            return nullptr;
-        }
-        auto found = it->types.find(name);
-        if (found != it->types.end()) {
-            return found->second;
-        }
-    }
+    // Types are not lexically scoped — local type declarations are
+    // forbidden — so only the module table is consulted. The loop over
+    // scopes is omitted deliberately: there is nothing to find.
     if (currentModuleTable) {
         auto found = currentModuleTable->types.find(name);
         if (found != currentModuleTable->types.end()) {
@@ -315,6 +191,8 @@ TypeDeclAST* SemaContext::lookupType(InternedString name) const {
     }
     return nullptr;
 }
+
+// ─── Import lookup ────────────────────────────────────────────────────────
 
 ModuleAST* SemaContext::lookupImport(InternedString alias) const {
     if (!currentModuleTable) return nullptr;
@@ -322,222 +200,36 @@ ModuleAST* SemaContext::lookupImport(InternedString alias) const {
     return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
 }
 
-// ─── Type Lookup with Context ────────────────────────────────────────────
-
-TypeDeclAST* SemaContext::lookupTypeDecl(InternedString name) const {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto gen = it->genericParams.find(name);
-        if (gen != it->genericParams.end()) {
-            return gen->second;
-        }
-        auto found = it->types.find(name);
-        if (found != it->types.end()) {
-            return found->second;
-        }
-    }
-    
-    if (currentModuleTable) {
-        auto found = currentModuleTable->types.find(name);
-        if (found != currentModuleTable->types.end()) {
-            return found->second;
-        }
-    }
-    
-    return nullptr;
-}
-
-bool SemaContext::isGenericTypeParam(InternedString name) const {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto gen = it->genericParams.find(name);
-        if (gen != it->genericParams.end()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-TypeDeclAST* SemaContext::lookupTypeDeclWithAlias(InternedString name) const {
-    TypeDeclAST* decl = lookupTypeDecl(name);
-    if (decl) return decl;
-    return nullptr;
-}
-
-// ─── Module Member Lookup ─────────────────────────────────────────────────
-
-ValueDeclAST* SemaContext::lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
-    if (!module) return nullptr;
-    auto it = moduleTables.find(module);
-    if (it == moduleTables.end()) return nullptr;
-    auto found = it->second.values.find(memberName);
-    return found != it->second.values.end() ? found->second : nullptr;
-}
-
-TypeDeclAST* SemaContext::lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
-    if (!module) return nullptr;
-    auto it = moduleTables.find(module);
-    if (it == moduleTables.end()) return nullptr;
-    auto found = it->second.types.find(memberName);
-    return found != it->second.types.end() ? found->second : nullptr;
-}
-
-ValueDeclAST* SemaContext::lookupValueByAlias(InternedString alias, InternedString memberName) const {
+ValueDeclAST* SemaContext::lookupImportedValue(InternedString alias,
+                                               InternedString member) const {
     ModuleAST* module = lookupImport(alias);
     if (!module) return nullptr;
-    return lookupModuleValueMember(module, memberName);
+    ModuleTable* table = const_cast<SemaContext*>(this)->findModuleTable(module);
+    if (!table) return nullptr;
+    auto found = table->values.find(member);
+    return found != table->values.end() ? found->second : nullptr;
 }
 
-TypeDeclAST* SemaContext::lookupTypeByAlias(InternedString alias, InternedString memberName) const {
+TypeDeclAST* SemaContext::lookupImportedType(InternedString alias,
+                                             InternedString member) const {
     ModuleAST* module = lookupImport(alias);
     if (!module) return nullptr;
-    return lookupModuleTypeMember(module, memberName);
+    ModuleTable* table = const_cast<SemaContext*>(this)->findModuleTable(module);
+    if (!table) return nullptr;
+    auto found = table->types.find(member);
+    return found != table->types.end() ? found->second : nullptr;
 }
 
-// ─── Module Member Keyword Info ──────────────────────────────────────────
-
-DeclKeyword SemaContext::lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
-    ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-    if (!decl) return DeclKeyword::Let;
-    if (decl->isa<VarDeclAST>()) {
-        return decl->as<VarDeclAST>()->keyword;
-    }
-    if (decl->isa<FuncDeclAST>()) {
-        return decl->as<FuncDeclAST>()->keyword;
-    }
-    return DeclKeyword::Let;
-}
-
-bool SemaContext::isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
-    ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-    if (!decl) return false;
-    if (decl->isa<VarDeclAST>()) {
-        return decl->as<VarDeclAST>()->keyword == DeclKeyword::Let;
-    }
-    if (decl->isa<FuncDeclAST>()) {
-        return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Let;
-    }
-    return false;
-}
-
-bool SemaContext::isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
-    ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-    if (!decl) return false;
-    if (decl->isa<VarDeclAST>()) {
-        return decl->as<VarDeclAST>()->keyword == DeclKeyword::Const;
-    }
-    if (decl->isa<FuncDeclAST>()) {
-        return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Const;
-    }
-    if (decl->isa<EnumVariantAST>()) {
-        return true;
-    }
-    return false;
-}
-
-DeclKeyword SemaContext::lookupModuleMemberKeywordByAlias(InternedString alias, InternedString memberName) const {
-    ModuleAST* module = lookupImport(alias);
-    if (!module) return DeclKeyword::Let;
-    return lookupModuleMemberKeyword(module, memberName);
-}
-
-bool SemaContext::isModuleMemberMutableByAlias(InternedString alias, InternedString memberName) const {
-    ModuleAST* module = lookupImport(alias);
-    if (!module) return false;
-    return isModuleMemberMutable(module, memberName);
-}
-
-bool SemaContext::isModuleMemberConstByAlias(InternedString alias, InternedString memberName) const {
-    ModuleAST* module = lookupImport(alias);
-    if (!module) return false;
-    return isModuleMemberConst(module, memberName);
-}
-
-// ─── Concurrency Helpers ──────────────────────────────────────────────────
-
-void SemaContext::addPendingAsync(InternedString name, ExprAST* call, const SourceLocation& loc) {
-    if (isAtModuleLevel()) return;
-    PendingAsync pending{name, call, loc};
-    currentScope().pendingAsync[name] = pending;
-}
-
-void SemaContext::addPendingSpawn(InternedString name, ExprAST* call, const SourceLocation& loc) {
-    if (isAtModuleLevel()) return;
-    PendingSpawn pending{name, call, loc};
-    currentScope().pendingSpawn[name] = pending;
-}
-
-bool SemaContext::hasPendingAsync(InternedString name) const {
-    if (scopes.empty()) return false;
-    return currentScope().pendingAsync.find(name) != currentScope().pendingAsync.end();
-}
-
-bool SemaContext::hasPendingSpawn(InternedString name) const {
-    if (scopes.empty()) return false;
-    return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
-}
-
-bool SemaContext::isPendingFuture(InternedString name) const {
-    return hasPendingAsync(name) || hasPendingSpawn(name);
-}
-
-void SemaContext::resolveAsync(InternedString name) {
-    if (!scopes.empty()) {
-        currentScope().pendingAsync.erase(name);
-    }
-}
-
-void SemaContext::resolveSpawn(InternedString name) {
-    if (!scopes.empty()) {
-        currentScope().pendingSpawn.erase(name);
-    }
-}
-
-std::vector<InternedString> SemaContext::getPendingAsyncNames() const {
-    std::vector<InternedString> result;
-    if (!scopes.empty()) {
-        for (const auto& [name, _] : currentScope().pendingAsync) {
-            result.push_back(name);
-        }
-    }
-    return result;
-}
-
-std::vector<InternedString> SemaContext::getPendingSpawnNames() const {
-    std::vector<InternedString> result;
-    if (!scopes.empty()) {
-        for (const auto& [name, _] : currentScope().pendingSpawn) {
-            result.push_back(name);
-        }
-    }
-    return result;
-}
-
-bool SemaContext::hasPendingAsync() const {
-    return !scopes.empty() && !currentScope().pendingAsync.empty();
-}
-
-bool SemaContext::hasPendingSpawn() const {
-    return !scopes.empty() && !currentScope().pendingSpawn.empty();
-}
-
-// ─── Type Cache Accessors ─────────────────────────────────────────────────
+// ─── Type canonicalization ────────────────────────────────────────────────
 
 PrimitiveTypeAST* SemaContext::getPrimitiveType(PrimitiveKind kind) {
     auto it = typeCache.primitives.find(kind);
-    if (it != typeCache.primitives.end()) {
-        return it->second;
-    }
-    PrimitiveTypeAST* type = arena.make<PrimitiveTypeAST>(kind);
-    typeCache.primitives[kind] = type;
-    return type;
-}
+    if (it != typeCache.primitives.end()) return it->second;
 
-PrimitiveTypeAST* SemaContext::getIntType()    { return getPrimitiveType(PrimitiveKind::Int); }
-PrimitiveTypeAST* SemaContext::getFloatType()  { return getPrimitiveType(PrimitiveKind::Float); }
-PrimitiveTypeAST* SemaContext::getBoolType()   { return getPrimitiveType(PrimitiveKind::Bool); }
-PrimitiveTypeAST* SemaContext::getStringType() { return getPrimitiveType(PrimitiveKind::String); }
-PrimitiveTypeAST* SemaContext::getCharType()   { return getPrimitiveType(PrimitiveKind::Char); }
-PrimitiveTypeAST* SemaContext::getUint64Type() { return getPrimitiveType(PrimitiveKind::Uint64); }
-PrimitiveTypeAST* SemaContext::getUint8Type()  { return getPrimitiveType(PrimitiveKind::Uint8); }
+    PrimitiveTypeAST* t = arena.make<PrimitiveTypeAST>(kind);
+    typeCache.primitives[kind] = t;
+    return t;
+}
 
 UnknownTypeAST* SemaContext::getUnknownType() {
     if (!typeCache.unknownType) {
@@ -546,170 +238,76 @@ UnknownTypeAST* SemaContext::getUnknownType() {
     return typeCache.unknownType;
 }
 
-NamedTypeAST* SemaContext::getNamedType(InternedString name, const ArenaSpan<TypeAST*>& genericArgs) {
-    TypeCache::NamedTypeKey key{name, genericArgs};
+NamedTypeAST* SemaContext::getNamedType(InternedString name) {
+    TypeCache::NamedTypeKey key{name};
     auto it = typeCache.namedTypes.find(key);
-    if (it != typeCache.namedTypes.end()) {
-        return it->second;
-    }
-    
-    NamedTypeAST* type = arena.make<NamedTypeAST>(name);
-    type->genericArgs = genericArgs;
-    
-    typeCache.namedTypes[key] = type;
-    return type;
+    if (it != typeCache.namedTypes.end()) return it->second;
+
+    NamedTypeAST* t = arena.make<NamedTypeAST>(name);
+    typeCache.namedTypes[key] = t;
+    return t;
 }
 
-ArrayTypeAST* SemaContext::getArrayType(ArrayKind kind, uint64_t size, TypeAST* element) {
+ArrayTypeAST* SemaContext::getArrayType(ArrayKind kind, uint64_t size,
+                                        TypeAST* element) {
     TypeCache::ArrayTypeKey key{kind, size, element};
     auto it = typeCache.arrayTypes.find(key);
-    if (it != typeCache.arrayTypes.end()) {
-        return it->second;
-    }
-    ArrayTypeAST* type = arena.make<ArrayTypeAST>(kind, size, element);
-    typeCache.arrayTypes[key] = type;
-    return type;
+    if (it != typeCache.arrayTypes.end()) return it->second;
+
+    ArrayTypeAST* t = arena.make<ArrayTypeAST>(kind, size, element);
+    typeCache.arrayTypes[key] = t;
+    return t;
 }
 
-PtrTypeAST* SemaContext::getPtrType(TypeAST* inner) {
-    if (!inner) return nullptr;
-    
-    TypeCache::PtrTypeKey key{inner};
-    auto it = typeCache.ptrTypes.find(key);
-    if (it != typeCache.ptrTypes.end()) {
-        return it->second;
-    }
-    
-    PtrTypeAST* type = arena.make<PtrTypeAST>(inner);
-    typeCache.ptrTypes[key] = type;
-    return type;
-}
+RowRefTypeAST* SemaContext::getRowRefType(TypeAST* table) {
+    if (!table) return nullptr;
 
-RefTypeAST* SemaContext::getRefType(TypeAST* inner) {
-    if (!inner) return nullptr;
-    
-    TypeCache::RefTypeKey key{inner};
-    auto it = typeCache.refTypes.find(key);
-    if (it != typeCache.refTypes.end()) {
-        return it->second;
-    }
-    
-    RefTypeAST* type = arena.make<RefTypeAST>(inner);
-    typeCache.refTypes[key] = type;
-    return type;
+    TypeCache::RowRefTypeKey key{table};
+    auto it = typeCache.rowRefTypes.find(key);
+    if (it != typeCache.rowRefTypes.end()) return it->second;
+
+    RowRefTypeAST* t = arena.make<RowRefTypeAST>(table);
+    typeCache.rowRefTypes[key] = t;
+    return t;
 }
 
 NullableTypeAST* SemaContext::getNullableType(TypeAST* inner) {
     if (!inner) return nullptr;
-    
+
     TypeCache::NullableTypeKey key{inner};
     auto it = typeCache.nullableTypes.find(key);
-    if (it != typeCache.nullableTypes.end()) {
-        return it->second;
-    }
-    
-    NullableTypeAST* type = arena.make<NullableTypeAST>(inner);
-    typeCache.nullableTypes[key] = type;
-    return type;
+    if (it != typeCache.nullableTypes.end()) return it->second;
+
+    NullableTypeAST* t = arena.make<NullableTypeAST>(inner);
+    typeCache.nullableTypes[key] = t;
+    return t;
 }
 
-FallibleTypeAST* SemaContext::getFallibleType(TypeAST* inner) {
-    if (!inner) return nullptr;
-    
-    TypeCache::FallibleTypeKey key{inner};
-    auto it = typeCache.fallibleTypes.find(key);
-    if (it != typeCache.fallibleTypes.end()) {
-        return it->second;
-    }
-    
-    FallibleTypeAST* type = arena.make<FallibleTypeAST>(inner);
-    typeCache.fallibleTypes[key] = type;
-    return type;
+FunctionTypeAST* SemaContext::getFunctionType(ArenaSpan<TypeAST*> params,
+                                              TypeAST* returnType) {
+    TypeCache::FunctionTypeKey key{params, returnType};
+    auto it = typeCache.functionTypes.find(key);
+    if (it != typeCache.functionTypes.end()) return it->second;
+
+    FunctionTypeAST* t = arena.make<FunctionTypeAST>();
+    t->params     = params;
+    t->returnType = returnType;
+    typeCache.functionTypes[key] = t;
+    return t;
 }
 
-CombinedTypeAST* SemaContext::getCombinedType(TypeAST* inner) {
-    if (!inner) return nullptr;
-    
-    TypeCache::CombinedTypeKey key{inner};
-    auto it = typeCache.combinedTypes.find(key);
-    if (it != typeCache.combinedTypes.end()) {
-        return it->second;
-    }
-    
-    CombinedTypeAST* type = arena.make<CombinedTypeAST>(inner);
-    typeCache.combinedTypes[key] = type;
-    return type;
-}
+// ─── RAII Guards ──────────────────────────────────────────────────────────
 
-// ─── Built-in Type Accessors ─────────────────────────────────────────────
-
-NamedTypeAST* SemaContext::getArenaType() {
-    InternedString name = pool.intern("Arena");
-    TypeCache::NamedTypeKey key{name, arena.emptySpan<TypeAST*>()};
-    auto it = typeCache.namedTypes.find(key);
-    if (it != typeCache.namedTypes.end()) {
-        return it->second;
-    }
-    
-    // Create the type directly, don't call getArenaType() again
-    NamedTypeAST* type = arena.make<NamedTypeAST>(name);
-    type->genericArgs = arena.emptySpan<TypeAST*>();
-    
-    typeCache.namedTypes[key] = type;
-    return type;
-}
-
-NamedTypeAST* SemaContext::getArenaDescriptorType() {
-    InternedString name = pool.intern("ArenaDescriptor");
-    TypeCache::NamedTypeKey key{name, arena.emptySpan<TypeAST*>()};
-    auto it = typeCache.namedTypes.find(key);
-    if (it != typeCache.namedTypes.end()) {
-        return it->second;
-    }
-    
-    // Create the type directly
-    NamedTypeAST* type = arena.make<NamedTypeAST>(name);
-    type->genericArgs = arena.emptySpan<TypeAST*>();
-    
-    typeCache.namedTypes[key] = type;
-    return type;
-}
-
-// ─── Self-Reference Helpers ──────────────────────────────────────────────
-
-bool SemaContext::isDefiningType(TypeDeclAST* decl) const {
-    for (TypeDeclAST* d : definingTypes) {
-        if (d == decl) return true;
-    }
-    return false;
-}
-
-TypeDeclAST* SemaContext::currentDefiningType() const {
-    return definingTypes.empty() ? nullptr : definingTypes.back();
-}
-
-// ─── Closure Helpers ──────────────────────────────────────────────────────
-
-size_t SemaContext::getClosureDepth() const {
-    return stack.getClosureDepth();
-}
-
-bool SemaContext::insideNestedFunction() const {
-    return stack.insideNestedFunction();
-}
-
-// ─── RAII Guards ─────────────────────────────────────────────────────────
-
-ScopedSemanticContext::ScopedSemanticContext(SemaContext& ctx, ContextKind kind, BaseAST* node)
+ScopedContext::ScopedContext(SemaContext& ctx, ContextKind kind, BaseAST* node)
     : ctx_(ctx) {
     ctx_.stack.push(kind, node);
 }
 
-ScopedSemanticContext::~ScopedSemanticContext() {
+ScopedContext::~ScopedContext() {
     ctx_.stack.pop();
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────
 
 ScopedIfCondition::ScopedIfCondition(SemaContext& ctx, bool hasElse)
     : ctx_(ctx) {
@@ -722,7 +320,7 @@ ScopedIfCondition::~ScopedIfCondition() {
     ctx_.stack.setIfConditionCtx(false);
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────
 
 SymbolScope::SymbolScope(SemaContext& ctx)
     : ctx_(ctx) {
@@ -733,18 +331,19 @@ SymbolScope::~SymbolScope() {
     ctx_.popScope();
 }
 
+// ─────────────────────────────────────────────────────────────────────────
 
-
-ScopedNarrowing::ScopedNarrowing(SemaContext& ctx, InternedString varName, 
+ScopedNarrowing::ScopedNarrowing(SemaContext& ctx, InternedString varName,
                                  TypeAST* narrowedType, bool isInverse)
     : ctx_(ctx) {
     ctx_.stack.pushNarrowingLevel(isInverse);
     ctx_.stack.narrowVariable(varName, narrowedType);
 }
 
-ScopedNarrowing::ScopedNarrowing(SemaContext& ctx, 
-                                 const std::unordered_map<InternedString, TypeAST*>& narrowings,
-                                 bool isInverse)
+ScopedNarrowing::ScopedNarrowing(
+    SemaContext& ctx,
+    const std::unordered_map<InternedString, TypeAST*>& narrowings,
+    bool isInverse)
     : ctx_(ctx) {
     ctx_.stack.pushNarrowingLevel(isInverse);
     for (const auto& [name, type] : narrowings) {
@@ -756,45 +355,27 @@ ScopedNarrowing::~ScopedNarrowing() {
     ctx_.stack.popNarrowingLevel();
 }
 
+// ─────────────────────────────────────────────────────────────────────────
 
-
-ScopedTypeDefinition::ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
-    : ctx_(ctx) {
-    ctx_.definingTypes.push_back(decl);
-}
-
-ScopedTypeDefinition::~ScopedTypeDefinition() {
-    if (!ctx_.definingTypes.empty()) {
-        ctx_.definingTypes.pop_back();
-    }
-}
-
-// ─── ScopedFunction Implementation ────────────────────────────────────────
-
-ScopedFunction::ScopedFunction(SemaContext& ctx, AnonFuncExprAST* expr, TypeAST* returnType)
+ScopedFunction::ScopedFunction(SemaContext& ctx, FnDeclAST* decl)
     : ctx_(ctx)
-    , paramScope_(ctx) {                      // pushes a symbol scope
-    ctx_.stack.pushAnonFunction(expr, returnType);
+    , paramScope_(ctx) {                      // pushes the parameter scope
+    ContextKind kind = decl->isSequence ? ContextKind::SequenceBody
+                                        : ContextKind::FuncBody;
+    ctx_.stack.pushFunction(decl, kind, decl->returnType);
 }
 
 ScopedFunction::~ScopedFunction() {
-    // ─── Destructor order is REVERSE of construction order ─────────────────
-    // 1. paramScope_ destructor runs LAST? No, member destructors run in
-    //    REVERSE order of construction.
-    // 
-    // Construction order:
-    //   1. ctx_ (reference, no destructor)
-    //   2. paramScope_ (SymbolScope) → pushes parameter scope
-    //   3. Function context push happens in constructor body
-    // 
     // Destruction order:
-    //   1. Function context pop happens in destructor body (explicit)
-    //   2. paramScope_ destructor → pops parameter scope
-    // 
-    // So the function context is popped BEFORE the parameter scope,
-    // which is correct because the function context depends on the parameters.
-    ctx_.stack.pop();  // ← Pop function context first (explicit)
-    // ─── paramScope_ destructor automatically pops the parameter scope ────
+    //   1. Destructor body: pop the function frame.
+    //   2. Member destructors: pop the parameter scope (via paramScope_).
+    //
+    // Reverse of construction: the frame was pushed after the scope, so
+    // it is popped before it. Both stacks are independent, so this is
+    // correctness-neutral today; the comment is here to record the
+    // invariant so a future reader does not "correct" the order.
+    ctx_.stack.pop();
+    // ─── paramScope_ destructor pops the parameter scope ────────────────
 }
 
-} // namespace sema
+} // namespace lucid::sema

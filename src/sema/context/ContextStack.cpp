@@ -1,40 +1,11 @@
 /// @file ContextStack.cpp
-/// @brief Implementation of ContextStack - semantic context management.
-///
-/// # Implementation Notes
-///
-/// ## Context Stack
-///
-/// The context stack tracks syntactic context for validation rules.
-/// Each `push()` creates a frame, and `pop()` removes it. RAII guards
-/// (`ScopedSemanticContext`) ensure proper cleanup.
-///
-/// ## Return Stack
-///
-/// The return stack is managed alongside the context stack. When a function
-/// context is pushed, the expected return type is also pushed. When popped,
-/// the return type is popped. This supports curried functions.
-///
-/// ## Narrowing Stack
-///
-/// The narrowing stack is separate from the context stack because narrowing
-/// can persist across multiple contexts. For example, a narrowed type from
-/// an if condition applies to the entire then branch, which may contain
-/// nested blocks and loops.
-///
-/// ## Pending Inverse Narrowing
-///
-/// For standalone if statements with early exit (`if x == nil { return }`),
-/// the inverse narrowing is stored on the innermost block context. When
-/// `resolveBlock()` enters a new block, it checks for pending inverse
-/// narrowing and applies it before resolving the block's statements.
+/// @brief Implementation of ContextStack.
 
 #include "ContextStack.hpp"
-#include "core/ast/TypeAST.hpp"
 
-namespace sema {
+namespace lucid::sema {
 
-// ─── Push/Pop ────────────────────────────────────────────────────────────
+// ─── Push / pop ───────────────────────────────────────────────────────────
 
 void ContextStack::push(ContextKind kind, BaseAST* node) {
     ContextFrame frame;
@@ -43,49 +14,22 @@ void ContextStack::push(ContextKind kind, BaseAST* node) {
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType) {
+void ContextStack::pushFunction(FnDeclAST* decl, ContextKind kind,
+                                TypeAST* returnType) {
     ContextFrame frame;
-    frame.kind = ContextKind::FuncBody;
-    frame.node = node;
+    frame.kind               = kind;
+    frame.node               = decl;
     frame.expectedReturnType = returnType;
-    m_stack.push_back(std::move(frame));
-    m_returnStack.push(returnType);
-}
-
-void ContextStack::pushLoop(StmtAST* loopStmt) {
-    ContextFrame frame;
-    frame.kind = ContextKind::LoopBody;
-    frame.node = loopStmt;
-    frame.loopStmt = loopStmt;
-    m_stack.push_back(std::move(frame));
-}
-
-void ContextStack::pushSwitch(SwitchStmtAST* switchStmt) {
-    ContextFrame frame;
-    frame.kind = ContextKind::SwitchBody;
-    frame.node = switchStmt;
-    frame.switchStmt = switchStmt;
-    m_stack.push_back(std::move(frame));
-}
-
-void ContextStack::pushBlock(BlockStmtAST* block) {
-    ContextFrame frame;
-    frame.kind = ContextKind::Block;
-    frame.node = block;
     m_stack.push_back(std::move(frame));
 }
 
 void ContextStack::pop() {
     if (!m_stack.empty()) {
-        ContextFrame& frame = m_stack.back();
-        if (frame.kind == ContextKind::FuncBody) {
-            m_returnStack.pop();
-        }
         m_stack.pop_back();
     }
 }
 
-// ─── Context Queries ─────────────────────────────────────────────────────
+// ─── Context queries ──────────────────────────────────────────────────────
 
 ContextKind ContextStack::current() const {
     return m_stack.empty() ? ContextKind::TopLevel : m_stack.back().kind;
@@ -103,7 +47,12 @@ BaseAST* ContextStack::currentNode() const {
 }
 
 bool ContextStack::insideFunction() const {
-    return isInside(ContextKind::FuncBody);
+    return isInside(ContextKind::FuncBody)
+        || isInside(ContextKind::SequenceBody);
+}
+
+bool ContextStack::insideSequence() const {
+    return isInside(ContextKind::SequenceBody);
 }
 
 bool ContextStack::insideLoop() const {
@@ -141,43 +90,57 @@ BlockStmtAST* ContextStack::currentBlock() const {
     return nullptr;
 }
 
-// ─── Type Narrowing ──────────────────────────────────────────────────────
+TypeAST* ContextStack::currentReturnType() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == ContextKind::FuncBody
+         || it->kind == ContextKind::SequenceBody) {
+            return it->expectedReturnType;
+        }
+    }
+    return nullptr;
+}
+
+// ─── If-condition context ─────────────────────────────────────────────────
 
 bool ContextStack::isIfConditionCtx() const {
-    auto* frame = findInnermostIfContext();
+    const ContextFrame* frame = findInnermostIfContext();
     return frame ? frame->isIfConditionCtx : false;
 }
 
-void ContextStack::setIfConditionCtx(bool isIfCtx) {
-    auto* frame = findInnermostIfContext();
-    if (frame) frame->isIfConditionCtx = isIfCtx;
+void ContextStack::setIfConditionCtx(bool value) {
+    ContextFrame* frame = findInnermostIfContext();
+    if (frame) frame->isIfConditionCtx = value;
 }
 
-void ContextStack::setHasElse(bool hasElse) {
-    auto* frame = findInnermostIfContext();
-    if (frame) frame->hasElse = hasElse;
+void ContextStack::setHasElse(bool value) {
+    ContextFrame* frame = findInnermostIfContext();
+    if (frame) frame->hasElse = value;
 }
 
 bool ContextStack::hasElse() const {
-    auto* frame = findInnermostIfContext();
+    const ContextFrame* frame = findInnermostIfContext();
     return frame ? frame->hasElse : false;
 }
 
+// ─── Pending narrowing ────────────────────────────────────────────────────
+
 void ContextStack::setPendingNarrowing(const NarrowingInfo& info) {
-    auto* frame = findInnermostIfContext();
+    ContextFrame* frame = findInnermostIfContext();
     if (frame) frame->pendingNarrowing = info;
 }
 
 const NarrowingInfo& ContextStack::getPendingNarrowing() const {
-    static NarrowingInfo empty;
-    auto* frame = findInnermostIfContext();
+    static const NarrowingInfo empty;
+    const ContextFrame* frame = findInnermostIfContext();
     return frame ? frame->pendingNarrowing : empty;
 }
 
 void ContextStack::clearPendingNarrowing() {
-    auto* frame = findInnermostIfContext();
+    ContextFrame* frame = findInnermostIfContext();
     if (frame) frame->pendingNarrowing = NarrowingInfo{};
 }
+
+// ─── Narrowing stack ──────────────────────────────────────────────────────
 
 void ContextStack::pushNarrowingLevel(bool isInverse) {
     NarrowingLevel level;
@@ -198,7 +161,8 @@ void ContextStack::narrowVariable(InternedString name, TypeAST* type) {
 }
 
 TypeAST* ContextStack::getNarrowedType(InternedString name) const {
-    // Search from innermost to outermost
+    // Search from innermost outward. An inner narrowing level wins over an
+    // outer one for the same name.
     for (auto it = m_narrowing.rbegin(); it != m_narrowing.rend(); ++it) {
         auto found = it->narrowedTypes.find(name);
         if (found != it->narrowedTypes.end()) {
@@ -212,34 +176,36 @@ bool ContextStack::isNarrowingInverse() const {
     return !m_narrowing.empty() && m_narrowing.back().isInverse;
 }
 
+// ─── Pending inverse narrowing ────────────────────────────────────────────
+
 void ContextStack::setPendingInverseNarrowing(const NarrowingInfo& info) {
-    auto* frame = findInnermostBlock();
+    ContextFrame* frame = findInnermostBlock();
     if (frame) {
         frame->hasPendingInverseNarrowing = true;
-        frame->pendingInverseNarrowing = info;
+        frame->pendingInverseNarrowing    = info;
     }
 }
 
 bool ContextStack::hasPendingInverseNarrowing() const {
-    auto* frame = findInnermostBlock();
+    const ContextFrame* frame = findInnermostBlock();
     return frame ? frame->hasPendingInverseNarrowing : false;
 }
 
 const NarrowingInfo& ContextStack::getPendingInverseNarrowing() const {
-    static NarrowingInfo empty;
-    auto* frame = findInnermostBlock();
+    static const NarrowingInfo empty;
+    const ContextFrame* frame = findInnermostBlock();
     return frame ? frame->pendingInverseNarrowing : empty;
 }
 
 void ContextStack::clearPendingInverseNarrowing() {
-    auto* frame = findInnermostBlock();
+    ContextFrame* frame = findInnermostBlock();
     if (frame) {
         frame->hasPendingInverseNarrowing = false;
-        frame->pendingInverseNarrowing = NarrowingInfo{};
+        frame->pendingInverseNarrowing    = NarrowingInfo{};
     }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────
+// ─── Frame search helpers ─────────────────────────────────────────────────
 
 ContextFrame* ContextStack::findInnermostIfContext() {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
@@ -277,20 +243,4 @@ const ContextFrame* ContextStack::findInnermostBlock() const {
     return nullptr;
 }
 
-// ─── Closure Helpers ──────────────────────────────────────────────────
-
-size_t ContextStack::getClosureDepth() const {
-    size_t depth = 0;
-    for (const auto& frame : m_stack) {
-        if (frame.kind == ContextKind::FuncBody) {
-            depth++;
-        }
-    }
-    return depth;
-}
-
-bool ContextStack::insideNestedFunction() const {
-    return getClosureDepth() > 1;
-}
-
-} // namespace sema
+} // namespace lucid::sema
