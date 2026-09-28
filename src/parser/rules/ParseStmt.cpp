@@ -19,16 +19,6 @@
  *   - parseIterable          a `for` iterable (range or expression)
  *   - the five suspend statements
  *
- * ─── Design: statements end with `}` or `;` ───────────────────────────────
- * A statement that ends in an expression ends with `;`: `var_decl`,
- * `assign_stmt`, `expr_stmt`, `return_stmt`, `break_stmt`,
- * `continue_stmt`, and the five suspend statements. A statement that ends
- * in a block ends with `}`: `if_stmt`, `switch_stmt`, `while_stmt`,
- * `for_stmt`, and a bare block.
- *
- * Each parser in this file consumes its own terminator. `consumeSemicolon`
- * is called only by the statement forms that need one.
- *
  * ─── Design: assignment is a statement, not an expression ─────────────────
  * §12: "An `assign_stmt` is a statement only — there is no assignment form
  * in the `expr` grammar." The parser reflects this. `parseExpr` never
@@ -329,7 +319,6 @@ StmtAST* parseAssignOrExprStmt(TokenStream& stream, ParserContext& ctx) {
             stmt->hasSyntaxError = true;
         }
 
-        consumeSemicolon(stream, ctx, "assignment");
         return stmt;
     }
 
@@ -338,7 +327,6 @@ StmtAST* parseAssignOrExprStmt(TokenStream& stream, ParserContext& ctx) {
     stmt->loc = loc;
     if (lhs->hasSyntaxError) stmt->hasSyntaxError = true;
 
-    consumeSemicolon(stream, ctx, "expression statement");
     return stmt;
 }
 
@@ -369,7 +357,6 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
         }
     }
 
-    consumeSemicolon(stream, ctx, "return");
     return ret;
 }
 
@@ -395,7 +382,6 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
         stmt->label = labelTok.value;
     }
 
-    consumeSemicolon(stream, ctx, "break");
     return stmt;
 }
 
@@ -421,7 +407,6 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
         stmt->label = labelTok.value;
     }
 
-    consumeSemicolon(stream, ctx, "continue");
     return stmt;
 }
 
@@ -988,7 +973,6 @@ WaitStmtAST* parseWaitStmt(TokenStream& stream, ParserContext& ctx) {
     stmt->seconds = readSuspendArg(stream, ctx, "wait");
     if (stmt->seconds->hasSyntaxError) stmt->hasSyntaxError = true;
 
-    consumeSemicolon(stream, ctx, "wait");
     return stmt;
 }
 
@@ -1007,7 +991,6 @@ WaitFramesStmtAST* parseWaitFramesStmt(TokenStream& stream,
     stmt->frames = readSuspendArg(stream, ctx, "waitFrames");
     if (stmt->frames->hasSyntaxError) stmt->hasSyntaxError = true;
 
-    consumeSemicolon(stream, ctx, "waitFrames");
     return stmt;
 }
 
@@ -1029,7 +1012,6 @@ WaitUntilStmtAST* parseWaitUntilStmt(TokenStream& stream,
                            stream.currentLoc(),
                            "expected '(' after 'waitUntil', got '",
                            stream.peekValueView(ctx.pool), "'");
-        consumeSemicolon(stream, ctx, "waitUntil");
         stmt->hasSyntaxError = true;
         return stmt;
     }
@@ -1055,7 +1037,6 @@ WaitUntilStmtAST* parseWaitUntilStmt(TokenStream& stream,
         stmt->hasSyntaxError = true;
     }
 
-    consumeSemicolon(stream, ctx, "waitUntil");
     return stmt;
 }
 
@@ -1074,7 +1055,6 @@ WaitForEventStmtAST* parseWaitForEventStmt(TokenStream& stream,
     stmt->event = readSuspendArg(stream, ctx, "waitForEvent");
     if (stmt->event->hasSyntaxError) stmt->hasSyntaxError = true;
 
-    consumeSemicolon(stream, ctx, "waitForEvent");
     return stmt;
 }
 
@@ -1093,7 +1073,6 @@ WaitForRequestStmtAST* parseWaitForRequestStmt(TokenStream& stream,
     stmt->request = readSuspendArg(stream, ctx, "waitForRequest");
     if (stmt->request->hasSyntaxError) stmt->hasSyntaxError = true;
 
-    consumeSemicolon(stream, ctx, "waitForRequest");
     return stmt;
 }
 

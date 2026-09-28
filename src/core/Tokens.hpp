@@ -351,6 +351,124 @@ inline bool isBitwiseOperator(TokenType t) noexcept {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Statement-boundary predicates
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These three predicates are the foundation of the optional-`;` rule
+// (§2.7, §12.6). A statement or declaration ends at the first token that
+// cannot continue it, so the parser never needs a `;` to find the next
+// construct — but only if the tokens that begin a statement and the
+// tokens that continue an expression are disjoint sets. These predicates
+// name those sets, and the disjointness of `startsStatement` and
+// `continuesExpression` is the invariant the whole scheme rests on.
+//
+// They live in Tokens.hpp, not GrammarPositions.hpp, because they answer
+// "what does this token do" — a vocabulary question — rather than "what
+// construct can begin at this position" — a grammar-position question.
+// ErrorRecovery.hpp and any future formatter use them directly and have
+// no business pulling in grammar-position logic.
+
+/// @brief True for a token that can begin a statement.
+///
+/// The set §12.6 uses to decide whether an expression statement has ended
+/// and a new statement has begun. A statement begins with an identifier,
+/// a declaration keyword (`let`/`const`), a control-flow keyword, a jump
+/// keyword, a suspend keyword, `start`, or `{` for a bare block.
+///
+/// This set must be disjoint from `continuesExpression`. A unit test
+/// asserts that.
+inline bool startsStatement(TokenType t) noexcept {
+    switch (t) {
+        case TokenType::IDENTIFIER:
+        case TokenType::KW_LET:
+        case TokenType::KW_CONST:
+        case TokenType::KW_IF:
+        case TokenType::KW_SWITCH:
+        case TokenType::KW_FOR:
+        case TokenType::KW_WHILE:
+        case TokenType::KW_RETURN:
+        case TokenType::KW_BREAK:
+        case TokenType::KW_CONTINUE:
+        case TokenType::KW_WAIT:
+        case TokenType::KW_WAIT_FRAMES:
+        case TokenType::KW_WAIT_UNTIL:
+        case TokenType::KW_WAIT_FOR_EVENT:
+        case TokenType::KW_WAIT_FOR_REQUEST:
+        case TokenType::KW_START:
+        case TokenType::LBRACE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief True for a token that can continue an expression.
+///
+/// Every postfix and infix operator, plus the range and arrow operators
+/// that appear mid-expression. If the parser is at a statement boundary
+/// and the current token is in this set, the previous statement is not
+/// finished — the token belongs to the expression on the line above.
+///
+/// This set must be disjoint from `startsStatement`. A unit test asserts
+/// that.
+inline bool continuesExpression(TokenType t) noexcept {
+    switch (t) {
+        // Postfix and grouping.
+        case TokenType::LPAREN:
+        case TokenType::LBRACKET:
+        case TokenType::DOT:
+
+        // Null-coalescing and range.
+        case TokenType::QUESTION_QUESTION:
+        case TokenType::RANGE:
+        case TokenType::RANGE_EXCLUSIVE:
+
+        // Lambda arrow.
+        case TokenType::ARROW:
+
+        // Logical operators (keywords, but infix).
+        case TokenType::KW_AND:
+        case TokenType::KW_OR:
+            return true;
+
+        default:
+            // Every binary and assignment operator, plus the unary bit
+            // operators that can also appear infix. isOperator covers the
+            // ASSIGN..QUESTION_QUESTION range.
+            return isOperator(t);
+    }
+}
+
+/// @brief True for a token that can end a statement.
+///
+/// The "previous token" test for the statement-recovery scan (§12.6,
+/// rule 2): an identifier stops the scan only when the token before it
+/// could have ended a statement. The set is the tokens an expression can
+/// end with — an identifier, a literal, a closer, `?` — plus the bare
+/// jump keywords, which end a statement with no operand.
+///
+/// An operator or a comma is deliberately *not* in this set: an
+/// identifier after an operator is mid-expression, not a new statement.
+inline bool canEndStatement(TokenType t) noexcept {
+    switch (t) {
+        case TokenType::IDENTIFIER:
+        case TokenType::RPAREN:
+        case TokenType::RBRACKET:
+        case TokenType::RBRACE:
+        case TokenType::QUESTION:
+
+        // Bare jumps end a statement with no operand.
+        case TokenType::KW_RETURN:
+        case TokenType::KW_BREAK:
+        case TokenType::KW_CONTINUE:
+            return true;
+
+        default:
+            return isLiteral(t);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Names
 // ─────────────────────────────────────────────────────────────────────────────
 

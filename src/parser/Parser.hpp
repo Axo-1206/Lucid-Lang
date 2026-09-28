@@ -152,8 +152,8 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx);
 // 3. Declaration parsers
 // =============================================================================
 //
-// Each consumes its own terminating `;`. Each is called with the cursor
-// on its keyword; attributes have already been read by parseDecl.
+// Each is called with the cursor on its keyword; attributes
+// have already been read by parseDecl.
 
 /// @brief Parse `import a.b.c` or `import a.b.c as alias`.
 ///
@@ -588,17 +588,6 @@ std::vector<InternedString> parseImportPath(TokenStream& stream,
 bool parseHostTarget(TokenStream& stream,
                      ParserContext& ctx,
                      InternedString& targetName);
-
-// ─── Semicolons ─────────────────────────────────────────────────────────
-
-/// @brief Consume a statement or declaration's terminating semicolon.
-///
-/// Reports an error if the `;` is missing. Every construct that ends with
-/// an expression (`let x = e;`, `return e;`, `f(x);`, ...) calls this
-/// after parsing the expression.
-void consumeSemicolon(TokenStream& stream,
-                      ParserContext& ctx,
-                      const char* constructKind);
 
 // ─── Doc comments ───────────────────────────────────────────────────────
 

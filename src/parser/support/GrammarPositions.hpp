@@ -60,34 +60,89 @@ namespace lucid::parser {
 // Declaration positions
 // =============================================================================
 
+/// @brief True for a declaration start that is legal at any brace depth.
+///
+/// A strong start can only appear at the top level of a file, never
+/// inside a body. Meeting one at brace depth > 0 during recovery means a
+/// `}` is missing, and the recovery scan should stop there and report
+/// the unclosed `{`.
+///
+/// The set is `TABLE`, `FIXED`, `import`, and `FN` followed by an
+/// identifier. `FN` alone is not strong: the grammar's `function_type`
+/// is `(T, U) -> R` with no `FN` (§5), so a bare `FN` is never a type,
+/// but the parser still wants to distinguish "`FN` that begins a
+/// declaration" from "`FN` the parser reached by accident". The
+/// lookahead is what separates them.
+///
+/// `second` is the token after `first`. Pass `TokenType::UNKNOWN` when
+/// there is no lookahead token; an `FN` with no following token is weak,
+/// not strong.
+inline bool isStrongDeclarationStart(TokenType first,
+                                     TokenType second) noexcept {
+    switch (first) {
+        case TokenType::KW_TABLE:
+        case TokenType::KW_FIXED:
+        case TokenType::KW_IMPORT:
+            return true;
+
+        case TokenType::KW_FN:
+            return second == TokenType::IDENTIFIER;
+
+        default:
+            return false;
+    }
+}
+
+/// @brief True for a declaration start that is legal only at brace
+///        depth zero.
+///
+/// A weak start is a token that *may* begin a declaration but that is
+/// also legal inside a body, so a recovery scan at depth > 0 must not
+/// stop on it.
+///
+/// The set is `let`, `const`, `@` (a column's attribute in a table
+/// body), a doc comment, and a bare `FN` (an `FN` not followed by an
+/// identifier). Each of these appears inside a body for some other
+/// purpose; only at depth zero is it unambiguously a declaration start.
+inline bool isWeakDeclarationStart(TokenType t) noexcept {
+    switch (t) {
+        case TokenType::KW_LET:
+        case TokenType::KW_CONST:
+        case TokenType::AT_SIGN:
+        case TokenType::DOC_COMMENT:
+        case TokenType::KW_FN:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /// @brief True for a token that can begin a top-level declaration.
 ///
 /// The top level of a file is `{ import_decl | top_level_decl }` (§3), and
 /// every declaration may be preceded by juxtaposed attributes (§9). So a
 /// top-level declaration position is entered by `import`, by one of the
 /// three declaration keywords, or by `@` for an attribute list.
-inline bool isDeclarationStart(TokenType t) noexcept {
-    return t == TokenType::KW_IMPORT
-        || t == TokenType::KW_FIXED
-        || t == TokenType::KW_TABLE
-        || t == TokenType::KW_FN
-        || t == TokenType::KW_LET
-        || t == TokenType::KW_CONST
-        || t == TokenType::AT_SIGN;
+///
+/// This is the union of the strong and weak sets. It answers "can a
+/// declaration begin here". For error recovery, which needs to know
+/// whether a start token is legal *at the current brace depth*, use the
+/// strong/weak pair above.
+///
+/// `second` is the token after `first`, consulted only for `FN`. Pass
+/// `TokenType::UNKNOWN` when there is no lookahead token.
+inline bool isDeclarationStart(TokenType first, TokenType second) noexcept {
+    return isStrongDeclarationStart(first, second)
+        || isWeakDeclarationStart(first);
 }
 
-/// @brief True for a keyword that names a declaration form.
+/// @brief One-token convenience for `isDeclarationStart(first, second)`.
 ///
-/// This is the *keyword* question, not the *position* question. `import`
-/// is a directive, not a name-binding declaration. `@` is not a keyword
-/// at all. A caller that wants "can this token begin a declaration
-/// position" uses `isDeclarationStart`; a caller that wants "is this
-/// keyword one of the declaration forms" uses this.
-inline bool isDeclarationKeyword(TokenType t) noexcept {
-    return t == TokenType::KW_TABLE
-        || t == TokenType::KW_FN
-        || t == TokenType::KW_LET
-        || t == TokenType::KW_CONST;
+/// Passes `TokenType::UNKNOWN` as the lookahead token, which makes a bare
+/// `FN` weak. Prefer the two-token form when the token might be `FN` and
+/// you have the lookahead available.
+inline bool isDeclarationStart(TokenType t) noexcept {
+    return isDeclarationStart(t, TokenType::UNKNOWN);
 }
 
 // =============================================================================

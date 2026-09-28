@@ -8,7 +8,6 @@
  *   - parseParamList                 `(a: T, b: U)`
  *   - parseFunctionTypeParamList     `(T, U, V)` (unnamed types)
  *   - parseImportPath                `a.b.c`
- *   - consumeSemicolon               the statement/declaration terminator
  *
  * ─── Design: list parsers own their delimiters ────────────────────────────
  * Each list parser consumes both the opening and closing delimiter of
@@ -124,22 +123,6 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream,
     }
 
     return std::nullopt;
-}
-
-// =============================================================================
-// consumeSemicolon
-// =============================================================================
-
-void consumeSemicolon(TokenStream& stream,
-                      ParserContext& ctx,
-                      const char* constructKind) {
-    if (stream.match(TokenType::SEMICOLON)) return;
-
-    ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
-                       stream.currentLoc(),
-                       "expected ';' after the ", constructKind,
-                       ", got '",
-                       stream.peekValueView(ctx.pool), "'");
 }
 
 // =============================================================================

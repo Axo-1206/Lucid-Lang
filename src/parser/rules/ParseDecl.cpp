@@ -37,16 +37,6 @@
  * or absence of an inline `= [ ... ]` initializer does not affect
  * `isFixed`.
  *
- * ─── Design: `;` on declarations ──────────────────────────────────────────
- * A `;` terminates any construct that ends in an expression:
- * `let`/`const` (per Rule 1's reconciliation), assignments, expression
- * statements, `return`, `break`, `continue`, and every suspend
- * statement. A `TABLE` and an `FN` end with `}` (a body) or with `)`
- * (a host target), so they have no `;`. An `import` has no `;` either.
- *
- * Only `parseVarDecl` calls `consumeSemicolon`. Every other parser in
- * this file ends at a token that already marks its own end.
- *
  * ─── Design: loc points at the first attribute ────────────────────────────
  * parseDecl captures the declaration's `loc` before reading the attribute
  * sequence, so a declaration with `@export` in front has its `loc`
@@ -806,12 +796,6 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
             decl->hasSyntaxError = true;
         }
     }
-
-    // ─── `;` ──────────────────────────────────────────────────────────────
-    //
-    // Under Rule 1, every `let`/`const` ends with `;`, both at top level
-    // and inside a block.
-    consumeSemicolon(stream, ctx, isConst ? "const" : "let");
 
     return decl;
 }

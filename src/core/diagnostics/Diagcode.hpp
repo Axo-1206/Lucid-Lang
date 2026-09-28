@@ -174,6 +174,7 @@ enum class DiagCode : uint32_t {
     Name_MethodNotFound           = 3008,
     Name_Redeclaration            = 3009,
     Name_PrivateMember            = 3010,
+    Name_ImportAliasRedeclaration = 3011,
 
     // Tables
     Name_ColumnNotFound           = 3101,
