@@ -31,12 +31,6 @@
  * lists. The lexer emits `AT_SIGN` and the identifier as separate tokens;
  * the parser reads the pair.
  *
- * ─── Design: every function value is a bare code pointer ──────────────────
- * The grammar has no `fn`/`cls` distinction and no closures. Every
- * function value is a compile-time-known code address (§5.0). There is no
- * `KW_FN_MARKER` distinct from the `FN` declaration keyword; the same
- * `FN` token introduces a declaration and (via §5.0's function-type
- * syntax) names the code-address type.
  */
 
 #pragma once
