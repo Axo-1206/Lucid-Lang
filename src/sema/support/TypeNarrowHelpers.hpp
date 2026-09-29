@@ -1,75 +1,95 @@
 /// @file TypeNarrowHelpers.hpp
-/// @brief Helper functions for type narrowing detection in if conditions.
-/// 
-/// Type narrowing allows the compiler to refine variable types based on
-/// conditional checks. For example:
-///   if x != nil { ... }  // x is non-nullable inside the block
-///   if x == nil { return }  // x is non-nullable after the check
-/// 
-/// @design_decision Uses existing semantic infrastructure
-///   - SemaCompare for type predicates (isNullableType, isFallibleType)
-///   - SemaLookup for name resolution (lookupValue)
-///   - SemaResolve for type resolution (getInnerType)
-///   - DiagnosticEngine for error reporting
+/// @brief Narrowing detection for `T?` values in `if` conditions.
+///
+/// ─── What narrowing is ────────────────────────────────────────────────────
+/// A value of type `T?` may hold `nil`. Using it where a `T` is expected
+/// is a compile error unless the compiler can prove the value is not
+/// `nil` at the use site. The compiler proves it by analyzing the shape
+/// of an enclosing `if` condition:
+///
+///   - `if x != nil { ... }` — inside the then-branch, `x` is `T`.
+///   - `if x == nil { ... } else { ... }` — inside the else-branch,
+///     `x` is `T`.
+///   - `if x == nil { return }` — after the if, `x` is `T`.
+///   - `if x != nil and y != nil { ... }` — both are `T` in the then.
+///   - `if x == nil or y == nil { ... }` — no narrowing in the then
+///     (the disjunction does not prove either is non-nil), but the
+///     *inverse* narrowing — both are `T` — applies in the else-branch.
+///
+/// The detector reads the condition's AST shape (identifier on one side,
+/// `nil` literal on the other, `==` or `!=` as the operator) and returns
+/// a `NarrowingInfo` describing what narrows and in which direction.
+///
+/// ─── What this file does NOT do ───────────────────────────────────────────
+/// No fallible narrowing. The old grammar had `T!` (a fallible type)
+/// and `err` (its counterpart to `nil`), and the narrowing detector
+/// handled both. The new grammar has no `T!`, no `err`. Narrowing is
+/// only over `nil`.
+///
+/// No `&T` narrowing. A row reference is inherently nilable, but the
+/// grammar does not require it to be narrowed before dereferencing —
+/// a dereference of a `nil` `&T` is a runtime panic, not a compile
+/// error (§5.2). The narrowing detector does not produce narrowings for
+/// `&T` values; a program that checks `if x != nil` on a `&T` gets a
+/// runtime check, not a compile-time narrowing.
+///
+/// No `await`/`join` narrowing. The old grammar's `Future<T>` and
+/// `Thread<T>` narrowed to `T` after the corresponding await/join. The
+/// new grammar has neither.
 
 #pragma once
 
-#include "core/ast/BaseAST.hpp"
 #include "core/ast/ExprAST.hpp"
-#include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/memory/InternedString.hpp"
-#include "../context/SemaContext.hpp"
+#include "sema/context/SemaContext.hpp"
 
-namespace sema {
+#include <unordered_map>
 
-// ─── Main Entry Points ────────────────────────────────────────────────────
+namespace lucid::sema {
 
-/// @brief Extract all narrowing information from a condition expression.
-/// 
-/// Handles:
-///   - Simple: x != nil, x == nil, x != err, x == err
-///   - `or` at top level: x == nil or y == nil → both narrowings
-///   - `and` at top level: No narrowing (unsound) → returns empty
-///   - `not x`: Inverse narrowing (x is nil/false)
-/// 
-/// @param expr The condition expression.
-/// @param ctx The semantic context.
-/// @param outNoMixing Optional output parameter. On return, `*outNoMixing`
-///                    is `true` if the condition is well-formed (no mixed
-///                    operators); `false` if mixed operators were detected
-///                    and the returned `NarrowingInfo` is empty.
-/// @return NarrowingInfo with all narrowings found, or empty if mixed/unsound.
-NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx, 
-                                               bool* outMixed = nullptr);
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Detect narrowing pattern from a binary expression.
-/// 
-/// This is the main entry point for checkBinaryExpr to detect narrowing patterns.
-/// It delegates to extractNarrowingsFromCondition but adds additional validation.
-/// 
-/// @param binary The binary expression to check.
-/// @param ctx The semantic context.
-/// @return NarrowingInfo with the detected narrowing, or empty if no pattern.
+/// @brief Detect the narrowing pattern of a binary expression.
+///
+/// This is the entry point called from `resolveBinaryExpr` when the
+/// binary expression is an `if` condition. It recognizes the two
+/// narrowing shapes (`x == nil`, `x != nil`), checks that the identifier
+/// refers to a `T?` value (narrowing a non-nullable value is a no-op,
+/// and the detector reports no narrowing), and returns a `NarrowingInfo`
+/// describing the effect.
+///
+/// For a condition that is a conjunction (`and`) of narrowings, the
+/// result combines them if they all use the same operator. A mixed
+/// condition (`x != nil and y == nil`) is rejected with a diagnostic and
+/// produces an empty `NarrowingInfo`.
+///
+/// For a condition that is a disjunction (`or`) of narrowings, the
+/// result is empty for the then-branch (the disjunction proves nothing
+/// about either operand in isolation), and the *inverse* — both are
+/// narrowed — applies in the else-branch. The caller handles the
+/// inverse application via `ScopedNarrowing`.
 NarrowingInfo detectNarrowingPattern(BinaryExprAST* binary, SemaContext& ctx);
 
-// ─── Internal Helpers (exposed for testing) ─────────────────────────────
+/// @brief Extract every narrowing from a condition expression.
+///
+/// Handles the full shape of a condition:
+///   - a single `x == nil` / `x != nil` binary;
+///   - an `and`-chain of such binaries;
+///   - an `or`-chain of such binaries;
+///   - `not x` where `x` is a `T?` value (treated as inverse
+///     narrowing — the condition is true when `x` is nil).
+///
+/// @param expr     The condition expression.
+/// @param ctx      The session context.
+/// @param outMixed Optional. On return, `*outMixed` is `true` if the
+///                 condition mixes `==` and `!=` in a way that makes
+///                 narrowing unsound (a diagnostic is emitted by the
+///                 caller in that case); `false` otherwise.
+NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr,
+                                             SemaContext& ctx,
+                                             bool* outMixed = nullptr);
 
-/// @brief Detect a single narrowing pattern in a binary expression.
-/// 
-/// Patterns detected:
-///   - x == nil, x != nil
-///   - x == err, x != err
-///   - nil == x, nil != x (reverse order)
-///   - err == x, err != x (reverse order)
-NarrowingInfo detectSingleNarrowing(BinaryExprAST* binary, SemaContext& ctx);
-
-/// @brief Detect if an identifier expression can be narrowed and add to info.
-void detectIdentifierNarrowing(NarrowingInfo& info, IdentifierExprAST* id, 
-                                const LiteralExprAST* lit, bool isEquality, 
-                                SemaContext& ctx);
-
-/// @brief Get the inner type of a value declaration (unwrap nullable/fallible).
-TypeAST* getInnerType(ValueDeclAST* decl, SemaContext& ctx);
-
-} // namespace sema
+} // namespace lucid::sema

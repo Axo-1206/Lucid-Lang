@@ -1,290 +1,312 @@
 /// @file Sema.cpp
-/// @brief Implements the public API for the semantic phase.
+/// @brief The driver: runs the three Sema passes over a module set.
+///
+/// ─── The three passes ─────────────────────────────────────────────────────
+/// Sema runs in three passes, and every module in the set completes a
+/// pass before any module starts the next one. The interleaving is what
+/// makes cross-module forward references work: by the time a module's
+/// pass 2 resolves a signature that names `weapons.Item`, `weapons`
+/// already has its `Item` registered from pass 1.
+///
+///   Pass 1 — registerModuleDeclarations:
+///     Walk each module's `decls`, insert every top-level name into the
+///     module's symbol table. No types resolved, no bodies analyzed.
+///
+///   Pass 2 — resolveModuleDeclarations:
+///     Walk each module's `decls` and resolve each declaration's
+///     signature or type. `TABLE` columns are resolved, `FN` parameter
+///     and return types are resolved, top-level `let`/`const`
+///     initializers are resolved. Attribute validation runs here, so
+///     `@sequence` is known before pass 3 sees the body.
+///
+///   Pass 3 — resolveModuleBodies:
+///     Walk each module's `decls` and resolve the body of every
+///     Lucid-bodied `FN`. By this point every name a body can reference
+///     is registered and every type it can mention is resolved.
+///
+/// ─── Why the driver lives here, not in the CLI ────────────────────────────
+/// The passes are not independent: pass 2 assumes pass 1 finished
+/// everywhere, pass 3 assumes pass 2 finished everywhere. Whichever
+/// caller runs the passes has to know that ordering. Putting the
+/// ordering in the CLI would mean every caller (a test, an LSP, a build
+/// tool) re-implements it. Keeping it here means a caller says "run
+/// Sema over these modules" and the ordering is the same everywhere.
+///
+/// A caller that owns exactly one module calls `resolveModule`, which
+/// runs all three passes over that one module. A caller that owns a set
+/// calls `analyze`, which runs each pass across the whole set in order.
+///
+/// ─── What is not here ─────────────────────────────────────────────────────
+/// The set of modules is not chosen here — that is a policy decision
+/// (which modules are Tier 1, which are Tier 2, what order mods load
+/// in) that belongs to the host. `analyze` runs over whatever span of
+/// modules it is given, in the order it is given.
 
 #include "Sema.hpp"
+
 #include "context/SemaContext.hpp"
-#include "const_eval/ConstEvaluator.hpp"
-#include "core/ast/BaseAST.hpp"
 
-namespace sema {
+namespace lucid::sema {
 
-// ─── assignModuleFieldIndices ─────────────────────────────────────────────
-//
-// Walks the module's declaration list once, in declaration order, and
-// assigns `moduleFieldIndex` to every top-level binding that lives in the
-// module's instance struct.
-//
-// Phase A: top-level `VarDeclAST`s only.
-//
-// Module-level `cls`-shaped `FuncDeclAST`s are deliberately excluded for
-// now. Their fat pointer currently lives in CodeGen's `ctx.values` and is
-// recomputed on each reference, which is correct for non-capturing `cls`
-// closures (null env, stateless) and a known bug for capturing ones. Giving
-// them an instance field requires the corresponding store/load codegen,
-// which is a follow-up. When that follow-up lands, uncomment the second
-// branch below — reserving the slot now would avoid a second ABI change,
-// but produces a dead field in the meantime. This implementation reserves
-// it, because the ABI stability is worth more than the few bytes.
-static void assignModuleFieldIndices(ModuleAST* module) {
-    if (!module) return;
+// ─────────────────────────────────────────────────────────────────────────────
+// analyze — run all three passes over a module set
+// ─────────────────────────────────────────────────────────────────────────────
 
-    size_t nextIndex = 0;
-    for (DeclAST* decl : module->decls) {
-        if (!decl) continue;
-        decl->declaringModule = module;
-
-        if (decl->isa<VarDeclAST>()) {
-            decl->as<VarDeclAST>()->moduleFieldIndex = nextIndex++;
-            continue;
-        }
-
-        // ── Reserved slot for cls-shaped module-level functions ───────
-        // Uncomment when the store/load codegen for module-level cls
-        // closures lands. Until then, including this branch would give
-        // the function an index that no code path reads or writes.
-        //
-        // if (decl->isa<FuncDeclAST>()) {
-        //     FuncDeclAST* fn = decl->as<FuncDeclAST>();
-        //     if (fn->funcType && fn->funcType->shape == FuncShape::Cls) {
-        //         fn->moduleFieldIndex = nextIndex++;
-        //     }
-        // }
-    }
-}
-
-// =============================================================================
-// analyze - Main Entry Point
-// =============================================================================
-
-void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
-    // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 1: Register ALL top-level names (No type resolution)
-    // ─────────────────────────────────────────────────────────────────────────
-    // 
-    // IMPORTANT: Phase 1 ONLY registers top-level declarations.
-    // Local variables, parameters, and other scoped names are registered
-    // during Phase 2 when we actually resolve the bodies.
-    // 
-    // This is because:
-    // 1. Name resolution needs type information (which we don't have yet)
-    // 2. Local scopes are only meaningful during type resolution
-    // 3. It's simpler and more correct
-    // ─────────────────────────────────────────────────────────────────────────
+void analyze(const std::vector<ModuleAST*>& modules, SemaContext& ctx) {
+    // ─── Pass 1: register every top-level name ──────────────────────────
+    //
+    // Every module completes this pass before any module starts pass 2.
+    // A module's pass-1 work is a pure function of that module's
+    // `decls` span — no cross-module information is consulted — so the
+    // per-module order within the pass does not matter for correctness.
+    // It is run in the given order anyway, so diagnostics from a
+    // predictable sequence of modules come out in the same order each
+    // run.
     for (ModuleAST* module : modules) {
         if (!module) continue;
         ctx.enterModule(module);
-        registerTopLevelNames(module, ctx);
+        registerModuleDeclarations(module, ctx);
+        if (!ctx.diagnostics.canContinue()) return;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 2: Resolve ALL types, check bodies, AND evaluate consts
-    // ─────────────────────────────────────────────────────────────────────────
-    // 
-    // During this phase, we resolve types, register local names as we go,
-    // perform semantic analysis, and evaluate const expressions.
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ─── Pass 2: resolve signatures, types, and top-level initializers ──
+    //
+    // Now every module's top-level names are visible from every other
+    // module (through the import aliases registered in pass 1). This
+    // pass resolves the signatures of tables and functions, and the
+    // initializers of top-level `let`/`const`.
     for (ModuleAST* module : modules) {
         if (!module) continue;
-
         ctx.enterModule(module);
-        resolveModuleDecls(module, ctx);
+        resolveModuleDeclarations(module, ctx);
 
+        // A module's `hasErrors` flag records whether any diagnostic was
+        // emitted while this module was the active one. It is a
+        // snapshot, not a live counter — a later pass over a different
+        // module does not change it.
         module->hasErrors = ctx.diagnostics.hasErrors();
 
-        if (!ctx.diagnostics.canContinue()) {
-            return;
-        }
+        if (!ctx.diagnostics.canContinue()) return;
     }
-}
 
-// =============================================================================
-// PHASE 1: Top-Level Name Registration Only
-// =============================================================================
-
-/// @brief Register ONLY top-level names in a module (no type resolution).
-///
-/// This is Phase 1 of semantic analysis. It only registers names that are
-/// visible at module scope. Local variables, parameters, and other scoped
-/// names are registered during Phase 2 (type resolution).
-///
-/// @param module The module to register names from.
-/// @param ctx The semantic context.
-void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
-    if (!module) return;
-
-    // ─── Compute the module instance layout FIRST ──────────────────────
-    // The layout is a pure structural fact: "the i-th top-level VarDeclAST
-    // (and, once the follow-up lands, cls-shaped FuncDeclAST) occupies
-    // field i of the module's instance struct." It is independent of
-    // type resolution, so it is computed here, before any resolver runs,
-    // and is stable even if a later pass fails and returns early.
+    // ─── Pass 3: resolve function bodies ────────────────────────────────
     //
-    // This is what makes `moduleFieldIndex` a Layout Field (set by Sema)
-    // rather than a CodeGen-derived value: CodeGen reads the index, it
-    // never computes it. See the field-category table in BaseAST.hpp.
-    assignModuleFieldIndices(module);
+    // By this point a body's references to other declarations are
+    // resolved through the module table; the body pass only walks
+    // expressions and statements.
+    for (ModuleAST* module : modules) {
+        if (!module) continue;
+        ctx.enterModule(module);
+        resolveModuleBodies(module, ctx);
 
-    for (DeclAST* decl : module->decls) {
-        if (!decl) continue;
-        
-        // Register ONLY top-level declaration names
-        registerDeclName(decl, ctx);
-        
-        // IMPORTANT: We do NOT walk into function bodies here.
-        // Local names are registered during Phase 2.
-        // 
-        // Struct fields are registered by registerStructName
-        // (called from registerDeclName)
-        
-        if (!ctx.diagnostics.canContinue()) {
-            return;
-        }
+        module->hasErrors = ctx.diagnostics.hasErrors();
+        if (!ctx.diagnostics.canContinue()) return;
     }
 }
 
-// ─── registerDeclName ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveModule — one-module convenience
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Register a declaration's name at the current scope level.
-///
-/// For top-level declarations, this registers in the module table.
-/// For local declarations (called during Phase 2), this registers in the
-/// current scope.
-///
-/// @param decl The declaration to register.
-/// @param ctx The semantic context.
-void registerDeclName(DeclAST* decl, SemaContext& ctx) {
-    if (!decl || decl->name.isEmpty()) return;
-
-    switch (decl->kind) {
-        case ASTKind::ImportDecl:
-            registerImportName(decl->as<ImportDeclAST>(), ctx);
-            return;
-        case ASTKind::VarDecl:
-            registerVarName(decl->as<VarDeclAST>(), ctx);
-            return;
-        case ASTKind::FuncDecl:
-            registerFuncName(decl->as<FuncDeclAST>(), ctx);
-            return;
-        case ASTKind::EnumDecl:
-            registerEnumName(decl->as<EnumDeclAST>(), ctx);
-            return;
-        case ASTKind::TraitDecl:
-            registerTraitName(decl->as<TraitDeclAST>(), ctx);
-            return;
-        case ASTKind::StructDecl:
-            registerStructName(decl->as<StructDeclAST>(), ctx);
-            return;
-        default:
-            return;
-    }
-}
-
-// =============================================================================
-// PHASE 2: Declaration Resolution
-// =============================================================================
-
-/// @brief Resolve all declarations in a module.
-///
-/// This is the Phase 2 entry point for a module. It walks all top-level
-/// declarations and resolves their types, bodies, and const expressions.
-///
-/// @param module The module to resolve.
-/// @param ctx The semantic context.
-///
-/// @note This function does NOT register names - that was done in Phase 1.
-///       However, nested declarations (inside function bodies) will be
-///       registered during resolution of those bodies.
-void resolveModuleDecls(ModuleAST* module, SemaContext& ctx) {
+void resolveModule(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
+    ctx.enterModule(module);
+    registerModuleDeclarations(module, ctx);
+    if (!ctx.diagnostics.canContinue()) return;
+
+    resolveModuleDeclarations(module, ctx);
+    module->hasErrors = ctx.diagnostics.hasErrors();
+    if (!ctx.diagnostics.canContinue()) return;
+
+    resolveModuleBodies(module, ctx);
+    module->hasErrors = ctx.diagnostics.hasErrors();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// registerModuleDeclarations — pass 1
+// ─────────────────────────────────────────────────────────────────────────────
+
+void registerModuleDeclarations(ModuleAST* module, SemaContext& ctx) {
+    if (!module) return;
+    if (module->hasSyntaxError) return;
+
     for (DeclAST* decl : module->decls) {
         if (!decl) continue;
-        
-        resolveDecl(decl, ctx);
-        
-        if (!ctx.diagnostics.canContinue()) {
-            return;
+        if (decl->hasSyntaxError) continue;
+
+        switch (decl->kind) {
+            case ASTKind::ImportDecl:
+                registerImportName(decl->as<ImportDeclAST>(), ctx);
+                break;
+
+            case ASTKind::TableDecl:
+                registerTableName(decl->as<TableDeclAST>(), ctx);
+                break;
+
+            case ASTKind::FnDecl:
+                registerFnName(decl->as<FnDeclAST>(), ctx);
+                break;
+
+            case ASTKind::VarDecl:
+                registerVarName(decl->as<VarDeclAST>(), ctx);
+                break;
+
+            default:
+                // A module's top level can only contain the four kinds
+                // above; anything else is a parser bug, not a user
+                // error. The dispatch above covers every kind the parser
+                // produces for a top-level decl.
+                AST_ASSERT_MSG(false,
+                    "registerModuleDeclarations: unexpected top-level "
+                    "declaration kind");
+                break;
         }
+
+        if (!ctx.diagnostics.canContinue()) return;
     }
 }
 
-// ─── Resolution Entry Point ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveModuleDeclarations — pass 2
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Resolve a single declaration.
-///
-/// This is the main entry point for declaration resolution.
-/// It handles:
-///   1. Registering nested declarations (Phase 2 registration)
-///   2. Dispatching to the appropriate resolver
-///
-/// @note Top-level declarations are already registered in Phase 1.
-///       Only nested declarations are registered here.
+void resolveModuleDeclarations(ModuleAST* module, SemaContext& ctx) {
+    if (!module) return;
+    if (module->hasSyntaxError) return;
+
+    for (DeclAST* decl : module->decls) {
+        if (!decl) continue;
+
+        // A declaration whose name was not registered in pass 1 (a
+        // syntax error, or a redeclaration) is skipped. Its name is not
+        // in the module table, so anything that references it will
+        // already have failed to resolve; running pass 2 on it would
+        // only produce follow-on diagnostics.
+        if (decl->hasSyntaxError) continue;
+
+        switch (decl->kind) {
+            case ASTKind::ImportDecl:
+                resolveImportDecl(decl->as<ImportDeclAST>(), ctx);
+                break;
+
+            case ASTKind::TableDecl:
+                resolveTableDecl(decl->as<TableDeclAST>(), ctx);
+                break;
+
+            case ASTKind::FnDecl:
+                resolveFnDecl(decl->as<FnDeclAST>(), ctx);
+                break;
+
+            case ASTKind::VarDecl:
+                resolveVarDecl(decl->as<VarDeclAST>(), ctx);
+                break;
+
+            default:
+                AST_ASSERT_MSG(false,
+                    "resolveModuleDeclarations: unexpected top-level "
+                    "declaration kind");
+                break;
+        }
+
+        if (!ctx.diagnostics.canContinue()) return;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveModuleBodies — pass 3
+// ─────────────────────────────────────────────────────────────────────────────
+
+void resolveModuleBodies(ModuleAST* module, SemaContext& ctx) {
+    if (!module) return;
+    if (module->hasSyntaxError) return;
+
+    for (DeclAST* decl : module->decls) {
+        if (!decl) continue;
+        if (decl->hasSyntaxError) continue;
+
+        // Only functions have bodies. Tables and variables are fully
+        // resolved in pass 2 — a table's initializer rows are const
+        // expressions evaluated at pass 2 time, and a top-level
+        // variable's initializer is resolved in pass 2 because a
+        // variable has no separate body.
+        if (!decl->isa<FnDeclAST>()) continue;
+
+        FnDeclAST* fn = decl->as<FnDeclAST>();
+
+        // A host-bound function has no body to resolve.
+        if (fn->isHostBound) continue;
+
+        resolveFnBody(fn, ctx);
+
+        if (!ctx.diagnostics.canContinue()) return;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveDecl — per-declaration dispatcher
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Public for the LSP and for tests. The three module passes call the
+// per-kind resolvers directly rather than going through this function,
+// because a module pass knows which pass it is and can assert on it —
+// `resolveModuleDeclarations` never dispatches a `FnDeclAST` to a
+// body resolver, and `resolveModuleBodies` never dispatches a
+// `TableDeclAST` to a signature resolver. This function exists for the
+// caller that wants to resolve a single declaration without knowing
+// which pass it belongs to.
+//
+// "Which pass it belongs to" is not a property of the declaration kind
+// alone: a top-level `let` is resolved in pass 2, but a local `let` is
+// resolved in pass 3 by `SemaStmt`'s `resolveVarDeclStmt`. This
+// dispatcher handles the top-level form. A caller that resolves a
+// declaration appearing inside a block should route through
+// `resolveStmt` instead.
+
 void resolveDecl(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return;
+    if (decl->hasSyntaxError) return;
 
-    // ─── PHASE 2 REGISTRATION: Nested declarations only ──────────────────
-    // Top-level declarations are already registered in Phase 1.
-    // Nested declarations (inside functions, blocks, etc.) are registered
-    // when the resolver encounters them during Phase 2.
-    if (!ctx.isAtModuleLevel()) {
-        if (!decl->name.isEmpty()) {
-            switch (decl->kind) {
-            case ASTKind::VarDecl:
-                ctx.insertValue(decl->as<VarDeclAST>());
-                break;
-            case ASTKind::FuncDecl:
-                ctx.insertValue(decl->as<FuncDeclAST>());
-                break;
-            case ASTKind::StructDecl:
-                ctx.insertType(decl->as<StructDeclAST>());
-                break;
-            case ASTKind::EnumDecl:
-                ctx.insertType(decl->as<EnumDeclAST>());
-                break;
-            case ASTKind::TraitDecl:
-                ctx.insertType(decl->as<TraitDeclAST>());
-                break;
-            default:
-                // Other declaration kinds don't need registration
-                break;
-            }
-        }
-    }
-
-    if (decl->hasSyntaxError) {
-        if (decl->kind == ASTKind::VarDecl) {
-            decl->as<VarDeclAST>()->type = ctx.getUnknownType();
-        }
-        return;
-    }
-
-    // ─── DISPATCH TO RESOLVER ─────────────────────────────────────────────
-    // The resolver functions below do NOT register the declaration again.
-    // They only resolve types, check bodies, and evaluate consts.
     switch (decl->kind) {
         case ASTKind::ImportDecl:
             resolveImportDecl(decl->as<ImportDeclAST>(), ctx);
             return;
+
+        case ASTKind::TableDecl:
+            resolveTableDecl(decl->as<TableDeclAST>(), ctx);
+            return;
+
+        case ASTKind::FnDecl: {
+            FnDeclAST* fn = decl->as<FnDeclAST>();
+            resolveFnDecl(fn, ctx);
+
+            // If the function has a body, resolve it. `resolveDecl` is
+            // the "resolve this declaration completely" entry point;
+            // the passes call the signature and body resolvers
+            // separately, but a tool that resolves a single declaration
+            // wants both.
+            if (!fn->isHostBound && !fn->hasSyntaxError) {
+                resolveFnBody(fn, ctx);
+            }
+            return;
+        }
+
         case ASTKind::VarDecl:
+            // Top-level form. The caller is responsible for having
+            // registered the name in pass 1. A local `let` reaches
+            // `resolveVarDecl` from `resolveVarDeclStmt`, which
+            // registers the name itself.
             resolveVarDecl(decl->as<VarDeclAST>(), ctx);
             return;
-        case ASTKind::FuncDecl:
-            resolveFuncDecl(decl->as<FuncDeclAST>(), ctx);
-            return;
-        case ASTKind::EnumDecl:
-            resolveEnumDecl(decl->as<EnumDeclAST>(), ctx);
-            return;
-        case ASTKind::TraitDecl:
-            resolveTraitDecl(decl->as<TraitDeclAST>(), ctx);
-            return;
-        case ASTKind::StructDecl:
-            resolveStructDecl(decl->as<StructDeclAST>(), ctx);
-            return;
+
         default:
-            // Unknown declaration kind - ignore (error recovery)
+            // A per-declaration entry point that gets a kind it does
+            // not handle is a caller bug — pass the right node, or
+            // route through the appropriate pass.
+            AST_ASSERT_MSG(false,
+                "resolveDecl: unexpected declaration kind");
             return;
     }
 }
 
-} // namespace sema
+} // namespace lucid::sema

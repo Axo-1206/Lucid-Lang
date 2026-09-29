@@ -1,209 +1,47 @@
 /// @file TypeNarrowHelpers.cpp
-/// @brief Implementation of type narrowing helper functions.
+/// @brief Implementation of narrowing detection.
 
 #include "TypeNarrowHelpers.hpp"
-#include "../Sema.hpp"
-#include "../types/SemaType.hpp"
-#include "core/ast/ExprAST.hpp"
+#include "sema/context/SemaContext.hpp"
+#include "sema/types/SemaType.hpp"
+
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 
-namespace sema {
+using namespace lucid::diag;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// extractNarrowingsFromCondition
-// ─────────────────────────────────────────────────────────────────────────────
-
-NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx,
-                                               bool* outMixed) {
-    NarrowingInfo result;
-    result.hasNarrowing = false;
-
-    // Default: assume no mixing until proven otherwise. "Mixing" is the
-    // exceptional case, so the flag's natural resting state is false.
-    if (outMixed) *outMixed = false;
-
-    if (!expr) return result;
-
-    // ─── 1. Handle `or` at top level ─────────────────────────────────────
-    // Pattern: a == nil or b == nil
-    if (expr->isa<BinaryExprAST>() && expr->as<BinaryExprAST>()->op == BinaryOp::Or) {
-        BinaryExprAST* binary = expr->as<BinaryExprAST>();
-        
-        bool leftMixed = false;
-        bool rightMixed = false;
-        NarrowingInfo left = extractNarrowingsFromCondition(binary->left, ctx, &leftMixed);
-        NarrowingInfo right = extractNarrowingsFromCondition(binary->right, ctx, &rightMixed);
-        
-        // Check for mixed operators - reject if either side has mixed operators
-        if (leftMixed || rightMixed) {
-            if (outMixed) *outMixed = true;
-            return NarrowingInfo();
-        }
-        
-        // Check operator consistency when both sides have narrowing
-        if (left.hasNarrowing && right.hasNarrowing) {
-            if (left.isEquality != right.isEquality) {
-                if (outMixed) *outMixed = true;
-                return NarrowingInfo();
-            }
-        }
-        
-        // Merge both narrowings
-        if (left.hasNarrowing) {
-            result.hasNarrowing = true;
-            result.isEquality = left.isEquality;
-            for (const auto& [name, type] : left.narrowings) {
-                result.narrowings[name] = type;
-            }
-        }
-        if (right.hasNarrowing) {
-            result.hasNarrowing = true;
-            if (!left.hasNarrowing) {
-                result.isEquality = right.isEquality;
-            }
-            for (const auto& [name, type] : right.narrowings) {
-                result.narrowings[name] = type;
-            }
-        }
-        
-        // If only right has narrowing, use its isEquality
-        if (right.hasNarrowing && !left.hasNarrowing) {
-            result.isEquality = right.isEquality;
-        }
-        
-        return result;
-    }
-    
-    // ─── 2. Handle `and` at top level ─────────────────────────────────────
-    // Pattern: a == nil and b == nil → No narrowing (unsound)
-    if (expr->isa<BinaryExprAST>() && expr->as<BinaryExprAST>()->op == BinaryOp::And) {
-        // No narrowing applied when 'and' is at the top level
-        // This is unsound because inverse would be OR, not AND
-        return NarrowingInfo();
-    }
-    
-    // ─── 3. Handle simple binary comparison ──────────────────────────────
-    if (expr->isa<BinaryExprAST>()) {
-        return detectSingleNarrowing(expr->as<BinaryExprAST>(), ctx);
-    }
-
-    // ─── 4. Handle `not x` ──────────────────────────────────────────────
-    // Pattern: not x → x is nil/false (inverse narrowing)
-    if (expr->isa<UnaryExprAST>() && expr->as<UnaryExprAST>()->op == UnaryOp::Not) {
-        const UnaryExprAST* unary = expr->as<UnaryExprAST>();
-        if (unary->operand->isa<IdentifierExprAST>()) {
-            IdentifierExprAST* id = unary->operand->as<IdentifierExprAST>();
-            
-            ValueDeclAST* decl = ctx.lookupValue(id->name);
-            if (decl) {
-                TypeAST* innerType = getInnerType(decl, ctx);
-                if (innerType) {
-                    result.hasNarrowing = true;
-                    // `not x` is treated as equality for inverse narrowing
-                    // i.e., if `not x` is true, x is nil/false
-                    result.isEquality = true;
-                    result.narrowings[id->name] = innerType;
-                }
-            }
-            return result;
-        }
-    }
-
-    return result;
-}
+namespace lucid::sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// detectSingleNarrowing
+// Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-NarrowingInfo detectSingleNarrowing(BinaryExprAST* binary, SemaContext& ctx) {
-    NarrowingInfo result;
-    result.hasNarrowing = false;
+namespace {
 
-    if (!binary) return result;
-
-    // Only detect for equality/inequality operators
-    if (binary->op != BinaryOp::Eq && binary->op != BinaryOp::Ne) {
-        return result;
-    }
-
-    bool isEquality = (binary->op == BinaryOp::Eq);
-
-    // Pattern: (identifier == nil) or (identifier != nil)
-    // Pattern: (identifier == err) or (identifier != err)
-    if (binary->left->isa<IdentifierExprAST>() && binary->right->isa<LiteralExprAST>()) {
-        IdentifierExprAST* id = binary->left->as<IdentifierExprAST>();
-        const LiteralExprAST* lit = binary->right->as<LiteralExprAST>();
-
-        detectIdentifierNarrowing(result, id, lit, isEquality, ctx);
-        return result;
-    }
-
-    // Also check reverse: (nil == identifier) or (err == identifier)
-    if (binary->left->isa<LiteralExprAST>() && binary->right->isa<IdentifierExprAST>()) {
-        const LiteralExprAST* lit = binary->left->as<LiteralExprAST>();
-        IdentifierExprAST* id = binary->right->as<IdentifierExprAST>();
-
-        detectIdentifierNarrowing(result, id, lit, isEquality, ctx);
-        return result;
-    }
-
-    return result;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// detectIdentifierNarrowing
-// ─────────────────────────────────────────────────────────────────────────────
-
-void detectIdentifierNarrowing(NarrowingInfo& info, IdentifierExprAST* id, 
-                                 const LiteralExprAST* lit, bool isEquality, 
-                                 SemaContext& ctx) {
-    if (!id || !lit) return;
-
-    // Check if literal is nil or err
-    if (lit->kind != LiteralKind::Nil && lit->kind != LiteralKind::Err) {
-        return;
-    }
-
-    // Look up the variable using existing infrastructure
-    ValueDeclAST* decl = ctx.lookupValue(id->name);
-    if (!decl) return;
-
-    // Check if the variable is nullable or fallible using SemaCompare
-    if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
-        return;
-    }
-
-    TypeAST* innerType = getInnerType(decl, ctx);
-    if (!innerType) return;
-
-    info.hasNarrowing = true;
-    info.isEquality = isEquality;
-    info.narrowings[id->name] = innerType;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// getInnerType
-// ─────────────────────────────────────────────────────────────────────────────
-
-TypeAST* getInnerType(ValueDeclAST* decl, SemaContext& ctx) {
-    if (!decl || !decl->type) return nullptr;
-
-    TypeAST* type = decl->type;
-
-    // Unwrap nullable using SemaCompare
-    if (isNullableType(type)) {
-        type = unwrapNullable(type);
-    }
-
-    // Unwrap fallible using SemaCompare
-    if (isFallibleType(type)) {
-        type = unwrapFallible(type);
-    }
-
+/// The "inner" type of a `T?` — the type a narrowed `T?` value becomes.
+/// For a non-nullable type, returns the type itself; narrowing such a
+/// value is a no-op and the caller uses the type unchanged.
+TypeAST* innerTypeOf(TypeAST* type) {
+    if (!type) return nullptr;
+    if (isNullableType(type)) return unwrapNullable(type);
     return type;
 }
+
+/// True if `decl` refers to a value whose type is nullable.
+bool isNullableValue(const ValueDeclAST* decl) {
+    return decl && decl->type && isNullableType(decl->type);
+}
+
+/// Record a narrowing in `info`. Sets `hasNarrowing` and inserts the
+/// entry, but leaves `isEquality` alone — the caller is responsible for
+/// setting it once, after all narrowings in the condition have been
+/// merged and their operator has been confirmed consistent.
+void addNarrowing(NarrowingInfo& info, InternedString name, TypeAST* type) {
+    info.hasNarrowing = true;
+    info.narrowings[name] = type;
+}
+
+} // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // detectNarrowingPattern
@@ -215,62 +53,254 @@ NarrowingInfo detectNarrowingPattern(BinaryExprAST* binary, SemaContext& ctx) {
 
     if (!binary) return result;
 
-    // Delegate to the main extraction function.
-    // `outMixed` is set to `true` only when the condition contains mixed
-    // '==' and '!=' operators in a way that makes narrowing unsound; in
-    // every other case it stays `false`.
+    // Delegate to the general extraction. `outMixed` is set to `true`
+    // only when the condition mixes `==` and `!=` in a way that makes
+    // narrowing unsound; in every other case it stays `false`.
     bool outMixed = false;
     result = extractNarrowingsFromCondition(binary, ctx, &outMixed);
 
     if (outMixed) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, binary,
-                              "mixed '==' and '!=' in condition for type narrowing");
+        ctx.diagnostics.error(DiagCode::Type_InvalidBinary, binary,
+                              "condition mixes '==' and '!=' in a way that "
+                              "prevents type narrowing; rewrite the "
+                              "condition with a single operator");
         return NarrowingInfo();
     }
 
-    // Additional validation: check that the variables being narrowed are
-    // actually defined and have the expected type
-    if (result.hasNarrowing) {
-        for (const auto& [varName, narrowedType] : result.narrowings) {
-            // Look up the variable using existing infrastructure
-            ValueDeclAST* decl = ctx.lookupValue(varName);
-            if (!decl) {
-                ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, binary,
-                                      "undefined variable '", ctx.pool.lookup(varName), "'");
-                return NarrowingInfo();
-            }
+    // ─── Validate each detected narrowing ───────────────────────────────
+    //
+    // The extractor records a name → type pair for every identifier
+    // that looked like a narrowing site. But not every such identifier
+    // is a genuine narrowing: the identifier might not resolve, or it
+    // might refer to a non-nullable value (in which case narrowing is a
+    // no-op, not an error).
+    //
+    // The check walks the resolved narrowings and drops any that do not
+    // correspond to a nullable value. A narrowing of a non-nullable
+    // value is silently dropped — `if x != nil` where `x: int` is a
+    // type error at a different point (comparing a non-nullable to
+    // `nil`), and the narrowing detector is not the right place to
+    // report it. The comparison itself will fail its type check.
+    NarrowingInfo validated;
+    validated.isEquality = result.isEquality;
+    for (const auto& [name, narrowedType] : result.narrowings) {
+        ValueDeclAST* decl = ctx.lookupValue(name);
+        if (!decl) continue;
+        if (!isNullableValue(decl)) continue;
+        if (!narrowedType) continue;
+        addNarrowing(validated, name, narrowedType);
+    }
 
-            // Verify the variable is nullable or fallible using SemaCompare
-            if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidNilCheck, binary,
-                                      "cannot narrow non-nullable/non-fallible variable '",
-                                      ctx.pool.lookup(varName), "'");
-                return NarrowingInfo();
-            }
+    return validated;
+}
 
-            // Verify the narrowed type is valid
-            if (!narrowedType) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, binary,
-                                      "cannot narrow variable '", ctx.pool.lookup(varName),
-                                      "' to invalid type");
-                return NarrowingInfo();
-            }
+// ─────────────────────────────────────────────────────────────────────────────
+// extractSingleBinaryNarrowing
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A single `x == nil` / `x != nil` binary. The identifier can be on
+// either side; the literal can be on either side. Both orders are
+// recognized.
+
+static NarrowingInfo extractSingleBinaryNarrowing(BinaryExprAST* binary,
+                                                  SemaContext& ctx) {
+    NarrowingInfo result;
+    result.hasNarrowing = false;
+    if (!binary) return result;
+
+    // Only `==` and `!=` produce narrowings. Everything else (`<`,
+    // `and`, `+`, `??`) is not a narrowing site.
+    if (binary->op != BinaryOp::Eq && binary->op != BinaryOp::Ne) {
+        return result;
+    }
+
+    const bool isEquality = (binary->op == BinaryOp::Eq);
+
+    // ─── One side must be an identifier, the other a `nil` literal ──────
+    //
+    // Two orders:
+    //   - `x == nil`, `x != nil`
+    //   - `nil == x`, `nil != x`
+    IdentifierExprAST* id = nullptr;
+    LiteralExprAST*    lit = nullptr;
+
+    if (binary->left->isa<IdentifierExprAST>() &&
+        binary->right->isa<LiteralExprAST>()) {
+        id  = binary->left->as<IdentifierExprAST>();
+        lit = binary->right->as<LiteralExprAST>();
+    } else if (binary->left->isa<LiteralExprAST>() &&
+               binary->right->isa<IdentifierExprAST>()) {
+        id  = binary->right->as<IdentifierExprAST>();
+        lit = binary->left->as<LiteralExprAST>();
+    } else {
+        return result;
+    }
+
+    if (lit->kind != LiteralKind::Nil) return result;
+
+    // ─── The identifier must refer to a nullable value ──────────────────
+    ValueDeclAST* decl = ctx.lookupValue(id->name);
+    if (!decl || !isNullableValue(decl)) {
+        return result;
+    }
+
+    TypeAST* inner = innerTypeOf(decl->type);
+    if (!inner) return result;
+
+    result.hasNarrowing = true;
+    result.isEquality   = isEquality;
+    addNarrowing(result, id->name, inner);
+    return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extractNarrowingsFromCondition
+// ─────────────────────────────────────────────────────────────────────────────
+
+NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx,
+                                             bool* outMixed) {
+    NarrowingInfo result;
+    result.hasNarrowing = false;
+    if (outMixed) *outMixed = false;
+    if (!expr) return result;
+
+    // ─── `and` chains ───────────────────────────────────────────────────
+    //
+    // `x != nil and y != nil` narrows both. `x == nil and y == nil`
+    // narrows neither in the then-branch (the conjunction is true only
+    // when *both* are nil, so neither is non-nil in the then). The
+    // extraction recurses into both sides and merges; a mixed operator
+    // (`!=` on one side, `==` on the other) is rejected.
+    if (expr->isa<BinaryExprAST>() &&
+        expr->as<BinaryExprAST>()->op == BinaryOp::And) {
+        BinaryExprAST* andExpr = expr->as<BinaryExprAST>();
+
+        bool leftMixed  = false;
+        bool rightMixed = false;
+        NarrowingInfo left  = extractNarrowingsFromCondition(andExpr->left,  ctx, &leftMixed);
+        NarrowingInfo right = extractNarrowingsFromCondition(andExpr->right, ctx, &rightMixed);
+
+        if (leftMixed || rightMixed) {
+            if (outMixed) *outMixed = true;
+            return NarrowingInfo();
         }
 
-        // Verify that we're not trying to narrow the same variable twice
-        std::unordered_set<InternedString> seenVars;
-        for (const auto& [varName, _] : result.narrowings) {
-            if (seenVars.find(varName) != seenVars.end()) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidNilCheck, binary,
-                                      "duplicate narrowing for variable '",
-                                      ctx.pool.lookup(varName), "'");
-                return NarrowingInfo();
-            }
-            seenVars.insert(varName);
+        // Operator consistency: both sides must use `!=` for the
+        // narrowing to apply in the then-branch. An `and` of `x == nil`
+        // and `y == nil` is a single condition that is true only when
+        // both are nil — the then-branch is the "both nil" case, not a
+        // narrowing of either. So a `==`-based `and` produces no
+        // narrowing at all, and a `!=`-based `and` produces narrowings
+        // for every operand.
+        if (left.hasNarrowing && left.isEquality) {
+            // `==` in an `and` — no then-branch narrowing.
+            return NarrowingInfo();
         }
+        if (right.hasNarrowing && right.isEquality) {
+            return NarrowingInfo();
+        }
+
+        // Merge: both sides narrow, and the merged result uses `!=`
+        // (isEquality = false).
+        if (left.hasNarrowing) {
+            result.hasNarrowing = true;
+            for (const auto& [name, type] : left.narrowings) {
+                addNarrowing(result, name, type);
+            }
+        }
+        if (right.hasNarrowing) {
+            result.hasNarrowing = true;
+            for (const auto& [name, type] : right.narrowings) {
+                addNarrowing(result, name, type);
+            }
+        }
+        result.isEquality = false;
+        return result;
+    }
+
+    // ─── `or` chains ────────────────────────────────────────────────────
+    //
+    // `x == nil or y == nil` narrows both in the *else*-branch: the
+    // else-branch runs when both are non-nil. This is inverse
+    // narrowing — the operator is `==`, and the narrowing applies to
+    // the else.
+    //
+    // `x != nil or y != nil` does not narrow in either branch: the
+    // then-branch runs when at least one is non-nil (nothing to say
+    // about the other), and the else-branch runs when both are nil
+    // (no non-nil type to assign).
+    if (expr->isa<BinaryExprAST>() &&
+        expr->as<BinaryExprAST>()->op == BinaryOp::Or) {
+        BinaryExprAST* orExpr = expr->as<BinaryExprAST>();
+
+        bool leftMixed  = false;
+        bool rightMixed = false;
+        NarrowingInfo left  = extractNarrowingsFromCondition(orExpr->left,  ctx, &leftMixed);
+        NarrowingInfo right = extractNarrowingsFromCondition(orExpr->right, ctx, &rightMixed);
+
+        if (leftMixed || rightMixed) {
+            if (outMixed) *outMixed = true;
+            return NarrowingInfo();
+        }
+
+        // Only `==`-based `or` produces a narrowing, and only in the
+        // else-branch. A `!=`-based `or` produces no narrowing.
+        if ((left.hasNarrowing && !left.isEquality) ||
+            (right.hasNarrowing && !right.isEquality)) {
+            return NarrowingInfo();
+        }
+
+        if (left.hasNarrowing) {
+            result.hasNarrowing = true;
+            for (const auto& [name, type] : left.narrowings) {
+                addNarrowing(result, name, type);
+            }
+        }
+        if (right.hasNarrowing) {
+            result.hasNarrowing = true;
+            for (const auto& [name, type] : right.narrowings) {
+                addNarrowing(result, name, type);
+            }
+        }
+        result.isEquality = true;   // `==`-based; applies to else
+        return result;
+    }
+
+    // ─── Single comparison ──────────────────────────────────────────────
+    if (expr->isa<BinaryExprAST>()) {
+        return extractSingleBinaryNarrowing(expr->as<BinaryExprAST>(), ctx);
+    }
+
+    // ─── `not x` ────────────────────────────────────────────────────────
+    //
+    // `not x` where `x: int?` is true when `x` is nil. This is
+    // equivalent to `x == nil`: the inverse narrowing (x is non-nil)
+    // applies to the else-branch.
+    //
+    // The check reads the operand's shape — an identifier — and looks
+    // up the identifier's type. A `not` on a non-identifier (a call, a
+    // binary, a field access) does not produce a narrowing; the
+    // grammar's narrowing is only over named bindings.
+    if (expr->isa<UnaryExprAST>() &&
+        expr->as<UnaryExprAST>()->op == UnaryOp::Not) {
+        UnaryExprAST* unary = expr->as<UnaryExprAST>();
+        if (unary->operand && unary->operand->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* id = unary->operand->as<IdentifierExprAST>();
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
+            if (decl && isNullableValue(decl)) {
+                TypeAST* inner = innerTypeOf(decl->type);
+                if (inner) {
+                    result.hasNarrowing = true;
+                    result.isEquality = true;
+                    addNarrowing(result, id->name, inner);
+                }
+            }
+        }
+        return result;
     }
 
     return result;
 }
 
-} // namespace sema
+
+} // namespace lucid::sema

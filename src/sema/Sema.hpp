@@ -1,5 +1,53 @@
-/// @file Sema.hpp
-/// @brief Lucid semantic analyzer – validates and annotates parsed ASTs.
+/**
+ * @file Sema.hpp
+ *
+ * @responsibility The complete declaration surface of semantic
+ *                 analysis: the driver entry points, the per-node
+ *                 resolvers, and every cross-file helper.
+ *
+ * ─── Design: one header, every cross-file function ────────────────────────
+ * A function that is defined in one `.cpp` and called from another has
+ * to be declared somewhere both files can see. Rather than split the
+ * declarations across `SemaInternal.hpp` and a per-file private header,
+ * every cross-file function is declared here. A function that is used
+ * by exactly one `.cpp` is `static` in that file and does not appear
+ * here.
+ *
+ * The result is a large header. It is worth it: the alternative is a
+ * web of forward declarations at the top of each `.cpp` that have to
+ * stay in sync with the definitions, and no single place to look up
+ * "what does Sema expose?". One flat list is easier to keep correct.
+ *
+ * ─── Design: three passes, three driver functions ─────────────────────────
+ * Sema runs over a module in three passes:
+ *
+ *   1. registerModuleDeclarations — insert every top-level name into
+ *      the module's symbol table. No types resolved, no bodies
+ *      analyzed. This is what makes forward references and cyclic
+ *      imports (§3.3) work.
+ *
+ *   2. resolveModuleDeclarations — resolve each declaration's types,
+ *      attributes, and imports. `FN` and `TABLE` declarations get
+ *      their signatures and their column types resolved here. Top-level
+ *      variable initializers are resolved here too, because a
+ *      `let`/`const` has no separate body phase.
+ *
+ *   3. resolveModuleBodies — resolve every function body. By this
+ *      point every name a body can reference has been registered
+ *      (pass 1) and every type a body can mention has been resolved
+ *      (pass 2).
+ *
+ * The three passes are separate entry points because the caller runs
+ * them across *all* modules before moving to the next pass. The
+ * interleaving is what makes cross-module forward references work.
+ *
+ * ─── Design: RAII guards live in SemaContext.hpp ──────────────────────────
+ * `ScopedFunction`, `ScopedContext`, `ScopedNarrowing`,
+ * `ScopedIfCondition`, and `SymbolScope` are declared in
+ * `SemaContext.hpp`. They are the tools a resolver uses to push and pop
+ * context. This header declares the resolvers themselves; those use the
+ * guards, they do not define them.
+ */
 
 #pragma once
 
@@ -8,256 +56,243 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "core/memory/ASTArena.hpp"
-#include "core/memory/StringPool.hpp"
-#include "core/diagnostics/Diagnostic.hpp"
-#include "core/trace/Trace.hpp"
-#include "context/SemaContext.hpp"
-#include "support/TypeNarrowHelpers.hpp"
-#include "support/SwitchHelpers.hpp"
-#include "types/SemaType.hpp"
 
 #include <vector>
-#include <optional>
 
-namespace sema {
+namespace lucid::sema {
 
-// =============================================================================
-// Module-Level Analysis
-// =============================================================================
+struct SemaContext;   // forward declaration; defined in SemaContext.hpp
 
-/// @brief Analyze all modules in the program.
-/// The ONLY entry point for semantic analysis.
-void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
+// ═════════════════════════════════════════════════════════════════════════════
+// Module-level driver
+// ═════════════════════════════════════════════════════════════════════════════
 
-// =============================================================================
-// NAME REGISTRATION (Phase 1)
-// =============================================================================
+/// @brief Run all three passes over a module set.
+///
+/// Runs pass 1 across every module, then pass 2 across every module,
+/// then pass 3. The interleaving is what makes cross-module forward
+/// references work: pass 2 of module A can reference a name in module B
+/// because pass 1 of module B already ran.
+///
+/// Stops early if `ctx.diagnostics.canContinue()` returns false.
+void analyze(const std::vector<ModuleAST*>& modules, SemaContext& ctx);
 
-/// @brief Register all names in a module (no type resolution).
-void registerTopLevelNames(ModuleAST* module, SemaContext& ctx);
+/// @brief Run all three passes over one module.
+///
+/// A convenience for a caller that owns exactly one module. For a
+/// multi-module session, use `analyze`.
+void resolveModule(ModuleAST* module, SemaContext& ctx);
 
-/// @brief Register a declaration's name only (no type resolution).
-void registerDeclName(DeclAST* decl, SemaContext& ctx);
+// ═════════════════════════════════════════════════════════════════════════════
+// Pass 1 — registration
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ─── Specific Name Registration Functions ──────────────────────────────
+/// @brief Pass 1: register every top-level name of `module`.
+///
+/// For each top-level declaration:
+///   - `TABLE X`        → insert `X` into the module's type namespace
+///                        AND its value namespace (a table is both a
+///                        type and a value — the sheet itself).
+///   - `FN f`           → insert `f` into the module's value namespace.
+///   - `let`/`const v`  → insert `v` into the module's value namespace.
+///   - `import a.b as c`→ register alias `c` for the resolved module.
+///
+/// Emits diagnostics for duplicate names.
+void registerModuleDeclarations(ModuleAST* module, SemaContext& ctx);
 
+/// @brief Register the alias of an `import` directive.
+///
+/// Emits no diagnostic if the target module does not resolve; that
+/// failure is reported in pass 2 by `resolveImportDecl`.
 void registerImportName(ImportDeclAST* decl, SemaContext& ctx);
+
+/// @brief Register a `TABLE` name in both namespaces.
+void registerTableName(TableDeclAST* decl, SemaContext& ctx);
+
+/// @brief Register a `FN` name in the value namespace.
+void registerFnName(FnDeclAST* decl, SemaContext& ctx);
+
+/// @brief Register a top-level `let`/`const` name in the value namespace.
 void registerVarName(VarDeclAST* decl, SemaContext& ctx);
-void registerFuncName(FuncDeclAST* decl, SemaContext& ctx);
-void registerStructName(StructDeclAST* decl, SemaContext& ctx);
-void registerEnumName(EnumDeclAST* decl, SemaContext& ctx);
-void registerTraitName(TraitDeclAST* decl, SemaContext& ctx);
 
-// =============================================================================
-// TYPE RESOLUTION (Phase 2)
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
+// Pass 2 — declaration resolution
+// ═════════════════════════════════════════════════════════════════════════════
 
-/// @brief Resolve all types in a module (after all names are registered).
-void resolveModuleDecls(ModuleAST* module, SemaContext& ctx);
+/// @brief Pass 2: resolve each declaration's types and attributes.
+///
+/// Runs after every module has completed pass 1.
+void resolveModuleDeclarations(ModuleAST* module, SemaContext& ctx);
 
-/// @brief Resolve a declaration's type and check its body.
-void resolveDecl(DeclAST* decl, SemaContext& ctx);
-
-// ─── Specific Declaration Resolvers ─────────────────────────────────────
-
+/// @brief Resolve an `import` directive. Emits `Name_UndefinedModule` on
+///        failure.
 void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx);
+
+/// @brief Resolve a `TABLE` declaration: attributes, column types,
+///        column indices, table constraint checks, mangled name.
+void resolveTableDecl(TableDeclAST* decl, SemaContext& ctx);
+
+/// @brief Resolve one column's declared type.
+void resolveColumnDecl(ColumnDeclAST* decl, SemaContext& ctx);
+
+/// @brief Resolve a `FN` declaration's signature: attributes, parameter
+///        types, return type, mangled name. Does NOT resolve the body.
+void resolveFnDecl(FnDeclAST* decl, SemaContext& ctx);
+
+/// @brief Resolve a `FN` declaration's body (pass 3).
+void resolveFnBody(FnDeclAST* decl, SemaContext& ctx);
+
+/// @brief Resolve a `ParamAST`'s type and register its name in the
+///        current scope.
+///
+/// Called from `resolveFnDecl` (pass 2, signature) and from
+/// `resolveFnBody` (pass 3, body). The two call sites register the
+/// parameter in two different scopes; the second is the one the body
+/// sees.
+void resolveParam(ParamAST* param, SemaContext& ctx);
+
+/// @brief Resolve a `VarDeclAST`'s type, resource kind, and initializer.
+///
+/// Called from `resolveModuleDeclarations` for a top-level `let` (pass 2),
+/// and from `resolveVarDeclStmt` in `SemaStmt.cpp` for a local `let`
+/// (pass 3). The caller is responsible for having registered the name;
+/// this function does not.
 void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx);
 
-void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx);
-bool resolveFunctionBody(ExprAST* init, FuncTypeAST* funcType, SemaContext& ctx);
+// ═════════════════════════════════════════════════════════════════════════════
+// Pass 3 — body resolution (driver) and per-declaration dispatcher
+// ═════════════════════════════════════════════════════════════════════════════
 
-void resolveParam(ParamAST* param, SemaContext& ctx);
-void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx);
+/// @brief Pass 3: resolve every function body in `module`.
+void resolveModuleBodies(ModuleAST* module, SemaContext& ctx);
 
-void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx);
-void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx);
+/// @brief Resolve one declaration, including its body if it has one.
+///
+/// A convenience for tooling (the LSP) and tests. The three module
+/// passes do not go through this function.
+void resolveDecl(DeclAST* decl, SemaContext& ctx);
 
-void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx);
-bool resolveStructFieldDeclarations(ArenaSpan<FieldDeclAST*> fields, StructDeclAST* owner, SemaContext& ctx);
+// ═════════════════════════════════════════════════════════════════════════════
+// Expressions
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ─── Statement Resolution ──────────────────────────────────────────────
-
-/// @brief Resolve types in a statement (after all names are registered).
-bool resolveStmt(StmtAST* stmt, SemaContext& ctx);
-
-// =============================================================================
-// STATEMENTS - Control flow analysis (Phase 2)
-// =============================================================================
-
-bool resolveBlock(BlockStmtAST* block, SemaContext& ctx);
-bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx);
-bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx);
-bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx);
-bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx);
-bool resolveDoWhileStmt(DoWhileStmtAST* stmt, SemaContext& ctx);
-bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx);
-bool resolveBreakStmt(BreakStmtAST* stmt, SemaContext& ctx);
-bool resolveContinueStmt(ContinueStmtAST* stmt, SemaContext& ctx);
-bool resolveExprStmt(ExprStmtAST* stmt, SemaContext& ctx);
-bool resolveDeclStmt(DeclStmtAST* stmt, SemaContext& ctx);
-
-// ─── Concurrency ─────────────────────────────────────────────────────────
-
-bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx);
-bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx);
-bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx);
-bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx);
-
-// =============================================================================
-// EXPRESSIONS - Type Resolution (New Design)
-// =============================================================================
-
-/// @brief Resolve the type of an expression with an optional target type.
-/// 
-/// This is the new main entry point for expression resolution.
-/// It resolves the expression's type, validates against targetType if provided,
-/// and stores the result directly on the expression node (resolvedType, valueState).
-/// 
-/// @param expr The expression to resolve.
-/// @param targetType The expected type (nullptr if no constraint).
-/// @param ctx The semantic context.
-/// @return The resolved type, or UnknownTypeAST on failure.
-/// 
-/// @note On success, expr->resolvedType is set to the resolved type.
-///       On failure, expr->resolvedType is set to UnknownTypeAST.
-TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType, SemaContext& ctx);
-
-/// @brief Resolve the type of an expression (legacy wrapper).
-/// 
-/// This is a wrapper around resolveExprWithTarget() that provides
-/// backward compatibility for existing code.
-/// 
-/// @param expr The expression to resolve.
-/// @param ctx The semantic context.
-/// @return The resolved type, or UnknownTypeAST on failure.
+/// @brief Resolve one expression with no target type.
 TypeAST* resolveExpr(ExprAST* expr, SemaContext& ctx);
 
-// ─── Specific Expression Resolvers (New Design) ──────────────────────
+/// @brief Resolve one expression against an expected type.
+///
+/// A `nullptr` target is equivalent to `resolveExpr`. An unknown-type
+/// target is treated as no target. If the expression's type is not
+/// assignable to the target, a `Type_Mismatch` is emitted and the
+/// unknown type is returned.
+TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType,
+                               SemaContext& ctx);
 
-/// @brief Resolve a literal expression.
-/// @param expr The expression to resolve.
-/// @param targetType The expected type (nullptr if no constraint).
-/// @param ctx The semantic context.
-/// @return The resolved type, or UnknownTypeAST on failure.
-TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── Per-form resolvers ─────────────────────────────────────────────────────
+//
+// Called from `resolveExprWithTarget`'s dispatch. Each is also callable
+// directly by a caller that has already classified the expression —
+// `resolveCallExpr` for instance calls `resolveExpr` on its callee, and
+// `resolveIndexExpr` calls `resolveExpr` on both target and index.
+//
+// Every per-form resolver returns the expression's *natural* type. The
+// target is consulted only by the forms that need it (literals, array
+// literals, lambdas); the wrapper `resolveExprWithTarget` applies the
+// final assignability check.
 
-/// @brief Resolve an identifier expression.
-TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* resolveLiteralExpr      (LiteralExprAST*      expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveIdentifierExpr   (IdentifierExprAST*   expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveArrayLiteralExpr (ArrayLiteralExprAST* expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveFieldAccessExpr  (FieldAccessExprAST*  expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveIndexExpr        (IndexExprAST*        expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveCallExpr         (CallExprAST*         expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveLambdaExpr       (LambdaExprAST*       expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveStartExpr        (StartExprAST*        expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveUnaryExpr        (UnaryExprAST*        expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveBinaryExpr       (BinaryExprAST*       expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveParenExpr        (ParenExprAST*        expr, TypeAST* target, SemaContext& ctx);
+TypeAST* resolveRangeExpr        (RangeExprAST*        expr, TypeAST* target, SemaContext& ctx);
 
-/// @brief Resolve an array literal expression.
-TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── Field-access classification ────────────────────────────────────────────
+//
+// `resolveFieldAccessExpr` classifies an `a.b` access by what `a` is.
+// The sub-resolvers handle one case each. They are declared here
+// because a future caller (a diagnostic renderer that wants to know
+// "is this a column view?") may need them.
 
-/// @brief Resolve a struct literal expression.
-TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* resolveModuleMemberAccess(FieldAccessExprAST* expr,
+                                   IdentifierExprAST*  objId,
+                                   ModuleAST*          module,
+                                   TypeAST*            target,
+                                   SemaContext&        ctx);
 
-/// @brief Resolve a binary expression.
-TypeAST* resolveBinaryExpr(BinaryExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* resolveCellAccess(FieldAccessExprAST* expr,
+                           RowRefTypeAST*      rowRef,
+                           TypeAST*            target,
+                           SemaContext&        ctx);
 
-/// @brief Resolve a unary expression.
-TypeAST* resolveUnaryExpr(UnaryExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* resolveTableMemberAccess(FieldAccessExprAST* expr,
+                                  TypeAST*            objectType,
+                                  TypeAST*            target,
+                                  SemaContext&        ctx);
 
-/// @brief Resolve a call expression.
-TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* tryResolveTableMethod(FieldAccessExprAST* expr,
+                               TableDeclAST*       table,
+                               SemaContext&        ctx);
 
-/// @brief Resolve an intrinsic call expression.
-TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* tryResolveByColumnLookup(FieldAccessExprAST* expr,
+                                  TableDeclAST*       table,
+                                  SemaContext&        ctx);
 
-/// @brief Resolve an index expression.
-TypeAST* resolveIndexExpr(IndexExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+TypeAST* resolveArrayMethodAccess(FieldAccessExprAST* expr,
+                                  ArrayTypeAST*       arrayType,
+                                  TypeAST*            target,
+                                  SemaContext&        ctx);
 
-/// @brief Resolve a slice expression.
-TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ═════════════════════════════════════════════════════════════════════════════
+// Statements
+// ═════════════════════════════════════════════════════════════════════════════
 
-/// @brief Resolve a field access expression.
-TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve one statement.
+///
+/// @return true if control transfers out of the enclosing block.
+bool resolveStmt(StmtAST* stmt, SemaContext& ctx);
 
-/// @brief Resolve a module access expression.
-TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── Per-kind statement resolvers ───────────────────────────────────────────
+//
+// Called from `resolveStmt`'s dispatch. All return the same bool
+// protocol as `resolveStmt`.
 
-/// @brief Resolve and validate an Arena access expression.
-TypeAST* resolveArenaAccess(ArenaAccessExprAST* expr, SemaContext& ctx);
+bool resolveBlock       (BlockStmtAST*      stmt, SemaContext& ctx);
+bool resolveIfStmt      (IfStmtAST*         stmt, SemaContext& ctx);
+bool resolveSwitchStmt  (SwitchStmtAST*     stmt, SemaContext& ctx);
+bool resolveWhileStmt   (WhileStmtAST*      stmt, SemaContext& ctx);
+bool resolveForStmt     (ForStmtAST*        stmt, SemaContext& ctx);
+bool resolveReturnStmt  (ReturnStmtAST*     stmt, SemaContext& ctx);
+bool resolveBreakStmt   (BreakStmtAST*      stmt, SemaContext& ctx);
+bool resolveContinueStmt(ContinueStmtAST*   stmt, SemaContext& ctx);
+bool resolveExprStmt    (ExprStmtAST*       stmt, SemaContext& ctx);
+bool resolveVarDeclStmt (VarDeclStmtAST*    stmt, SemaContext& ctx);
+bool resolveAssignStmt  (AssignStmtAST*     stmt, SemaContext& ctx);
 
-/// @brief Resolve a null coalesce expression.
-TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── Sequence suspend points ────────────────────────────────────────────────
 
-/// @brief Resolve an assignment expression.
-TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+bool resolveWaitStmt          (WaitStmtAST*           stmt, SemaContext& ctx);
+bool resolveWaitFramesStmt    (WaitFramesStmtAST*     stmt, SemaContext& ctx);
+bool resolveWaitUntilStmt     (WaitUntilStmtAST*      stmt, SemaContext& ctx);
+bool resolveWaitForEventStmt  (WaitForEventStmtAST*   stmt, SemaContext& ctx);
+bool resolveWaitForRequestStmt(WaitForRequestStmtAST* stmt, SemaContext& ctx);
 
-/// @brief Resolve a pipeline expression.
-TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── For-loop binding helpers ───────────────────────────────────────────────
 
-/// @brief Resolve a single pipeline step.
-/// 
-/// Pipeline steps are always function types (callable). They are never nullable
-/// or fallible by definition - a function value itself cannot be nil or err.
-/// 
-/// Argument order: The upstream values are passed FIRST, then the pack args.
-/// Extra arguments beyond the function's parameter count are discarded.
-/// 
-/// @param step The pipeline step.
-/// @param upstreamType The type of the upstream value (from seed or previous step).
-/// @param ctx The semantic context.
-/// @return The return type of the step, or nullptr on error.
-TypeAST* resolvePipelineStepInternal(PipelineStepAST* step, TypeAST* upstreamType, SemaContext& ctx);
+bool resolveRangeForBindings (ForStmtAST* stmt, TypeAST* boundType,    SemaContext& ctx);
+bool resolveTableForBindings (ForStmtAST* stmt, TypeAST* iterableType, SemaContext& ctx);
+bool resolveArrayForBindings (ForStmtAST* stmt, TypeAST* iterableType, SemaContext& ctx);
 
-/// @brief Resolve an anonymous function expression.
-TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+// ─── Switch coverage helper ─────────────────────────────────────────────────
 
-/// @brief Resolve an if expression.
-TypeAST* resolveIfExpr(IfExprAST* expr, TypeAST* targetType, SemaContext& ctx);
+void checkFixedTableSwitchCoverage(SwitchStmtAST* stmt,
+                                   TypeAST*       subjectType,
+                                   SemaContext&   ctx);
 
-/// @brief Resolve a range expression.
-TypeAST* resolveRangeExpr(RangeExprAST* expr, TypeAST* targetType, SemaContext& ctx);
-
-
-// =============================================================================
-// Helper: Check if an expression is a function value used by 
-// resolveStructLiteralExpr and resolveStructFields
-// =============================================================================
-
-/// @brief Check if an expression is a function value.
-/// 
-/// A function value can be:
-///   - A named function reference (IdentifierExprAST)
-///   - A module function reference (ModuleAccessExprAST)
-///   - A call that returns a function (CallExprAST)
-///   - A field access that returns a function (FieldAccessExprAST)
-/// 
-/// @param expr The expression to check.
-/// @param ctx The semantic context.
-/// @return true if the expression evaluates to a function value.
-static bool isFunctionValue(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return false;
-
-    switch (expr->kind) {
-        case ASTKind::IdentifierExpr: {
-            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            ValueDeclAST* decl = ctx.lookupValue(id->name);
-            return decl && decl->isa<FuncDeclAST>();
-        }
-
-        case ASTKind::ModuleAccessExpr: {
-            const ModuleAccessExprAST* access = expr->as<ModuleAccessExprAST>();
-            ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
-            return decl && decl->isa<FuncDeclAST>();
-        }
-
-        case ASTKind::CallExpr: {
-            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
-        }
-
-        case ASTKind::FieldAccessExpr: {
-            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
-        }
-
-        case ASTKind::AnonFuncExpr: {
-            return true;
-        }
-
-        default:
-            return false;
-    }
-}
-
-} // namespace sema
+} // namespace lucid::sema

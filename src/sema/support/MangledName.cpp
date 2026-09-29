@@ -1,587 +1,140 @@
-/// @file sema/support/MangledName.cpp
+/// @file MangledName.cpp
 /// @brief Implementation of mangled name generation.
 
 #include "MangledName.hpp"
-#include "../context/Generic.hpp"
-#include "core/ASTStrings.hpp"
 
-#include <algorithm>
+#include "sema/context/SemaContext.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
+
 #include <cctype>
 
-namespace sema {
+namespace lucid::sema {
 
-// ─── Private Helper: Build Mangled String ──────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Build a mangled name string from components.
-/// @param components The components to join.
-/// @param ctx The semantic context.
-/// @return The full mangled name as an InternedString.
-static InternedString buildMangledName(const std::string& components, SemaContext& ctx) {
-    std::string result = "_L";
-    result += components;
-    return ctx.pool.intern(result);
-}
+namespace {
 
-// ─── Public API ─────────────────────────────────────────────────────────────
-
-InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx) {
-    if (!decl) return InternedString(0);
-
-    // ─── 0. Export short-circuit ─────────────────────────────────────────
-    // An @[export]ed function's symbol is exactly its source name. No module
-    // path, no signature encoding. This is what makes `@[export] const main`
-    // produce the symbol `main` that the C runtime and the interpreter's
-    // entry-point lookup both expect.
-    //
-    // For a generic function template, this returns the source name for the
-    // *template*. Each specialization still goes through
-    // generateMangledNameForGeneric and receives its own distinct mangled
-    // name; the template itself is never lowered to LLVM IR (lowerDeclaration
-    // skips generics). So an exported generic function's source-named symbol
-    // never exists at runtime — the flag is effectively a no-op for
-    // templates, which is fine because exporting a template is meaningless
-    // (callers can't reference it without instantiating).
-    if (decl->isExported) {
-        return decl->name;
-    }
-
+/// Sanitize a string for use in a symbol name.
+///
+/// Replaces every character that is not a letter, a digit, or an
+/// underscore with an underscore. The result is a valid C identifier
+/// fragment. Case is preserved; the mangled name is case-sensitive.
+std::string sanitizeForMangledName(std::string_view input) {
     std::string result;
-
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-
-    // ─── 2. Function name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-
-    // ─── 3. Generic parameters (if any) ──────────────────────────────────
-    if (!decl->genericParams.empty()) {
-        result += "_G";
-        for (size_t i = 0; i < decl->genericParams.size(); ++i) {
-            if (i > 0) result += "_";
-            result += sanitizeForMangledName(
-                ctx.pool.lookup(decl->genericParams[i]->name)
-            );
+    result.reserve(input.size());
+    for (char c : input) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            result.push_back(c);
+        } else {
+            result.push_back('_');
         }
     }
-
-    // ─── 4. Parameter types ──────────────────────────────────────────────
-    result += "_P";
-    const FuncTypeAST* funcType = decl->funcType;
-    while (funcType) {
-        for (ParamAST* param : funcType->params) {
-            result += typeToMangleString(param->type, ctx);
-        }
-        funcType = funcType->getNext();
-    }
-
-    // ─── 5. Return type ──────────────────────────────────────────────────
-    if (decl->funcType->returnType) {
-        result += "_R" + typeToMangleString(decl->funcType->returnType, ctx);
-    } else {
-        result += "_RV";  // void
-    }
-
-    return buildMangledName(result, ctx);
-}
-
-InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx) {
-    if (!decl) return InternedString(0);
-
-    // ─── 0. Export short-circuit ─────────────────────────────────────────
-    // See the FuncDeclAST overload for the rationale.
-    if (decl->isExported) {
-        return decl->name;
-    }
-
-    std::string result;
-
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-
-    // ─── 2. Variable name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-
-    // ─── 3. Type ──────────────────────────────────────────────────────────
-    if (decl->type) {
-        result += "_T" + typeToMangleString(decl->type, ctx);
-    } else {
-        result += "_TV";  // void (should not happen for variables)
-    }
-
-    // ─── 4. Mutability ──────────────────────────────────────────────────
-    result += decl->isConst() ? "_C" : "_M";  // Const or Mutable
-
-    return buildMangledName(result, ctx);
-}
-
-InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx) {
-    if (!decl) return InternedString(0);
-
-    // NOTE: `decl->isExported` is deliberately NOT consulted here.
-    //
-    // See the StructDeclAST overload above for the full reasoning. The
-    // same interface-name-vs-LLVM-type-name distinction applies, and
-    // the same `.luci` writer will be the consumer that reads the flag.
-    //
-    // Enums differ from structs in one respect: getEnumType lowers them
-    // to a bare llvm::IntegerType, which LLVM interns per-LLVMContext
-    // by bit width — so two enums with the same backing kind already
-    // share an LLVM type today, and no mangled-name-based lookup
-    // distinguishes them. The mangled name here is used for diagnostic
-    // and `.luci` purposes, not for type identity. Keeping it fully
-    // mangled preserves the invariant that every declaration's mangled
-    // name is unique across the loaded module set, so a future change
-    // that starts relying on it (e.g., a tagged-union enum lowering
-    // that names its LLVM struct) inherits that invariant for free.
-
-    std::string result;
-
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-
-    // ─── 2. Enum name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-
-    // ─── 3. Backing type (for disambiguation) ──────────────────────────────
-    // This helps distinguish enums with different backing types
-    // but the same name (unlikely, but safe for consistency).
-    if (decl->backingType) {
-        result += "_B" + typeToMangleString(decl->backingType, ctx);
-    } else {
-        // Default backing type is int32
-        result += "_B" + typeToMangleString(ctx.getIntType(), ctx);
-    }
-
-    // ─── 4. Variant count (for disambiguation) ─────────────────────────────
-    // Two enums with the same name and same backing type but different
-    // variants would be different types. This ensures uniqueness.
-    result += "_V" + std::to_string(decl->variants.size());
-
-    return buildMangledName(result, ctx);
-}
-
-InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx) {
-    if (!decl) return InternedString(0);
-
-    // NOTE: `decl->isExported` is deliberately NOT consulted here.
-    //
-    // CodeGen's getStructType (CodeGenType.cpp) uses this mangled name as
-    // the LLVM struct type's *name*, and creates it via
-    // `StructType::getTypeByName(ctx.llvmCtx, name)` — a lookup that is
-    // scoped to the shared LLVMContext, not to any one llvm::Module.
-    // Because a single codegen run lowers every loaded module into the
-    // same context, two structs named `Player` in different modules
-    // would alias the same llvm::StructType if their mangled names
-    // matched. The module-path prefix below is what keeps them distinct.
-    //
-    // Export-awareness for structs belongs in the `.luci` writer
-    // (Architecture §9.2), which serializes the typed AST's exported
-    // subset and reads `decl->name` + `decl->isExported` directly. It
-    // does not go through `decl->mangledName`, because the interface
-    // name and the LLVM type name are different concerns.
-    //
-    // Setting `@[export]` on a struct is therefore a valid interface
-    // marker with no effect on this function's output. See the
-    // EnumDeclAST overload for the same reasoning applied to enums.
-
-    std::string result;
-
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-
-    // ─── 2. Struct name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-
-    // ─── 3. Generic parameters (if any) ──────────────────────────────────
-    if (!decl->genericParams.empty()) {
-        result += "_G";
-        for (size_t i = 0; i < decl->genericParams.size(); ++i) {
-            if (i > 0) result += "_";
-            result += sanitizeForMangledName(
-                ctx.pool.lookup(decl->genericParams[i]->name)
-            );
-        }
-    }
-
-    return buildMangledName(result, ctx);
-}
-
-// ─── Core Encoding Functions ──────────────────────────────────────────────
-
-std::string typeToMangleString(TypeAST* type, SemaContext& ctx) {
-    if (!type) return "V";  // void
-
-    switch (type->kind) {
-        case ASTKind::PrimitiveType: {
-            const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
-            char code = encodePrimitiveKind(prim->primitiveKind);
-            return std::string(1, code);
-        }
-
-        case ASTKind::NamedType: {
-            const NamedTypeAST* named = type->as<NamedTypeAST>();
-            std::string name = sanitizeForMangledName(
-                ctx.pool.lookup(named->name)
-            );
-
-            // Add generic arguments if present
-            if (!named->genericArgs.empty()) {
-                name += "_G";
-                for (size_t i = 0; i < named->genericArgs.size(); ++i) {
-                    if (i > 0) name += "_";
-                    name += typeToMangleString(named->genericArgs[i], ctx);
-                }
-            }
-            return name;
-        }
-
-        case ASTKind::ArrayType: {
-            const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-            std::string result = "A";
-            if (arr->isFixed()) {
-                result += std::to_string(arr->size);
-            } else if (arr->isSlice()) {
-                result += "_";
-            } else {
-                result += "*";
-            }
-            result += typeToMangleString(arr->element, ctx);
-            return result;
-        }
-
-        case ASTKind::PtrType: {
-            const PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            return "P" + typeToMangleString(ptr->inner, ctx);
-        }
-
-        case ASTKind::RefType: {
-            const RefTypeAST* ref = type->as<RefTypeAST>();
-            return "R" + typeToMangleString(ref->inner, ctx);
-        }
-
-        case ASTKind::NullableType: {
-            const NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            return "N" + typeToMangleString(nullable->inner, ctx);
-        }
-
-        case ASTKind::FallibleType: {
-            const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            return "F" + typeToMangleString(fallible->inner, ctx);
-        }
-
-        case ASTKind::CombinedType: {
-            const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            return "X" + typeToMangleString(combined->inner, ctx);
-        }
-
-        case ASTKind::FuncType: {
-            const FuncTypeAST* func = type->as<FuncTypeAST>();
-            std::string result = "F";
-
-            // Parameter types
-            for (ParamAST* param : func->params) {
-                result += typeToMangleString(param->type, ctx);
-            }
-            result += "_";
-
-            // Return type
-            if (func->returnType) {
-                result += typeToMangleString(func->returnType, ctx);
-            } else {
-                result += "V";
-            }
-            return result;
-        }
-
-        case ASTKind::FutureType: {
-            const FutureTypeAST* future = type->as<FutureTypeAST>();
-            return "U" + typeToMangleString(future->inner, ctx);
-        }
-
-        case ASTKind::ThreadType: {
-            const ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            return "H" + typeToMangleString(thread->inner, ctx);
-        }
-
-        default:
-            return "?" + astKindToString(type->kind);
-    }
-}
-
-// ─── Substituting Type Encoding ─────────────────────────────────────────
-//
-// Like typeToMangleString, but consults a GenericSubstitution while
-// walking: when a NamedTypeAST is a generic parameter, its concrete
-// type is mangled in its place.
-//
-// This deliberately does NOT call substituteType. Mangling only needs
-// to *read* the substitution map to decide what string to emit — it
-// never needs the rewritten AST that substituteType produces. Building
-// the rewritten tree here would allocate nodes the caller immediately
-// discards, bloating the arena for every generic instantiation. Walking
-// the original tree and substituting on the fly produces the same
-// string with zero allocations.
-//
-// Recursion terminates because GenericSubstitution maps a parameter to
-// a concrete type that does not itself reference the same parameter
-// (Sema rejects self-referential instantiations before reaching
-// mangling).
-
-static std::string typeToMangleStringSubstituted(
-    TypeAST* type,
-    const GenericSubstitution& subst,
-    SemaContext& ctx)
-{
-    if (!type) return "V";
-
-    // ─── Generic parameter: mangle its concrete type in its place ────
-    if (type->isa<NamedTypeAST>()) {
-        NamedTypeAST* named = type->as<NamedTypeAST>();
-        if (subst.isParam(named->name)) {
-            TypeAST* concrete = subst.lookup(named->name);
-            if (concrete) {
-                // Recurse with the same substitution: the concrete type
-                // may itself contain parameters (e.g., a nested generic
-                // instantiation `Pair<U, int>` where U is also bound).
-                return typeToMangleStringSubstituted(concrete, subst, ctx);
-            }
-            // Fallthrough: parameter with no binding. Emit the name.
-        }
-    }
-
-    // ─── Structural walk: mirror typeToMangleString exactly ──────────
-    switch (type->kind) {
-        case ASTKind::PrimitiveType: {
-            const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
-            char code = encodePrimitiveKind(prim->primitiveKind);
-            return std::string(1, code);
-        }
-
-        case ASTKind::NamedType: {
-            const NamedTypeAST* named = type->as<NamedTypeAST>();
-            std::string name = sanitizeForMangledName(
-                ctx.pool.lookup(named->name)
-            );
-
-            if (!named->genericArgs.empty()) {
-                name += "_G";
-                for (size_t i = 0; i < named->genericArgs.size(); ++i) {
-                    if (i > 0) name += "_";
-                    name += typeToMangleStringSubstituted(
-                        named->genericArgs[i], subst, ctx);
-                }
-            }
-            return name;
-        }
-
-        case ASTKind::ArrayType: {
-            const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-            std::string result = "A";
-            if (arr->isFixed()) {
-                result += std::to_string(arr->size);
-            } else if (arr->isSlice()) {
-                result += "_";
-            } else {
-                result += "*";
-            }
-            result += typeToMangleStringSubstituted(arr->element, subst, ctx);
-            return result;
-        }
-
-        case ASTKind::PtrType: {
-            const PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            return "P" + typeToMangleStringSubstituted(ptr->inner, subst, ctx);
-        }
-
-        case ASTKind::RefType: {
-            const RefTypeAST* ref = type->as<RefTypeAST>();
-            return "R" + typeToMangleStringSubstituted(ref->inner, subst, ctx);
-        }
-
-        case ASTKind::NullableType: {
-            const NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            return "N" + typeToMangleStringSubstituted(nullable->inner, subst, ctx);
-        }
-
-        case ASTKind::FallibleType: {
-            const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            return "F" + typeToMangleStringSubstituted(fallible->inner, subst, ctx);
-        }
-
-        case ASTKind::CombinedType: {
-            const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            return "X" + typeToMangleStringSubstituted(combined->inner, subst, ctx);
-        }
-
-        case ASTKind::FuncType: {
-            const FuncTypeAST* func = type->as<FuncTypeAST>();
-            std::string result = "F";
-
-            for (ParamAST* param : func->params) {
-                result += typeToMangleStringSubstituted(param->type, subst, ctx);
-            }
-            result += "_";
-
-            if (func->returnType) {
-                result += typeToMangleStringSubstituted(func->returnType, subst, ctx);
-            } else {
-                result += "V";
-            }
-            return result;
-        }
-
-        case ASTKind::FutureType: {
-            const FutureTypeAST* future = type->as<FutureTypeAST>();
-            return "U" + typeToMangleStringSubstituted(future->inner, subst, ctx);
-        }
-
-        case ASTKind::ThreadType: {
-            const ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            return "H" + typeToMangleStringSubstituted(thread->inner, subst, ctx);
-        }
-
-        default:
-            return "?" + astKindToString(type->kind);
-    }
-}
-
-std::string sanitizeForMangledName(const std::string& str) {
-    std::string result = str;
-
-    // Replace special characters with underscores
-    for (char& c : result) {
-        if (!std::isalnum(static_cast<unsigned char>(c))) {
-            c = '_';
-        }
-    }
-
     return result;
 }
 
-std::string getMangledModulePath(SemaContext& ctx) {
-    if (!ctx.currentModule) {
-        return "global";
-    }
-
-    std::string path = ctx.pool.lookup(ctx.currentModule->filePath);
-
-    // Replace path separators and dots with underscores
-    for (char& c : path) {
-        if (c == '/' || c == '\\' || c == '.') {
-            c = '_';
-        }
-    }
-
-    return path;
+/// The current module's path, sanitized for use in a mangled name.
+///
+/// The path is the module's file path relative to the package root
+/// (grammar §3.1). Path separators and dots are folded to underscores so
+/// the result is a valid identifier fragment.
+std::string mangledModulePath(SemaContext& ctx) {
+    if (!ctx.currentModule) return "global";
+    return sanitizeForMangledName(
+        ctx.pool.lookupView(ctx.currentModule->filePath));
 }
 
-// ─── Primitive Type Encoding ─────────────────────────────────────────────
-
-char encodePrimitiveKind(PrimitiveKind kind) {
-    switch (kind) {
-        case PrimitiveKind::Bool:   return 'b';
-        case PrimitiveKind::Int8:   return 'c';  // char
-        case PrimitiveKind::Int16:  return 's';
-        case PrimitiveKind::Int32:  return 'i';
-        case PrimitiveKind::Int64:  return 'l';
-        case PrimitiveKind::Uint8:  return 'h';  // unsigned char
-        case PrimitiveKind::Uint16: return 't';  // unsigned short
-        case PrimitiveKind::Uint32: return 'u';
-        case PrimitiveKind::Uint64: return 'm';  // unsigned long
-        case PrimitiveKind::Byte:   return 'c';
-        case PrimitiveKind::Short:  return 's';
-        case PrimitiveKind::Int:    return 'i';
-        case PrimitiveKind::Long:   return 'l';
-        case PrimitiveKind::Ubyte:  return 'h';
-        case PrimitiveKind::Ushort: return 't';
-        case PrimitiveKind::Uint:   return 'u';
-        case PrimitiveKind::Ulong:  return 'm';
-        case PrimitiveKind::Float:  return 'f';
-        case PrimitiveKind::Double: return 'd';
-        case PrimitiveKind::Decimal:return 'D';
-        case PrimitiveKind::String: return 'S';
-        case PrimitiveKind::Char:   return 'C';
-        default:                    return '?';
-    }
-}
-
-// ─── Generic Instantiation Mangling ──────────────────────────────────────
-
-InternedString generateMangledNameForGeneric(
-    DeclAST* decl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx)
-{
-    if (!decl || typeArgs.empty()) {
-        return InternedString(0);
-    }
-
-    // NOTE: `decl->isExported` is deliberately NOT consulted here. A
-    // specialization is a distinct symbol with its own concrete signature
-    // and must remain distinct. The template's exported-ness — even if we
-    // were to give it meaning — does not transfer to its specializations,
-    // because a C caller naming the specialization would need to know the
-    // concrete type arguments, at which point the source name alone is
-    // meaningless. Exporting a generic is effectively a no-op; see the
-    // FuncDeclAST overload of generateMangledName.
-
+/// Build a mangled name from a module path and a sanitized declaration
+/// name. The `_L` prefix marks the name as a Lucid-mangled symbol; the
+/// `_` separates the module path from the declaration name.
+InternedString buildMangled(const std::string& modulePath,
+                            std::string_view name,
+                            SemaContext& ctx) {
     std::string result;
-
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-
-    // ─── 2. Declaration name ──────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-
-    // ─── 3. Generic arguments (concrete types) ──────────────────────────
-    result += "_G";
-    for (size_t i = 0; i < typeArgs.size(); ++i) {
-        if (i > 0) result += "_";
-        result += typeToMangleString(typeArgs[i], ctx);
-    }
-
-    // ─── 4. For functions, also encode parameter and return types ──────
-    if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        GenericSubstitution subst{funcDecl->genericParams, typeArgs};
-
-        // Parameter types (substituted)
-        result += "_P";
-        FuncTypeAST* funcType = funcDecl->funcType;
-        while (funcType) {
-            for (ParamAST* param : funcType->params) {
-                if (param->type) {
-                    result += typeToMangleStringSubstituted(
-                        param->type, subst, ctx);
-                }
-            }
-            funcType = funcType->getNext();
-        }
-
-        // Return type (substituted)
-        if (funcDecl->funcType->returnType) {
-            result += "_R" + typeToMangleStringSubstituted(
-                funcDecl->funcType->returnType, subst, ctx);
-        } else {
-            result += "_RV";
-        }
-    }
-
-    // ─── 5. For structs, encode field types ──────────────────────────────
-    if (decl->isa<StructDeclAST>()) {
-        StructDeclAST* structDecl = decl->as<StructDeclAST>();
-        GenericSubstitution subst{structDecl->genericParams, typeArgs};
-
-        result += "_F";
-        for (FieldDeclAST* field : structDecl->fields) {
-            if (field->type) {
-                result += typeToMangleStringSubstituted(
-                    field->type, subst, ctx);
-            }
-        }
-    }
-
-    return ctx.pool.intern("_L" + result);
+    result.reserve(2 + modulePath.size() + 1 + name.size());
+    result += "_L";
+    result += modulePath;
+    result += "_";
+    result += name;
+    return ctx.pool.intern(result);
 }
 
-} // namespace sema
+} // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// generateMangledName — FuncDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+InternedString generateMangledName(FnDeclAST* decl, SemaContext& ctx) {
+    if (!decl) return InternedString{};
+
+    // ─── @export: the symbol is the source name ─────────────────────────
+    //
+    // An `@export`ed function's symbol is exactly the name the user
+    // wrote. No prefix, no module path. The host looks up `onTick` by
+    // the name `onTick`, and the bytecode module's symbol table must
+    // resolve that name to this function.
+    //
+    // A host-bound function without `@export` uses the same mangled
+    // shape as a Lucid-bodied function. The `hostName` field is the
+    // name in the *native* symbol table; the mangled name is the name
+    // in the bytecode module's symbol table. The two are independent.
+    if (decl->isExported) {
+        return decl->name;
+    }
+
+    // ─── Non-exported: `_L<module-path>_<name>` ─────────────────────────
+    std::string name = sanitizeForMangledName(ctx.pool.lookupView(decl->name));
+    return buildMangled(mangledModulePath(ctx), name, ctx);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// generateMangledName — VarDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx) {
+    if (!decl) return InternedString{};
+
+    if (decl->isExported) {
+        return decl->name;
+    }
+
+    std::string name = sanitizeForMangledName(ctx.pool.lookupView(decl->name));
+    return buildMangled(mangledModulePath(ctx), name, ctx);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// generateMangledName — TableDeclAST
+// ─────────────────────────────────────────────────────────────────────────────
+
+InternedString generateMangledName(TableDeclAST* decl, SemaContext& ctx) {
+    if (!decl) return InternedString{};
+
+    // A table's `@export` semantics differ slightly from a function's.
+    //
+    // For a function, `@export` means "the host can look this function
+    // up by the name written in source". The mangled name is the source
+    // name and the host's lookup is a plain string match.
+    //
+    // For a table, `@export` means "other modules (Tier 2 in particular)
+    // can see this table". The `@export`-based visibility is what
+    // `resolveModuleMemberAccess` checks, not the mangled name. But the
+    // mangled name still has to exist and still has to be unique across
+    // the loaded module set, because the bytecode module's table
+    // registry keys on it.
+    //
+    // The short-circuit here uses the source name for consistency with
+    // functions and variables. If a future design wants tables to have
+    // module-qualified symbols even when exported (to disambiguate two
+    // exported tables of the same name in different modules), the
+    // short-circuit can be removed without touching anything else.
+    if (decl->isExported) {
+        return decl->name;
+    }
+
+    std::string name = sanitizeForMangledName(ctx.pool.lookupView(decl->name));
+    return buildMangled(mangledModulePath(ctx), name, ctx);
+}
+
+} // namespace lucid::sema

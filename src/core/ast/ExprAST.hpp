@@ -300,24 +300,34 @@ struct FieldAccessExprAST : ExprAST {
     const InternedString fieldName;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
-    /// True if the object resolved to a module name. Sema sets this;
-    /// when true, `fieldName` names an exported member of that module.
     bool isModuleAccess = false;
+    bool isTableMethod  = false;
+    bool isColumnView   = false;
 
-    /// True if the object resolved to a table's name and the field
-    /// resolved to a built-in table method (`ADD`, `FIND`, `COUNT`, ...).
-    /// Sema sets this when the object is a table name and the field is
-    /// a recognized method.
-    bool isTableMethod = false;
+    /// True if the access is a fixed-table member reference
+    /// (`Direction.North`). Set by `resolveTableMemberAccess` when the
+    /// field name matches a row's first string cell in a
+    /// `@fixed`/`@readonly` table.
+    bool isFixedRowSugar = false;
 
-    /// True if the object resolved to a table's name and the field
-    /// resolved to a column. Sema sets this when the access produces a
-    /// column view.
-    bool isColumnView = false;
+    /// True if the access is a generated primary-key lookup
+    /// (`Person.byId`). Set by `tryResolveByColumnLookup`.
+    bool isPrimaryLookup = false;
 
-    /// The resolved column, when the access is a column view or a cell
-    /// access. Null for a module member access.
+    /// The resolved column, when the access is a cell access or a
+    /// column view. Null otherwise.
     ColumnDeclAST* resolvedColumn = nullptr;
+
+    /// The resolved declaration, when the access is a module member
+    /// access. Null otherwise.
+    ///
+    /// A module member access (`math.sqrt`) resolves to the exported
+    /// member's `ValueDeclAST`. A table method (`Person.ADD`) leaves
+    /// this null — the method has no declaration node; its identity is
+    /// on `isTableMethod` and `fieldName`. A cell access
+    /// (`row.name`) leaves this null and sets `resolvedColumn`
+    /// instead.
+    DeclAST* resolvedDecl = nullptr;
 
     FieldAccessExprAST(InternedString f)
         : ExprAST(ASTKind::FieldAccessExpr), fieldName(f) {}

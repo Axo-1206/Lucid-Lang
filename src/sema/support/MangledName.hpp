@@ -1,112 +1,85 @@
-/// @file sema/support/MangledName.hpp
+/// @file MangledName.hpp
 /// @brief Mangled name generation for declarations.
 ///
-/// ─── Export Behavior ─────────────────────────────────────────────────────
+/// ─── What this file produces ──────────────────────────────────────────────
+/// Every top-level declaration that survives to the bytecode module gets
+/// a symbol name. The name is what the bytecode's symbol table stores,
+/// what `HostSymbolTable` maps to native addresses, and what a future
+/// `.lucb` serializer writes into the artifact.
 ///
-/// A declaration carrying `@[export]` has `decl->isExported == true` (set by
-/// Sema's attribute validator). For functions and variables, the mangled
-/// name is exactly the source name: no module path, no signature suffix.
-/// That is what makes the symbol `main` from `@[export] const main` findable
-/// by the C runtime and by `InterpreterProgram::run`'s entry-point lookup.
+/// Two shapes:
 ///
-/// Structs and enums deliberately keep their fully-mangled names even when
-/// `@[export]`ed. For structs the reason is concrete: getStructType uses
-/// the mangled name as the LLVM struct's name and looks it up via
-/// `StructType::getTypeByName`, which is scoped to the shared LLVMContext;
-/// a source-named exported struct would alias any same-named struct in
-/// another module. See the StructDeclAST overload below for the full case.
+///   - **An `@export`ed declaration** gets its source name verbatim.
+///     This is the whole point of `@export`: the host knows a function
+///     as `main` or `onTick`, and the symbol the compiled artifact
+///     exposes for it must be exactly that name. No prefix, no
+///     signature encoding, no module path.
 ///
-/// Enums do not yet have an LLVM type name of their own (getEnumType
-/// returns a bare IntegerType interned by bit width), so the struct
-/// hazard does not apply to them today. They are kept mangled anyway to
-/// preserve the cross-declaration "every mangled name is unique" invariant,
-/// which a future tagged-union enum lowering would rely on.
+///   - **A non-exported declaration** gets a mangled name of the form
+///     `_L<module-path>_<name>`. The module path is the file path
+///     relative to the package root, with `/`, `\`, and `.` folded to
+///     `_`. The result is unique across the loaded module set: two
+///     modules each declaring a private `helper` produce
+///     `_Lfoo_bar_helper` and `_Lbaz_qux_helper`, and the two do not
+///     collide.
+///
+/// ─── What this file does NOT do (vs. the previous design) ─────────────────
+/// No signature encoding. The old grammar needed `_P<params>_R<return>`
+/// on a function's mangled name because two functions of the same name
+/// could coexist in one module (overloading by parameter type). The new
+/// grammar forbids redeclaration — a module's top-level names are unique
+/// — so the name itself already disambiguates. The signature suffix is
+/// gone.
+///
+/// No generic-instantiation form. The new grammar has no generics, so
+/// there is no `generateMangledNameForGeneric`, no substitution walk,
+/// no type-argument encoding. Every declaration is concrete.
+///
+/// No struct/enum overloads. The new grammar has neither. A table is
+/// the only user-declarable type, and its mangled name follows the same
+/// `_L<module>_<name>` shape as a non-exported function.
 
 #pragma once
 
-#include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
 #include "core/memory/InternedString.hpp"
-#include "core/memory/ArenaSpan.hpp"
-#include "../context/SemaContext.hpp"
-#include "../context/Generic.hpp"
 
 #include <string>
 
-namespace sema {
+namespace lucid::sema {
 
-// ─── Declaration Mangling ─────────────────────────────────────────────────
+struct SemaContext;   // forward declaration; defined in SemaContext.hpp
 
-/// @brief Generate a mangled name for a function declaration.
-///
-/// If `decl->isExported`, returns `decl->name` unchanged.
-/// Otherwise returns the full `_L<module>_<name>_P<params>_R<return>` form.
-///
-/// For a generic function template, this produces the *template's* name.
-/// Export-aware mangling returns the source name for the template; each
-/// specialization still receives its own mangled name from
-/// generateMangledNameForGeneric. The template itself is never emitted to
-/// LLVM IR, so an exported generic function's source-named symbol does not
-/// exist at runtime — a limitation worth a diagnostic if `@[export]` on a
-/// generic function ever becomes a real use case.
-InternedString generateMangledName(FuncDeclAST* decl, SemaContext& ctx);
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-declaration entry points
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Generate a mangled name for a variable declaration.
+/// @brief Mangled name for a `FN` declaration.
 ///
-/// If `decl->isExported`, returns `decl->name` unchanged.
+/// An `@export`ed function's mangled name is `decl->name` (the source
+/// name). A non-exported function's mangled name is
+/// `_L<module-path>_<name>`.
+///
+/// The return value is always a valid `InternedString` — the empty
+/// interned string is returned only if `decl` is null or the module's
+/// path is empty, both of which are compiler bugs.
+InternedString generateMangledName(FnDeclAST* decl, SemaContext& ctx);
+
+/// @brief Mangled name for a top-level `let`/`const` declaration.
+///
+/// Same shape as a function's: exported → source name, non-exported →
+/// `_L<module-path>_<name>`. A local `let` never reaches this function;
+/// the `@export` attribute is rejected on a local by
+/// `AttributeValidator`, and a non-exported local has no symbol to
+/// publish.
 InternedString generateMangledName(VarDeclAST* decl, SemaContext& ctx);
 
-/// @brief Generate a mangled name for a struct declaration.
+/// @brief Mangled name for a `TABLE` declaration.
 ///
-/// Does NOT honor `decl->isExported` — see the file-level comment.
-InternedString generateMangledName(StructDeclAST* decl, SemaContext& ctx);
+/// Same shape as a function's. The table's mangled name is what the
+/// bytecode module's table registry uses to reference the table across
+/// modules, and what a future `.lucb` serializer writes into the
+/// artifact.
+InternedString generateMangledName(TableDeclAST* decl, SemaContext& ctx);
 
-/// @brief Generate a mangled name for an enum declaration.
-///
-/// Does NOT honor `decl->isExported` — see the file-level comment.
-InternedString generateMangledName(EnumDeclAST* decl, SemaContext& ctx);
-
-// ─── Generic Instantiation Mangling ──────────────────────────────────────
-
-/// @brief Generate a full mangled name for a generic instantiation.
-///
-/// This is the PRIMARY entry point for generic instantiation mangling.
-/// It generates the full symbol name including:
-///   - Module path
-///   - Declaration name
-///   - Generic parameters (the template params)
-///   - Concrete type arguments
-///   - Parameter types (substituted)
-///   - Return type (substituted)
-///   - Field types for structs (substituted)
-///
-/// Does NOT consult `isExported`. A specialization is a distinct symbol
-/// and must remain distinct; the template's exported-ness is irrelevant
-/// to the specialization's name.
-///
-/// @param decl The generic declaration (function or struct).
-/// @param typeArgs The concrete type arguments.
-/// @param ctx The semantic context.
-/// @return The full mangled name as an InternedString.
-InternedString generateMangledNameForGeneric(
-    DeclAST* decl,
-    const ArenaSpan<TypeAST*>& typeArgs,
-    SemaContext& ctx
-);
-
-// ─── Core Encoding Functions ─────────────────────────────────────────────
-
-/// @brief Encode a type to a mangled string.
-std::string typeToMangleString(TypeAST* type, SemaContext& ctx);
-
-/// @brief Sanitize a string for use in a mangled name.
-std::string sanitizeForMangledName(const std::string& str);
-
-/// @brief Get the module path for mangling.
-std::string getMangledModulePath(SemaContext& ctx);
-
-/// @brief Encode a primitive kind to a single character.
-char encodePrimitiveKind(PrimitiveKind kind);
-
-} // namespace sema
+} // namespace lucid::sema

@@ -1,628 +1,598 @@
 /// @file SemaStmt.cpp
-/// @brief Implements Sema.hpp's "STATEMENTS - Control flow analysis" section.
-/// 
-/// This file handles Phase 2: Type resolution and validation for statements.
-/// All names are already registered from Phase 1, so lookups will succeed.
-/// 
-/// @architectural_note Control Flow Analysis
-///   Each statement resolver returns a boolean indicating whether the statement
-///   guarantees control transfer out of the enclosing block (return, break,
-///   continue, or a block whose last statement guarantees it).
-/// 
-/// @architectural_note RAII Guards
-///   All scope and context management is done via RAII guards to ensure
-///   proper cleanup even when errors occur.
-/// 
-/// @architectural_note Const Evaluation Integration
-///   Const evaluation is used for constant folding and dead code elimination.
-///   - If conditions with constant booleans: only resolve the taken branch
-///   - While conditions with constant false: warn about unreachable body
-///   - For loop ranges with constant bounds: validate range at compile time
+/// @brief Statement resolution and control-flow analysis.
+///
+/// ─── The return protocol ──────────────────────────────────────────────────
+/// `resolveStmt` and its per-kind helpers return a `bool` that answers
+/// one question: "does this statement guarantee that control transfers
+/// out of the enclosing block?" A `return`, `break`, `continue`, or a
+/// block whose last reachable statement transfers all return `true`.
+/// Everything else returns `false`.
+///
+/// The protocol is used two ways:
+///   - Inside a block, to detect unreachable code — a statement after a
+///     statement that returns `true` is unreachable, and Sema warns.
+///   - At the end of a function body, to check that a value-returning
+///     function returns on every path. `resolveFnBody` calls
+///     `resolveStmt` on the body block; the return value answers "does
+///     the function's last reachable statement transfer?".
+///
+/// ─── Context management ───────────────────────────────────────────────────
+/// Every per-kind resolver that opens a syntactic context pushes a frame
+/// through an RAII guard and lets the destructor pop it. The frame kinds
+/// are:
+///
+///   Block       — pushed by `resolveBlock`, holds pending inverse
+///                 narrowing for a standalone `if x == nil { return }`.
+///   IfStmt      — pushed by `resolveIfStmt`, holds the pending
+///                 narrowing set during condition analysis.
+///   LoopBody    — pushed by `resolveWhileStmt` and `resolveForStmt`.
+///   SwitchBody  — pushed by `resolveSwitchStmt`.
+///
+/// `ScopedFunction` (in `SemaContext.hpp`) pushes `FuncBody` or
+/// `SequenceBody`, but that happens in `resolveFnBody`, not here.
+///
+/// ─── The sequence suspend points ──────────────────────────────────────────
+/// The five `wait*` statements are only legal inside a `@sequence`
+/// function's body. The parser produces them anywhere and Sema rejects
+/// them outside a sequence. This file resolves them; the sequence
+/// rules that need the surrounding signature or the enclosing call
+/// sites live in `SequenceChecker` and are invoked from elsewhere.
 
-#include "../Sema.hpp"
-#include "../context/SemaContext.hpp"
-#include "../const_eval/ConstEvaluator.hpp"
-#include "core/ast/StmtAST.hpp"
-#include "core/ast/ExprAST.hpp"
-#include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
+#include "sema/Sema.hpp"
+#include "sema/context/SemaContext.hpp"
+#include "sema/const_eval/ConstEvaluator.hpp"
+#include "sema/support/TypeNarrowHelpers.hpp"
+#include "sema/types/SemaType.hpp"
+
 #include "core/ASTStrings.hpp"
-#include "../support/CaptureAnalysis.hpp"
-#include "../support/Truthiness.hpp"
+#include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
+#include "core/ast/StmtAST.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
-namespace sema {
+using namespace lucid::diag;
 
-// =============================================================================
-// resolveStmt - Dispatch
-// =============================================================================
+namespace lucid::sema {
+
+// ═════════════════════════════════════════════════════════════════════════════
+// resolveStmt — dispatcher
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveStmt(StmtAST* stmt, SemaContext& ctx) {
     if (!stmt || stmt->hasSyntaxError) return false;
 
     switch (stmt->kind) {
-        case ASTKind::BlockStmt:        return resolveBlock(stmt->as<BlockStmtAST>(), ctx);
-        case ASTKind::IfStmt:           return resolveIfStmt(stmt->as<IfStmtAST>(), ctx);
-        case ASTKind::SwitchStmt:       return resolveSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
-        case ASTKind::ForStmt:          return resolveForStmt(stmt->as<ForStmtAST>(), ctx);
-        case ASTKind::WhileStmt:        return resolveWhileStmt(stmt->as<WhileStmtAST>(), ctx);
-        case ASTKind::DoWhileStmt:      return resolveDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
-        case ASTKind::ReturnStmt:       return resolveReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
-        case ASTKind::BreakStmt:        return resolveBreakStmt(stmt->as<BreakStmtAST>(), ctx);
-        case ASTKind::ContinueStmt:     return resolveContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
-        case ASTKind::ExprStmt:         return resolveExprStmt(stmt->as<ExprStmtAST>(), ctx);
-        case ASTKind::DeclStmt:         return resolveDeclStmt(stmt->as<DeclStmtAST>(), ctx);
-        case ASTKind::AsyncStmt:        return resolveAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
-        case ASTKind::AwaitStmt:        return resolveAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
-        case ASTKind::SpawnStmt:        return resolveSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
-        case ASTKind::JoinStmt:         return resolveJoinStmt(stmt->as<JoinStmtAST>(), ctx);
+        case ASTKind::BlockStmt:      return resolveBlock      (stmt->as<BlockStmtAST>(),      ctx);
+        case ASTKind::IfStmt:         return resolveIfStmt     (stmt->as<IfStmtAST>(),         ctx);
+        case ASTKind::SwitchStmt:     return resolveSwitchStmt (stmt->as<SwitchStmtAST>(),     ctx);
+        case ASTKind::WhileStmt:      return resolveWhileStmt  (stmt->as<WhileStmtAST>(),      ctx);
+        case ASTKind::ForStmt:        return resolveForStmt    (stmt->as<ForStmtAST>(),        ctx);
+        case ASTKind::ReturnStmt:     return resolveReturnStmt (stmt->as<ReturnStmtAST>(),     ctx);
+        case ASTKind::BreakStmt:      return resolveBreakStmt  (stmt->as<BreakStmtAST>(),      ctx);
+        case ASTKind::ContinueStmt:   return resolveContinueStmt(stmt->as<ContinueStmtAST>(),  ctx);
+        case ASTKind::ExprStmt:       return resolveExprStmt   (stmt->as<ExprStmtAST>(),       ctx);
+        case ASTKind::VarDeclStmt:    return resolveVarDeclStmt(stmt->as<VarDeclStmtAST>(),    ctx);
+        case ASTKind::AssignStmt:     return resolveAssignStmt (stmt->as<AssignStmtAST>(),     ctx);
+
+        // Sequence suspend points
+        case ASTKind::WaitStmt:           return resolveWaitStmt          (stmt->as<WaitStmtAST>(),           ctx);
+        case ASTKind::WaitFramesStmt:     return resolveWaitFramesStmt    (stmt->as<WaitFramesStmtAST>(),     ctx);
+        case ASTKind::WaitUntilStmt:      return resolveWaitUntilStmt     (stmt->as<WaitUntilStmtAST>(),      ctx);
+        case ASTKind::WaitForEventStmt:   return resolveWaitForEventStmt  (stmt->as<WaitForEventStmtAST>(),   ctx);
+        case ASTKind::WaitForRequestStmt: return resolveWaitForRequestStmt(stmt->as<WaitForRequestStmtAST>(), ctx);
+
         default:
+            // A statement kind that the dispatcher does not handle means
+            // a new statement form was added without extending this
+            // function — a compiler bug, not a user error.
+            AST_ASSERT_MSG(false,
+                "resolveStmt: unrecognized StmtAST kind");
             return false;
     }
 }
 
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 // resolveBlock
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveBlock(BlockStmtAST* block, SemaContext& ctx) {
     if (!block) return false;
 
-    // ─── RAII: Push block context ──────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::Block, block);
+    // ─── Push the block context ─────────────────────────────────────────
+    //
+    // The `Block` context frame carries the block's pending inverse
+    // narrowing, set by a preceding standalone `if x == nil { return }`.
+    // When the block is entered, this frame is the innermost `Block`,
+    // and `hasPendingInverseNarrowing` reports whether there is one to
+    // apply.
+    ScopedContext blockCtx(ctx, ContextKind::Block, block);
 
-    bool transfers = false;
-    bool hasAppliedPendingNarrowing = false;
-
-    // Apply pending inverse narrowing
+    // ─── Apply pending inverse narrowing ────────────────────────────────
+    //
+    // A standalone `if x == nil { return }` inside this block, in an
+    // earlier statement, has stored its inverse (x is non-nil after the
+    // if) on this frame. Apply it before resolving the block's body so
+    // subsequent statements see `x` as narrowed.
+    //
+    // The narrowing level is pushed here and popped before the function
+    // returns. It is a separate scope from the block's own `SymbolScope`
+    // — the narrowing is flow state, not name binding.
+    bool appliedPendingNarrowing = false;
     if (ctx.stack.hasPendingInverseNarrowing()) {
-        const NarrowingInfo& pendingInfo = ctx.stack.getPendingInverseNarrowing();
-        if (pendingInfo.hasNarrowing) {
-            ctx.stack.pushNarrowingLevel(true);
-            for (const auto& [varName, narrowedType] : pendingInfo.narrowings) {
-                ctx.stack.narrowVariable(varName, narrowedType);
+        const NarrowingInfo& pending = ctx.stack.getPendingInverseNarrowing();
+        if (pending.hasNarrowing) {
+            ctx.stack.pushNarrowingLevel(/*isInverse=*/true);
+            for (const auto& [name, type] : pending.narrowings) {
+                ctx.stack.narrowVariable(name, type);
             }
             ctx.stack.clearPendingInverseNarrowing();
-            hasAppliedPendingNarrowing = true;
+            appliedPendingNarrowing = true;
         }
     }
 
-    // ─── RAII: Push a new scope for the block ──────────────────────────────
+    // ─── Push the block's lexical scope ─────────────────────────────────
+    //
+    // Names declared inside the block — including local `let`s — are
+    // visible only until the block's closing brace. The scope is popped
+    // by the guard's destructor on any return path.
     SymbolScope scope(ctx);
 
     // ─── Resolve each statement ─────────────────────────────────────────
+    //
+    // The first statement that transfers control makes every following
+    // statement unreachable. Report one warning per unreachable
+    // statement (with a break after the first to avoid a cascade in a
+    // long dead tail) and stop resolving the block.
+    bool transfers = false;
     for (StmtAST* stmt : block->stmts) {
+        if (!stmt) continue;
+
         if (transfers) {
-            ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt, "unreachable code");
-            continue;
-        }
-        transfers = resolveStmt(stmt, ctx);
-        if (transfers) {
+            ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt,
+                                    "unreachable code");
             break;
         }
+
+        transfers = resolveStmt(stmt, ctx);
     }
 
-    // Check for unresolved async/spawn operations
-    for (const InternedString& name : ctx.getPendingAsyncNames()) {
-        ctx.diagnostics.warning(DiagCode::Warn_UnawaitedAsync, block,
-                                "async '", ctx.pool.lookup(name), "' was never awaited");
-    }
-
-    for (const InternedString& name : ctx.getPendingSpawnNames()) {
-        ctx.diagnostics.warning(DiagCode::Warn_UnjoinedSpawn, block,
-                                "spawn '", ctx.pool.lookup(name), "' was never joined");
-    }
-
-    // ─── Pop pending narrowing level ──────────────────────────────────────
-    if (hasAppliedPendingNarrowing) {
+    // ─── Pop the narrowing level ────────────────────────────────────────
+    if (appliedPendingNarrowing) {
         ctx.stack.popNarrowingLevel();
     }
 
     return transfers;
 }
 
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 // resolveIfStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── RAII: Push if context ────────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::IfStmt, stmt);
-    ctx.stack.setHasElse(stmt->elseBranch != nullptr);
+    // ─── Push the if-statement context ──────────────────────────────────
+    //
+    // The `IfStmt` frame carries the pending narrowing set during
+    // condition analysis. `ScopedIfCondition` (below) is the guard that
+    // puts the frame in "condition-analysis mode" and reads the pending
+    // narrowing back out.
+    ScopedContext ifCtx(ctx, ContextKind::IfStmt, stmt);
 
-    // ─── RAII: ScopedIfCondition for narrowing detection ──────────────────
-    ScopedIfCondition ifContext(ctx, stmt->elseBranch != nullptr);
+    const bool hasElse = (stmt->elseBranch != nullptr);
 
-    // ─── Resolve condition without forcing it to bool ────────────────────
-    TypeAST* condType = resolveExpr(stmt->condition, ctx);
-
-    if (!condType || condType->isa<UnknownTypeAST>()) {
-        return false;
+    // ─── Resolve the condition ──────────────────────────────────────────
+    //
+    // Conditions are `bool` in the new grammar (§6.14). No truthiness.
+    // `resolveExprWithTarget` against the singleton `bool` type
+    // enforces the rule and produces a well-typed condition node.
+    //
+    // The narrowing detection that follows reads the condition tree —
+    // it wants to see the shape `x != nil` / `x == nil`, so it needs
+    // the tree's structure, not just its type. `ScopedIfCondition` sets
+    // a flag on the context stack that tells the binary-expression
+    // resolver "you are in an if-condition; detect narrowings". See
+    // `resolveBinaryExpr` for where the flag is read.
+    {
+        ScopedIfCondition ifCond(ctx, hasElse);
+        TypeAST* condType = resolveExprWithTarget(stmt->condition,
+                                                  ctx.getBoolType(), ctx);
+        if (!condType || condType->isa<UnknownTypeAST>()) {
+            return false;
+        }
+        // The narrowing analysis runs inside `resolveBinaryExpr` and
+        // stores its result on the frame via `setPendingNarrowing`.
+        // After `ScopedIfCondition`'s guard scope ends, the flag is
+        // cleared but the pending-narrowing data survives on the frame.
     }
 
-    // ─── CONST EVALUATION: Try to evaluate the condition at compile time ──
-    bool condIsConst = false;
-    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
+    const NarrowingInfo info = ctx.stack.getPendingNarrowing();
+    const bool hasNarrowing = info.hasNarrowing;
 
-    // ─── Extract narrowing info from the condition ─────────────────────────
-    NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
-    bool hasNarrowing = info.hasNarrowing;
-
-    // ─── If condition is compile-time constant, only resolve the taken branch ──
-    if (condIsConst) {
-        if (condValue) {
-            // ─── Condition is always true: only resolve then branch ──────
-            if (stmt->thenBranch) {
-                if (hasNarrowing && !info.isEquality) {
-                    ScopedNarrowing narrowing(ctx, info.narrowings, false);
-                    return resolveStmt(stmt->thenBranch, ctx);
-                }
-                return resolveStmt(stmt->thenBranch, ctx);
-            }
-            return false;
+    // ─── Resolve the then-branch ────────────────────────────────────────
+    //
+    // If the condition narrowed a variable (e.g. `x != nil`), the
+    // then-branch sees the narrowed type. The `ScopedNarrowing` guard
+    // pushes a narrowing level with the narrowings applied; the level
+    // pops when the guard's destructor fires, which is after the
+    // then-branch has been resolved.
+    //
+    // The `isInverse` flag is `false` for a `!=` condition: the direct
+    // narrowing (x is non-nil) applies in the then-branch.
+    bool thenTransfers = false;
+    {
+        if (hasNarrowing && !info.isEquality) {
+            ScopedNarrowing narrowing(ctx, info.narrowings, /*isInverse=*/false);
+            thenTransfers = resolveStmt(stmt->thenBranch, ctx);
         } else {
-            // ─── Condition is always false: only resolve else branch ──────
-            if (stmt->elseBranch) {
-                if (stmt->elseBranch->isa<IfStmtAST>()) {
-                    return resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
-                }
-                if (hasNarrowing && info.isEquality) {
-                    ScopedNarrowing narrowing(ctx, info.narrowings, true);
-                    return resolveStmt(stmt->elseBranch, ctx);
-                }
-                return resolveStmt(stmt->elseBranch, ctx);
-            }
-            return false;
+            thenTransfers = resolveStmt(stmt->thenBranch, ctx);
         }
     }
 
-    // ─── Condition is runtime: resolve both branches ──────────────────────
-    bool thenReturns = false;
-
-    if (hasNarrowing && !info.isEquality) {
-        ScopedNarrowing narrowing(ctx, info.narrowings, false);
-        thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
-    } else {
-        thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
-    }
-
+    // ─── Resolve the else-branch ────────────────────────────────────────
+    //
+    // The `isInverse` flag is `true` for an `==` condition: the inverse
+    // narrowing (x is non-nil in the else-branch of `x == nil`) applies
+    // there.
+    //
+    // `else if` chains: an else branch that is itself an `IfStmtAST` is
+    // resolved by recursing into `resolveIfStmt`, which pushes its own
+    // `IfStmt` frame.
+    bool elseTransfers = false;
     if (stmt->elseBranch) {
-        bool elseReturns = false;
-
         if (stmt->elseBranch->isa<IfStmtAST>()) {
-            elseReturns = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
+            elseTransfers = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
+        } else if (hasNarrowing && info.isEquality) {
+            ScopedNarrowing narrowing(ctx, info.narrowings, /*isInverse=*/true);
+            elseTransfers = resolveStmt(stmt->elseBranch, ctx);
         } else {
-            if (hasNarrowing && info.isEquality) {
-                ScopedNarrowing narrowing(ctx, info.narrowings, true);
-                elseReturns = resolveStmt(stmt->elseBranch, ctx);
-            } else {
-                elseReturns = resolveStmt(stmt->elseBranch, ctx);
-            }
-        }
-
-        if (thenReturns && elseReturns) {
-            return true;
+            elseTransfers = resolveStmt(stmt->elseBranch, ctx);
         }
     }
 
-    // ─── Handle inverse narrowing for standalone if ───────────────────────
-    if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
+    // ─── If both branches transfer, the if transfers ────────────────────
+    if (thenTransfers && elseTransfers) {
+        return true;
+    }
+
+    // ─── Pending inverse narrowing for a standalone if ──────────────────
+    //
+    // `if x == nil { return }` with no else: the then-branch transfers
+    // (it returns), so the code after the if sees `x` as non-nil. Store
+    // the inverse narrowing on the enclosing block's frame so the block
+    // can apply it to the rest of its statements.
+    //
+    // The condition must be `x == nil` for this to make sense — an
+    // `if x != nil { return }` transfers when x is *not* nil, and the
+    // code after sees x as `nil`, which is a different (and much less
+    // useful) fact. The `isEquality` flag distinguishes the two.
+    if (!hasElse && thenTransfers && hasNarrowing && info.isEquality) {
         ctx.stack.setPendingInverseNarrowing(info);
     }
 
     return false;
 }
 
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 // resolveSwitchStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The new grammar's switch is over a fixed-table row reference (`&T`
+// where T is a `@fixed` or `@readonly` table), or over a primitive
+// value. The fixed-table case gets a missing-member warning — not an
+// error — because the switch's `default` clause is always required, so
+// a missing case is never a correctness bug; it is a hint that the
+// switch may not have been updated when the table gained a row.
+//
+// This file holds the *body* of the fixed-table check inline. The check
+// is small enough that a separate `SwitchHelpers` file would be more
+// ceremony than the logic warrants. The old `SwitchHelpers` existed for
+// enum exhaustiveness, which the new grammar does not have.
 
 bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── Resolve subject expression ────────────────────────────────────────
+    // ─── Resolve the subject ────────────────────────────────────────────
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
+        ctx.diagnostics.error(DiagCode::Type_InvalidSwitchType, stmt->subject,
                               "switch subject has unknown type");
         return false;
     }
-    
-    // ─── Validate subject type ─────────────────────────────────────────────
-    if (!isValidSwitchType(subjectType, ctx)) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
-                              "switch subject must be integer, enum, bool, char, or string");
+
+    // ─── Validate the subject's type ────────────────────────────────────
+    //
+    // The subject must be a primitive (`int`, `bool`, `char`, `string`)
+    // or a `&T` for a `@fixed`/`@readonly` table `T`. Anything else —
+    // a bare table, a dynamic array, a function type, a `T?` — is a
+    // mismatch.
+    //
+    // The subject type is consulted again below to run the fixed-table
+    // check; the validation here is just the "is this legal at all?"
+    // gate.
+    //
+    // (The subject being a `&T` for a *growing* table is legal — the
+    // cases just cannot be compile-time constants, and each case value
+    // will fail its own constant-expression check when resolved. There
+    // is no reason to reject the switch shape itself.)
+    const bool subjectIsRowRef = isRowRefType(subjectType);
+    const bool subjectIsPrimitive =
+        isIntegerType(subjectType) || isBoolType(subjectType) ||
+        isCharType(subjectType)    || isStringType(subjectType);
+
+    if (!subjectIsRowRef && !subjectIsPrimitive) {
+        ctx.diagnostics.error(DiagCode::Type_InvalidSwitchType, stmt->subject,
+                              "switch subject must be a primitive or a "
+                              "row reference, got ",
+                              typeToString(subjectType, ctx.pool));
         return false;
     }
-    
-    // ─── RAII: Push switch context ─────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::SwitchBody, stmt);
-    
-    // ─── CONST EVALUATION: Try to evaluate subject at compile time ────────
-    ConstantValue subjectVal = ConstEvaluator::evaluate(ctx, stmt->subject);
-    bool subjectConst = subjectVal.isInt() || subjectVal.isBool() || subjectVal.isString();
-    
-    // ─── Validate cases ─────────────────────────────────────────────────────
-    bool allCasesReturn = true;
-    bool foundMatch = false;
-    
-    // ─── Track seen values for duplicate detection ─────────────────────────
-    // For literal values, store the raw value as key
-    std::unordered_map<InternedString, SourceLocation> seenLiterals;
-    // For enum variants, store the variant name
-    std::unordered_map<InternedString, SourceLocation> seenVariants;
-    // For ranges, store the range bounds
-    struct RangeKey {
-        int64_t lo;
-        int64_t hi;
-        bool isInclusive;
-        bool operator==(const RangeKey& other) const {
-            return lo == other.lo && hi == other.hi && isInclusive == other.isInclusive;
-        }
-    };
-    struct RangeKeyHash {
-        size_t operator()(const RangeKey& key) const {
-            return std::hash<int64_t>{}(key.lo) ^ 
-                   std::hash<int64_t>{}(key.hi) ^ 
-                   std::hash<bool>{}(key.isInclusive);
-        }
-    };
-    std::unordered_map<RangeKey, SourceLocation, RangeKeyHash> seenRanges;
-    
-    for (const SwitchCaseAST* caseStmt : stmt->cases) {
-        // Validate each case value against the subject type
-        for (ExprAST* value : caseStmt->values) {
+
+    // ─── Push the switch context ────────────────────────────────────────
+    ScopedContext switchCtx(ctx, ContextKind::SwitchBody, stmt);
+
+    // ─── Resolve each case ──────────────────────────────────────────────
+    //
+    // A case's body is a block; the case "transfers" if its block
+    // transfers. A switch transfers if every case (including `default`)
+    // transfers.
+    //
+    // Each case value is a constant expression (grammar §12.2):
+    // a literal, a fixed-table member reference (`Direction.North`), a
+    // small arithmetic combination of literals, or a range. The
+    // `resolveExprWithTarget` call below resolves each against the
+    // subject's type, which enforces "same-type as the subject" and
+    // also drives the fixed-row-sugar resolution for `Direction.North`
+    // (the field access classifier recognizes a fixed-table member
+    // access and resolves it to a compile-time row reference).
+    bool allCasesTransfer = true;
+    for (SwitchCaseAST* caseClause : stmt->cases) {
+        if (!caseClause) continue;
+
+        for (ExprAST* value : caseClause->values) {
             TypeAST* valueType = resolveExprWithTarget(value, subjectType, ctx);
             if (!valueType || valueType->isa<UnknownTypeAST>()) {
+                // The resolver already emitted a diagnostic.
                 continue;
             }
-            
-            if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
-                                      "case value is not compatible with switch subject type");
-            }
-            
-            // ─── DUPLICATE DETECTION ─────────────────────────────────────────
-            
-            // ─── Check literal values ──────────────────────────────────────
-            if (value->isa<LiteralExprAST>()) {
-                const LiteralExprAST* lit = value->as<LiteralExprAST>();
-                InternedString key = lit->value;
-                
-                // For integer literals, also check if they fall within any range
-                auto it = seenLiterals.find(key);
-                if (it != seenLiterals.end()) {
-                    ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
-                                          "duplicate case value '", ctx.pool.lookup(key), "'");
-                    ctx.diagnostics.noteAt(it->second, "previous definition here");
-                    return false;
-                }
-                seenLiterals[key] = value->loc;
+
+            // ─── Constant-ness check ────────────────────────────────────
+            //
+            // Every case value must be a compile-time constant. The
+            // constant evaluator tries to fold the expression; if the
+            // fold succeeds, `value->isConst` and `value->constValue`
+            // are populated, and the value is legal.
+            //
+            // The error here is `Type_Mismatch` rather than a dedicated
+            // code; the message names the rule.
+            ConstantValue folded = ConstEvaluator::evaluateExpr(value, ctx);
+            if (!folded.isEvaluated() || folded.isError()) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, value,
+                                      "case value must be a compile-time "
+                                      "constant expression");
                 continue;
-            }
-            
-            // ─── Check enum variants ──────────────────────────────────────
-            if (switch_helpers::isEnumVariantAccess(value, ctx)) {
-                InternedString variantName = switch_helpers::getEnumVariantName(value, ctx);
-                if (variantName.isValid()) {
-                    auto it = seenVariants.find(variantName);
-                    if (it != seenVariants.end()) {
-                        ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
-                                              "duplicate case value '", ctx.pool.lookup(variantName), "'");
-                        ctx.diagnostics.noteAt(it->second, "previous definition here");
-                        return false;
-                    }
-                    seenVariants[variantName] = value->loc;
-                }
-                continue;
-            }
-            
-            // ─── Check ranges ──────────────────────────────────────────────
-            if (value->isa<RangeExprAST>()) {
-                RangeExprAST* range = value->as<RangeExprAST>();
-                auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
-                auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
-                
-                if (loOpt.has_value() && hiOpt.has_value()) {
-                    RangeKey key{loOpt.value(), hiOpt.value(), !range->isExclusive};
-                    
-                    // Check for duplicate range
-                    auto it = seenRanges.find(key);
-                    if (it != seenRanges.end()) {
-                        ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
-                                              "duplicate range case");
-                        ctx.diagnostics.noteAt(it->second, "previous definition here");
-                        return false;
-                    }
-                    seenRanges[key] = value->loc;
-                    
-                    // ─── Check if this range overlaps with any literal ──────
-                    for (const auto& [litKey, loc] : seenLiterals) {
-                        // Try to parse the literal as an integer
-                        // This is a simplified check - only works for int literals
-                        std::string litStr = ctx.pool.lookup(litKey);
-                        try {
-                            int64_t litVal = std::stoll(litStr, nullptr, 0);
-                            bool overlaps = key.isInclusive 
-                                ? (litVal >= key.lo && litVal <= key.hi)
-                                : (litVal >= key.lo && litVal < key.hi);
-                            if (overlaps) {
-                                ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, value,
-                                                        "range case overlaps with literal case '", litStr, 
-                                                        "' - literal case is unreachable");
-                                break;
-                            }
-                        } catch (const std::exception&) {
-                            // Not an integer literal - skip
-                        }
-                    }
-                }
-                continue;
-            }
-            
-            // ─── CONST EVALUATION: Check if this case matches the subject ──
-            if (subjectConst && !foundMatch) {
-                bool matches = false;
-                
-                if (value->isa<RangeExprAST>()) {
-                    RangeExprAST* range = value->as<RangeExprAST>();
-                    auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
-                    auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
-                    if (loOpt.has_value() && hiOpt.has_value() && subjectVal.isInt()) {
-                        int64_t subj = subjectVal.asInt();
-                        bool isInclusive = !range->isExclusive;
-                        matches = isInclusive ? (subj >= loOpt.value() && subj <= hiOpt.value())
-                                              : (subj >= loOpt.value() && subj < hiOpt.value());
-                    }
-                } else if (subjectVal.isInt() && value->isa<LiteralExprAST>() && 
-                           value->as<LiteralExprAST>()->kind == LiteralKind::Int) {
-                    auto caseInt = ConstEvaluator::evaluateAsInt(ctx, value);
-                    if (caseInt.has_value() && caseInt.value() == subjectVal.asInt()) {
-                        matches = true;
-                    }
-                } else if (subjectVal.isBool() && value->isa<LiteralExprAST>()) {
-                    auto caseBool = ConstEvaluator::evaluateAsBool(ctx, value);
-                    if (caseBool.has_value() && caseBool.value() == subjectVal.asBool()) {
-                        matches = true;
-                    }
-                } else if (subjectVal.isString() && value->isa<LiteralExprAST>() &&
-                           value->as<LiteralExprAST>()->kind == LiteralKind::String) {
-                    auto caseStr = ConstEvaluator::evaluate(ctx, value);
-                    if (caseStr.isString() && 
-                        ctx.pool.lookup(caseStr.asString()) == ctx.pool.lookup(subjectVal.asString())) {
-                        matches = true;
-                    }
-                } else if (value->isa<FieldAccessExprAST>() && subjectVal.isEnum()) {
-                    // Enum variant case - check by comparing names
-                    // For now, skip enum const evaluation as it's more complex
-                }
-                
-                if (matches) {
-                    foundMatch = true;
-                }
             }
         }
-        
-        // Resolve case body
-        if (caseStmt->body) {
-            if (!resolveBlock(caseStmt->body, ctx)) {
-                allCasesReturn = false;
+
+        if (caseClause->body) {
+            if (!resolveBlock(caseClause->body, ctx)) {
+                allCasesTransfer = false;
             }
         }
     }
-    
-    // ─── Check exhaustiveness ──────────────────────────────────────────────
-    if (!stmt->defaultBody && isEnumType(subjectType, ctx)) {
-        switch_helpers::checkExhaustiveness(stmt, subjectType, ctx);
-    }
-    
-    // ─── Resolve default clause ────────────────────────────────────────────
+
+    // ─── Resolve the default clause ─────────────────────────────────────
+    //
+    // The default clause is always present (grammar §12.2 requires it),
+    // but the parser produces a placeholder block on a missing default
+    // and reports a syntax error. Resolving a placeholder block is
+    // harmless — it is empty — so the code does not need to guard
+    // against its presence.
     if (stmt->defaultBody) {
         if (!resolveBlock(stmt->defaultBody, ctx)) {
-            allCasesReturn = false;
+            allCasesTransfer = false;
         }
     }
-    
-    return allCasesReturn && (stmt->defaultBody || !isEnumType(subjectType, ctx));
+
+    // ─── Missing-member warning for a fixed-table subject ───────────────
+    //
+    // When the subject's type is `&T` and `T` is a `@fixed` or
+    // `@readonly` table, Sema checks the case values against the
+    // table's rows. If any row is not named by a case, warn.
+    //
+    // The check is decided by the case values that resolved to fixed
+    // rows — `FieldAccessExprAST` whose object is a table and whose
+    // field resolved to a fixed-row sugar. Each such case contributes
+    // its row to the covered set. After the loop, compare the covered
+    // set to the table's rows.
+    //
+    // The check is skipped silently if the subject is not a row
+    // reference, or if it is a row reference to a growing table (which
+    // has no fixed row set to check against).
+    if (subjectIsRowRef) {
+        checkFixedTableSwitchCoverage(stmt, subjectType, ctx);
+    }
+
+    // A switch with a default clause always has a fallback, so it
+    // transfers only if every case body transfers *and* the default
+    // body transfers. The `allCasesTransfer` flag folds the case check
+    // and the default check into one.
+    return allCasesTransfer;
 }
 
-// =============================================================================
-// resolveForStmt
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// checkFixedTableSwitchCoverage
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Helper for `resolveSwitchStmt`. Runs only when the subject is a row
+// reference. Looks through the switch's case values for fixed-row-sugar
+// accesses (the `Direction.North` form), collects the set of rows they
+// cover, and warns if any row of the subject's table is missing.
+//
+// The helper is a no-op when:
+//   - the subject is `&T` for a growing table (no fixed row set);
+//   - the subject is not a row reference at all (checked by the caller).
+//
+// It never emits an error, only a warning. The default clause is
+// mandatory, so a missing case is never a correctness bug.
 
-bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
-    if (!stmt) return false;
+void checkFixedTableSwitchCoverage(SwitchStmtAST* stmt,
+                                          TypeAST* subjectType,
+                                          SemaContext& ctx) {
+    if (!stmt || !subjectType) return;
+    if (!isRowRefType(subjectType)) return;
 
-    // ─── RAII: Push loop context ───────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::LoopBody, stmt->body);
+    RowRefTypeAST* rowRef = subjectType->as<RowRefTypeAST>();
+    if (!rowRef->inner || !rowRef->inner->isa<NamedTypeAST>()) return;
 
-    // ─── RAII: Push a scope for loop variables ─────────────────────────────
-    SymbolScope scope(ctx);
+    NamedTypeAST* named = rowRef->inner->as<NamedTypeAST>();
+    if (!named->resolvedDecl) return;
+    if (!named->resolvedDecl->isa<TableDeclAST>()) return;
 
-    // ─── Determine if this is a range loop or collection loop ─────────────
-    bool isRangeLoop = (stmt->valueVar == nullptr);
-    
-    if (isRangeLoop) {
-        // ─── Form 1: Range loop ─────────────────────────────────────────────
-        // for i int in 0..10 [..step]
-        
-        if (!stmt->iterable || !stmt->iterable->isa<RangeExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
-                                  "range loop requires a range expression (start..end)");
-            return false;
-        }
-        
-        RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
-        
-        // ─── Resolve AND REGISTER the index binding ──────────────────────
-        if (stmt->indexVar) {
-            TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
-            stmt->indexVar->resourceKind = classifyResourceKind(indexType);
-            ctx.insertValue(stmt->indexVar);
-            if (indexType && !isNumericType(indexType)) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
-                                      "index variable in range loop must be numeric, got ",
-                                      typeToString(indexType, ctx.pool));
-            }
-        }
-        
-        // ─── CONST EVALUATION: Validate range bounds at compile time ──────
-        auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
-        auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
-        
-        if (loOpt.has_value() && hiOpt.has_value()) {
-            int64_t lo = loOpt.value();
-            int64_t hi = hiOpt.value();
-            bool isInclusive = !range->isExclusive;
-            
-            // Validate range order
-            if (isInclusive && lo > hi) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, range,
-                                      "inclusive range start (", lo, 
-                                      ") must be less than or equal to end (", hi, ")");
-                return false;
-            }
-            if (!isInclusive && lo >= hi) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, range,
-                                      "exclusive range start (", lo, 
-                                      ") must be less than end (", hi, ")");
-                return false;
-            }
-            
-            // Warn about empty ranges
-            int64_t count = hi - lo + (isInclusive ? 1 : 0);
-            if (count <= 0) {
-                ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, range,
-                                        "range is empty - loop body will never execute");
-            }
-        }
-        
-        // ─── Resolve step ──────────────────────────────────────────────────
-        if (stmt->step) {
-            PrimitiveTypeAST* numericType = ctx.getIntType();
-            TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
-            if (!stepType || stepType->isa<UnknownTypeAST>()) {
-                // Error already reported
-            }
-            
-            // ─── CONST EVALUATION: Validate step at compile time ──────────
-            auto stepOpt = ConstEvaluator::evaluateAsInt(ctx, stmt->step);
-            if (stepOpt.has_value()) {
-                int64_t step = stepOpt.value();
-                if (step <= 0) {
-                    ctx.diagnostics.error(DiagCode::Sem_InvalidRange, stmt->step,
-                                          "step must be positive, got ", step);
-                    return false;
-                }
-            }
-        }
-        
-    } else {
-        // ─── Form 2: Collection loop ───────────────────────────────────────
-        // for i int, v V in collection
-        
-        if (stmt->step) {
-            // Step should have been rejected by the parser
-            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->step,
-                                  "step ('..') is not allowed in collection iteration");
-            return false;
-        }
-        
-        // ─── Resolve AND REGISTER the index binding ──────────────────────
-        if (stmt->indexVar) {
-            TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
-            stmt->indexVar->resourceKind = classifyResourceKind(indexType);
-            ctx.insertValue(stmt->indexVar);
-            if (indexType && !isIntegerType(indexType)) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
-                                      "index variable in collection loop must be integer, got ",
-                                      typeToString(indexType, ctx.pool));
-            }
-        }
-        
-        // ─── Resolve AND REGISTER the value binding ──────────────────────
-        if (stmt->valueVar) {
-            TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
-            stmt->valueVar->resourceKind = classifyResourceKind(valueType);
-            ctx.insertValue(stmt->valueVar);
-        }
-        
-        // ─── Resolve the iterable expression ──────────────────────────────
-        TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
-        if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
-                                  "iterable has unknown type");
-            return false;
-        }
-        
-        // ─── Validate value type against iterable element type ──────────
-        if (stmt->valueVar && iterableType->isa<ArrayTypeAST>()) {
-            ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
-            TypeAST* elementType = arrayType->element;
-            
-            if (stmt->valueVar->type) {
-                TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
-                if (valueType && !typesEqual(valueType, elementType)) {
-                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->valueVar,
-                                          "value type '", typeToString(valueType, ctx.pool),
-                                          "' does not match iterable element type '",
-                                          typeToString(elementType, ctx.pool), "'");
-                }
-            }
-        } else if (stmt->valueVar && !iterableType->isa<ArrayTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
-                                  "collection loop requires an array type, got ",
-                                  typeToString(iterableType, ctx.pool));
-            return false;
+    TableDeclAST* table = named->resolvedDecl->as<TableDeclAST>();
+
+    // Only fixed-row-set tables have a member list to check against.
+    if (!table->hasFixedRowSet()) return;
+
+    // A host-backed table has no rows in the source-language sense;
+    // its "rows" are opaque handles the script cannot name. Skip the
+    // coverage check for one.
+    if (table->isHostBacked) return;
+
+    // ─── Collect covered rows ───────────────────────────────────────────
+    //
+    // Each case value that resolved to a fixed-row sugar contributes
+    // its row's name (the field name of the `FieldAccessExprAST`) to
+    // the covered set. A case value that is not a fixed-row sugar
+    // (a literal in a primitive switch, or a range) contributes
+    // nothing — the missing-member check is about named rows, and a
+    // non-row case value cannot name a row.
+    //
+    // A range in a fixed-table switch is not meaningful (ranges match
+    // against integer values, not row identities), so it is ignored
+    // here. If a range ever becomes legal in a fixed-table switch, this
+    // helper would need to expand the range into individual rows before
+    // comparing.
+    std::unordered_set<InternedString> covered;
+    for (SwitchCaseAST* caseClause : stmt->cases) {
+        if (!caseClause) continue;
+        for (ExprAST* value : caseClause->values) {
+            if (!value) continue;
+            if (!value->isa<FieldAccessExprAST>()) continue;
+
+            FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
+            if (!field->isFixedRowSugar) continue;
+
+            covered.insert(field->fieldName);
         }
     }
 
-    // ─── Resolve the loop body ─────────────────────────────────────────────
-    if (stmt->body) {
-        resolveStmt(stmt->body, ctx);
+    // ─── Emit the warning if any row is missing ─────────────────────────
+    //
+    // Iterate the table's rows in declaration order, so the diagnostic
+    // names them in the order the source declared them. The warning is
+    // emitted once, on the switch statement, listing every missing row.
+    std::string missing;
+    bool anyMissing = false;
+    for (size_t i = 0; i < table->rows.size(); ++i) {
+        RowAST* row = table->rows[i];
+        if (!row) continue;
+
+        // The "name" of a row for the purposes of this check is the
+        // fixed-row sugar name — the identifier the user would write as
+        // `T.Member`. That name is the row's *first string column's
+        // value* (§7.1's fixed-table sugar rule).
+        //
+        // The parser stores the row's cells; the first cell's value is
+        // the row's name. If the first cell is a string literal and
+        // its value is interned, use it. If it is not (a row whose
+        // first column is not a string, or whose first cell is a
+        // non-literal), the row is not addressable by sugar and is
+        // skipped — the user cannot name it in a case, so it cannot be
+        // covered or missing.
+        if (row->cells.empty()) continue;
+        ExprAST* firstCell = row->cells[0];
+        if (!firstCell || !firstCell->isa<LiteralExprAST>()) continue;
+
+        LiteralExprAST* lit = firstCell->as<LiteralExprAST>();
+        if (lit->kind != LiteralKind::String &&
+            lit->kind != LiteralKind::RawString) {
+            continue;
+        }
+
+        InternedString rowName = lit->value;
+        if (covered.count(rowName)) continue;
+
+        if (anyMissing) missing += ", ";
+        missing += ctx.pool.lookup(rowName);
+        anyMissing = true;
     }
 
-    return false;
+    if (anyMissing) {
+        ctx.diagnostics.warning(DiagCode::Warn_SwitchMissingMember, stmt,
+                                "switch over '", ctx.pool.lookup(table->name),
+                                "' does not cover all rows (missing: ",
+                                missing, ")");
+        ctx.diagnostics.note(stmt,
+                             "a 'default' clause is present, so the switch "
+                             "still compiles; the warning is a hint that "
+                             "the switch may need updating if the table "
+                             "gains rows");
+    }
 }
 
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 // resolveWhileStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── RAII: Push loop context ───────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::LoopBody, stmt->body);
+    // ─── Push the loop context ──────────────────────────────────────────
+    //
+    // `LoopBody` is what `resolveBreakStmt` and `resolveContinueStmt`
+    // check for — a `break` outside a loop and outside a switch is an
+    // error.
+    ScopedContext loopCtx(ctx, ContextKind::LoopBody, stmt);
 
-    // ─── Resolve the condition without forcing it to bool ────────────────
-    TypeAST* condType = resolveExpr(stmt->condition, ctx);
-    
+    // ─── Resolve the condition ──────────────────────────────────────────
+    //
+    // A `while` condition is `bool`, same as an `if` condition. The
+    // condition is resolved against the singleton `bool` type.
+    TypeAST* condType = resolveExprWithTarget(stmt->condition,
+                                              ctx.getBoolType(), ctx);
     if (!condType || condType->isa<UnknownTypeAST>()) {
         return false;
     }
 
-    // ─── CONST EVALUATION: Check if condition is compile-time constant ────
-    bool condIsConst = false;
-    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
-
-    // ─── If condition is compile-time false, body is unreachable ──────────
-    if (condIsConst && !condValue) {
+    // ─── Compile-time condition folding ─────────────────────────────────
+    //
+    // A `while` whose condition folds to `false` at compile time has a
+    // body that never executes. Warn and skip the body (there is no
+    // point resolving unreachable code, and the `break`/`continue`
+    // diagnostics that would fire in the body would be spurious).
+    //
+    // A `while` whose condition folds to `true` is an infinite loop
+    // *unless* the body contains a `break`. Whether the body breaks is
+    // not something this pass can cheaply decide (it would require a
+    // full control-flow analysis that tracks `break` through nested
+    // blocks and switches). The compiler emits no diagnostic for an
+    // infinite `while`; the user is assumed to know what they wrote.
+    ConstantValue folded = ConstEvaluator::evaluateExpr(stmt->condition, ctx);
+    if (folded.isEvaluated() && folded.isBool() && !folded.asBool()) {
         ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt->body,
-                                "while loop condition is always false - body will never execute");
+                                "while loop condition is always false — "
+                                "body will never execute");
         return false;
     }
 
-    // ─── If condition is compile-time true, it's an infinite loop ─────────
-    if (condIsConst && condValue) {
-        ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt,
-                                "while loop condition is always true - infinite loop (no break)");
-        // Still resolve the body (it may have break/return)
-    }
-
-    // ─── Resolve the loop body ─────────────────────────────────────────────
+    // ─── Resolve the body ───────────────────────────────────────────────
+    //
+    // A `while` never transfers control out of the enclosing block:
+    // even if its body ends in `return`, the loop might have iterated
+    // zero times, so control can reach the statement after the loop.
+    // This is the same reasoning an `if` without an `else` uses.
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
@@ -630,675 +600,811 @@ bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx) {
     return false;
 }
 
-// =============================================================================
-// resolveDoWhileStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
+// resolveForStmt
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A `for` loop's binding shape depends on the iterable (§12.3):
+//
+//   Range                one binding — the counter
+//   Table / FIND view    one binding — a row reference
+//   Table, indexed       two bindings — index (uint) + row reference
+//   Column view          one binding — the value
+//   Array                one binding — the element
+//   Array, indexed       two bindings — index (uint) + element
+//
+// The check is done in two stages:
+//
+//   1. Resolve the iterable. Get its type.
+//   2. Dispatch on the type to determine the binding shape and the
+//      binding types, then check the bindings the source wrote against
+//      that shape.
 
-bool resolveDoWhileStmt(DoWhileStmtAST* stmt, SemaContext& ctx) {
+bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── RAII: Push loop context ───────────────────────────────────────────
-    ScopedSemanticContext context(ctx, ContextKind::LoopBody, stmt->body);
+    // ─── Push the loop context and a scope for the bindings ─────────────
+    ScopedContext loopCtx(ctx, ContextKind::LoopBody, stmt);
+    SymbolScope bindingScope(ctx);
 
-    // ─── Resolve the loop body ─────────────────────────────────────────────
+    // ─── Resolve the iterable ───────────────────────────────────────────
+    //
+    // A range is not a first-class value, so `resolveExpr` on a
+    // `RangeExprAST` is dispatched to `resolveRangeExpr` in
+    // `SemaExpr.cpp`, which resolves the bounds against `int` and
+    // returns the bounds' type (the "range's type" for the purposes
+    // of this dispatch — the loop counter's type).
+    TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
+    if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Value_InvalidIterator, stmt->iterable,
+                              "iterable has unknown type");
+        return false;
+    }
+
+    // ─── Dispatch on the iterable's type ────────────────────────────────
+    //
+    // The four shapes map onto four type shapes:
+    //   Range                 — the type is a primitive integer (the
+    //                           range's bound type)
+    //   Table / FIND view     — the type is a table name, or a
+    //                           `&T`-returning view
+    //   Column view           — the type is the column's element type
+    //   Array                 — the type is an array
+    //
+    // The range case is distinguished by the *node*, not the type: a
+    // `RangeExprAST` at the iterable position is what produces the
+    // primitive-type result, and the AST check here is what keeps a
+    // bare `for i: int in someIntVariable` from being misread as a
+    // range loop.
+    const bool isRangeIterable = stmt->iterable->isa<RangeExprAST>();
+
+    if (isRangeIterable) {
+        resolveRangeForBindings(stmt, iterableType, ctx);
+    } else if (iterableType->isa<NamedTypeAST>() ||
+               iterableType->isa<RowRefTypeAST>() ||
+               isTableType(iterableType, ctx)) {
+        resolveTableForBindings(stmt, iterableType, ctx);
+    } else if (iterableType->isa<ArrayTypeAST>()) {
+        resolveArrayForBindings(stmt, iterableType, ctx);
+    } else {
+        ctx.diagnostics.error(DiagCode::Value_InvalidIterator, stmt->iterable,
+                              "cannot iterate over type ",
+                              typeToString(iterableType, ctx.pool));
+        return false;
+    }
+
+    // ─── Resolve the body ───────────────────────────────────────────────
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
 
-    // ─── Resolve the condition without forcing it to bool ────────────────
-    TypeAST* condType = resolveExpr(stmt->condition, ctx);
-    
-    if (!condType || condType->isa<UnknownTypeAST>()) {
+    // A `for` loop, like `while`, never transfers: a loop over an
+    // empty range / empty array / empty table iterates zero times, and
+    // control reaches the statement after the loop.
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveRangeForBindings
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `for i: int in 0..<10 { ... }`
+//
+// One binding: the loop counter. Its type must equal the range's bound
+// type (which is the primitive the range resolves to). A second binding
+// is a mistake.
+//
+// The return value is always `false`: a binding resolver never transfers
+// control. The `bool` return exists so the three binding helpers share a
+// signature with the per-kind statement resolvers and with each other;
+// it is the uniform protocol across the file, not a value any caller
+// reads.
+
+bool resolveRangeForBindings(ForStmtAST* stmt, TypeAST* boundType, SemaContext& ctx) {
+    if (!stmt->firstVar) {
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->iterable,
+                              "range loop requires a loop-counter binding");
         return false;
     }
 
-    // ─── CONST EVALUATION: Check if condition is compile-time constant ────
-    bool condIsConst = false;
-    bool condValue = evaluateTruthiness(stmt->condition, ctx, condIsConst);
-
-    // ─── If condition is compile-time false, loop executes once ────────────
-    if (condIsConst && !condValue) {
-        // Body already resolved above
+    if (stmt->secondVar) {
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->secondVar,
+                              "range loop takes exactly one binding "
+                              "(the counter), got a second binding");
         return false;
     }
 
-    // ─── If condition is compile-time true, it's an infinite loop ─────────
-    if (condIsConst && condValue) {
-        ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt,
-                                "do-while loop condition is always true - infinite loop (no break)");
+    // `_` is legal — the loop body doesn't need the counter. The
+    // parser produces a `ParamAST` with an empty name for `_`.
+    if (stmt->firstVar->name.isEmpty()) {
+        // Discard binding: no type to check.
+        return false;
+    }
+
+    TypeAST* declared = resolveType(stmt->firstVar->type, ctx);
+    if (!declared || declared->isa<UnknownTypeAST>()) {
+        stmt->firstVar->type = ctx.getUnknownType();
+        return false;
+    }
+
+    if (!typesEqual(declared, boundType)) {
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->firstVar,
+                              "range loop counter must have the same type "
+                              "as the range's bounds (",
+                              typeToString(boundType, ctx.pool), "), got ",
+                              typeToString(declared, ctx.pool));
+    }
+
+    stmt->firstVar->type = declared;
+    stmt->firstVar->resourceKind = classifyResourceKind(declared);
+    ctx.insertValue(stmt->firstVar);
+
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveTableForBindings
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `for r: &Person in Person { ... }`
+// `for i: uint, r: &Person in Person { ... }`
+// `for r: &Person in Person.FIND(pred) { ... }`
+//
+// One binding: a row reference (`&T`). Two bindings: index (`uint`) +
+// row reference. The row reference's inner table is the iterable's
+// table; the source must write exactly `&T`.
+//
+// The return value is always `false`: a binding resolver never transfers
+// control.
+
+bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContext& ctx) {
+    // ─── Determine the row reference type ───────────────────────────────
+    //
+    // Three shapes reach here:
+    //   - The bare name `Person` — its resolved type is a `NamedTypeAST`
+    //     whose resolvedDecl is a `TableDeclAST`. The row reference type
+    //     is `ctx.getRowRefType(iterableType)`.
+    //   - A `FIND` view — the expression `Person.FIND(pred)` returns a
+    //     value whose type is a `NamedTypeAST` (the table itself, since
+    //     the view is a live view over the table's rows and the grammar
+    //     types it as the table). Same derivation.
+    //   - A `&T` — the iterable is already a row reference. This is
+    //     unusual but legal (e.g. a variable holding a row reference
+    //     that the loop wants to iterate over — impossible in practice,
+    //     since a single row reference has no iterable contents, but
+    //     the type system does not reject it).
+    //
+    // The derivation is uniform: the row reference type is what the
+    // *binding* should be declared as, and it is derived from the
+    // iterable type by the same rules the rest of Sema uses.
+    TypeAST* rowRefType = nullptr;
+    if (iterableType->isa<RowRefTypeAST>()) {
+        rowRefType = iterableType;
+    } else if (iterableType->isa<NamedTypeAST>()) {
+        rowRefType = ctx.getRowRefType(iterableType);
+    } else {
+        ctx.diagnostics.error(DiagCode::Value_InvalidIterator, stmt->iterable,
+                              "iterating a table requires a table name or "
+                              "a row-reference view");
+        return false;
+    }
+
+    if (stmt->secondVar) {
+        // ─── Two bindings: index + row reference ────────────────────────
+        //
+        // The first binding is the index; the second is the row
+        // reference. The source writes `for i: uint, r: &Person in
+        // Person`. The grammar fixes the index's type at `uint`; the
+        // row reference's type at `&T`.
+        //
+        // The first binding may be `_` to discard the index; then only
+        // the second binding is checked.
+
+        if (!stmt->firstVar->name.isEmpty()) {
+            TypeAST* idxType = resolveType(stmt->firstVar->type, ctx);
+            if (!idxType || idxType->isa<UnknownTypeAST>()) {
+                stmt->firstVar->type = ctx.getUnknownType();
+            } else {
+                if (!isIntegerType(idxType)) {
+                    ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->firstVar,
+                                          "table-loop index binding must be "
+                                          "an integer, got ",
+                                          typeToString(idxType, ctx.pool));
+                }
+                stmt->firstVar->type = idxType;
+                stmt->firstVar->resourceKind = classifyResourceKind(idxType);
+                ctx.insertValue(stmt->firstVar);
+            }
+        }
+
+        if (!stmt->secondVar->name.isEmpty()) {
+            TypeAST* rowType = resolveType(stmt->secondVar->type, ctx);
+            if (!rowType || rowType->isa<UnknownTypeAST>()) {
+                stmt->secondVar->type = ctx.getUnknownType();
+            } else if (!typesEqual(rowType, rowRefType)) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->secondVar,
+                                      "table-loop value binding must be '",
+                                      typeToString(rowRefType, ctx.pool),
+                                      "', got ",
+                                      typeToString(rowType, ctx.pool));
+            } else {
+                stmt->secondVar->type = rowType;
+                stmt->secondVar->resourceKind = classifyResourceKind(rowType);
+                ctx.insertValue(stmt->secondVar);
+            }
+        }
+    } else {
+        // ─── One binding: row reference ─────────────────────────────────
+        if (stmt->firstVar->name.isEmpty()) {
+            return false;   // discard binding
+        }
+
+        TypeAST* rowType = resolveType(stmt->firstVar->type, ctx);
+        if (!rowType || rowType->isa<UnknownTypeAST>()) {
+            stmt->firstVar->type = ctx.getUnknownType();
+            return false;
+        }
+
+        if (!typesEqual(rowType, rowRefType)) {
+            ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->firstVar,
+                                  "table-loop binding must be '",
+                                  typeToString(rowRefType, ctx.pool),
+                                  "', got ",
+                                  typeToString(rowType, ctx.pool));
+            return false;
+        }
+
+        stmt->firstVar->type = rowType;
+        stmt->firstVar->resourceKind = classifyResourceKind(rowType);
+        ctx.insertValue(stmt->firstVar);
     }
 
     return false;
 }
 
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveArrayForBindings
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `for x: int in scores { ... }`
+// `for i: uint, x: int in scores { ... }`
+//
+// One binding: the array's element type. Two bindings: index (`uint`) +
+// element. The element type is exactly the array's declared element
+// type — no row-reference indirection here, unlike the table case.
+//
+// The return value is always `false`: a binding resolver never transfers
+// control.
+
+bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContext& ctx) {
+    ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+    TypeAST* elementType = arrayType->element;
+
+    if (stmt->secondVar) {
+        // ─── Two bindings: index + element ──────────────────────────────
+        if (!stmt->firstVar->name.isEmpty()) {
+            TypeAST* idxType = resolveType(stmt->firstVar->type, ctx);
+            if (!idxType || idxType->isa<UnknownTypeAST>()) {
+                stmt->firstVar->type = ctx.getUnknownType();
+            } else {
+                if (!isIntegerType(idxType)) {
+                    ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->firstVar,
+                                          "array-loop index binding must be "
+                                          "an integer, got ",
+                                          typeToString(idxType, ctx.pool));
+                }
+                stmt->firstVar->type = idxType;
+                stmt->firstVar->resourceKind = classifyResourceKind(idxType);
+                ctx.insertValue(stmt->firstVar);
+            }
+        }
+
+        if (!stmt->secondVar->name.isEmpty()) {
+            TypeAST* valueType = resolveType(stmt->secondVar->type, ctx);
+            if (!valueType || valueType->isa<UnknownTypeAST>()) {
+                stmt->secondVar->type = ctx.getUnknownType();
+            } else if (!typesEqual(valueType, elementType)) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->secondVar,
+                                      "array-loop value binding must be '",
+                                      typeToString(elementType, ctx.pool),
+                                      "', got ",
+                                      typeToString(valueType, ctx.pool));
+            } else {
+                stmt->secondVar->type = valueType;
+                stmt->secondVar->resourceKind = classifyResourceKind(valueType);
+                ctx.insertValue(stmt->secondVar);
+            }
+        }
+    } else {
+        // ─── One binding: element ───────────────────────────────────────
+        if (stmt->firstVar->name.isEmpty()) {
+            return false;   // discard binding
+        }
+
+        TypeAST* valueType = resolveType(stmt->firstVar->type, ctx);
+        if (!valueType || valueType->isa<UnknownTypeAST>()) {
+            stmt->firstVar->type = ctx.getUnknownType();
+            return false;
+        }
+
+        if (!typesEqual(valueType, elementType)) {
+            ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->firstVar,
+                                  "array-loop binding must be '",
+                                  typeToString(elementType, ctx.pool),
+                                  "', got ",
+                                  typeToString(valueType, ctx.pool));
+            return false;
+        }
+
+        stmt->firstVar->type = valueType;
+        stmt->firstVar->resourceKind = classifyResourceKind(valueType);
+        ctx.insertValue(stmt->firstVar);
+    }
+
+    return false;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // resolveReturnStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    // ─── Check: Must be inside a function body ─────────────────────────────
+    // ─── Must be inside a function ──────────────────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidBreak, stmt,
-                              "return statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Type_MissingReturn, stmt,
+                              "'return' outside of a function body");
         return true;
     }
 
-    // ─── Get the current expected return type from the stack ──────────────
+    // ─── Get the enclosing function's return type ───────────────────────
+    //
+    // A `null` return type means the function returns `unit`; a non-null
+    // type is the type the function's `-> T` named. The distinction is
+    // preserved by the AST so the JSON dumper can render the source
+    // faithfully; Sema treats them identically (a `unit` return type
+    // means "return without a value").
     TypeAST* expectedType = ctx.stack.currentReturnType();
 
-    // ─── Validate return value against expected type ───────────────────────
     if (stmt->value) {
-        // ─── Non-void return ──────────────────────────────────────────────
-        if (!expectedType) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "return value provided but function has no return type (expected void)");
+        // ─── Non-void return ────────────────────────────────────────────
+        if (!expectedType || isUnitType(expectedType)) {
+            ctx.diagnostics.error(DiagCode::Type_MissingReturn, stmt,
+                                  "return value provided in a function "
+                                  "with no return type (expected 'unit')");
             return true;
         }
 
-        // Resolve the return value against the expected type
         TypeAST* valueType = resolveExprWithTarget(stmt->value, expectedType, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
             return true;
         }
-
-        // ─── Arena validation: Cannot return Arena by value ──────────────
-        if (isArenaType(valueType)) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, stmt->value,
-                                  "cannot return Arena by value");
-            ctx.diagnostics.note(stmt->value,
-                                 "Arena is scope-confined and cannot cross function boundaries by value");
-            return true;
-        }
-
-        // Validate fallible/nullable propagation
-        if (stmt->value->valueState == ValueState::Err) {
-            if (!isFallibleType(expectedType)) {
-                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, stmt->value,
-                                      "cannot return err to non-fallible return type");
-                return true;
-            }
-        }
-
-        if (stmt->value->valueState == ValueState::Nil) {
-            if (!isNullableType(expectedType)) {
-                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, stmt->value,
-                                      "cannot return nil to non-nullable return type");
-                return true;
-            }
-        }
-
     } else {
-        // ─── Void return (no value) ──────────────────────────────────────
-        if (expectedType) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "void return statement but function expects a return value (", 
-                                  typeToString(expectedType, ctx.pool), ")");
+        // ─── Bare return ────────────────────────────────────────────────
+        //
+        // A bare `return;` is legal in a `unit`-returning function. In a
+        // value-returning function, it is a mistake: the function's
+        // declared return type is not `unit`, so the return must supply
+        // a value.
+        if (expectedType && !isUnitType(expectedType)) {
+            ctx.diagnostics.error(DiagCode::Type_MissingReturn, stmt,
+                                  "return statement is missing a value; "
+                                  "function returns '",
+                                  typeToString(expectedType, ctx.pool), "'");
             return true;
         }
     }
 
+    // A `return` always transfers control out of the enclosing block.
     return true;
 }
 
-// =============================================================================
-// resolveBreakStmt
-// =============================================================================
+// ═════════════════════════════════════════════════════════════════════════════
+// resolveBreakStmt / resolveContinueStmt
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveBreakStmt(BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
+    // A `break` is legal inside a loop or inside a switch. Labels are
+    // not resolved here: the new grammar does not have labeled
+    // `break`/`continue` (they are not in the statement grammar, §12's
+    // `break_stmt ::= 'break'`). If the AST still has a `label` field,
+    // it is always invalid.
     if (!ctx.stack.insideLoop() && !ctx.stack.insideSwitch()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidBreak, stmt,
-                              "break statement outside of loop or switch");
-        return true;
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt,
+                              "'break' outside of a loop or switch");
     }
 
     return true;
 }
-
-// =============================================================================
-// resolveContinueStmt
-// =============================================================================
 
 bool resolveContinueStmt(ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     if (!ctx.stack.insideLoop()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidContinue, stmt,
-                              "continue statement outside of loop");
-        return true;
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt,
+                              "'continue' outside of a loop");
     }
 
     return true;
 }
 
-// =============================================================================
-// resolveExprStmt
-// =============================================================================
-
-/// @brief Check if an expression has side effects.
-static bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return false;
-
-    switch (expr->kind) {
-        case ASTKind::CallExpr:
-            return true;
-
-        case ASTKind::IntrinsicCallExpr: {
-            IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
-            std::string nameStr = ctx.pool.lookup(intrinsic->intrinsicName);
-            if (nameStr == "memcpy" || nameStr == "memmove" || nameStr == "memset" ||
-                nameStr == "alloc" || nameStr == "free" ||
-                nameStr == "arena_create" || nameStr == "arena_alloc" || 
-                nameStr == "arena_free" || nameStr == "arena_reset" ||
-                nameStr == "atomic_store" || nameStr == "atomic_add" ||
-                nameStr == "atomic_sub" || nameStr == "atomic_and" ||
-                nameStr == "atomic_or" || nameStr == "atomic_xor" ||
-                nameStr == "atomic_cas") {
-                return true;
-            }
-            return false;
-        }
-
-        case ASTKind::AssignExpr:
-            return true;
-
-        case ASTKind::PipelineExpr: {
-            const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
-            if (hasSideEffects(pipeline->seed, ctx)) return true;
-            for (const PipelineStepAST* step : pipeline->steps) {
-                if (hasSideEffects(step->callable, ctx)) return true;
-                for (ExprAST* arg : step->packArgs) {
-                    if (hasSideEffects(arg, ctx)) return true;
-                }
-            }
-            return false;
-        }
-
-        case ASTKind::PipelineStep: {
-            const PipelineStepAST* step = expr->as<PipelineStepAST>();
-            if (hasSideEffects(step->callable, ctx)) return true;
-            for (ExprAST* arg : step->packArgs) {
-                if (hasSideEffects(arg, ctx)) return true;
-            }
-            return false;
-        }
-
-        case ASTKind::BinaryExpr: {
-            BinaryExprAST* bin = expr->as<BinaryExprAST>();
-            return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
-        }
-
-        case ASTKind::UnaryExpr: {
-            const UnaryExprAST* unary = expr->as<UnaryExprAST>();
-            return hasSideEffects(unary->operand, ctx);
-        }
-
-        case ASTKind::FieldAccessExpr: {
-            const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
-            return hasSideEffects(field->object, ctx);
-        }
-
-        case ASTKind::IndexExpr: {
-            const IndexExprAST* index = expr->as<IndexExprAST>();
-            return hasSideEffects(index->target, ctx) || 
-                   hasSideEffects(index->index, ctx);
-        }
-
-        case ASTKind::SliceExpr: {
-            const SliceExprAST* slice = expr->as<SliceExprAST>();
-            if (hasSideEffects(slice->target, ctx)) return true;
-            if (slice->start && hasSideEffects(slice->start, ctx)) return true;
-            if (slice->end && hasSideEffects(slice->end, ctx)) return true;
-            return false;
-        }
-
-        case ASTKind::StructLiteralExpr: {
-            const StructLiteralExprAST* sl = expr->as<StructLiteralExprAST>();
-            for (FieldInitAST* init : sl->inits) {
-                if (hasSideEffects(init->value, ctx)) return true;
-            }
-            return false;
-        }
-
-        case ASTKind::ArrayLiteralExpr: {
-            const ArrayLiteralExprAST* al = expr->as<ArrayLiteralExprAST>();
-            for (ExprAST* elem : al->elements) {
-                if (hasSideEffects(elem, ctx)) return true;
-            }
-            return false;
-        }
-
-        case ASTKind::IfExpr: {
-            const IfExprAST* ifExpr = expr->as<IfExprAST>();
-            if (hasSideEffects(ifExpr->condition, ctx)) return true;
-            if (hasSideEffects(ifExpr->thenBranch, ctx)) return true;
-            if (hasSideEffects(ifExpr->elseBranch, ctx)) return true;
-            return false;
-        }
-
-        case ASTKind::NullCoalesceExpr: {
-            const NullCoalesceExprAST* nc = expr->as<NullCoalesceExprAST>();
-            return hasSideEffects(nc->value, ctx) || 
-                   hasSideEffects(nc->fallback, ctx);
-        }
-
-        case ASTKind::LiteralExpr:
-        case ASTKind::IdentifierExpr:
-        case ASTKind::ModuleAccessExpr:
-        case ASTKind::RangeExpr:
-            return false;
-
-        default:
-            return false;
-    }
-}
+// ═════════════════════════════════════════════════════════════════════════════
+// resolveExprStmt / resolveVarDeclStmt / resolveAssignStmt
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool resolveExprStmt(ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
-
     if (stmt->expr->hasSyntaxError) return false;
 
-    // ─── Resolve the expression ────────────────────────────────────────────
+    // The expression statement's value is discarded. Resolve it for
+    // its side effects.
+    //
+    // The grammar (§12.6) restricts an expression statement to a call
+    // or a `start` expression. If the parser produced something else
+    // — a literal, an identifier, a binary expression — the statement
+    // has no side effects and its value is discarded. That is a
+    // warning, not an error: some patterns (a discarded call result, a
+    // debug-only side effect) look like this.
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);
     if (!exprType || exprType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, stmt->expr,
-                              "expression has unknown type");
         return false;
     }
 
-    // ─── Check for discarded non-void value ──────────────────────────────
-    if (exprType && !exprType->isa<UnknownTypeAST>()) {
-        if (!hasSideEffects(stmt->expr, ctx)) {
-            ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt,
-                                    "expression result is discarded (no side effects)");
-        }
+    // The warning fires for a statement whose top-level node is not a
+    // call and not a `start`. Everything else is an expression whose
+    // result the user is deliberately discarding.
+    const bool hasEffect =
+        stmt->expr->isa<CallExprAST>() ||
+        stmt->expr->isa<StartExprAST>();
+    if (!hasEffect) {
+        ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt->expr,
+                                "expression result is discarded; "
+                                "this statement has no effect");
     }
 
     return false;
 }
 
-// =============================================================================
-// resolveDeclStmt
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 
-bool resolveDeclStmt(DeclStmtAST* stmt, SemaContext& ctx) {
+bool resolveVarDeclStmt(VarDeclStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->decl) return false;
+    if (stmt->decl->hasSyntaxError) return false;
 
-    resolveDecl(stmt->decl, ctx);
+    // ─── Register the local's name ──────────────────────────────────────
+    //
+    // The contract documented in `SemaDecl.cpp` and `Sema.hpp`: a local
+    // `let`/`const` is registered by this function, not by
+    // `resolveVarDecl`. `resolveVarDecl` assumes the name is already in
+    // scope; the caller is responsible for putting it there.
+    //
+    // Registration happens *before* the declaration's initializer is
+    // resolved, so an initializer that references the declaration's own
+    // name resolves to the (still unresolved) declaration and produces
+    // an "undefined value" error. That is the correct behavior: a
+    // declaration's initializer is not allowed to reference the
+    // variable it is declaring (the value does not exist yet).
+    ctx.insertValue(stmt->decl);
+
+    // ─── Resolve the declaration ────────────────────────────────────────
+    resolveVarDecl(stmt->decl, ctx);
+
     return false;
 }
 
-// =============================================================================
-// Concurrency Statements
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── resolveAsyncStmt ──────────────────────────────────────────────────────
+bool resolveAssignStmt(AssignStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt || !stmt->lhs || !stmt->rhs) return false;
+    if (stmt->hasSyntaxError) return false;
 
-bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
+    // ─── Resolve the LHS ────────────────────────────────────────────────
+    //
+    // The LHS must be an lvalue: an identifier, a field access on an
+    // lvalue, or an index on an lvalue. `resolveExpr` on the LHS sets
+    // `isLValue` as a side effect (see `resolveFieldAccessExpr`,
+    // `resolveIndexExpr`, `resolveIdentifierExpr`), and this function
+    // checks it.
+    TypeAST* lhsType = resolveExpr(stmt->lhs, ctx);
+    bool lhsUsable = lhsType && !lhsType->isa<UnknownTypeAST>();
+
+    if (!lhsUsable) {
+        // resolveExpr already emitted a diagnostic.
+        return false;
+    }
+
+    // ─── L-value check ──────────────────────────────────────────────────
+    if (!stmt->lhs->isLValue) {
+        ctx.diagnostics.error(DiagCode::Mut_NonLValueAssignment, stmt->lhs,
+                              "cannot assign to a non-lvalue expression");
+        return false;
+    }
+
+    // ─── Const-binding check ────────────────────────────────────────────
+    //
+    // Assigning through a `const`-bound name is illegal. This covers
+    // both `const x = ...` (the name itself) and `const p: &Person =
+    // ...` (the reference the name holds — mutating the *row* through
+    // a const binding is also illegal).
+    //
+    // The `isConst` flag is set on the expression by the resolvers that
+    // produce an lvalue: `resolveIdentifierExpr` sets it from the
+    // resolved declaration's `isConst`; `resolveFieldAccessExpr` sets
+    // it from the field's `@readonly` and the object's constness.
+    if (stmt->lhs->isConst) {
+        ctx.diagnostics.error(DiagCode::Mut_ConstAssignment, stmt->lhs,
+                              "cannot assign through a const binding");
+        return false;
+    }
+
+    // ─── Compound-assignment operator check ─────────────────────────────
+    //
+    // A compound assignment (`x += 1`) performs the operator on the
+    // current value, so the LHS must be a type the operator accepts.
+    // A plain `=` accepts any type.
+    if (stmt->op != AssignOp::Assign) {
+        // The `??` operator has no compound form; the parser does not
+        // produce one, and there is no `AssignOp` for it.
+        //
+        // Arithmetic compound operators (`+=`, `-=`, `*=`, `/=`, `%=`)
+        // require a numeric LHS. The `+` case additionally accepts a
+        // `string` LHS for concatenation (§6.8); the other arithmetic
+        // operators do not.
+        //
+        // Bitwise compound operators (`&=`, `|=`, `^=`, `<<=`, `>>=`)
+        // require an integer LHS.
+        const bool isAddAssign = (stmt->op == AssignOp::AddAssign);
+        const bool isArithAssign =
+            (stmt->op == AssignOp::SubAssign ||
+             stmt->op == AssignOp::MulAssign ||
+             stmt->op == AssignOp::DivAssign ||
+             stmt->op == AssignOp::ModAssign);
+        const bool isBitwiseAssign =
+            (stmt->op == AssignOp::BitAndAssign ||
+             stmt->op == AssignOp::BitOrAssign  ||
+             stmt->op == AssignOp::BitXorAssign ||
+             stmt->op == AssignOp::ShlAssign    ||
+             stmt->op == AssignOp::ShrAssign);
+
+        if (isAddAssign) {
+            if (!isNumericType(lhsType) && !isStringType(lhsType)) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->lhs,
+                                      "'+=' requires a numeric or string lvalue, got ",
+                                      typeToString(lhsType, ctx.pool));
+            }
+        } else if (isArithAssign) {
+            if (!isNumericType(lhsType)) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->lhs,
+                                      "compound arithmetic assignment requires "
+                                      "a numeric lvalue, got ",
+                                      typeToString(lhsType, ctx.pool));
+            }
+        } else if (isBitwiseAssign) {
+            if (!isIntegerType(lhsType)) {
+                ctx.diagnostics.error(DiagCode::Type_Mismatch, stmt->lhs,
+                                      "compound bitwise assignment requires "
+                                      "an integer lvalue, got ",
+                                      typeToString(lhsType, ctx.pool));
+            }
+        }
+    }
+
+    // ─── Resolve the RHS against the LHS's type ─────────────────────────
+    //
+    // `resolveExprWithTarget` checks assignability. If the RHS is not
+    // assignable to the LHS's type, the resolver emits the diagnostic.
+    TypeAST* rhsType = resolveExprWithTarget(stmt->rhs, lhsType, ctx);
+    (void)rhsType;   // The diagnostic, if any, is emitted by the resolver.
+
+    // An assignment is a statement; its result is discarded. It never
+    // transfers control.
+    return false;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Sequence suspend points
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Each `wait*` statement is only legal inside a `@sequence` function's
+// body. The check is `ctx.stack.insideSequence()` — a context-stack
+// query, not a symbol-table lookup.
+//
+// The argument shapes are fixed by §9.2.2:
+//
+//   wait(seconds)       — one `float` expression
+//   waitFrames(n)       — one `uint` expression
+//   waitUntil(pred,arg) — one `(T) -> bool` function value and one `T`
+//   waitForEvent(expr)  — a compile-time constant (§4.1.1c)
+//   waitForRequest(req) — one `&T` where `T` is `@request`-attributed
+//
+// The value of a `wait*` statement is always `unit`; the statement
+// never transfers control (it suspends, then resumes).
+
+bool resolveWaitStmt(WaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── Check: Must be inside a function body ─────────────────────────────
-    if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
-                              "async statement outside of function body");
+    if (!ctx.stack.insideSequence()) {
+        ctx.diagnostics.error(DiagCode::Seq_SuspendOutsideSequence, stmt,
+                              "'wait' is only legal inside a @sequence "
+                              "function body");
         return false;
     }
 
-    // ─── Check: Must have a binding ─────────────────────────────────────────
-    if (!stmt->binding) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
-                              "async statement requires a binding variable");
-        return false;
-    }
+    // The duration is a `float`. `resolveExprWithTarget` against the
+    // singleton float type enforces the rule and produces a well-typed
+    // argument.
+    resolveExprWithTarget(stmt->seconds, ctx.getPrimitiveType(PrimitiveKind::Float32), ctx);
 
-    // ─── Resolve the binding's type ────────────────────────────────────────
-    // The type is already stored in stmt->binding->type (which was set by the parser).
-    // We just need to validate it resolves to FutureTypeAST.
-    TypeAST* resolvedType = resolveType(stmt->binding->type, ctx);
-    if (!resolvedType || resolvedType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
-                              "async binding has invalid type");
-        return false;
-    }
-
-    // ─── Verify it's a FutureTypeAST ───────────────────────────────────────
-    if (!resolvedType->isa<FutureTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
-                              "async binding type must be Future<T>, got ",
-                              typeToString(resolvedType, ctx.pool));
-        return false;
-    }
-
-    // ─── Get the inner type for call validation ────────────────────────────
-    FutureTypeAST* futureType = resolvedType->as<FutureTypeAST>();
-    TypeAST* innerType = futureType->inner;
-
-    // ─── Classify the binding before registration ──────────────────────────
-    stmt->binding->resourceKind = classifyResourceKind(resolvedType);
-
-    // ─── Register the binding in the current scope ──────────────────────────
-    // The binding already has its type in `binding->type` (the FutureTypeAST).
-    // We don't need to store `resolvedType` anywhere.
-    if (!ctx.insertValue(stmt->binding)) {
-        return false;
-    }
-
-    // ─── Resolve the call expression ───────────────────────────────────────
-    if (!stmt->call) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
-                              "async statement requires a call expression");
-        return false;
-    }
-
-    TypeAST* callType = resolveExprWithTarget(stmt->call, innerType, ctx);
-    if (!callType || callType->isa<UnknownTypeAST>()) {
-        return false;
-    }
-
-    // ─── Check: The call's return type must match the Future's inner type ──
-    if (!typesEqual(callType, innerType)) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
-                              "async call return type '", 
-                              typeToString(callType, ctx.pool),
-                              "' does not match binding type '",
-                              typeToString(innerType, ctx.pool), "'");
-        return false;
-    }
-
-    // ─── Store in pending list for later await ─────────────────────────────
-    ctx.addPendingAsync(stmt->binding->name, stmt->call, stmt->loc);
-
-    Trace::info("resolveAsyncStmt: registered async '", 
-             ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
 
-// ─── resolveAwaitStmt ──────────────────────────────────────────────────────
-
-bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx) {
+bool resolveWaitFramesStmt(WaitFramesStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── Check: Must be inside a function body ─────────────────────────────
-    if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_AwaitOutsideFunction, stmt,
-                              "await statement outside of function body");
+    if (!ctx.stack.insideSequence()) {
+        ctx.diagnostics.error(DiagCode::Seq_SuspendOutsideSequence, stmt,
+                              "'waitFrames' is only legal inside a @sequence "
+                              "function body");
         return false;
     }
 
-    // ─── Check each target variable ────────────────────────────────────────
-    for (ExprAST* target : stmt->targets) {
-        if (!target->isa<IdentifierExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "await target must be a variable (not an expression)");
-            continue;
-        }
-
-        IdentifierExprAST* id = target->as<IdentifierExprAST>();
-        InternedString targetName = id->name;
-
-        // ─── Look up the variable ──────────────────────────────────────────
-        ValueDeclAST* decl = ctx.lookupValue(targetName);
-        if (!decl) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
-                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
-            return false;
-        }
-
-        if (!decl->isa<VarDeclAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
-            return false;
-        }
-
-        // ─── Check if this is a pending async operation ────────────────────
-        if (ctx.hasPendingAsync(targetName)) {
-            // ─── Validate the variable's type is FutureTypeAST ────────────
-            // Use decl->type directly (the parser-stored type)
-            TypeAST* varType = decl->type;
-            if (!varType || !varType->isa<FutureTypeAST>()) {
-                ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                      "'", ctx.pool.lookup(targetName), 
-                                      "' is not a Future<T> (type: ", 
-                                      typeToString(varType, ctx.pool), ")");
-                return false;
-            }
-
-            // ─── NARROW THE TYPE: Unwrap FutureTypeAST to its inner type ──
-            FutureTypeAST* futureType = varType->as<FutureTypeAST>();
-            TypeAST* innerType = futureType->inner;
-            
-            if (!innerType) {
-                ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                      "'", ctx.pool.lookup(targetName), 
-                                      "' has no inner type");
-                return false;
-            }
-
-            // Apply narrowing to the variable
-            ctx.stack.narrowVariable(targetName, innerType);
-
-            // Mark the async as resolved
-            ctx.resolveAsync(targetName);
-            
-            Trace::detail("resolveAwaitStmt: narrowed '", ctx.pool.lookup(targetName),
-                     "' from Future<", typeToString(innerType, ctx.pool),
-                     "> to ", typeToString(innerType, ctx.pool));
-        } else if (ctx.hasPendingSpawn(targetName)) {
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), 
-                                  "' was declared with spawn, not async. Use 'join' instead.");
-            return false;
-        } else {
-            // ─── Check if already narrowed (double await) ──────────────────
-            TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
-            if (narrowedType) {
-                // Check if the original type was FutureTypeAST
-                TypeAST* originalType = decl->type;
-                if (originalType && originalType->isa<FutureTypeAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_DoubleAwait, target,
-                                          "'", ctx.pool.lookup(targetName), 
-                                          "' has already been awaited");
-                    return false;
-                }
-            }
-            
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), 
-                                  "' is not a pending async operation");
-            return false;
-        }
-    }
+    // The frame count is a `uint` (§9.2.2). The grammar's `uint` is the
+    // sized alias for `uint32`.
+    resolveExprWithTarget(stmt->frames, ctx.getPrimitiveType(PrimitiveKind::Uint32), ctx);
 
     return false;
 }
 
-// ─── resolveSpawnStmt ──────────────────────────────────────────────────────
-
-bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
+bool resolveWaitUntilStmt(WaitUntilStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── Check: Must be inside a function body ─────────────────────────────
-    if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
-                              "spawn statement outside of function body");
+    if (!ctx.stack.insideSequence()) {
+        ctx.diagnostics.error(DiagCode::Seq_SuspendOutsideSequence, stmt,
+                              "'waitUntil' is only legal inside a @sequence "
+                              "function body");
         return false;
     }
 
-    // ─── Handle discard pattern ────────────────────────────────────────────
-    if (!stmt->binding) {
-        if (!stmt->call) {
-            ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
-                                  "spawn statement requires a call expression");
-            return false;
-        }
-
-        TypeAST* callType = resolveExpr(stmt->call, ctx);
-        if (!callType || callType->isa<UnknownTypeAST>()) {
-            return false;
-        }
-
-        Trace::info("resolveSpawnStmt: spawn discard (fire-and-forget)");
+    // `waitUntil(pred, arg)`: `pred` is `(T) -> bool` and `arg` is `T`.
+    //
+    // The two are resolved in order, with `arg` resolved against the
+    // predicate's parameter type. The predicate's type is derived from
+    // its shape, not from a pre-declared annotation — `waitUntil` is
+    // generic over `T` in the calling convention, not in the source.
+    //
+    // Resolve `pred` with no target first, to get its signature. Then
+    // resolve `arg` against the signature's first parameter type.
+    //
+    // A `pred` that is a lambda whose parameters are not annotated has
+    // an inferred type from `pred`'s own resolution — the lambda's
+    // parameter types are inferred from the argument the caller passes.
+    // But `waitUntil(pred, arg)` has the argument in the same call, so
+    // the two can be resolved as a unit. The order here is: resolve
+    // `pred` freely to get a *shape* (a function type), then check
+    // `arg` against the shape's parameter type. If `pred`'s parameter
+    // type is not concrete (an unannotated lambda), the resolver
+    // attempts to fix it from `arg`'s own type.
+    TypeAST* predType = resolveExpr(stmt->predicate, ctx);
+    if (!predType || predType->isa<UnknownTypeAST>()) {
+        return false;
+    }
+    if (!predType->isa<FunctionTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitUntilArgTypeMismatch, stmt->predicate,
+                              "'waitUntil' predicate must be a function value, got ",
+                              typeToString(predType, ctx.pool));
         return false;
     }
 
-    // ─── Resolve the binding's type ────────────────────────────────────────
-    TypeAST* resolvedType = resolveType(stmt->binding->type, ctx);
-    if (!resolvedType || resolvedType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
-                              "spawn binding has invalid type");
+    FunctionTypeAST* predFn = predType->as<FunctionTypeAST>();
+    if (predFn->params.size() != 1) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitUntilArgTypeMismatch, stmt->predicate,
+                              "'waitUntil' predicate must take one parameter, "
+                              "got ", predFn->params.size());
+        return false;
+    }
+    if (!predFn->returnType || !isBoolType(predFn->returnType)) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitUntilArgTypeMismatch, stmt->predicate,
+                              "'waitUntil' predicate must return 'bool'");
         return false;
     }
 
-    // ─── Verify it's a ThreadTypeAST ───────────────────────────────────────
-    if (!resolvedType->isa<ThreadTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
-                              "spawn binding type must be Thread<T>, got ",
-                              typeToString(resolvedType, ctx.pool));
-        return false;
-    }
+    // Resolve the argument against the predicate's parameter type.
+    TypeAST* argType = resolveExprWithTarget(stmt->arg, predFn->params[0], ctx);
+    (void)argType;
 
-    // ─── Get the inner type for call validation ────────────────────────────
-    const ThreadTypeAST* threadType = resolvedType->as<ThreadTypeAST>();
-    TypeAST* innerType = threadType->inner;
-
-    // ─── Classify the binding before registration ──────────────────────────
-    stmt->binding->resourceKind = classifyResourceKind(resolvedType);
-
-    // ─── Register the binding in the current scope ──────────────────────────
-    // The binding already has its type in `binding->type` (the ThreadTypeAST).
-    if (!ctx.insertValue(stmt->binding)) {
-        return false;
-    }
-
-    // ─── Resolve the call expression ───────────────────────────────────────
-    if (!stmt->call) {
-        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
-                              "spawn statement requires a call expression");
-        return false;
-    }
-
-    TypeAST* callType = resolveExprWithTarget(stmt->call, innerType, ctx);
-    if (!callType || callType->isa<UnknownTypeAST>()) {
-        return false;
-    }
-
-    // ─── Check: The call's return type must match the Thread's inner type ──
-    if (!typesEqual(callType, innerType)) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
-                              "spawn call return type '", 
-                              typeToString(callType, ctx.pool),
-                              "' does not match binding type '",
-                              typeToString(innerType, ctx.pool), "'");
-        return false;
-    }
-
-    // ─── Store in pending list for later join ──────────────────────────────
-    ctx.addPendingSpawn(stmt->binding->name, stmt->call, stmt->loc);
-
-    Trace::info("resolveSpawnStmt: registered spawn '", 
-             ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
 
-// ─── resolveJoinStmt ───────────────────────────────────────────────────────
-
-bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
+bool resolveWaitForEventStmt(WaitForEventStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── Check: Must be inside a function body ─────────────────────────────
-    if (!ctx.stack.insideFunction()) {
-        ctx.diagnostics.error(DiagCode::Sem_JoinOutsideFunction, stmt,
-                              "join statement outside of function body");
+    if (!ctx.stack.insideSequence()) {
+        ctx.diagnostics.error(DiagCode::Seq_SuspendOutsideSequence, stmt,
+                              "'waitForEvent' is only legal inside a @sequence "
+                              "function body");
         return false;
     }
 
-    // ─── Check each target variable ────────────────────────────────────────
-    for (ExprAST* target : stmt->targets) {
-        if (!target->isa<IdentifierExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "join target must be a variable (not an expression)");
-            continue;
-        }
+    // The argument is a compile-time constant naming the event. The
+    // grammar's §9.2.2 says "a compile-time constant (§4.1.1c)" — the
+    // same `const_expr` shape fixed-table rows use.
+    //
+    // The expression is resolved like any other (to give a diagnostic
+    // if the name is unresolved), then the constant evaluator is
+    // consulted. If the fold fails, the event is not compile-time
+    // knowable and the statement is rejected.
+    TypeAST* eventType = resolveExpr(stmt->event, ctx);
+    if (!eventType || eventType->isa<UnknownTypeAST>()) {
+        return false;
+    }
 
-        IdentifierExprAST* id = target->as<IdentifierExprAST>();
-        InternedString targetName = id->name;
-
-        // ─── Look up the variable ──────────────────────────────────────────
-        ValueDeclAST* decl = ctx.lookupValue(targetName);
-        if (!decl) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
-                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
-            return false;
-        }
-
-        if (!decl->isa<VarDeclAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
-            return false;
-        }
-
-        // ─── Check if this is a pending spawn operation ────────────────────
-        if (ctx.hasPendingSpawn(targetName)) {
-            // ─── Validate the variable's type is ThreadTypeAST ────────────
-            // Use decl->type directly (the parser-stored type)
-            TypeAST* varType = decl->type;
-            if (!varType || !varType->isa<ThreadTypeAST>()) {
-                ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                      "'", ctx.pool.lookup(targetName), 
-                                      "' is not a Thread<T> (type: ", 
-                                      typeToString(varType, ctx.pool), ")");
-                return false;
-            }
-
-            // ─── NARROW THE TYPE: Unwrap ThreadTypeAST to its inner type ──
-            const ThreadTypeAST* threadType = varType->as<ThreadTypeAST>();
-            TypeAST* innerType = threadType->inner;
-            
-            if (!innerType) {
-                ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                      "'", ctx.pool.lookup(targetName), 
-                                      "' has no inner type");
-                return false;
-            }
-
-            // Apply narrowing to the variable
-            ctx.stack.narrowVariable(targetName, innerType);
-
-            // Mark the spawn as resolved
-            ctx.resolveSpawn(targetName);
-            
-            Trace::detail("resolveJoinStmt: narrowed '", ctx.pool.lookup(targetName),
-                     "' from Thread<", typeToString(innerType, ctx.pool),
-                     "> to ", typeToString(innerType, ctx.pool));
-        } else if (ctx.hasPendingAsync(targetName)) {
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), 
-                                  "' was declared with async, not spawn. Use 'await' instead.");
-            return false;
-        } else {
-            // ─── Check if already narrowed (double join) ──────────────────
-            TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
-            if (narrowedType) {
-                TypeAST* originalType = decl->type;
-                if (originalType && originalType->isa<ThreadTypeAST>()) {
-                    ctx.diagnostics.error(DiagCode::Sem_DoubleJoin, target,
-                                          "'", ctx.pool.lookup(targetName), 
-                                          "' has already been joined");
-                    return false;
-                }
-            }
-            
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), 
-                                  "' is not a pending spawn operation");
-            return false;
-        }
+    ConstantValue folded = ConstEvaluator::evaluateExpr(stmt->event, ctx);
+    if (!folded.isEvaluated() || folded.isError()) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitForEventNotAFixedTable, stmt->event,
+                              "'waitForEvent' argument must be a compile-time "
+                              "constant naming an event (e.g. a fixed-table "
+                              "member)");
+        return false;
     }
 
     return false;
 }
 
-} // namespace sema
+bool resolveWaitForRequestStmt(WaitForRequestStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    if (!ctx.stack.insideSequence()) {
+        ctx.diagnostics.error(DiagCode::Seq_SuspendOutsideSequence, stmt,
+                              "'waitForRequest' is only legal inside a @sequence "
+                              "function body");
+        return false;
+    }
+
+    // The argument must be a row reference (`&T`) whose `T` is declared
+    // `@request` (§9.2.3).
+    //
+    // Resolution:
+    //   1. Resolve the argument. Its type must be `&T`.
+    //   2. Follow the `T` to its `TableDeclAST`.
+    //   3. Confirm `T->isHostBacked` and `T->isRequest`.
+    //
+    // A non-`&T` argument, an `&T` whose table is not `@request`, and
+    // an `&T` whose table is not host-backed are all rejected.
+    TypeAST* reqType = resolveExpr(stmt->request, ctx);
+    if (!reqType || reqType->isa<UnknownTypeAST>()) {
+        return false;
+    }
+
+    if (!isRowRefType(reqType)) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitForRequestNotARequest, stmt->request,
+                              "'waitForRequest' argument must be a row "
+                              "reference to an @request host type, got ",
+                              typeToString(reqType, ctx.pool));
+        return false;
+    }
+
+    RowRefTypeAST* rowRef = reqType->as<RowRefTypeAST>();
+    if (!rowRef->inner || !rowRef->inner->isa<NamedTypeAST>()) {
+        return false;
+    }
+    NamedTypeAST* named = rowRef->inner->as<NamedTypeAST>();
+    if (!named->resolvedDecl || !named->resolvedDecl->isa<TableDeclAST>()) {
+        return false;
+    }
+    TableDeclAST* table = named->resolvedDecl->as<TableDeclAST>();
+    if (!table->isHostBacked || !table->isRequest) {
+        ctx.diagnostics.error(DiagCode::Seq_WaitForRequestNotARequest, stmt->request,
+                              "'waitForRequest' argument must be a row "
+                              "reference to an @request host type; '",
+                              ctx.pool.lookup(table->name),
+                              "' is not @request-attributed");
+        return false;
+    }
+
+    return false;
+}
+
+} // namespace lucid::sema

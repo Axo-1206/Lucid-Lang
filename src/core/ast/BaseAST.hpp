@@ -340,18 +340,28 @@ struct DeclAST : BaseAST {
     ArenaSpan<AttributeAST*> attributes;
     std::optional<DocComment> doc;
 
-    /// Set by Sema during module registration. Used for mangled-name
-    /// computation and diagnostics that need the declaring module.
+    /// Set by Sema during module registration. Used for diagnostics
+    /// that need the declaring module.
     ModuleAST* declaringModule = nullptr;
 
-    /// True if the declaration is visible outside its module. Set by Sema
-    /// when the declaration's attribute list contains `@export`.
+    /// True if the declaration is visible outside its module. Set by
+    /// `AttributeValidator` when the declaration's attribute list
+    /// contains `@export`.
     bool isExported = false;
 
     /// The message from `@deprecated("msg")`, if present. Invalid
-    /// otherwise. On `DeclAST` because the attribute is legal on tables,
-    /// functions, and top-level variables alike.
+    /// otherwise.
     InternedString deprecationMessage;
+
+    /// The declaration's mangled symbol name. Set by `MangledName`'s
+    /// `generateMangledName` overload for the declaration's concrete
+    /// kind, during pass 2 of Sema. An `@export`ed declaration's
+    /// mangled name is its source name; a non-exported one's is
+    /// `_L<module-path>_<name>`.
+    ///
+    /// Invalid until Sema runs; a caller that reads it before pass 2
+    /// sees the empty `InternedString`.
+    InternedString mangledName;
 
     explicit DeclAST(ASTKind k, InternedString n)
         : BaseAST(k), name(n) {}
