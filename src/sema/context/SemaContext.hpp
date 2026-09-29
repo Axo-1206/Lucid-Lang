@@ -19,30 +19,56 @@
  *   - the built-in method registry (a fixed table of method metadata),
  *   - the `ContextStack` that tracks traversal position and narrowings.
  *
- * ─── Design: two namespaces per module ────────────────────────────────────
- * A `ModuleTable` stores values and types in separate maps. `TABLE
- * Person` registers `Person` in *both* maps — the type-namespace entry
- * is what `&Person` and `let p: Person` resolve against; the
- * value-namespace entry is what `Person.ADD(...)`, `Person[i]`, and a
- * bare `Person` in an expression position resolve against. Both point
- * at the same `TableDeclAST`.
+ * ─── Design: the language has three declaration forms ─────────────────────
+ * §1 of the grammar says a module contains TABLE declarations, FN
+ * declarations, and variable declarations. Three forms, three shapes.
+ * The AST models this directly: `TableDeclAST`, `FnDeclAST`,
+ * `VarDeclAST` are siblings under `DeclAST`, with no shared value/type
+ * intermediate between them and no diamond in the inheritance graph.
  *
- * The two namespaces are still separate: a `let Person = ...` in the
- * same module collides with the table's value-namespace entry, because
- * `Person` already names a value (the sheet). That is the intended
- * behavior.
+ * The module table mirrors the AST's three forms: a `tables` map, a
+ * `functions` map, and a `variables` map. A lookup tells the caller
+ * which form it found without a family check.
  *
- * Local scopes hold values only. `FN` and `TABLE` are module-only
- * declarations (§12.5), so `insertType` asserts module level and writes
- * to the module table.
+ * ─── Design: a table is both a type and a value ──────────────────────────
+ * A table name refers to a sheet, and a sheet is usable in two
+ * positions:
+ *
+ *   - as a **type** (`&Person`, `let p: Person`), where the name
+ *     resolves through the type namespace;
+ *   - as a **value** (`Person.ADD(...)`, `Person[i]`, and a bare
+ *     `Person` in an expression position), where the name resolves
+ *     through the value namespaces.
+ *
+ * The two positions are stored in two maps, but they hold the *same*
+ * `TableDeclAST*`. There is one node per table declaration; the two
+ * maps just provide two ways to reach it. This is the "one node, two
+ * entries" model.
+ *
+ *   - `types` holds tables (as `TypeDeclAST*`), and is what
+ *     `lookupType` reads.
+ *   - `tables` holds tables (as `TableDeclAST*`), and is what
+ *     `lookupTable` reads.
+ *
+ * The polymorphic `lookupValue` consults `variables`, then
+ * `functions`, then `tables`, and reports which map it found the name
+ * in.
+ *
+ * ─── Design: local scopes hold values only ────────────────────────────────
+ * `FN` and `TABLE` are module-only declarations (§12.5). A local scope
+ * therefore holds only variables and parameters, both of which are
+ * `ValueDeclAST`s. `Scope::values` is a single map of `ValueDeclAST*`.
+ *
+ * The module table needs three maps for values because a top-level
+ * declaration can be any of the three forms; a local scope needs one
+ * because a local declaration can only be a variable or a parameter.
  *
  * ─── Design: the type cache is load-bearing ───────────────────────────────
  * `TypeCache` canonicalizes every type it produces: two references to
  * `int` share one `PrimitiveTypeAST`, two references to `Person` share
  * one `NamedTypeAST`, two references to `[int]` share one
  * `ArrayTypeAST`. The share is by pointer, and it is what makes
- * `typesEqual` O(1) in the common case (`a == b` succeeds before the
- * structural fallback runs).
+ * `typesEqual` O(1) in the common case.
  *
  * The cache is also how the resolver disambiguates forms whose type is
  * not inferable from the expression alone. When a condition (`if`,
@@ -56,14 +82,7 @@
  * tables. They are constructed by the context's constructor, never
  * reassigned, and reached as `ctx.attributeRegistry` and
  * `ctx.builtinMethodRegistry`. Two sessions do not share them; a
- * session's registries die with the session. This mirrors how the type
- * cache and the symbol tables work and keeps the whole Sema subsystem
- * session-scoped.
- *
- * Both registries are cheap to construct (a `std::unordered_map` with a
- * handful of static entries) and hold no per-session state. Making them
- * members rather than static singletons means a future test can build a
- * context with a modified registry if it needs to.
+ * session's registries die with the session.
  *
  * ─── Design: the context is not thread-safe ───────────────────────────────
  * Like the diagnostic engine and the string pool, `SemaContext` is
@@ -94,23 +113,92 @@
 namespace lucid::sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ValueLookup
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The result of a polymorphic value lookup.
+///
+/// A bare identifier in an expression position can resolve to one of
+/// three value forms:
+///
+///   - a **variable** — a `let`/`const` binding;
+///   - a **function** — a `FN` declaration;
+///   - a **table** — the sheet itself, used as a value.
+///
+/// A parameter is a fourth form, but only inside a function's lexical
+/// scope; a `lookupValue` on the module table never produces one.
+/// `ValueLookup::Kind::Param` exists so a lookup that walks into the
+/// scope chain can report a parameter without a second result type.
+///
+/// The struct is a discriminated union: `kind` says which field is
+/// valid. A caller that wants a specific form can call the specific
+/// lookup (`lookupVariable`, `lookupFunction`, `lookupTable`) and skip
+/// the discrimination. A caller that wants "whatever this name is"
+/// reads `kind` and picks the field.
+struct ValueLookup {
+    enum class Kind : uint8_t {
+        None,       ///< The name did not resolve.
+        Variable,   ///< A `let`/`const` binding.
+        Function,   ///< A `FN` declaration.
+        Table,      ///< A table, used as a value.
+        Param,      ///< A function parameter.
+    };
+
+    Kind kind = Kind::None;
+
+    VarDeclAST*   variable = nullptr;   ///< valid when kind == Variable
+    FnDeclAST*    function = nullptr;   ///< valid when kind == Function
+    TableDeclAST* table    = nullptr;   ///< valid when kind == Table
+    ParamAST*     param    = nullptr;   ///< valid when kind == Param
+
+    /// True if the name resolved to anything.
+    bool found() const { return kind != Kind::None; }
+
+    // ─── Convenience factories ──────────────────────────────────────────
+
+    static ValueLookup none()     { return {}; }
+
+    static ValueLookup from(VarDeclAST* v) {
+        ValueLookup r; r.kind = Kind::Variable; r.variable = v; return r;
+    }
+    static ValueLookup from(FnDeclAST* f) {
+        ValueLookup r; r.kind = Kind::Function; r.function = f; return r;
+    }
+    static ValueLookup from(TableDeclAST* t) {
+        ValueLookup r; r.kind = Kind::Table; r.table = t; return r;
+    }
+    static ValueLookup from(ParamAST* p) {
+        ValueLookup r; r.kind = Kind::Param; r.param = p; return r;
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ModuleTable
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief All symbols declared at the top level of one module.
 ///
-/// `values` holds tables, functions, and top-level `let`/`const`
-/// variables. `types` holds tables — a table is a type, and
-/// `TypeDeclAST` is the family base for type declarations. A `TABLE`
-/// therefore appears in both maps under the same name; the two are
-/// distinct lookups, not duplicates.
+/// Four maps, one per form a top-level name can take:
+///
+///   - `tables` holds the table declarations, as values. This is the
+///     map that `lookupTable` and the table case of `lookupValue`
+///     consult.
+///   - `types` holds the table declarations, as types. This is the map
+///     that `lookupType` consults. It has the same names and the same
+///     nodes as `tables`; the two maps are two views of the same set
+///     of declarations.
+///   - `functions` holds the `FN` declarations.
+///   - `variables` holds the top-level `let`/`const` declarations.
 ///
 /// `importAliases` maps a local alias (from `import x.y as z`) to the
 /// imported `ModuleAST*`. It is populated by Sema during pass 1.
 struct ModuleTable {
     ModuleAST* module = nullptr;
-    std::unordered_map<InternedString, ValueDeclAST*> values;
+
+    std::unordered_map<InternedString, TableDeclAST*> tables;
     std::unordered_map<InternedString, TypeDeclAST*>  types;
+    std::unordered_map<InternedString, FnDeclAST*>    functions;
+    std::unordered_map<InternedString, VarDeclAST*>   variables;
     std::unordered_map<InternedString, ModuleAST*>    importAliases;
 };
 
@@ -118,16 +206,17 @@ struct ModuleTable {
 // Scope
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief One lexical scope: a map of value bindings.
+/// @brief One lexical scope: a map of local value bindings.
 ///
 /// Scopes are pushed on entry to a function body, a block, an
 /// if-branch, a loop body, and a switch body, and popped on exit. The
-/// scope chain sits on top of the current module's table: `lookupValue`
+/// scope chain sits on top of the current module's tables: `lookupValue`
 /// walks innermost scope outward, then the module table.
 ///
-/// A scope holds values only. `FN` and `TABLE` are module-only
-/// (§12.5), so a local declaration cannot introduce a type name; the
-/// `types` map that an earlier design carried here is gone.
+/// A scope holds `ValueDeclAST*` only. The two forms a local declaration
+/// can take — a `let`/`const` variable and a function parameter — are
+/// both `ValueDeclAST`s. A `TABLE` or `FN` is module-only (§12.5), so
+/// neither can appear in a local scope.
 struct Scope {
     std::unordered_map<InternedString, ValueDeclAST*> values;
 };
@@ -142,11 +231,6 @@ struct Scope {
 /// requests. Two call sites writing `int` (or `int?`, or `[int]`) share
 /// one AST node, which makes type comparison a pointer comparison and
 /// keeps the arena from filling with duplicate nodes.
-///
-/// The cache stores one entry per primitive kind, one entry per named
-/// type (keyed by the name), one entry per array shape (keyed by kind,
-/// size, element), and so on. Every key is a structural fact about the
-/// type; every value is the canonical node for that fact.
 struct TypeCache {
     // ─── The unknown singleton ──────────────────────────────────────────
     /// The one `UnknownTypeAST`. Returned by every resolver on failure.
@@ -174,7 +258,7 @@ struct TypeCache {
     // ─── Array types ────────────────────────────────────────────────────
     struct ArrayTypeKey {
         ArrayKind kind;
-        uint64_t  size;      // meaningful only when kind == Fixed
+        uint64_t  size;
         TypeAST*  element;
         bool operator==(const ArrayTypeKey& o) const {
             return kind == o.kind && size == o.size && element == o.element;
@@ -247,16 +331,9 @@ struct TypeCache {
 
 struct SemaContext {
     // ─── Borrowed resources ─────────────────────────────────────────────
-    /// The string pool. Owns every interned name and string literal.
-    StringPool&        pool;
-
-    /// The AST arena. Every AST node and every type node is allocated
-    /// from here. The context never frees a node; the arena is reclaimed
-    /// when the session dies.
-    ASTArena&          arena;
-
-    /// The diagnostic engine. Collects errors, warnings, and notes.
-    diag::DiagnosticEngine&  diagnostics;
+    StringPool&             pool;
+    ASTArena&               arena;
+    diag::DiagnosticEngine& diagnostics;
 
     // ─── Modules ────────────────────────────────────────────────────────
     /// Every module the CLI handed over. Populated before any pass runs.
@@ -344,102 +421,117 @@ struct SemaContext {
     // Scope management
     // ─────────────────────────────────────────────────────────────────────
 
-    /// True when no lexical scope is open — we are at module level.
-    bool isAtModuleLevel() const;
-
-    void   pushScope();
-    void   popScope();
+    bool         isAtModuleLevel() const;
+    void         pushScope();
+    void         popScope();
     Scope&       currentScope();
     const Scope& currentScope() const;
 
-    /// True if `name` is bound in the innermost lexical scope.
     bool isInCurrentScope(InternedString name) const;
-
-    /// True if `name` is declared at the top level of the current module
-    /// (in either the value or the type namespace).
     bool isModuleMember(InternedString name) const;
 
     // ─────────────────────────────────────────────────────────────────────
     // Symbol insertion
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Insert a value binding. At module level this writes to the
-    /// current module table; inside a scope it writes to the innermost
-    /// scope. Emits a redeclaration diagnostic and returns false on a
-    /// collision.
-    bool insertValue(ValueDeclAST* decl);
+    /// Insert a table's name into the module's `tables` and `types`
+    /// maps. Both entries point at the same `TableDeclAST*`. Types are
+    /// module-level only, so this asserts `isAtModuleLevel()`.
+    bool insertTable(TableDeclAST* decl);
+
+    /// Insert a `FN` name into the module's `functions` map. Functions
+    /// are module-level only.
+    bool insertFunction(FnDeclAST* decl);
+
+    /// Insert a top-level `let`/`const` name into the module's
+    /// `variables` map. Variables are module-level only.
+    bool insertVariable(VarDeclAST* decl);
+
+    /// Insert a local variable or a parameter into the innermost lexical
+    /// scope. Local bindings are always `ValueDeclAST`s — a `let`/`const`
+    /// variable or a function parameter. The caller must have pushed a
+    /// scope; this asserts `!isAtModuleLevel()`.
+    bool insertLocal(ValueDeclAST* decl);
 
     /// Insert a type binding. Types are module-level only (§12.5); this
     /// asserts `isAtModuleLevel()` and writes to the current module
-    /// table. Emits a redeclaration diagnostic and returns false on a
-    /// collision.
+    /// table's `types` map.
+    ///
+    /// The only `TypeDeclAST` the new grammar produces is a
+    /// `TableDeclAST`. `insertTable` performs the two-map write; a
+    /// caller that wants only the type half (rare — a Sema pass that
+    /// wants to check a name is already in the type namespace) calls
+    /// this directly.
     bool insertType(TypeDeclAST* decl);
 
-    /// Register an import alias on the current module. Emits a
-    /// diagnostic and returns false if the alias is already taken.
     bool addImportAlias(InternedString alias, ModuleAST* module, BaseAST* node);
 
     // ─────────────────────────────────────────────────────────────────────
-    // Symbol lookup
+    // Symbol lookup — polymorphic
     // ─────────────────────────────────────────────────────────────────────
-    //
-    // Lookup walks innermost scope outward, then the current module
-    // table. It does not follow imports; cross-module lookup goes
-    // through `lookupImport` / `lookupModuleValueMember`.
 
-    ValueDeclAST* lookupValue   (InternedString name) const;
-    FnDeclAST*    lookupFunction(InternedString name) const;
-    TypeDeclAST*  lookupType    (InternedString name) const;
+    /// Resolve `name` in the current lexical scopes and the current
+    /// module's namespaces. Walks innermost scope outward, then the
+    /// module's `variables`, `functions`, and `tables` maps.
+    ///
+    /// The return value is a discriminated union. A caller that wants a
+    /// specific form can call the specific lookup (`lookupVariable`,
+    /// `lookupFunction`, `lookupTable`) instead; those skip the
+    /// discrimination and return the concrete pointer.
+    ValueLookup lookupValue(InternedString name) const;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Symbol lookup — per form
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Resolve `name` to a function, or null.
+    FnDeclAST* lookupFunction(InternedString name) const;
+
+    /// Resolve `name` to a table (as a value), or null.
+    TableDeclAST* lookupTable(InternedString name) const;
+
+    /// Resolve `name` to a top-level variable, or null.
+    VarDeclAST* lookupVariable(InternedString name) const;
+
+    /// Resolve `name` to a type declaration, or null. Types live in the
+    /// module's `types` map only; there is no lexical type scope.
+    TypeDeclAST* lookupType(InternedString name) const;
 
     // ─────────────────────────────────────────────────────────────────────
     // Import and cross-module lookup
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Resolve an import alias to its module, or null.
     ModuleAST* lookupImport(InternedString alias) const;
 
-    /// Look up a member of an imported module's value namespace.
-    /// Does not check `@export`; the caller (the field-access
-    /// classifier in `SemaExpr.cpp`) checks it.
     ValueDeclAST* lookupModuleValueMember(ModuleAST* module,
                                           InternedString memberName) const;
 
-    /// Look up a member of an imported module's type namespace.
+    TableDeclAST* lookupModuleTableMember(ModuleAST* module,
+                                          InternedString memberName) const;
+
     TypeDeclAST* lookupModuleTypeMember(ModuleAST* module,
                                         InternedString memberName) const;
 
-    /// Convenience: resolve an alias to a module, then look up the
-    /// member in that module's value namespace. Null if either step
-    /// fails.
     ValueDeclAST* lookupImportedValue(InternedString alias,
                                       InternedString member) const;
 
-    /// Convenience: same, for the type namespace.
     TypeDeclAST* lookupImportedType(InternedString alias,
                                     InternedString member) const;
 
     // ─────────────────────────────────────────────────────────────────────
     // Type canonicalization accessors
     // ─────────────────────────────────────────────────────────────────────
-    //
-    // Every accessor returns the canonical singleton for its request.
-    // The cache is what makes `typesEqual` cheap; two structurally
-    // identical types share a pointer.
 
     PrimitiveTypeAST* getPrimitiveType(PrimitiveKind kind);
     UnknownTypeAST*   getUnknownType();
 
-    NamedTypeAST*  getNamedType    (InternedString name);
-    ArrayTypeAST*  getArrayType    (ArrayKind kind, uint64_t size, TypeAST* element);
-    RowRefTypeAST* getRowRefType   (TypeAST* table);
-    NullableTypeAST* getNullableType(TypeAST* inner);
-    FunctionTypeAST* getFunctionType(ArenaSpan<TypeAST*> params, TypeAST* returnType);
+    NamedTypeAST*    getNamedType    (InternedString name);
+    ArrayTypeAST*    getArrayType    (ArrayKind kind, uint64_t size, TypeAST* element);
+    RowRefTypeAST*   getRowRefType   (TypeAST* table);
+    NullableTypeAST* getNullableType (TypeAST* inner);
+    FunctionTypeAST* getFunctionType (ArenaSpan<TypeAST*> params, TypeAST* returnType);
 
     // ─── Named accessors for the primitives the compiler uses most ──────
-    //
-    // `getPrimitiveType(PrimitiveKind::Bool)` is correct but reads
-    // poorly at a call site. These named forms are the ones most Sema
-    // code uses; they are thin wrappers over `getPrimitiveType`.
 
     PrimitiveTypeAST* getBoolType();
     PrimitiveTypeAST* getIntType();
@@ -462,10 +554,8 @@ struct SemaContext {
 struct ScopedContext {
     ScopedContext(SemaContext& ctx, ContextKind kind, BaseAST* node);
     ~ScopedContext();
-
     ScopedContext(const ScopedContext&)            = delete;
     ScopedContext& operator=(const ScopedContext&) = delete;
-
 private:
     SemaContext& ctx_;
 };
@@ -479,10 +569,8 @@ private:
 struct ScopedIfCondition {
     ScopedIfCondition(SemaContext& ctx, bool hasElse);
     ~ScopedIfCondition();
-
     ScopedIfCondition(const ScopedIfCondition&)            = delete;
     ScopedIfCondition& operator=(const ScopedIfCondition&) = delete;
-
 private:
     SemaContext& ctx_;
 };
@@ -491,10 +579,8 @@ private:
 struct SymbolScope {
     explicit SymbolScope(SemaContext& ctx);
     ~SymbolScope();
-
     SymbolScope(const SymbolScope&)            = delete;
     SymbolScope& operator=(const SymbolScope&) = delete;
-
 private:
     SemaContext& ctx_;
 };
@@ -510,10 +596,8 @@ struct ScopedNarrowing {
                     const std::unordered_map<InternedString, TypeAST*>& narrowings,
                     bool isInverse = false);
     ~ScopedNarrowing();
-
     ScopedNarrowing(const ScopedNarrowing&)            = delete;
     ScopedNarrowing& operator=(const ScopedNarrowing&) = delete;
-
 private:
     SemaContext& ctx_;
 };
@@ -529,10 +613,8 @@ private:
 struct ScopedFunction {
     ScopedFunction(SemaContext& ctx, FnDeclAST* decl);
     ~ScopedFunction();
-
     ScopedFunction(const ScopedFunction&)            = delete;
     ScopedFunction& operator=(const ScopedFunction&) = delete;
-
 private:
     SemaContext& ctx_;
     SymbolScope  paramScope_;

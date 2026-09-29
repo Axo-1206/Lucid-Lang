@@ -738,7 +738,7 @@ bool resolveRangeForBindings(ForStmtAST* stmt, TypeAST* boundType, SemaContext& 
 
     stmt->firstVar->type = declared;
     stmt->firstVar->resourceKind = classifyResourceKind(declared);
-    ctx.insertValue(stmt->firstVar);
+    ctx.insertLocal(stmt->firstVar);
 
     return false;
 }
@@ -814,7 +814,7 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                 }
                 stmt->firstVar->type = idxType;
                 stmt->firstVar->resourceKind = classifyResourceKind(idxType);
-                ctx.insertValue(stmt->firstVar);
+                ctx.insertLocal(stmt->firstVar);
             }
         }
 
@@ -831,7 +831,7 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
             } else {
                 stmt->secondVar->type = rowType;
                 stmt->secondVar->resourceKind = classifyResourceKind(rowType);
-                ctx.insertValue(stmt->secondVar);
+                ctx.insertLocal(stmt->secondVar);
             }
         }
     } else {
@@ -857,7 +857,7 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
 
         stmt->firstVar->type = rowType;
         stmt->firstVar->resourceKind = classifyResourceKind(rowType);
-        ctx.insertValue(stmt->firstVar);
+        ctx.insertLocal(stmt->firstVar);
     }
 
     return false;
@@ -896,7 +896,7 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                 }
                 stmt->firstVar->type = idxType;
                 stmt->firstVar->resourceKind = classifyResourceKind(idxType);
-                ctx.insertValue(stmt->firstVar);
+                ctx.insertLocal(stmt->firstVar);
             }
         }
 
@@ -913,7 +913,7 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
             } else {
                 stmt->secondVar->type = valueType;
                 stmt->secondVar->resourceKind = classifyResourceKind(valueType);
-                ctx.insertValue(stmt->secondVar);
+                ctx.insertLocal(stmt->secondVar);
             }
         }
     } else {
@@ -939,7 +939,7 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
 
         stmt->firstVar->type = valueType;
         stmt->firstVar->resourceKind = classifyResourceKind(valueType);
-        ctx.insertValue(stmt->firstVar);
+        ctx.insertLocal(stmt->firstVar);
     }
 
     return false;
@@ -1077,18 +1077,12 @@ bool resolveVarDeclStmt(VarDeclStmtAST* stmt, SemaContext& ctx) {
 
     // ─── Register the local's name ──────────────────────────────────────
     //
-    // The contract documented in `SemaDecl.cpp` and `Sema.hpp`: a local
-    // `let`/`const` is registered by this function, not by
-    // `resolveVarDecl`. `resolveVarDecl` assumes the name is already in
-    // scope; the caller is responsible for putting it there.
-    //
-    // Registration happens *before* the declaration's initializer is
-    // resolved, so an initializer that references the declaration's own
-    // name resolves to the (still unresolved) declaration and produces
-    // an "undefined value" error. That is the correct behavior: a
-    // declaration's initializer is not allowed to reference the
-    // variable it is declaring (the value does not exist yet).
-    ctx.insertValue(stmt->decl);
+    // A local `let`/`const` is a `ValueDeclAST`; it goes into the
+    // innermost lexical scope. The context's `insertLocal` asserts
+    // `!isAtModuleLevel()`, which is guaranteed here: a `VarDeclStmtAST`
+    // only appears inside a block, and a block always pushes a
+    // `SymbolScope`.
+    ctx.insertLocal(stmt->decl);
 
     // ─── Resolve the declaration ────────────────────────────────────────
     resolveVarDecl(stmt->decl, ctx);

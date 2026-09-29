@@ -318,22 +318,52 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* target,
     return result;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// functionTypeOf
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Synthesize the function type of a `FnDeclAST` from its parameter list
+// and return type. The AST does not store a `TypeAST*` for the function
+// itself; the type is derived from the declaration's shape. The
+// synthesizer goes through the context's type cache, so two references
+// to the same function type share one node.
+//
+// A `FnDeclAST`'s parameters are `ParamAST*` (with names, `const`
+// qualifiers, and optional `isVariadic`), but a function *type*'s
+// parameters are `TypeAST*` (unnamed, no qualifiers). The
+// synthesizer drops the qualifiers and keeps only the types. A
+// variadic parameter's type is already a `[T]` array (set by
+// `resolveParam`); the array type is the parameter's type in the
+// function type as well.
+static TypeAST* functionTypeOf(FnDeclAST* fn, SemaContext& ctx) {
+    if (!fn) return ctx.getUnknownType();
+
+    std::vector<TypeAST*> params;
+    params.reserve(fn->params.size());
+    for (ParamAST* p : fn->params) {
+        if (p && p->type) params.push_back(p->type);
+    }
+    ArenaSpan<TypeAST*> paramSpan = ctx.arena.makeSpan<TypeAST*>(params);
+
+    // A function with no `-> T` returns `unit`. The AST stores a null
+    // `returnType` for that case; the synthesized function type uses
+    // the `unit` singleton.
+    TypeAST* ret = fn->returnType
+                 ? fn->returnType
+                 : ctx.getUnitType();
+
+    return ctx.getFunctionType(paramSpan, ret);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // resolveIdentifierExpr
 // ═════════════════════════════════════════════════════════════════════════════
 
 TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* target,
-                                      SemaContext& ctx) {
+                               SemaContext& ctx) {
     if (!expr) return ctx.getUnknownType();
 
     // ─── `_` is a discard placeholder, not a name ───────────────────────
-    //
-    // The parser produces an `IdentifierExprAST` with name `_` wherever
-    // `_` appears in an expression position. The grammar allows it only
-    // as a `for` binding (§12.3), where it is handled by the `for`
-    // resolver, not here. In any other position — an expression, an
-    // argument — `_` is a syntax error the parser should have caught.
-    // Sema is defensive: return unknown.
     if (ctx.pool.lookupView(expr->name) == "_") {
         expr->resolvedType = ctx.getUnknownType();
         expr->isLValue = false;
@@ -343,12 +373,12 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* target,
     // ─── Look up the name in the value namespace ────────────────────────
     //
     // `lookupValue` walks local scopes outward, then the current module
-    // table. It does not follow imports; a name from another module
-    // reaches here through a qualified field access (`math.sqrt`),
-    // which is a `FieldAccessExprAST` and goes through
-    // `resolveFieldAccessExpr`, not this function.
-    ValueDeclAST* decl = ctx.lookupValue(expr->name);
-    if (!decl) {
+    // table's variables, functions, and tables. It does not follow
+    // imports; a name from another module reaches here through a
+    // qualified field access (`math.sqrt`), which is a
+    // `FieldAccessExprAST` and goes through `resolveFieldAccessExpr`.
+    ValueLookup lv = ctx.lookupValue(expr->name);
+    if (!lv.found()) {
         ctx.diagnostics.error(DiagCode::Name_UndefinedValue, expr,
                               "undefined value '",
                               ctx.pool.lookup(expr->name), "'");
@@ -357,39 +387,61 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* target,
         return ctx.getUnknownType();
     }
 
-    expr->resolvedDecl = decl;
-
-    // ─── Get the declaration's type ─────────────────────────────────────
+    // ─── Get the declaration's type, per form ───────────────────────────
     //
-    // Every value declaration has a `type` field by the time it has been
-    // resolved. A `VarDeclAST`'s type is set by `resolveVarDecl`; a
-    // `ParamAST`'s by `resolveParam`; a `FnDeclAST`'s by `resolveFnDecl`.
-    // A `TableDeclAST` has no `type` field of its own — its type *is*
-    // its name, and a bare `Person` in an expression position resolves
-    // to the table type via the special handling below.
+    // The three value forms each have a different "what is my type?"
+    // answer:
+    //
+    //   - A `VarDeclAST` binding: its declared type, `var->type`.
+    //   - A `FnDeclAST` declaration: a function value. Its type is
+    //     synthesized from the declaration's parameter and return
+    //     types — the AST does not store a `TypeAST*` on the function
+    //     itself because the function type is derived from the
+    //     declaration's shape.
+    //   - A `TableDeclAST` name: the sheet itself. Its type is the
+    //     table's `NamedTypeAST`.
+    //   - A `ParamAST`: a parameter. Its type is `param->type`.
+    //
+    // The `ValueLookup` struct carries the discriminator, so this
+    // function reads one field per case instead of `isa<>`-checking a
+    // `ValueDeclAST*` and casting.
     TypeAST* declType = nullptr;
+    DeclAST* resolvedDecl = nullptr;
 
-    if (decl->isa<TableDeclAST>()) {
-        // A bare table name is the sheet itself. The value namespace
-        // holds the table's name (registered in pass 1 alongside the
-        // type namespace); the type a bare name produces is the sheet.
-        TableDeclAST* table = decl->as<TableDeclAST>();
-        declType = ctx.getNamedType(table->name);
-        if (declType && declType->isa<NamedTypeAST>()) {
-            declType->as<NamedTypeAST>()->resolvedDecl = table;
+    switch (lv.kind) {
+        case ValueLookup::Kind::Variable: {
+            VarDeclAST* var = lv.variable;
+            resolvedDecl = var;
+            declType = var->type;
+            break;
         }
-    } else if (decl->isa<ValueDeclAST>()) {
-        declType = decl->as<ValueDeclAST>()->type;
-    } else {
-        // A value-namespace declaration that is neither a table nor a
-        // ValueDeclAST is not something the new grammar produces. A
-        // compiler bug.
-        AST_ASSERT_MSG(false,
-            "resolveIdentifierExpr: value-namespace declaration is "
-            "neither a table nor a value declaration");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->isLValue = false;
-        return ctx.getUnknownType();
+        case ValueLookup::Kind::Function: {
+            FnDeclAST* fn = lv.function;
+            resolvedDecl = fn;
+            // The function's type is its signature. A `FnDeclAST` does
+            // not carry a `type` field the way a `VarDeclAST` does; the
+            // function type is derived from the parameters and return
+            // type. `resolveFnDecl` has already resolved both.
+            declType = functionTypeOf(fn, ctx);
+            break;
+        }
+        case ValueLookup::Kind::Table: {
+            TableDeclAST* table = lv.table;
+            resolvedDecl = table;
+            NamedTypeAST* tableType = ctx.getNamedType(table->name);
+            tableType->resolvedDecl = table;
+            declType = tableType;
+            break;
+        }
+        case ValueLookup::Kind::Param: {
+            ParamAST* param = lv.param;
+            resolvedDecl = param;
+            declType = param->type;
+            break;
+        }
+        case ValueLookup::Kind::None:
+            // Handled above by the `found()` check.
+            break;
     }
 
     if (!declType || declType->isa<UnknownTypeAST>()) {
@@ -398,12 +450,11 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* target,
         return ctx.getUnknownType();
     }
 
+    // Store the resolved declaration. The `IdentifierExprAST` field is
+    // typed `DeclAST*`; the four forms above are all `DeclAST`s.
+    expr->resolvedDecl = resolvedDecl;
+
     // ─── Apply the narrowings in scope ──────────────────────────────────
-    //
-    // If an enclosing `if x != nil` narrowed `expr->name`, the narrowed
-    // type wins over the declaration's declared type. The narrowing
-    // stack is consulted first, so a narrowed type overrides the
-    // declared one, but only within the narrowed scope.
     TypeAST* narrowed = ctx.stack.getNarrowedType(expr->name);
     if (narrowed) {
         declType = narrowed;
@@ -411,32 +462,25 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* target,
 
     // ─── Mutability ─────────────────────────────────────────────────────
     //
-    // An identifier is an lvalue iff its declaration is mutable. A
-    // `const` binding is not an lvalue; a `let` binding is. A table
-    // name is not an lvalue (`Person = ...` is meaningless); a
-    // function name is not an lvalue.
-    //
-    // A `ParamAST` is an lvalue unless it is `const`. The `isConst`
-    // flag on a parameter reflects the `const` qualifier; a
-    // non-`const` parameter can be reassigned (and, if it holds a row
-    // reference, mutated through).
-    //
-    // A `TableDeclAST` is never an lvalue.
-    if (decl->isa<TableDeclAST>()) {
-        expr->isLValue = false;
-    } else if (decl->isa<ParamAST>()) {
-        ParamAST* param = decl->as<ParamAST>();
-        expr->isLValue = !param->isConst;
-    } else if (decl->isa<VarDeclAST>()) {
-        VarDeclAST* var = decl->as<VarDeclAST>();
-        expr->isLValue = !var->isConst;
-    } else if (decl->isa<FnDeclAST>()) {
-        // A function name in an expression position is a function
-        // value. The name is not an lvalue; a function binding cannot
-        // be reassigned.
-        expr->isLValue = false;
-    } else {
-        expr->isLValue = false;
+    // An identifier is an lvalue iff its declaration is mutable:
+    //   - a `let` variable: lvalue;
+    //   - a `const` variable: not an lvalue;
+    //   - a non-`const` parameter: lvalue;
+    //   - a `const` parameter: not an lvalue;
+    //   - a `FN` declaration: not an lvalue;
+    //   - a `TABLE` name: not an lvalue.
+    switch (lv.kind) {
+        case ValueLookup::Kind::Variable:
+            expr->isLValue = !lv.variable->isConst;
+            break;
+        case ValueLookup::Kind::Param:
+            expr->isLValue = !lv.param->isConst;
+            break;
+        case ValueLookup::Kind::Function:
+        case ValueLookup::Kind::Table:
+        case ValueLookup::Kind::None:
+            expr->isLValue = false;
+            break;
     }
 
     return declType;
@@ -725,19 +769,21 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr,
 // `math.sqrt` where `math` is an import alias.
 
 TypeAST* resolveModuleMemberAccess(FieldAccessExprAST* expr,
-                                          IdentifierExprAST* /*objId*/,
-                                          ModuleAST* module,
-                                          TypeAST* target,
-                                          SemaContext& ctx) {
+                                   IdentifierExprAST* /*objId*/,
+                                   ModuleAST* module,
+                                   TypeAST* target,
+                                   SemaContext& ctx) {
     expr->isModuleAccess = true;
 
-    // ─── Look up the member in the target module ────────────────────────
-    ValueDeclAST* member = ctx.lookupModuleValueMember(module, expr->fieldName);
-    if (!member) {
-        // The member might be a type rather than a value. A qualified
-        // type name in an expression position is unusual (types do not
-        // appear in expressions in the new grammar) but the lookup is
-        // here for completeness.
+    // ─── Try a value member first ───────────────────────────────────────
+    ValueDeclAST* valueMember = ctx.lookupModuleValueMember(module, expr->fieldName);
+    TableDeclAST* tableMember = nullptr;
+
+    if (!valueMember) {
+        tableMember = ctx.lookupModuleTableMember(module, expr->fieldName);
+    }
+
+    if (!valueMember && !tableMember) {
         ctx.diagnostics.error(DiagCode::Name_UndefinedMember, expr,
                               "module '", ctx.pool.lookup(module->filePath),
                               "' has no member named '",
@@ -746,6 +792,11 @@ TypeAST* resolveModuleMemberAccess(FieldAccessExprAST* expr,
         expr->isLValue = false;
         return ctx.getUnknownType();
     }
+
+    // ─── Export check ───────────────────────────────────────────────────
+    DeclAST* member = valueMember
+                    ? static_cast<DeclAST*>(valueMember)
+                    : static_cast<DeclAST*>(tableMember);
 
     if (!member->isExported) {
         ctx.diagnostics.error(DiagCode::Name_PrivateMember, expr,
@@ -762,14 +813,12 @@ TypeAST* resolveModuleMemberAccess(FieldAccessExprAST* expr,
 
     // ─── Determine the member's type ────────────────────────────────────
     TypeAST* memberType = nullptr;
-    if (member->isa<TableDeclAST>()) {
-        TableDeclAST* table = member->as<TableDeclAST>();
-        memberType = ctx.getNamedType(table->name);
-        if (memberType && memberType->isa<NamedTypeAST>()) {
-            memberType->as<NamedTypeAST>()->resolvedDecl = table;
-        }
-    } else if (member->isa<ValueDeclAST>()) {
-        memberType = member->as<ValueDeclAST>()->type;
+    if (tableMember) {
+        NamedTypeAST* t = ctx.getNamedType(tableMember->name);
+        t->resolvedDecl = tableMember;
+        memberType = t;
+    } else if (valueMember->isa<ValueDeclAST>()) {
+        memberType = valueMember->as<ValueDeclAST>()->type;
     }
 
     if (!memberType || memberType->isa<UnknownTypeAST>()) {
@@ -782,17 +831,13 @@ TypeAST* resolveModuleMemberAccess(FieldAccessExprAST* expr,
     }
 
     // ─── Mutability ─────────────────────────────────────────────────────
-    if (member->isa<VarDeclAST>()) {
-        expr->isLValue = !member->as<VarDeclAST>()->isConst;
-    } else if (member->isa<FnDeclAST>()) {
-        expr->isLValue = false;
-    } else if (member->isa<TableDeclAST>()) {
-        expr->isLValue = false;
+    if (valueMember && valueMember->isa<VarDeclAST>()) {
+        expr->isLValue = !valueMember->as<VarDeclAST>()->isConst;
     } else {
         expr->isLValue = false;
     }
 
-    (void)target;   // The wrapper `resolveExprWithTarget` checks the target.
+    (void)target;
     return memberType;
 }
 
@@ -1739,7 +1784,7 @@ TypeAST* resolveLambdaExpr(LambdaExprAST* expr, TypeAST* target,
         }
         param->type = paramType;
         if (!param->name.isEmpty()) {
-            ctx.insertValue(param);
+            ctx.insertLocal(param);
         }
     }
 
@@ -1772,20 +1817,22 @@ TypeAST* resolveLambdaExpr(LambdaExprAST* expr, TypeAST* target,
 // result is a `&Coroutine` handle.
 
 TypeAST* resolveStartExpr(StartExprAST* expr, TypeAST* /*target*/,
-                                 SemaContext& ctx) {
+                          SemaContext& ctx) {
     if (!expr || !expr->call) {
         if (expr) expr->resolvedType = ctx.getUnknownType();
         return ctx.getUnknownType();
     }
 
     // ─── Check the callee is a @sequence function ───────────────────────
+    //
+    // A bare identifier resolves to a `FnDeclAST` via `lookupFunction`,
+    // which returns the function specifically (not a `ValueLookup`
+    // discriminated result). The field-access case reads its
+    // `resolvedDecl`, which is set by the field-access resolver.
     FnDeclAST* fn = nullptr;
     if (expr->call->callee->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = expr->call->callee->as<IdentifierExprAST>();
-        ValueDeclAST* decl = ctx.lookupValue(id->name);
-        if (decl && decl->isa<FnDeclAST>()) {
-            fn = decl->as<FnDeclAST>();
-        }
+        fn = ctx.lookupFunction(id->name);
     } else if (expr->call->callee->isa<FieldAccessExprAST>()) {
         FieldAccessExprAST* fa = expr->call->callee->as<FieldAccessExprAST>();
         if (fa->resolvedDecl && fa->resolvedDecl->isa<FnDeclAST>()) {

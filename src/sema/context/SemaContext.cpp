@@ -1,9 +1,27 @@
 /// @file SemaContext.cpp
 /// @brief Implementation of SemaContext and its RAII guards.
+///
+/// ─── Insertion ────────────────────────────────────────────────────────────
+/// There are four insertion methods, one per form a name can take:
+/// `insertTable`, `insertFunction`, `insertVariable`, `insertLocal`, plus
+/// `insertType` for the type-namespace half of a table.
+///
+/// `insertTable` writes the table's name into both the `tables` and the
+/// `types` maps. The other three write to one map each.
+///
+/// ─── Lookup ───────────────────────────────────────────────────────────────
+/// Three specific lookups (`lookupTable`, `lookupFunction`,
+/// `lookupVariable`) return the concrete declaration pointer or null.
+/// `lookupValue` is the polymorphic form: it walks the scope chain, then
+/// the module's `variables`, `functions`, and `tables` maps, and reports
+/// which one held the name.
 
 #include "SemaContext.hpp"
+
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+
+#include <cassert>
 
 using namespace lucid::diag;
 
@@ -33,9 +51,8 @@ void SemaContext::enterModule(ModuleAST* module) {
 
 ModuleTable& SemaContext::getOrCreateModuleTable(ModuleAST* module) {
     auto it = moduleTables.find(module);
-    if (it != moduleTables.end()) {
-        return it->second;
-    }
+    if (it != moduleTables.end()) return it->second;
+
     ModuleTable& table = moduleTables[module];
     table.module = module;
     return table;
@@ -62,9 +79,7 @@ void SemaContext::pushScope() {
 }
 
 void SemaContext::popScope() {
-    if (!scopes.empty()) {
-        scopes.pop_back();
-    }
+    if (!scopes.empty()) scopes.pop_back();
 }
 
 Scope& SemaContext::currentScope() {
@@ -86,27 +101,95 @@ bool SemaContext::isInCurrentScope(InternedString name) const {
 
 bool SemaContext::isModuleMember(InternedString name) const {
     if (!currentModuleTable) return false;
-    return currentModuleTable->values.find(name) != currentModuleTable->values.end()
-        || currentModuleTable->types .find(name) != currentModuleTable->types .end();
+    return currentModuleTable->variables.count(name)
+        || currentModuleTable->functions.count(name)
+        || currentModuleTable->tables.count(name)
+        || currentModuleTable->types.count(name);
 }
 
 // ─── Symbol insertion ─────────────────────────────────────────────────────
 
-bool SemaContext::insertValue(ValueDeclAST* decl) {
+bool SemaContext::insertTable(TableDeclAST* decl) {
     if (!decl) return false;
 
-    if (isAtModuleLevel()) {
-        if (!currentModuleTable) return false;
-        if (currentModuleTable->values.count(decl->name)) {
-            diagnostics.error(DiagCode::Name_Redeclaration, decl,
-                              "redeclaration of '", pool.lookup(decl->name),
-                              "' in module '",
-                              pool.lookup(currentModule->filePath), "'");
-            return false;
-        }
-        currentModuleTable->values[decl->name] = decl;
-        return true;
+    AST_ASSERT_MSG(isAtModuleLevel(),
+                   "insertTable() called from a non-module scope; "
+                   "tables are module-level only");
+
+    if (!currentModuleTable) return false;
+
+    if (currentModuleTable->tables.count(decl->name)
+        || currentModuleTable->types.count(decl->name)
+        || currentModuleTable->functions.count(decl->name)
+        || currentModuleTable->variables.count(decl->name)) {
+        diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                          "redeclaration of '", pool.lookup(decl->name),
+                          "' in module '",
+                          pool.lookup(currentModule->filePath), "'");
+        return false;
     }
+
+    currentModuleTable->tables[decl->name] = decl;
+    currentModuleTable->types[decl->name]  = decl;
+    return true;
+}
+
+bool SemaContext::insertFunction(FnDeclAST* decl) {
+    if (!decl) return false;
+
+    AST_ASSERT_MSG(isAtModuleLevel(),
+                   "insertFunction() called from a non-module scope; "
+                   "functions are module-level only");
+
+    if (!currentModuleTable) return false;
+
+    if (currentModuleTable->functions.count(decl->name)
+        || currentModuleTable->variables.count(decl->name)
+        || currentModuleTable->tables.count(decl->name)
+        || currentModuleTable->types.count(decl->name)) {
+        diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                          "redeclaration of '", pool.lookup(decl->name),
+                          "' in module '",
+                          pool.lookup(currentModule->filePath), "'");
+        return false;
+    }
+
+    currentModuleTable->functions[decl->name] = decl;
+    return true;
+}
+
+bool SemaContext::insertVariable(VarDeclAST* decl) {
+    if (!decl) return false;
+
+    AST_ASSERT_MSG(isAtModuleLevel(),
+                   "insertVariable() called from a non-module scope; "
+                   "a top-level variable is a module declaration — a "
+                   "local let uses insertLocal()");
+
+    if (!currentModuleTable) return false;
+
+    if (currentModuleTable->variables.count(decl->name)
+        || currentModuleTable->functions.count(decl->name)
+        || currentModuleTable->tables.count(decl->name)
+        || currentModuleTable->types.count(decl->name)) {
+        diagnostics.error(DiagCode::Name_Redeclaration, decl,
+                          "redeclaration of '", pool.lookup(decl->name),
+                          "' in module '",
+                          pool.lookup(currentModule->filePath), "'");
+        return false;
+    }
+
+    currentModuleTable->variables[decl->name] = decl;
+    return true;
+}
+
+bool SemaContext::insertLocal(ValueDeclAST* decl) {
+    if (!decl) return false;
+
+    AST_ASSERT_MSG(!isAtModuleLevel(),
+                   "insertLocal() called at module level; a top-level "
+                   "declaration uses insertVariable() or "
+                   "insertFunction()");
 
     if (currentScope().values.count(decl->name)) {
         diagnostics.error(DiagCode::Name_Redeclaration, decl,
@@ -114,6 +197,7 @@ bool SemaContext::insertValue(ValueDeclAST* decl) {
                           "' in the same scope");
         return false;
     }
+
     currentScope().values[decl->name] = decl;
     return true;
 }
@@ -121,16 +205,12 @@ bool SemaContext::insertValue(ValueDeclAST* decl) {
 bool SemaContext::insertType(TypeDeclAST* decl) {
     if (!decl) return false;
 
-    // Types are module-level only (grammar §12.5). A local TABLE, FN, or
-    // any future TypeDeclAST is a parser/Sema bug, not a user error —
-    // the parser should have rejected it. The assert fires on the bug;
-    // the diagnostic below is a defensive belt-and-suspenders for a
-    // release build where NDEBUG turns the assert into a no-op.
     AST_ASSERT_MSG(isAtModuleLevel(),
                    "insertType() called from a non-module scope; "
-                   "local type declarations are forbidden by the grammar");
+                   "types are module-level only");
 
     if (!currentModuleTable) return false;
+
     if (currentModuleTable->types.count(decl->name)) {
         diagnostics.error(DiagCode::Name_Redeclaration, decl,
                           "redeclaration of type '", pool.lookup(decl->name),
@@ -138,7 +218,17 @@ bool SemaContext::insertType(TypeDeclAST* decl) {
                           pool.lookup(currentModule->filePath), "'");
         return false;
     }
+
     currentModuleTable->types[decl->name] = decl;
+
+    // A TypeDeclAST in the new grammar is always a TableDeclAST. Keep
+    // the two maps in sync: if this is a table, it also belongs in the
+    // `tables` map so a value lookup finds it. (insertTable is the
+    // preferred entry point; insertType is the type-namespace-only
+    // path and is called by passes that only want the type half.)
+    if (decl->isa<TableDeclAST>()) {
+        currentModuleTable->tables[decl->name] = decl->as<TableDeclAST>();
+    }
     return true;
 }
 
@@ -156,43 +246,97 @@ bool SemaContext::addImportAlias(InternedString alias, ModuleAST* module,
     return true;
 }
 
-// ─── Symbol lookup ────────────────────────────────────────────────────────
+// ─── Symbol lookup — polymorphic ──────────────────────────────────────────
 
-ValueDeclAST* SemaContext::lookupValue(InternedString name) const {
+ValueLookup SemaContext::lookupValue(InternedString name) const {
+    // ─── 1. Walk the lexical scope chain ────────────────────────────────
+    //
+    // A local scope holds `ValueDeclAST*` — a `let`/`const` variable or
+    // a parameter. The two are told apart by `isa<ParamAST>()`.
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
         auto found = it->values.find(name);
         if (found != it->values.end()) {
-            return found->second;
+            ValueDeclAST* decl = found->second;
+            if (decl->isa<ParamAST>()) {
+                return ValueLookup::from(decl->as<ParamAST>());
+            }
+            return ValueLookup::from(decl->as<VarDeclAST>());
         }
     }
-    if (currentModuleTable) {
-        auto found = currentModuleTable->values.find(name);
-        if (found != currentModuleTable->values.end()) {
-            return found->second;
-        }
+
+    if (!currentModuleTable) return ValueLookup::none();
+
+    // ─── 2. Module's variables ──────────────────────────────────────────
+    if (auto found = currentModuleTable->variables.find(name);
+        found != currentModuleTable->variables.end()) {
+        return ValueLookup::from(found->second);
     }
-    return nullptr;
+
+    // ─── 3. Module's functions ──────────────────────────────────────────
+    if (auto found = currentModuleTable->functions.find(name);
+        found != currentModuleTable->functions.end()) {
+        return ValueLookup::from(found->second);
+    }
+
+    // ─── 4. Module's tables (a table used as a value) ───────────────────
+    if (auto found = currentModuleTable->tables.find(name);
+        found != currentModuleTable->tables.end()) {
+        return ValueLookup::from(found->second);
+    }
+
+    return ValueLookup::none();
 }
 
+// ─── Symbol lookup — per form ─────────────────────────────────────────────
+
 FnDeclAST* SemaContext::lookupFunction(InternedString name) const {
-    ValueDeclAST* v = lookupValue(name);
-    return (v && v->isa<FnDeclAST>()) ? v->as<FnDeclAST>() : nullptr;
+    // A local scope never holds a function; skip it.
+    if (!currentModuleTable) return nullptr;
+    auto found = currentModuleTable->functions.find(name);
+    return found != currentModuleTable->functions.end() ? found->second : nullptr;
+}
+
+TableDeclAST* SemaContext::lookupTable(InternedString name) const {
+    // A local scope never holds a table; skip it.
+    if (!currentModuleTable) return nullptr;
+    auto found = currentModuleTable->tables.find(name);
+    return found != currentModuleTable->tables.end() ? found->second : nullptr;
+}
+
+VarDeclAST* SemaContext::lookupVariable(InternedString name) const {
+    // ─── 1. Walk the lexical scope chain ────────────────────────────────
+    //
+    // A local scope can hold both variables and parameters. A parameter
+    // is not a variable; skip it here so the per-form lookup is exactly
+    // "a `let`/`const` variable".
+    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+        auto found = it->values.find(name);
+        if (found != it->values.end()) {
+            ValueDeclAST* decl = found->second;
+            if (decl->isa<VarDeclAST>()) {
+                return decl->as<VarDeclAST>();
+            }
+            // A parameter shadows anything further out. A `lookupVariable`
+            // that reaches a parameter's name returns null: the name is
+            // taken, and it is not a variable.
+            return nullptr;
+        }
+    }
+
+    if (!currentModuleTable) return nullptr;
+    auto found = currentModuleTable->variables.find(name);
+    return found != currentModuleTable->variables.end() ? found->second : nullptr;
 }
 
 TypeDeclAST* SemaContext::lookupType(InternedString name) const {
     // Types are not lexically scoped — local type declarations are
-    // forbidden — so only the module table is consulted. The loop over
-    // scopes is omitted deliberately: there is nothing to find.
-    if (currentModuleTable) {
-        auto found = currentModuleTable->types.find(name);
-        if (found != currentModuleTable->types.end()) {
-            return found->second;
-        }
-    }
-    return nullptr;
+    // forbidden — so only the module table is consulted.
+    if (!currentModuleTable) return nullptr;
+    auto found = currentModuleTable->types.find(name);
+    return found != currentModuleTable->types.end() ? found->second : nullptr;
 }
 
-// ─── Import lookup ────────────────────────────────────────────────────────
+// ─── Import and cross-module lookup ───────────────────────────────────────
 
 ModuleAST* SemaContext::lookupImport(InternedString alias) const {
     if (!currentModuleTable) return nullptr;
@@ -200,24 +344,57 @@ ModuleAST* SemaContext::lookupImport(InternedString alias) const {
     return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
 }
 
+ValueDeclAST* SemaContext::lookupModuleValueMember(ModuleAST* module,
+                                                   InternedString memberName) const {
+    if (!module) return nullptr;
+    auto it = moduleTables.find(module);
+    if (it == moduleTables.end()) return nullptr;
+
+    const ModuleTable& table = it->second;
+    if (auto found = table.variables.find(memberName);
+        found != table.variables.end()) {
+        return found->second;
+    }
+    if (auto found = table.functions.find(memberName);
+        found != table.functions.end()) {
+        return found->second;
+    }
+    // A table member is not a `ValueDeclAST`, so it cannot be returned
+    // by this function. The caller checks `lookupModuleTableMember`
+    // separately when it needs one.
+    return nullptr;
+}
+
+TableDeclAST* SemaContext::lookupModuleTableMember(ModuleAST* module,
+                                                   InternedString memberName) const {
+    if (!module) return nullptr;
+    auto it = moduleTables.find(module);
+    if (it == moduleTables.end()) return nullptr;
+    auto found = it->second.tables.find(memberName);
+    return found != it->second.tables.end() ? found->second : nullptr;
+}
+
+TypeDeclAST* SemaContext::lookupModuleTypeMember(ModuleAST* module,
+                                                 InternedString memberName) const {
+    if (!module) return nullptr;
+    auto it = moduleTables.find(module);
+    if (it == moduleTables.end()) return nullptr;
+    auto found = it->second.types.find(memberName);
+    return found != it->second.types.end() ? found->second : nullptr;
+}
+
 ValueDeclAST* SemaContext::lookupImportedValue(InternedString alias,
                                                InternedString member) const {
     ModuleAST* module = lookupImport(alias);
     if (!module) return nullptr;
-    ModuleTable* table = const_cast<SemaContext*>(this)->findModuleTable(module);
-    if (!table) return nullptr;
-    auto found = table->values.find(member);
-    return found != table->values.end() ? found->second : nullptr;
+    return lookupModuleValueMember(module, member);
 }
 
 TypeDeclAST* SemaContext::lookupImportedType(InternedString alias,
                                              InternedString member) const {
     ModuleAST* module = lookupImport(alias);
     if (!module) return nullptr;
-    ModuleTable* table = const_cast<SemaContext*>(this)->findModuleTable(module);
-    if (!table) return nullptr;
-    auto found = table->types.find(member);
-    return found != table->types.end() ? found->second : nullptr;
+    return lookupModuleTypeMember(module, member);
 }
 
 // ─── Type canonicalization ────────────────────────────────────────────────
@@ -296,7 +473,18 @@ FunctionTypeAST* SemaContext::getFunctionType(ArenaSpan<TypeAST*> params,
     return t;
 }
 
-// ─── RAII Guards ──────────────────────────────────────────────────────────
+// ─── Named primitive accessors ────────────────────────────────────────────
+
+PrimitiveTypeAST* SemaContext::getBoolType()    { return getPrimitiveType(PrimitiveKind::Bool); }
+PrimitiveTypeAST* SemaContext::getIntType()     { return getPrimitiveType(PrimitiveKind::Int32); }
+PrimitiveTypeAST* SemaContext::getUint32Type()  { return getPrimitiveType(PrimitiveKind::Uint32); }
+PrimitiveTypeAST* SemaContext::getUint64Type()  { return getPrimitiveType(PrimitiveKind::Uint64); }
+PrimitiveTypeAST* SemaContext::getFloatType()   { return getPrimitiveType(PrimitiveKind::Float32); }
+PrimitiveTypeAST* SemaContext::getCharType()    { return getPrimitiveType(PrimitiveKind::Char); }
+PrimitiveTypeAST* SemaContext::getStringType()  { return getPrimitiveType(PrimitiveKind::String); }
+PrimitiveTypeAST* SemaContext::getUnitType()    { return getPrimitiveType(PrimitiveKind::Unit); }
+
+// ─── RAII guards ──────────────────────────────────────────────────────────
 
 ScopedContext::ScopedContext(SemaContext& ctx, ContextKind kind, BaseAST* node)
     : ctx_(ctx) {
@@ -359,23 +547,15 @@ ScopedNarrowing::~ScopedNarrowing() {
 
 ScopedFunction::ScopedFunction(SemaContext& ctx, FnDeclAST* decl)
     : ctx_(ctx)
-    , paramScope_(ctx) {                      // pushes the parameter scope
+    , paramScope_(ctx) {
     ContextKind kind = decl->isSequence ? ContextKind::SequenceBody
                                         : ContextKind::FuncBody;
     ctx_.stack.pushFunction(decl, kind, decl->returnType);
 }
 
 ScopedFunction::~ScopedFunction() {
-    // Destruction order:
-    //   1. Destructor body: pop the function frame.
-    //   2. Member destructors: pop the parameter scope (via paramScope_).
-    //
-    // Reverse of construction: the frame was pushed after the scope, so
-    // it is popped before it. Both stacks are independent, so this is
-    // correctness-neutral today; the comment is here to record the
-    // invariant so a future reader does not "correct" the order.
     ctx_.stack.pop();
-    // ─── paramScope_ destructor pops the parameter scope ────────────────
+    // paramScope_ destructor pops the parameter scope.
 }
 
 } // namespace lucid::sema
