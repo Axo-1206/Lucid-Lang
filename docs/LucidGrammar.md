@@ -178,7 +178,7 @@ Because tables are references (§5.2), a cyclic type dependency (`TABLE A { b: &
 Execution happens only through two host-driven mechanisms:
 
 - **Direct call.** The host calls an `@export`ed function by name at a time of its choosing (an update tick, a game-specific hook).
-- **Event callback.** The host calls an `@export`ed function tagged `@on(...)` (§9) when a matching event occurs.
+- **Callback.** The host calls an `@export`ed function by name in response to something happening (an input event, a network message). There is no attribute for this — it is an ordinary exported function the host looks up and calls; how a game or library organizes "call the right function for this event" (registration, dispatch order, an event-kind table) is not a language concept and is specified in `Architecture.md`.
 
 **Loading is two-tiered when mods/extensions are involved:**
 
@@ -187,7 +187,7 @@ Execution happens only through two host-driven mechanisms:
 
 Dependency direction is strictly one-way: **mods depend on core; core never depends on a mod.** Only Tier 1 modules may register new `host(...)` natives. A Tier 2 mod only ever gets a *view* onto a subset of the registry that Tier 1 already populated, chosen by whoever loads the mod — this is also the trust boundary: a host loading untrusted mod content should scope the registry view down to whatever that mod actually needs (no raw file I/O, no arbitrary native calls, etc.), not hand it the full registry by default.
 
-**Callback ordering.** When an event fires and multiple functions are tagged `@on(...)` for it, all Tier 1 callbacks run before any Tier 2 callbacks, in declaration order within each tier. This lets trusted code observe or veto behavior ahead of any mod.
+**Ordering trusted code ahead of mods for a shared event** (so core can observe or veto before any mod runs) is a dispatch-library concern, not a loading concern — see `Architecture.md`.
 
 ---
 
@@ -337,7 +337,7 @@ A `FIXED` host-backed table is a fixed set of opaque handles. This combination i
 | Native shape                                                    | Lucid convention                                                                                                                                                                                     |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Opaque handle — script never inspects it, only passes it around | `TABLE X = host("name")` (this section) — e.g. `SpriteRef`, `TextureRef`                                                                                                                             |
-| Enum — a fixed, known set of values                             | An ordinary `FIXED TABLE` (§4.1.1) — the `Key`/`EventKind`/`Direction` pattern (§9.1, §11.2), with a host-side `@primary id` column if native code needs the value back as an integer                |
+| Enum — a fixed, known set of values                             | An ordinary `FIXED TABLE` (§4.1.1) — the `Key`/`Direction` pattern (§11.2), with a host-side `@primary id` column if native code needs the value back as an integer                                  |
 | Struct — fields the script needs to read or write               | An ordinary `TABLE X { ... }` with real columns, kept in sync through host functions (e.g. a native call that does `T.ADD(...)` from engine data, or writes into an existing row's cells each frame) |
 
 If you find yourself wanting to read a field out of an opaque host type, that's a sign it should have been declared as a real `TABLE` with columns in the first place — not a reason to add field-access syntax to host types.
@@ -595,12 +595,11 @@ The one narrow exception is the lambda form (§6.9), which is sugar for a compil
 
 #### 4.2.6 Function attributes
 
-| Attribute               | Meaning                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `@export`               | Visible outside the module.                                                          |
-| `@deprecated(msg)`      | Using the function produces a compile warning with `msg`.                            |
-| `@on(EventKind.Member)` | Registers the function as a callback for the named event (§9.1). Requires `@export`. |
-| `@sequence`             | Declares a suspension-capable function — see §9.2.                                   |
+| Attribute          | Meaning                                                   |
+| ------------------ | --------------------------------------------------------- |
+| `@export`          | Visible outside the module.                               |
+| `@deprecated(msg)` | Using the function produces a compile warning with `msg`. |
+| `@sequence`        | Declares a suspension-capable function — see §9.2.        |
 
 ### 4.3 Variable declarations
 
@@ -1366,9 +1365,9 @@ attr_arg       ::= STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT
 Attributes are juxtaposed, not comma-separated in a bracket — there is exactly one way to write a multi-attribute declaration:
 
 ```
-@export @on(EventKind.KeyDown)
-FN onJump(key: Key) {
-    if key == Key.W { jump() }
+@export @reserve(1000)
+TABLE Unit {
+    hp: int
 }
 ```
 
@@ -1378,15 +1377,7 @@ Attributes never change what the parser reads for the declaration that follows �
 
 ### 9.1 Event callbacks
 
-```
-FIXED TABLE EventKind { name: string } = [
-    { "KeyDown" }, { "KeyUp" }, { "NetworkMessage" }, ...
-]
-```
-
-`@on(EventKind.Member)` on an `@export`ed function registers it as a callback for that event kind. `EventKind.Member` is resolved at compile time (§7.1's fixed-table sugar), so a typo is a name-resolution error, not a silently-ignored string. Multiple functions may register for the same event kind; see §3.4 for ordering across trust tiers.
-
-Sema checks that the function's parameter list matches whatever signature the named event kind requires (defined per event kind in the standard library, §11.2).
+There is no `@on` attribute and no built-in event-dispatch mechanism. A callback is just an `@export`ed function the host looks up by name and calls (§3). How "run the right function when X happens" is organized — registration, an event-kind table, dispatch order, ordering trusted code ahead of mods — is a library concern, not a language one, and is specified in `Architecture.md` rather than here.
 
 ### 9.2 Sequences (the suspension primitive)
 
@@ -1423,13 +1414,13 @@ suspend_stmt   ::= ( 'wait' | 'waitFrames' ) '(' expr ')'
 
 `wait`, `waitFrames`, `waitUntil`, `waitForEvent`, and `waitForRequest` are keywords (§2.2), not ordinary functions — like `break`/`continue`, the parser recognizes them directly, and Sema requires them to appear only inside a `@sequence` function's body (nested inside `if`/`while`/`for`/`switch` blocks within it is fine — there's still no nested *declaration*, per §12.5).
 
-| Suspend point                    | Argument(s)                                                | Resumes when                                          | Cost                                                |
-| -------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------- |
-| `wait(seconds)`                  | `float`                                                    | That much real time (accumulated `dt`) has passed.    | Polled once per tick.                               |
-| `waitFrames(n)`                  | `uint`                                                     | `n` engine ticks have elapsed.                        | Polled once per tick.                               |
-| `waitUntil(pred, arg)`           | `pred: (T) -> bool`, `arg: T`                              | `pred(arg)` returns `true`, re-checked once per tick. | Polled once per tick.                               |
-| `waitForEvent(EventKind.Member)` | a fixed-table member (§9.1)                                | The next time that event kind fires.                  | Zero-poll — registered once, resumed on fire.       |
-| `waitForRequest(req)`            | `req: &T`, `T` an `@request`-attributed host type (§4.1.2) | The host signals that specific request as complete.   | Zero-poll — registered once, resumed on completion. |
+| Suspend point          | Argument(s)                                                | Resumes when                                          | Cost                                                |
+| ---------------------- | ---------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------- |
+| `wait(seconds)`        | `float`                                                    | That much real time (accumulated `dt`) has passed.    | Polled once per tick.                               |
+| `waitFrames(n)`        | `uint`                                                     | `n` engine ticks have elapsed.                        | Polled once per tick.                               |
+| `waitUntil(pred, arg)` | `pred: (T) -> bool`, `arg: T`                              | `pred(arg)` returns `true`, re-checked once per tick. | Polled once per tick.                               |
+| `waitForEvent(expr)`   | a compile-time constant (§4.1.1c)                          | The next time that library-defined event fires.       | Zero-poll — registered once, resumed on fire.       |
+| `waitForRequest(req)`  | `req: &T`, `T` an `@request`-attributed host type (§4.1.2) | The host signals that specific request as complete.   | Zero-poll — registered once, resumed on completion. |
 
 **`waitUntil` takes its predicate and argument separately rather than as a closed-over lambda.** A lambda can only see its own parameters and module-level declarations (§6.9) — it cannot capture a local like a request handle you just created. Passing the value in explicitly (`waitUntil(isDown, Key.Space)`, `waitUntil(isLoaded, req)`) keeps the no-capture rule intact everywhere, including here: `pred` is an ordinary no-capture function or lambda, and `arg` is just another local the compiler already has to keep alive across the pause.
 
@@ -1437,7 +1428,7 @@ suspend_stmt   ::= ( 'wait' | 'waitFrames' ) '(' expr ')'
 
 `waitForEvent` and `waitForRequest` exist specifically so "waiting on completion" doesn't have to mean polling. Both register the suspended sequence once and do zero work until the host actively resumes it — no per-tick check at all.
 
-**`waitForEvent(EventKind.Member)`** is for a *category* of event you didn't initiate yourself — the next inbound network message, the next key press, anything already modeled as an `@on(...)` event kind (§9.1). It shares the same registration the callback mechanism uses; a sequence parked on `waitForEvent` is, from the runtime's point of view, a one-shot listener that resumes and unregisters itself the moment that event kind next fires.
+**`waitForEvent(expr)`** is for a *category* of event you didn't initiate yourself — the next inbound network message, the next key press, anything a dispatch library already tracks. `expr` is a compile-time constant naming the event, the same shape `@on` used to accept (§4.1.1c). How a suspended sequence gets registered with, and resumed by, a library-level `fire` is specified in `Architecture.md`, not here — the language only guarantees the sequence does zero work until it is resumed.
 
 **`waitForRequest(req)`** is for a *specific instance* of an async host operation you started yourself and hold a handle to — a resource load, a single RPC-style call. A host type is eligible for this only if it's declared `@request` (§4.1.2), which is the host's promise that it will notify the runtime directly when that particular handle's operation finishes, rather than requiring the operation to be polled:
 
@@ -1504,7 +1495,7 @@ These keep the feature to "suspend one sequence," not "a general concurrency sys
 
 #### 9.2.6 How it's compiled (informative)
 
-A `@sequence` function is lowered by the compiler into a small generated state machine: a struct holding a state id plus whichever local variables are live across a suspend point (found by ordinary liveness analysis), and a step function that runs from one suspend point to the next. The runtime keeps two lists rather than one: **polled** coroutines (paused on `wait`/`waitFrames`/`waitUntil`), advanced once per engine tick, in `start` order, before any `@on(EventKind.Update)` callbacks run that tick; and **parked** coroutines (paused on `waitForEvent`/`waitForRequest`), which do no work at all and aren't touched by the tick loop until the host or the event registration explicitly resumes them. Either way, advancement is cooperative and single-threaded: only one coroutine is ever actually executing at a time, in a fixed, deterministic order — there is no preemption and no data race to guard against, which is what keeps this from becoming the general concurrency model §13.1 already argued against.
+A `@sequence` function is lowered by the compiler into a small generated state machine: a struct holding a state id plus whichever local variables are live across a suspend point (found by ordinary liveness analysis), and a step function that runs from one suspend point to the next. The runtime keeps two lists rather than one: **polled** coroutines (paused on `wait`/`waitFrames`/`waitUntil`), advanced once per engine tick, in `start` order, before any per-tick library callback (e.g. an `Update` event, `Architecture.md`) runs that tick; and **parked** coroutines (paused on `waitForEvent`/`waitForRequest`), which do no work at all and aren't touched by the tick loop until the host or the event registration explicitly resumes them. Either way, advancement is cooperative and single-threaded: only one coroutine is ever actually executing at a time, in a fixed, deterministic order — there is no preemption and no data race to guard against, which is what keeps this from becoming the general concurrency model §13.1 already argued against.
 
 ---
 
@@ -1515,7 +1506,7 @@ Lucid has exactly two failure channels and no `try`/`catch`:
 - **Panics** — programmer bugs: out-of-bounds `T[i]`, a `@unique`/`@primary` violation, dereferencing `nil`. Not recoverable inside the script.
 - **`nil`** — a legitimately absent result: `T.AT(i)`, `T.by<Column>(...)`, a reference whose row was removed, a `T?` value. Checked with `== nil` / `!= nil` or defaulted with `??`.
 
-A panic unwinds only as far as the host call boundary: the specific `@export`ed function the engine invoked (directly, or via `@on(...)`) returns an error to the engine instead of crashing the whole process. There is no in-script exception handling beyond that.
+A panic unwinds only as far as the host call boundary: the specific `@export`ed function the engine invoked, however it was looked up, returns an error to the engine instead of crashing the whole process. There is no in-script exception handling beyond that.
 
 ---
 
@@ -1544,7 +1535,7 @@ FN abs(v: float) -> float            = host("float_abs")
 
 ### 11.2 Standard library modules
 
-Input, rendering, and networking are not language features — they are ordinary modules using the same `host(...)` and `@on(...)` mechanisms any game or mod developer has access to:
+Input, rendering, and networking are not language features — they are ordinary modules using the same `host(...)` mechanism, and the same library-level event dispatch (`Architecture.md`), any game or mod developer has access to:
 
 ```
 -- core/input.luc
@@ -1565,7 +1556,7 @@ Input, rendering, and networking are not language features — they are ordinary
 @export FN loadTexture(path: string) -> TextureRef = host("load_texture")
 ```
 
-A game module does `import core.input` and calls `input.isDown(Key.W)`, or writes its own `@export @on(EventKind.KeyDown) FN onJump(...)`. If the engine gains a new subsystem later, that's a new library module, not a grammar change — the compiler itself has zero built-in knowledge of input, rendering, audio, or networking.
+A game module does `import core.input` and calls `input.isDown(Key.W)`, or registers its own callback with whatever dispatch library `core.events` provides (`Architecture.md`). If the engine gains a new subsystem later, that's a new library module, not a grammar change — the compiler itself has zero built-in knowledge of input, rendering, audio, or networking.
 
 ---
 
@@ -1769,13 +1760,14 @@ Because `;` is optional, the parser cannot rely on it to find the next statement
 - Table compaction (`T.compact()`) (§4.1.1d) — it would move rows and silently retarget references; memory comes back through slot reuse, `CLEAR`, and `SHRINK`.
 - Auto-generated `@primary` values (§4.1.5) — the caller supplies every key.
 - Built-in aggregation on column views (`SUM`, `AVG`) (§7.4) — it would need a numeric-only rule on column views; aggregation is a loop or a library function over an array.
+- An `@on` attribute or any other built-in event-dispatch mechanism (§9.1) — a callback is an ordinary `@export`ed function the host looks up by name; registration and dispatch are a library concern, specified in `Architecture.md`.
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
-Every async-shaped need identified so far, apart from one, reduces to a synchronous call from the script's point of view once the callback mechanism (§9.1) exists:
+Every async-shaped need identified so far, apart from one, reduces to a synchronous call from the script's point of view once a callback is registered and invoked (§9.1, `Architecture.md`):
 
-- **Input** — an `@on(EventKind.KeyDown)` callback, called once per event.
-- **Network** — sending is a fire-and-forget `host(...)` call; receiving is an `@on(EventKind.NetworkMessage)` callback when a response lands.
+- **Input** — a library-dispatched callback, called once per event.
+- **Network** — sending is a fire-and-forget `host(...)` call; receiving is a library-dispatched callback when a response lands.
 
 The one case that doesn't fit a callback is **sequencing** work across time inside one logical unit — "wait 2 seconds, then do X," for cutscenes and scripted dialogue — because that requires *pausing partway through a function's own body and resuming it later*, which a callback (which always returns control to the engine immediately) can't express. §9.2 answers that directly with `@sequence` and its suspend points plus `start` to launch one, rather than deferring it.
 
@@ -1791,4 +1783,4 @@ This is still a narrow, single-purpose addition, not general concurrency: `@sequ
 
 ---
 
-*This document consolidates the full design conversation: the tables/functions/variables redesign, the sheet-vs-shape resolution, the attribute system, the `??`/nilability rework (including `?` as a type suffix for non-reference types), lambdas and first-class function types, `switch` (with fixed-table exhaustiveness warnings), compound assignment, array operations, numeric coercion rules, the `@on(...)` event/callback mechanism, the `@sequence` suspension primitive, the host/standard-library split, and the Tier 1/Tier 2 loading model.*
+*This document consolidates the full design conversation: the tables/functions/variables redesign, the sheet-vs-shape resolution, the attribute system, the `??`/nilability rework (including `?` as a type suffix for non-reference types), lambdas and first-class function types, `switch` (with fixed-table exhaustiveness warnings), compound assignment, array operations, numeric coercion rules, moving the event/callback mechanism out of the language and into a library (`Architecture.md`), the `@sequence` suspension primitive, the host/standard-library split, and the Tier 1/Tier 2 loading model.*
