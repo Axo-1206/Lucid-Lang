@@ -16,26 +16,6 @@
 namespace lucid::sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Numeric-literal parsing
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The parser stores a numeric literal's raw lexeme — `"42"`, `"0xFF"`,
-// `"0b1010"`, `"0o777"`, `"3.14"`. These helpers read the lexeme and
-// return the value, or a failure indicator if the lexeme is malformed.
-//
-// The parser guarantees a well-formed lexeme: it rejects a malformed
-// numeric token at parse time. So the "failure" branch here is
-// defensive — it fires only on a compiler bug, not on user error.
-
-/// Parse a decimal, hex, binary, or octal integer lexeme. Returns true
-/// and writes `out` on success, false on failure.
-bool parseIntLexeme(std::string_view lexeme, int64_t& out);
-
-/// Parse a decimal float lexeme. Returns true and writes `out` on
-/// success, false on failure.
-bool parseFloatLexeme(std::string_view lexeme, double& out);
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Kind predicates
 // ─────────────────────────────────────────────────────────────────────────────
 //

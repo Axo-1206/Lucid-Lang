@@ -129,8 +129,8 @@ ConstantValue evaluate(ExprAST* expr, SemaContext& ctx) {
 ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     if (!expr) return ConstantValue::unknown();
 
-    ValueDeclAST* decl = ctx.lookupValue(expr->name);
-    if (!decl) return ConstantValue::unknown();
+    ValueLookup lv = ctx.lookupValue(expr->name);
+    if (!lv.found()) return ConstantValue::unknown();
 
     // ─── A bare `FN` name: a compile-time code address ──────────────────
     //
@@ -138,8 +138,8 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     // compile-time-known code address. Its `ConstantValue` is the
     // `FnDeclAST*` itself; downstream code that needs the address reads
     // it from the declaration.
-    if (decl->isa<FnDeclAST>()) {
-        return ConstantValue(decl->as<FnDeclAST>());
+    if (lv.kind == ValueLookup::Kind::Function) {
+        return ConstantValue(lv.function);
     }
 
     // ─── A `const` binding: use the cached value, if folded ─────────────
@@ -158,8 +158,8 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     // A `let` binding is never a compile-time constant, even when its
     // initializer is literal: the binding is mutable, so its value at a
     // later point is not determined by the initializer.
-    if (decl->isa<VarDeclAST>()) {
-        VarDeclAST* var = decl->as<VarDeclAST>();
+    if (lv.kind == ValueLookup::Kind::Variable) {
+        VarDeclAST* var = lv.variable;
         if (var->isConst && var->init && var->init->isConst) {
             return var->init->constValue;
         }
@@ -170,6 +170,10 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     // A parameter is bound at call time, not at compile time. A table
     // name is a sheet, not a value. An import alias is a module, not a
     // value. None of these can appear in a `const_expr` as a value.
+    //
+    //   - `Kind::Param`   — a parameter; runtime value.
+    //   - `Kind::Table`   — a table name; a sheet, not a value.
+    //   - `Kind::None`    — already handled above by `found()`.
     return ConstantValue::unknown();
 }
 
