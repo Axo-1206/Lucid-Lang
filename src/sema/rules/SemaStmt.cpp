@@ -50,6 +50,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include <unordered_set>
 
 using namespace lucid::diag;
 
@@ -366,7 +367,7 @@ bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx) {
             //
             // The error here is `Type_Mismatch` rather than a dedicated
             // code; the message names the rule.
-            ConstantValue folded = ConstEvaluator::evaluateExpr(value, ctx);
+            ConstantValue folded = evaluate(value, ctx);
             if (!folded.isEvaluated() || folded.isError()) {
                 ctx.diagnostics.error(DiagCode::Type_Mismatch, value,
                                       "case value must be a compile-time "
@@ -579,7 +580,7 @@ bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx) {
     // full control-flow analysis that tracks `break` through nested
     // blocks and switches). The compiler emits no diagnostic for an
     // infinite `while`; the user is assumed to know what they wrote.
-    ConstantValue folded = ConstEvaluator::evaluateExpr(stmt->condition, ctx);
+    ConstantValue folded = evaluate(stmt->condition, ctx);
     if (folded.isEvaluated() && folded.isBool() && !folded.asBool()) {
         ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt->body,
                                 "while loop condition is always false — "
@@ -1341,7 +1342,7 @@ bool resolveWaitForEventStmt(WaitForEventStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    ConstantValue folded = ConstEvaluator::evaluateExpr(stmt->event, ctx);
+    ConstantValue folded = evaluate(stmt->event, ctx);
     if (!folded.isEvaluated() || folded.isError()) {
         ctx.diagnostics.error(DiagCode::Seq_WaitForEventNotAFixedTable, stmt->event,
                               "'waitForEvent' argument must be a compile-time "

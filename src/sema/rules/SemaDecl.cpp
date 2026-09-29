@@ -401,7 +401,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     // initializer might be constant, but a `let` is a mutable binding
     // and the compiler does not treat its value as fixed.
     if (decl->isConst && decl->init) {
-        ConstantValue val = ConstEvaluator::evaluateExpr(decl->init, ctx);
+        ConstantValue val = evaluate(decl->init, ctx);
         if (val.isEvaluated() && !val.isError()) {
             decl->init->isConst    = true;
             decl->init->constValue = val;
