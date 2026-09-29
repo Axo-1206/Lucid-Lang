@@ -1,74 +1,65 @@
-/// @file const_eval/ConstEvalUnary.cpp
-/// @brief Unary operation evaluation for const expressions.
-/// Only integer operations are evaluated at compile-time.
-/// Float operations are left to LLVM's constant folding.
+/// @file ConstEvalUnary.cpp
+/// @brief Unary-operator folding: `-`, `not`, `~`.
+///
+/// Three operators, three narrow domains:
+///
+///   - `-` (Neg) requires a numeric operand (Int or Float); the result
+///     is the negation in the same kind.
+///   - `not` (Not) requires a Bool operand; the result is its logical
+///     negation.
+///   - `~` (BitNot) requires an Int operand; the result is its bitwise
+///     complement.
+///
+/// Anything else is a kind mismatch. A kind mismatch is not an error —
+/// the evaluator returns `Unknown`, which the caller interprets as "not
+/// a compile-time constant". The type checker, not the evaluator, is
+/// responsible for reporting a genuine type error like `not 42`.
 
-#include "ConstEvalHelpers.hpp"
 #include "ConstEvaluator.hpp"
+#include "ConstEvalHelpers.hpp"
+
 #include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaType.hpp"
 
-#include <climits>
+namespace lucid::sema {
 
-namespace sema {
+ConstantValue foldUnary(UnaryOp op, const ConstantValue& operand,
+                        SemaContext& ctx) {
+    (void)ctx;   // No diagnostics are emitted on a kind mismatch.
 
-// ─── Individual Unary Operations ──────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalNeg(SemaContext& ctx, const ConstantValue& operand,
-                                       BaseAST* node, TypeAST* targetType) {
-    if (operand.isInt()) {
-        if (operand.asInt() == INT64_MIN) {
-            ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
-                                  "integer overflow in const negation (INT64_MIN)");
-            return ConstantValue::error();
+    switch (op) {
+        // ─── Negation ───────────────────────────────────────────────────
+        case UnaryOp::Neg: {
+            if (operand.isInt()) {
+                return ConstantValue(-operand.asInt());
+            }
+            if (operand.isFloat()) {
+                return ConstantValue(-operand.asFloat());
+            }
+            return ConstantValue::unknown();
         }
-        return ConstantValue(-operand.asInt());
+
+        // ─── Logical not ────────────────────────────────────────────────
+        case UnaryOp::Not: {
+            if (operand.isBool()) {
+                return ConstantValue(!operand.asBool());
+            }
+            return ConstantValue::unknown();
+        }
+
+        // ─── Bitwise not ────────────────────────────────────────────────
+        //
+        // The value is stored as an `int64_t`. `~v` is the same
+        // regardless of the operand's declared width; the width matters
+        // at the bytecode's storage site, not in the fold.
+        case UnaryOp::BitNot: {
+            if (operand.isInt()) {
+                return ConstantValue(~operand.asInt());
+            }
+            return ConstantValue::unknown();
+        }
     }
-    
-    // Float negation: let LLVM handle it
+
     return ConstantValue::unknown();
 }
 
-ConstantValue ConstEvaluator::evalNot(SemaContext& ctx, const ConstantValue& operand,
-                                       BaseAST* node) {
-    if (operand.isBool()) {
-        return ConstantValue(!operand.asBool());
-    }
-    
-    ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, node,
-                          "logical not requires bool operand");
-    return ConstantValue::error();
-}
-
-ConstantValue ConstEvaluator::evalBitNot(SemaContext& ctx, const ConstantValue& operand,
-                                          BaseAST* node) {
-    if (operand.isInt()) {
-        return ConstantValue(~operand.asInt());
-    }
-    
-    ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, node,
-                          "bitwise not requires integer operand");
-    return ConstantValue::error();
-}
-
-// ─── Unary Operation Evaluation ──────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, UnaryExprAST* expr,
-                                         TypeAST* targetType) {
-    ConstantValue operand = evaluate(ctx, expr->operand, targetType);
-    if (operand.isError()) return operand;
-    if (operand.isUnknown()) return ConstantValue::unknown();
-
-    switch (expr->op) {
-        case UnaryOp::Neg:
-            return evalNeg(ctx, operand, expr, targetType);
-        case UnaryOp::Not:
-            return evalNot(ctx, operand, expr);
-        case UnaryOp::BitNot:
-            return evalBitNot(ctx, operand, expr);
-        default:
-            return ConstantValue::unknown();
-    }
-}
-
-} // namespace sema
+} // namespace lucid::sema

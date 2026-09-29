@@ -1,993 +1,304 @@
-/// @file const_eval/ConstEvaluator.cpp
-/// @brief Main const evaluation logic - public API only.
+/// @file ConstEvaluator.cpp
+/// @brief Compile-time constant folding — the dispatcher.
+///
+/// ─── The three return states ─────────────────────────────────────────────
+/// `evaluate` returns a `ConstantValue` in one of three states:
+///
+///   - **Evaluated** — the expression is a compile-time constant, and its
+///     value is in the returned `ConstantValue`.
+///   - **Unknown** — the expression is not a compile-time constant. No
+///     diagnostic. The caller decides whether that is acceptable.
+///   - **Error** — the expression *is* a constant-shaped expression
+///     whose fold failed (division by zero, integer overflow, ...). A
+///     diagnostic has been emitted.
+///
+/// The dispatcher's job is to walk the expression, call the per-form
+/// helpers, and propagate the first `Unknown` or `Error` upward. It
+/// never emits a diagnostic on its own — only the leaf folders do.
+///
+/// ─── Design: no diagnostic for Unknown ───────────────────────────────────
+/// "Not a constant" is only an error in the positions that require one.
+/// The evaluator returns `Unknown` and lets the caller decide. A
+/// `switch` case that is not constant emits `Type_Mismatch` at the
+/// case; a `const` binding whose initializer is not constant simply
+/// does not fold, and the binding becomes a `let`-like `const` with no
+/// cached value.
+///
+/// ─── Design: the evaluator does not cache on the AST ─────────────────────
+/// The evaluator returns a value. The caller sets `expr->isConst` and
+/// `expr->constValue`. This keeps the evaluator a pure function of
+/// `(expr, ctx)` — a unit test can call `evaluate` and inspect the
+/// result without an AST to mutate.
 
 #include "ConstEvaluator.hpp"
 #include "ConstEvalHelpers.hpp"
+
 #include "core/ASTStrings.hpp"
-#include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaType.hpp"
-#include "sema/Sema.hpp"
-#include "sema/support/Truthiness.hpp"
-#include "core/registry/IntrinsicRegistry.hpp"
+#include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 
-#include <cmath>
+namespace lucid::sema {
 
-namespace sema {
+// ═════════════════════════════════════════════════════════════════════════════
+// evaluate — the public entry point
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ─── Static Member Initialization ────────────────────────────────────────
+ConstantValue evaluate(ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return ConstantValue::unknown();
 
-std::unordered_map<DeclAST*, std::vector<DeclAST*>> ConstEvaluator::m_deps;
-std::vector<DeclAST*> ConstEvaluator::m_constDecls;
-std::unordered_map<ExprAST*, ConstantValue> ConstEvaluator::m_evalCache;
-std::unordered_set<DeclAST*> ConstEvaluator::m_evaluating;
-size_t ConstEvaluator::m_recursionDepth = 0;
-std::unordered_map<ParamAST*, ConstantValue> ConstEvaluator::m_paramBindings;
+    // A parser error-recovery node is never a constant; the parser
+    // already reported the syntax error, and Sema stays out of the way.
+    if (expr->hasSyntaxError) return ConstantValue::unknown();
 
-// ─── Main Entry Points ───────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, VarDeclAST* decl) {
-    if (!decl) return ConstantValue::error();
-    if (decl->hasSyntaxError) return ConstantValue::error();
-
-    if (!decl->init) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
-                              "const variable '", ctx.pool.lookup(decl->name),
-                              "' has no initializer");
-        return ConstantValue::error();
-    }
-
-    if (m_recursionDepth >= MAX_RECURSION) {
-        return ConstantValue::unknown();
-    }
-
-    if (m_evaluating.find(decl) != m_evaluating.end()) {
-        ctx.diagnostics.error(DiagCode::Sem_CircularDependency, decl,
-                              "circular dependency detected in const declaration '",
-                              ctx.pool.lookup(decl->name), "'");
-        return ConstantValue::error();
-    }
-
-    EvaluationGuard guard(m_evaluating, decl);
-    DepthGuard depthGuard(m_recursionDepth);
-
-    ctx.pushScope();
-    ctx.insertValue(decl);
-    
-    ConstantValue result = evaluate(ctx, decl->init, decl->type);
-    
-    ctx.popScope();
-
-    return result;
-}
-
-ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, ExprAST* expr,
-                                        TypeAST* targetType) {
-    if (!expr) return ConstantValue::error();
-    if (expr->hasSyntaxError) return ConstantValue::error();
-
-    if (m_recursionDepth >= MAX_RECURSION) {
-        return ConstantValue::unknown();
-    }
-
-    // ─── Cache check ──────────────────────────────────────────────────────
-    auto it = m_evalCache.find(expr);
-    if (it != m_evalCache.end()) {
-        return it->second;
-    }
-
-    ConstantValue result;
+    // ─── If the expression is already folded, return the cached value ──
+    //
+    // This makes the evaluator idempotent: a second call on the same
+    // expression returns the same `ConstantValue` without re-walking.
+    // The cached value is only set by a previous successful fold, so a
+    // cached `Unknown` is not possible — a failed fold is not cached.
+    if (expr->isConst) return expr->constValue;
 
     switch (expr->kind) {
         case ASTKind::LiteralExpr:
-            result = evalLiteral(ctx, expr->as<LiteralExprAST>());
-            break;
+            return evaluateLiteral(expr->as<LiteralExprAST>(), ctx);
+
         case ASTKind::IdentifierExpr:
-            result = evalIdentifier(ctx, expr->as<IdentifierExprAST>());
-            break;
-        case ASTKind::BinaryExpr:
-            result = evalBinary(ctx, expr->as<BinaryExprAST>(), targetType);
-            break;
+            return evaluateIdentifier(expr->as<IdentifierExprAST>(), ctx);
+
+        case ASTKind::ParenExpr:
+            // A parenthesized expression is transparent: fold the inner.
+            return evaluate(expr->as<ParenExprAST>()->inner, ctx);
+
         case ASTKind::UnaryExpr:
-            result = evalUnary(ctx, expr->as<UnaryExprAST>(), targetType);
-            break;
-        case ASTKind::CallExpr:
-            result = evalCall(ctx, expr->as<CallExprAST>());
-            break;
-        case ASTKind::StructLiteralExpr:
-            result = evalStructLiteral(ctx, expr->as<StructLiteralExprAST>());
-            break;
-        case ASTKind::ArrayLiteralExpr:
-            result = evalArrayLiteral(ctx, expr->as<ArrayLiteralExprAST>());
-            break;
+            return evaluateUnaryExpr(expr->as<UnaryExprAST>(), ctx);
+
+        case ASTKind::BinaryExpr:
+            return evaluateBinaryExpr(expr->as<BinaryExprAST>(), ctx);
+
         case ASTKind::FieldAccessExpr:
-            result = evalFieldAccess(ctx, expr->as<FieldAccessExprAST>());
-            break;
-        case ASTKind::NullCoalesceExpr:
-            result = evalNullCoalesce(ctx, expr->as<NullCoalesceExprAST>());
-            break;
-        case ASTKind::IfExpr:
-            result = evalIfExpr(ctx, expr->as<IfExprAST>());
-            break;
+            return evaluateFieldAccess(expr->as<FieldAccessExprAST>(), ctx);
+
+        case ASTKind::ArrayLiteralExpr:
+            return evaluateArrayLiteral(expr->as<ArrayLiteralExprAST>(), ctx);
+
+        // ─── Not constant-shaped nodes ──────────────────────────────────
+        //
+        // An index, a call, a lambda, a start expression, and a range
+        // are never compile-time constants. Returning Unknown tells the
+        // caller "not constant", which is the correct answer.
+        //
+        //   - `T[i]` / `arr[i]` — a runtime operation. A fixed table's
+        //     index is theoretically foldable, but the effort is not
+        //     worth it: a fixed table's rows are what a switch checks
+        //     against, not what a `const_expr` reads.
+        //   - A call has side effects, by definition.
+        //   - A lambda's value is a code address, but the evaluator
+        //     does not model code addresses; the compiler does.
+        //   - `start f()` launches a sequence.
+        //   - A range is not a first-class value.
+        case ASTKind::IndexExpr:
+        case ASTKind::CallExpr:
+        case ASTKind::LambdaExpr:
+        case ASTKind::StartExpr:
         case ASTKind::RangeExpr:
-            result = evalRangeExpr(ctx, expr->as<RangeExprAST>());
-            break;
-        case ASTKind::IntrinsicCallExpr:
-            result = evalIntrinsicCall(ctx, expr->as<IntrinsicCallExprAST>());
-            break;
+            return ConstantValue::unknown();
+
         default:
+            // A future expression form that this dispatcher does not
+            // handle. Returning Unknown is the safe default — the
+            // expression is simply not a constant, and the caller
+            // will produce the position-specific diagnostic.
             return ConstantValue::unknown();
     }
-
-    // ─── Cache the result and update AST metadata ──────────────────────
-    //
-    // This is the ONLY place `constValue` is written. Every consumer —
-    // CodeGen, later Sema passes, future tooling — reads it from the node.
-    // Keeping the write here means the two fields `isConst` and
-    // `constValue` are stamped together, so they can never disagree.
-    if (result.isEvaluated() && !result.isError()) {
-        m_evalCache[expr] = result;
-        expr->isConst = true;
-        expr->constValue = result;
-        if (!expr->resolvedType) {
-            expr->resolvedType = getConstantType(ctx, result);
-        }
-        expr->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
-    }
-
-    return result;
 }
 
-bool ConstEvaluator::isConstExpr(SemaContext& ctx, ExprAST* expr,
-                                  TypeAST* targetType) {
-    if (!expr) return false;
-    if (expr->isConst) return true;
-    
-    ConstantValue val = evaluate(ctx, expr, targetType);
-    return val.isEvaluated() && !val.isError();
-}
+// ═════════════════════════════════════════════════════════════════════════════
+// evaluateIdentifier
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A bare identifier in a `const_expr` position is one of two things:
+//
+//   - a top-level `FN` name, which produces a `Function` constant;
+//   - a reference to a `const` binding whose initializer has already
+//     been folded, which produces the binding's cached value.
+//
+// Everything else — a `let`, an unfolder `const`, a parameter, a table
+// name, a module alias — is not a compile-time constant.
 
-ConstantValue ConstEvaluator::getConstValue(SemaContext& ctx, ExprAST* expr,
-                                             TypeAST* targetType) {
+ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     if (!expr) return ConstantValue::unknown();
-    if (expr->hasSyntaxError) return ConstantValue::error();
-    
-    // Check cache first
-    auto it = m_evalCache.find(expr);
-    if (it != m_evalCache.end()) {
-        return it->second;
-    }
-    
-    // If the expression is marked const but not in cache, evaluate it
-    if (expr->isConst) {
-        return evaluate(ctx, expr, targetType);
-    }
-    
-    return ConstantValue::unknown();
-}
-
-std::optional<int64_t> ConstEvaluator::evaluateAsInt(SemaContext& ctx, ExprAST* expr) {
-    if (!expr) return std::nullopt;
-    
-    ConstantValue val = getConstValue(ctx, expr);
-    if (val.isInt()) {
-        return val.asInt();
-    }
-    return std::nullopt;
-}
-
-std::optional<bool> ConstEvaluator::evaluateAsBool(SemaContext& ctx, ExprAST* expr) {
-    if (!expr) return std::nullopt;
-    
-    ConstantValue val = getConstValue(ctx, expr);
-    if (val.isBool()) {
-        return val.asBool();
-    }
-    return std::nullopt;
-}
-
-// ─── evalLiteral ──────────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, LiteralExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    switch (expr->kind) {
-        case LiteralKind::True:   return ConstantValue(true);
-        case LiteralKind::False:  return ConstantValue(false);
-        case LiteralKind::Int:
-        case LiteralKind::Hex:
-        case LiteralKind::Binary: {
-            std::string str = ctx.pool.lookup(expr->value);
-            try {
-                return ConstantValue(std::stoll(str, nullptr, 0));
-            } catch (const std::exception&) {
-                ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
-                                      "invalid integer literal '", str, "'");
-                return ConstantValue::error();
-            }
-        }
-        case LiteralKind::Float: {
-            std::string str = ctx.pool.lookup(expr->value);
-            try {
-                return ConstantValue(std::stod(str));
-            } catch (const std::exception&) {
-                ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
-                                      "invalid float literal '", str, "'");
-                return ConstantValue::error();
-            }
-        }
-        case LiteralKind::String:
-        case LiteralKind::RawString:
-            return ConstantValue(expr->value);
-        case LiteralKind::Char:
-            return ConstantValue(expr->value);
-        case LiteralKind::Nil:   return ConstantValue::nil();
-        case LiteralKind::Err:   return ConstantValue::err();
-        default:                 return ConstantValue::unknown();
-    }
-}
-
-// ─── evalIdentifier ──────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, IdentifierExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    // ─── `_` is the discard placeholder ──────────────────────────────────
-    if (ctx.pool.lookupView(expr->name) == "_") {
-        return ConstantValue::unknown();
-    }
 
     ValueDeclAST* decl = ctx.lookupValue(expr->name);
-    if (!decl) {
-        return ConstantValue::error();
+    if (!decl) return ConstantValue::unknown();
+
+    // ─── A bare `FN` name: a compile-time code address ──────────────────
+    //
+    // A function name is a valid `const_expr` because it names a
+    // compile-time-known code address. Its `ConstantValue` is the
+    // `FnDeclAST*` itself; downstream code that needs the address reads
+    // it from the declaration.
+    if (decl->isa<FnDeclAST>()) {
+        return ConstantValue(decl->as<FnDeclAST>());
     }
 
-    // ─── Variable ──────────────────────────────────────────────────────────
+    // ─── A `const` binding: use the cached value, if folded ─────────────
+    //
+    // A `const` binding's initializer is folded by `resolveVarDecl`
+    // during pass 2. If the reference appears in a declaration that
+    // pass 2 has already reached, the binding's `init->constValue` is
+    // populated and the reference is a compile-time constant.
+    //
+    // If the reference appears before the binding has been folded (a
+    // forward reference to a later `const`, or a reference to a `const`
+    // whose own initializer was not foldable), the reference is not a
+    // compile-time constant. The evaluator returns Unknown, and the
+    // caller decides whether that is an error.
+    //
+    // A `let` binding is never a compile-time constant, even when its
+    // initializer is literal: the binding is mutable, so its value at a
+    // later point is not determined by the initializer.
     if (decl->isa<VarDeclAST>()) {
         VarDeclAST* var = decl->as<VarDeclAST>();
-        
-        // Check if this variable has a const value already computed (in cache)
-        if (var->init && var->init->isConst) {
-            auto it = m_evalCache.find(var->init);
-            if (it != m_evalCache.end()) {
-                return it->second;
-            }
-            // If marked const but not in cache, evaluate it
-            return evaluate(ctx, var->init, var->type);
+        if (var->isConst && var->init && var->init->isConst) {
+            return var->init->constValue;
         }
-
-        // If it's a const variable, evaluate it now
-        if (var->keyword == DeclKeyword::Const && var->init) {
-            // Check for circular dependency
-            if (m_evaluating.find(var) != m_evaluating.end()) {
-                ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
-                                      "cycle detected in const declaration '",
-                                      ctx.pool.lookup(expr->name), "'");
-                return ConstantValue::error();
-            }
-            return evaluate(ctx, var->init, var->type);
-        }
-
-        // Non-const variable cannot be evaluated at compile time
-        return ConstantValue::unknown();
     }
 
-    // ─── Function ──────────────────────────────────────────────────────────
-    if (decl->isa<FuncDeclAST>()) {
-        FuncDeclAST* func = decl->as<FuncDeclAST>();
-        if (func->keyword != DeclKeyword::Const) {
-            return ConstantValue::unknown();
-        }
-        return ConstantValue(func);
-    }
-
-    // ─── Enum Variant ──────────────────────────────────────────────────────
-    if (decl->isa<EnumVariantAST>()) {
-        const EnumVariantAST* variant = decl->as<EnumVariantAST>();
-        return ConstantValue(variant->value);
-    }
-
-    // ─── Parameter ─────────────────────────────────────────────────────────
-    if (decl->isa<ParamAST>()) {
-        // Parameters get their values from function arguments during
-        // const function execution.
-        ParamAST* param = decl->as<ParamAST>();
-        if (param->type && param->type->isa<PrimitiveTypeAST>()) {
-            return ConstantValue::unknown();
-        }
-        return ConstantValue::unknown();
-    }
-
+    // ─── Anything else: not a compile-time constant ─────────────────────
+    //
+    // A parameter is bound at call time, not at compile time. A table
+    // name is a sheet, not a value. An import alias is a module, not a
+    // value. None of these can appear in a `const_expr` as a value.
     return ConstantValue::unknown();
 }
 
-// ─── evalBinary ──────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// evaluateFieldAccess
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The only field access that is a compile-time constant is the
+// fixed-table sugar `Direction.North`. The resolver in
+// `resolveFieldAccessExpr` sets `isFixedRowSugar` when it recognizes
+// the shape and resolves it to a specific row of a `@fixed` or
+// `@readonly` table. The constant value is that row's index.
+//
+// Everything else — a cell access `row.name`, a column view
+// `Person.age`, a module member `math.sqrt`, a `by<Column>` lookup —
+// is either a runtime operation (a cell read) or a function value (a
+// module member, a `by<Column>` lookup). Neither is a `const_expr`.
 
-ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, BinaryExprAST* expr,
-                                          TypeAST* targetType) {
-    if (!expr) return ConstantValue::error();
+ConstantValue evaluateFieldAccess(FieldAccessExprAST* expr, SemaContext& ctx) {
+    if (!expr) return ConstantValue::unknown();
 
-    // ─── If condition context: detect narrowing ──────────────────────────
-    if (ctx.stack.isIfConditionCtx()) {
-        NarrowingInfo info = detectNarrowingPattern(expr, ctx);
-        if (info.hasNarrowing) {
-            ctx.stack.setPendingNarrowing(info);
-            // Return unknown - the condition is const for narrowing purposes
-            // but we don't need the actual value here.
-            return ConstantValue::unknown();
-        }
+    if (!expr->isFixedRowSugar) {
+        return ConstantValue::unknown();
     }
 
-    // ─── Evaluate left operand ──────────────────────────────────────────
-    ConstantValue left = evaluate(ctx, expr->left, targetType);
-    if (left.isError()) return left;
-    if (left.isUnknown()) return ConstantValue::unknown();
-
-    // ─── Short-circuit for logical operators ────────────────────────────
-    if (expr->op == BinaryOp::And) {
-        if (left.isBool() && !left.asBool()) {
-            return ConstantValue(false);
-        }
-        if (left.isUnknown()) return ConstantValue::unknown();
+    // ─── Fixed-row sugar: the value is the row's index ──────────────────
+    //
+    // The resolver that set `isFixedRowSugar` also resolved the field
+    // name to a specific row of the fixed table. The row's index within
+    // the table's `rows` span is the compile-time value.
+    //
+    // The row index is stored on the resolved `ColumnDeclAST` — no,
+    // there is no column here. The row index is derived from the
+    // table's rows span by finding the row whose first string cell's
+    // value matches the field name. The resolver already did that
+    // search; the index is what it found, but the resolver does not
+    // currently store the index on the AST node.
+    //
+    // ─── What we do here ────────────────────────────────────────────────
+    //
+    // Rather than re-search the table's rows, this evaluator reads the
+    // index from `expr->resolvedFixedRowIndex`, a new field the resolver
+    // is expected to set alongside `isFixedRowSugar`. If the field is
+    // not set (a resolver that forgot to fill it in, or an AST that
+    // predates the field), the fold returns Unknown rather than guess.
+    //
+    // This makes the fixed-row constant's value available to any caller
+    // that wants it — the switch-coverage check, the bytecode emitter,
+    // a future `.lucb` serializer — without those callers having to
+    // re-derive the index from the row span.
+    if (!expr->hasResolvedFixedRow) {
+        return ConstantValue::unknown();
     }
-    if (expr->op == BinaryOp::Or) {
-        if (left.isBool() && left.asBool()) {
-            return ConstantValue(true);
-        }
-        if (left.isUnknown()) return ConstantValue::unknown();
-    }
 
-    // ─── Evaluate right operand ──────────────────────────────────────────
-    ConstantValue right = evaluate(ctx, expr->right, targetType);
-    if (right.isError()) return right;
-    if (right.isUnknown()) return ConstantValue::unknown();
-
-    // ─── Perform the operation ────────────────────────────────────────────
-    return evalBinaryOp(ctx, expr->op, left, right, expr, targetType);
+    return ConstantValue(static_cast<int64_t>(expr->resolvedFixedRowIndex));
 }
 
-// ─── evalStructLiteral ────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// evaluateArrayLiteral
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// An array literal is a compile-time constant iff every element is. The
+// elements are folded in order; the first non-constant element makes
+// the whole literal non-constant. An error in any element propagates
+// as an error.
+//
+// The result is a `ConstantValue` of `Kind::Array`, holding the folded
+// element values. The array's length is implicit in the vector's size.
 
-ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, StructLiteralExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    // ─── Look up struct type ──────────────────────────────────────────────
-    TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
-    if (!typeDecl) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "undefined type '", ctx.pool.lookup(expr->typeName), "'");
-        return ConstantValue::error();
-    }
-
-    if (!typeDecl->isa<StructDeclAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
-        return ConstantValue::error();
-    }
-
-    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-
-    // ─── Build field map ──────────────────────────────────────────────────
-    std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
-    for (FieldDeclAST* field : structDecl->fields) {
-        fieldMap[field->name] = field;
-    }
-
-    std::unordered_map<InternedString, ConstantValue> fields;
-
-    // ─── Initialize with default values ──────────────────────────────────
-    for (FieldDeclAST* field : structDecl->fields) {
-        if (field->defaultVal) {
-            ConstantValue val = evaluate(ctx, field->defaultVal, field->type);
-            if (val.isError()) return val;
-            if (val.isUnknown()) return ConstantValue::unknown();
-            fields[field->name] = val;
-        }
-    }
-
-    // ─── Override with explicit initializers ─────────────────────────────
-    for (FieldInitAST* init : expr->inits) {
-        auto it = fieldMap.find(init->name);
-        if (it == fieldMap.end()) {
-            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, init,
-                                  "struct '", ctx.pool.lookup(structDecl->name),
-                                  "' has no field named '", ctx.pool.lookup(init->name), "'");
-            return ConstantValue::error();
-        }
-
-        FieldDeclAST* field = it->second;
-
-        // Check const field cannot be assigned nil/err
-        if (field->isConst()) {
-            if (init->value->isa<LiteralExprAST>()) {
-                LiteralExprAST* lit = init->value->as<LiteralExprAST>();
-                if (lit->kind == LiteralKind::Nil || lit->kind == LiteralKind::Err) {
-                    ctx.diagnostics.error(DiagCode::Sem_ConstNullable, init,
-                                          "const field '", ctx.pool.lookup(field->name),
-                                          "' cannot be assigned '",
-                                          (lit->kind == LiteralKind::Nil ? "nil" : "err"), "'");
-                    return ConstantValue::error();
-                }
-            }
-        }
-
-        ConstantValue val = evaluate(ctx, init->value, field->type);
-        if (val.isError()) return val;
-        if (val.isUnknown()) return ConstantValue::unknown();
-        fields[init->name] = val;
-    }
-
-    // ─── Check missing required fields ──────────────────────────────────
-    for (FieldDeclAST* field : structDecl->fields) {
-        if (fields.find(field->name) == fields.end()) {
-            if (field->defaultVal) continue;
-            if (isNullableType(field->type) || isFallibleType(field->type)) continue;
-            
-            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
-                                  "missing initializer for struct field '",
-                                  ctx.pool.lookup(field->name), "'");
-            return ConstantValue::error();
-        }
-    }
-
-    ConstantValue result;
-    result.kind = ConstantValue::Kind::Struct;
-    result.value = fields;
-
-    if (expr->resolvedType) {
-        result.type = expr->resolvedType;
-    } else if (expr->resolvedDecl) {
-        // Reconstruct the type from the literal's own fields:
-        // - `resolvedDecl` is the specialization (or the struct, if non-generic)
-        // - `genericArgs` are the args as written (already canonicalized by
-        //   resolveStructLiteralExpr step 2d, so they're stable pointers)
-        result.type = ctx.getNamedType(
-            expr->resolvedDecl->name,
-            expr->genericArgs);
-    } else {
-        result.type = ctx.getNamedType(structDecl->name);
-    }
-
-    return result;
-}
-
-// ─── evalArrayLiteral ────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, ArrayLiteralExprAST* expr) {
-    if (!expr) return ConstantValue::error();
+ConstantValue evaluateArrayLiteral(ArrayLiteralExprAST* expr, SemaContext& ctx) {
+    if (!expr) return ConstantValue::unknown();
 
     std::vector<ConstantValue> elements;
+    elements.reserve(expr->elements.size());
 
-    for (ExprAST* elem : expr->elements) {
-        ConstantValue val = evaluate(ctx, elem);
-        if (val.isError()) return val;
-        if (val.isUnknown()) return ConstantValue::unknown();
-        elements.push_back(val);
-    }
-
-    // ─── Check all elements have the same type ──────────────────────────
-    if (!elements.empty()) {
-        TypeAST* firstType = elements[0].type;
-        for (size_t i = 1; i < elements.size(); ++i) {
-            if (!typesEqual(elements[i].type, firstType)) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
-                                      "array elements must have the same type");
-                return ConstantValue::error();
-            }
+    for (ExprAST* element : expr->elements) {
+        ConstantValue folded = evaluate(element, ctx);
+        if (folded.isError()) {
+            // A real fold error — propagate it. The element's own
+            // evaluator already emitted the diagnostic.
+            return folded;
         }
+        if (!folded.isEvaluated()) {
+            // An element is not a constant. The whole literal is not a
+            // constant. Return Unknown, not Error — "this array is not
+            // a compile-time constant" is not an error on its own; the
+            // caller decides.
+            return ConstantValue::unknown();
+        }
+        elements.push_back(folded);
     }
 
     ConstantValue result;
-    result.kind = ConstantValue::Kind::Array;
-    result.value = elements;
-    if (!elements.empty()) {
-        result.type = ctx.getArrayType(ArrayKind::Fixed, elements.size(), elements[0].type);
-    }
+    result.kind  = ConstantValue::Kind::Array;
+    result.value = std::move(elements);
     return result;
 }
 
-// ─── evalFieldAccess ─────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// evaluateUnaryExpr / evaluateBinaryExpr
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// These two helpers fold the sub-expressions and hand the results to
+// the operator-specific folders in `ConstEvalUnary.cpp` and
+// `ConstEvalBinary.cpp`. They are the only place the `Operand not
+// folded` propagation lives for unary and binary nodes.
 
-ConstantValue ConstEvaluator::evalFieldAccess(SemaContext& ctx, FieldAccessExprAST* expr) {
-    if (!expr) return ConstantValue::error();
+ConstantValue evaluateUnaryExpr(UnaryExprAST* expr, SemaContext& ctx) {
+    if (!expr) return ConstantValue::unknown();
 
-    ConstantValue obj = evaluate(ctx, expr->object);
-    if (obj.isError()) return obj;
-    if (obj.isUnknown()) return ConstantValue::unknown();
+    ConstantValue operand = evaluate(expr->operand, ctx);
+    if (operand.isError())   return operand;
+    if (!operand.isEvaluated()) return ConstantValue::unknown();
 
-    if (!obj.isStruct()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr->object,
-                              "field access on non-struct value");
-        return ConstantValue::error();
-    }
-
-    const auto& structFields = obj.asStruct();
-    auto it = structFields.find(expr->fieldName);
-    if (it == structFields.end()) {
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                              "struct has no field '",
-                              ctx.pool.lookup(expr->fieldName), "'");
-        return ConstantValue::error();
-    }
-
-    return it->second;
+    return foldUnary(expr->op, operand, ctx);
 }
 
-// ─── evalNullCoalesce ────────────────────────────────────────────────────
+ConstantValue evaluateBinaryExpr(BinaryExprAST* expr, SemaContext& ctx) {
+    if (!expr) return ConstantValue::unknown();
 
-ConstantValue ConstEvaluator::evalNullCoalesce(SemaContext& ctx, NullCoalesceExprAST* expr) {
-    if (!expr) return ConstantValue::error();
+    ConstantValue left = evaluate(expr->left, ctx);
+    if (left.isError())   return left;
+    if (!left.isEvaluated()) return ConstantValue::unknown();
 
-    ConstantValue val = evaluate(ctx, expr->value);
-    if (val.isError()) return val;
+    ConstantValue right = evaluate(expr->right, ctx);
+    if (right.isError())   return right;
+    if (!right.isEvaluated()) return ConstantValue::unknown();
 
-    if (val.isNil() || val.isErr()) {
-        return evaluate(ctx, expr->fallback);
-    }
-
-    if (val.isUnknown()) return ConstantValue::unknown();
-    return val;
+    return foldBinary(expr->op, left, right, ctx);
 }
 
-// ─── evalIfExpr ──────────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalIfExpr(SemaContext& ctx, IfExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    ConstantValue cond = evaluate(ctx, expr->condition);
-    if (cond.isError()) return cond;
-    if (cond.isUnknown()) return ConstantValue::unknown();
-
-    if (constantTruthiness(cond, ctx)) {
-        return evaluate(ctx, expr->thenBranch);
-    } else {
-        return evaluate(ctx, expr->elseBranch);
-    }
-}
-
-// ─── evalRangeExpr ──────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, RangeExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    // ─── Evaluate both bounds ───────────────────────────────────────────
-    ConstantValue loVal = evaluate(ctx, expr->lo);
-    if (loVal.isError()) return loVal;
-    if (loVal.isUnknown()) return ConstantValue::unknown();
-
-    ConstantValue hiVal = evaluate(ctx, expr->hi);
-    if (hiVal.isError()) return hiVal;
-    if (hiVal.isUnknown()) return ConstantValue::unknown();
-
-    // ─── Both bounds must be integers ────────────────────────────────────
-    if (!loVal.isInt() || !hiVal.isInt()) {
-        return ConstantValue::unknown();
-    }
-
-    int64_t lo = loVal.asInt();
-    int64_t hi = hiVal.asInt();
-    bool isInclusive = !expr->isExclusive;
-    
-    // ─── Validate range order ────────────────────────────────────────────
-    if (isInclusive && lo > hi) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
-                              "inclusive range start (", lo, 
-                              ") must be less than or equal to end (", hi, ")");
-        return ConstantValue::error();
-    }
-    if (!isInclusive && lo >= hi) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
-                              "exclusive range start (", lo, 
-                              ") must be less than end (", hi, ")");
-        return ConstantValue::error();
-    }
-
-    // ─── Return the lower bound (range expressions are only used for loops) ──
-    // The actual range evaluation for loops is handled in executeFor, which
-    // calls evaluateAsInt on lo and hi separately.
-    return ConstantValue::unknown();
-}
-
-// ─── evalCall ────────────────────────────────────────────────────────────
-
-/// @brief Check whether a call callee carries explicit generic arguments.
-///
-/// Generic args are stored on the callee (IdentifierExprAST or
-/// ModuleAccessExprAST), never on CallExprAST itself — the AST's design
-/// keeps a single source of truth for them, on the node that names the
-/// declaration being instantiated.
-static bool calleeHasGenericArgs(ExprAST* callee) {
-    if (!callee) return false;
-
-    if (callee->isa<IdentifierExprAST>()) {
-        return !callee->as<IdentifierExprAST>()->genericArgs.empty();
-    }
-    if (callee->isa<ModuleAccessExprAST>()) {
-        return !callee->as<ModuleAccessExprAST>()->genericArgs.empty();
-    }
-    // Other callee shapes (FieldAccessExprAST, etc.) don't carry generic args.
-    return false;
-}
-
-ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, CallExprAST* expr) {
-    FuncDeclAST* func = resolveCalleeOrError(expr->callee, ctx);
-    if (!func) {
-        return ConstantValue::error();
-    }
-
-    if (func->keyword != DeclKeyword::Const) {
-        return ConstantValue::unknown();
-    }
-
-    // ─── Check generic instantiation ─────────────────────────────────────
-    // Generic args live on the callee, not on CallExprAST:
-    //   - IdentifierExprAST::genericArgs  for `func<T>(...)`
-    //   - ModuleAccessExprAST::genericArgs for `module:func<T>(...)`
-    // A generic const function that isn't instantiated cannot be evaluated
-    // at compile time — the compiler doesn't know which concrete type T is.
-    if (!func->genericParams.empty() && !calleeHasGenericArgs(expr->callee)) {
-        return ConstantValue::unknown();
-    }
-
-    std::vector<ConstantValue> args;
-    for (ExprAST* arg : expr->args) {
-        ConstantValue val = evaluate(ctx, arg);
-        if (val.isError()) return val;
-        if (val.isUnknown()) return ConstantValue::unknown();
-        args.push_back(val);
-    }
-
-    return executeFunction(ctx, func, args);
-}
-
-// ─── Report Cycle ────────────────────────────────────────────────────────
-
-void ConstEvaluator::reportCycle(SemaContext& ctx, const std::vector<DeclAST*>& cycle) {
-    if (cycle.empty()) return;
-    
-    std::string msg = "circular dependency in const declarations: ";
-    for (size_t i = 0; i < cycle.size(); ++i) {
-        if (i > 0) msg += " → ";
-        msg += ctx.pool.lookup(cycle[i]->name);
-    }
-    ctx.diagnostics.error(DiagCode::Sem_CircularDependency, cycle[0], msg);
-}
-
-ConstantValue ConstEvaluator::getConstValue(VarDeclAST* decl) {
-    if (!decl || decl->keyword != DeclKeyword::Const || !decl->init) {
-        return ConstantValue::unknown();
-    }
-    if (decl->init->isConst) {
-        auto it = m_evalCache.find(decl->init);
-        if (it != m_evalCache.end()) {
-            return it->second;
-        }
-    }
-    return ConstantValue::unknown();
-}
-
-void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
-    m_constDecls.clear();
-    m_deps.clear();
-
-    for (ModuleAST* module : ctx.modules) {
-        for (DeclAST* decl : module->decls) {
-            if (decl && decl->isa<VarDeclAST>()) {
-                VarDeclAST* var = decl->as<VarDeclAST>();
-                if (var->keyword == DeclKeyword::Const) {
-                    m_constDecls.push_back(var);
-                }
-            }
-            if (decl && decl->isa<FuncDeclAST>()) {
-                FuncDeclAST* func = decl->as<FuncDeclAST>();
-                if (func->keyword == DeclKeyword::Const) {
-                    m_constDecls.push_back(func);
-                }
-            }
-        }
-    }
-
-    for (DeclAST* decl : m_constDecls) {
-        std::vector<DeclAST*> deps;
-        if (decl->isa<VarDeclAST>()) {
-            VarDeclAST* var = decl->as<VarDeclAST>();
-            if (var->init) {
-                collectDeps(ctx, var->init, deps);
-            }
-        } else if (decl->isa<FuncDeclAST>()) {
-            FuncDeclAST* func = decl->as<FuncDeclAST>();
-
-            // The body (when there is one) lives on the AnonFuncExprAST at
-            // `init` — not on FuncDeclAST itself. `func->body` has not existed
-            // since the FuncDeclAST/AnonFuncExprAST redesign; everything that
-            // needs to walk a body reads it through `init`.
-            //
-            // `init` can be:
-            //   - an AnonFuncExprAST (block body) — this is the interesting case
-            //   - a reference expression (IdentifierExprAST, ModuleAccessExprAST,
-            //     CallExprAST, FieldAccessExprAST) — a pure alias to another function, 
-            //     so its dependencies are whatever the reference resolves to, not a body of its own
-            //   - nullptr (foreign function) — nothing to walk
-            if (func->init && func->init->isa<AnonFuncExprAST>()) {
-                AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
-                if (body->body) {
-                    collectDepsFromStmt(ctx, body->body, deps);
-                }
-            }
-            // Reference bodies and foreign declarations contribute no
-            // dependencies of their own. If we ever want to follow a reference
-            // alias to the function it points at, this is where that logic
-            // would go — but for const dependency ordering, a reference is a
-            // leaf: either the target function is itself const (and is picked
-            // up by the top-level scan independently) or it isn't (and the
-            // const evaluator will reject it at call time anyway).
-        }
-        m_deps[decl] = deps;
-    }
-
-    topologicalSort(ctx, m_deps);
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// INTRINSIC FOLDING
-// ═════════════════════════════════════════════════════════════════════════
-//
-// A foldable intrinsic is one whose value can be determined from the
-// resolved types of its arguments alone, without layout, without a
-// target machine, and without side effects. #typeof and #nameof are
-// pure type-level queries; #sizeof and #alignof are pure *primitive*
-// queries (see evalIntrinsicSizeof for why user structs are excluded).
-//
-// Every fold returns a ConstantValue whose kind matches what the
-// intrinsic would produce at runtime:
-//   #typeof / #nameof  ->  Kind::String
-//   #sizeof / #alignof ->  Kind::Int
-//
-// Returning Kind::Unknown is the correct response for any intrinsic
-// that is valid but not foldable at compile time. It is NOT an error:
-// the caller (resolveIntrinsicCallExpr) will fall through to the
-// normal getIntrinsicReturnType path and CodeGen will emit the call.
-
-// ─── evalIntrinsicCall — dispatcher ─────────────────────────────────────
-
-ConstantValue ConstEvaluator::evalIntrinsicCall(SemaContext& ctx, IntrinsicCallExprAST* expr) {
-    if (!expr) return ConstantValue::error();
-
-    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
-    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
-    if (!info) {
-        // Unknown intrinsic — validateIntrinsicCall will have already
-        // emitted Sem_UnknownIntrinsic, but if for some reason this
-        // path is reached first, do not double-report. Return Unknown
-        // so a caller that checks for isEvaluated() simply sees "no
-        // value available" rather than a spurious error.
-        return ConstantValue::unknown();
-    }
-
-    switch (info->kind) {
-        case IntrinsicKind::Typeof:
-            return evalIntrinsicTypeof(ctx, expr);
-        case IntrinsicKind::Nameof:
-            return evalIntrinsicNameof(ctx, expr);
-        case IntrinsicKind::Sizeof:
-            return evalIntrinsicSizeof(ctx, expr);
-        case IntrinsicKind::Alignof:
-            return evalIntrinsicAlignof(ctx, expr);
-
-        default:
-            // Every other intrinsic — #sqrt, #memcpy, #str_len,
-            // #simd_add, #alloc, #scope_exit, #bitcast, ...
-            // — is either runtime-only, side-effecting, or both.
-            // Not foldable. Not an error.
-            return ConstantValue::unknown();
-    }
-}
-
-// ─── evalIntrinsicTypeof — #typeof(T) / #typeof(x) ──────────────────────
-//
-// Produces a string literal naming the resolved type.
-//
-// Two argument shapes are valid and are handled identically:
-//   1. #typeof(SomeType)  — argument is an IdentifierExprAST whose
-//      `isType` flag is set, with the resolved type node on
-//      `resolvedTypeNode`. This form is produced by resolveTypeArgument
-//      in IntrinsicValidator.cpp, which is also what #sizeof / #bitcast
-//      use.
-//   2. #typeof(x)         — argument is a value expression whose
-//      `resolvedType` has been set by the ordinary expression resolver.
-//
-// Both paths converge on a TypeAST*, and typeToString does the rest.
-// The key invariant is that typeToString is deterministic: two calls
-// that produce the same TypeAST* must produce the same string. That is
-// already true — it is what every diagnostic message depends on.
-ConstantValue ConstEvaluator::evalIntrinsicTypeof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
-    if (expr->args.size() != 1) {
-        // validateIntrinsicCall already reported Sem_ArgCountMismatch.
-        return ConstantValue::unknown();
-    }
-
-    ExprAST* arg = expr->args[0];
-    TypeAST* argType = nullptr;
-
-    // ─── Type position: #typeof(SomeType) ────────────────────────────
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType && id->resolvedTypeNode) {
-            argType = id->resolvedTypeNode;
-        }
-    }
-
-    // ─── Value position: #typeof(expr) ───────────────────────────────
-    if (!argType) {
-        argType = arg->resolvedType;
-    }
-
-    if (!argType || argType->isa<UnknownTypeAST>()) {
-        // The argument couldn't be resolved to a type. Don't emit a
-        // new diagnostic here — the caller's validation pass owns
-        // that. Return Unknown so the intrinsic's static return
-        // type (string) is used and the error, if any, was reported
-        // by resolveIntrinsicCallExpr.
-        return ConstantValue::unknown();
-    }
-
-    std::string typeStr = typeToString(argType, ctx.pool);
-    InternedString interned = ctx.pool.intern(typeStr);
-
-    ConstantValue result(interned);
-    result.type = ctx.getStringType();
-    return result;
-}
-
-// ─── evalIntrinsicNameof — #nameof(entity) ──────────────────────────────
-//
-// Produces a string literal naming the entity. Valid entities are:
-//
-//   IdentifierExprAST  — #nameof(myVar), #nameof(SomeType), #nameof(fn)
-//                        yields the identifier's name.
-//
-//   FieldAccessExprAST — #nameof(obj.field) yields the *field's* name,
-//                        not the object's. This is what makes
-//                        #nameof(self.someField) useful for building
-//                        reflection-ish tables.
-//
-//   ModuleAccessExprAST — #nameof(mod:member) yields the member name.
-//
-// Every other shape has no name to give and is a hard error. This is
-// the one fold that must be able to reject its argument, unlike
-// #typeof, which is happy with any resolved expression.
-ConstantValue ConstEvaluator::evalIntrinsicNameof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
-    if (expr->args.size() != 1) {
-        // validateIntrinsicCall already reported Sem_ArgCountMismatch.
-        return ConstantValue::unknown();
-    }
-
-    ExprAST* arg = expr->args[0];
-    InternedString name;
-
-    if (arg->isa<IdentifierExprAST>()) {
-        name = arg->as<IdentifierExprAST>()->name;
-    } else if (arg->isa<FieldAccessExprAST>()) {
-        name = arg->as<FieldAccessExprAST>()->fieldName;
-    } else if (arg->isa<ModuleAccessExprAST>()) {
-        name = arg->as<ModuleAccessExprAST>()->memberName;
-    } else {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                              "#nameof requires a named entity "
-                              "(identifier, field access, or module member)");
-        return ConstantValue::error();
-    }
-
-    if (name.isEmpty()) {
-        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                              "#nameof argument has no name");
-        return ConstantValue::error();
-    }
-
-    ConstantValue result(name);
-    result.type = ctx.getStringType();
-    return result;
-}
-
-// ─── evalIntrinsicSizeof — #sizeof(T) ───────────────────────────────────
-//
-// Only primitive types are folded. This is a deliberate restriction:
-//
-//   #sizeof(int32) is 4 on every target Lucid supports. It is a
-//   property of the type itself, not of the machine.
-//
-//   #sizeof(MyStruct) depends on the target's DataLayout — field
-//   alignment, padding rules, and the ABI all affect the answer.
-//   Sema runs before any target is chosen (see Architecture.md
-//   §3.3: "Semantic analysis is a multi-step walk ... the compiler
-//   never produces IR for a file with semantic errors" and §4:
-//   IRLowering is "the ONLY place in the codebase that imports
-//   LLVM headers"). Pulling DataLayout into Sema would break that
-//   separation for one intrinsic.
-//
-// So: fold the target-independent case, return Unknown for the
-// target-dependent one, and let CodeGen compute the struct size at
-// emit time, where it already has the DataLayout it needs.
-ConstantValue ConstEvaluator::evalIntrinsicSizeof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
-    if (expr->args.size() != 1) {
-        return ConstantValue::unknown();
-    }
-
-    ExprAST* arg = expr->args[0];
-    TypeAST* type = nullptr;
-
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType && id->resolvedTypeNode) {
-            type = id->resolvedTypeNode;
-        }
-    }
-    if (!type) {
-        type = arg->resolvedType;
-    }
-    if (!type || type->isa<UnknownTypeAST>()) {
-        return ConstantValue::unknown();
-    }
-
-    // ─── Primitive types: target-independent ─────────────────────────
-    if (type->isa<PrimitiveTypeAST>()) {
-        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
-
-        size_t bits = getPrimitiveBitWidth(kind);
-        if (bits == 0) {
-            // String, Float, Double, Decimal — bit width is not
-            // the right notion, or is target-dependent. Defer.
-            return ConstantValue::unknown();
-        }
-        return ConstantValue(static_cast<int64_t>(bits / 8));
-    }
-
-    // ─── Bool is a special case: 1 byte on every target ──────────────
-    // (Bool has bit width 8 via getPrimitiveBitWidth, so it's
-    //  already covered above; this comment exists so a future reader
-    //  doesn't add a second Bool branch.)
-
-    // ─── Everything else: defer to CodeGen ───────────────────────────
-    return ConstantValue::unknown();
-}
-
-// ─── evalIntrinsicAlignof — #alignof(T) ─────────────────────────────────
-//
-// Same restriction as #sizeof, same reasoning. For primitives, the
-// alignment equals the size on all targets Lucid supports (natural
-// alignment, no packed primitives). For user types, alignment
-// depends on DataLayout.
-ConstantValue ConstEvaluator::evalIntrinsicAlignof(SemaContext& ctx, IntrinsicCallExprAST* expr) {
-    if (expr->args.size() != 1) {
-        return ConstantValue::unknown();
-    }
-
-    ExprAST* arg = expr->args[0];
-    TypeAST* type = nullptr;
-
-    if (arg->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = arg->as<IdentifierExprAST>();
-        if (id->isType && id->resolvedTypeNode) {
-            type = id->resolvedTypeNode;
-        }
-    }
-    if (!type) {
-        type = arg->resolvedType;
-    }
-    if (!type || type->isa<UnknownTypeAST>()) {
-        return ConstantValue::unknown();
-    }
-
-    if (type->isa<PrimitiveTypeAST>()) {
-        PrimitiveKind kind = type->as<PrimitiveTypeAST>()->primitiveKind;
-
-        size_t bits = getPrimitiveBitWidth(kind);
-        if (bits == 0) {
-            return ConstantValue::unknown();
-        }
-        return ConstantValue(static_cast<int64_t>(bits / 8));
-    }
-
-    return ConstantValue::unknown();
-}
-
-} // namespace sema
+} // namespace lucid::sema

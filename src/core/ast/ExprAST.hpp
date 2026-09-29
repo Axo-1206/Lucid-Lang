@@ -318,6 +318,16 @@ struct FieldAccessExprAST : ExprAST {
     /// column view. Null otherwise.
     ColumnDeclAST* resolvedColumn = nullptr;
 
+    /// True if the resolver found a fixed-table row that the field name
+    /// refers to. Set by `resolveTableMemberAccess` when the table is
+    /// `@fixed` or `@readonly` and the field name matches a row's first
+    /// string cell.
+    bool hasResolvedFixedRow = false;
+
+    /// The index of the resolved fixed-table row within the table's `rows`
+    /// span. Meaningful only when `hasResolvedFixedRow` is true.
+    uint32_t resolvedFixedRowIndex = 0;
+
     /// The resolved declaration, when the access is a module member
     /// access. Null otherwise.
     ///

@@ -1,314 +1,258 @@
-/// @file const_eval/ConstEvaluator.hpp
-/// @brief Evaluates const expressions at compile-time.
-///
-/// @design_decision Single responsibility: evaluate expression → ConstantValue
-///   The evaluator does not know about statements, loops, or switches.
-///   It only evaluates expressions and returns their constant values.
-///
-/// @design_decision Results are cached internally
-///   When an expression is evaluated, we store the result in m_evalCache.
-///   This avoids re-evaluation without bloating the AST with heavy data.
-///
-/// @design_decision Unknown is not an error
-///   If an expression can't be evaluated, we return ConstantValue::unknown()
-///   without a diagnostic. The caller decides what to do.
-///
-/// @design_decision AST nodes are minimally modified
-///   We only set `isConst = true` on successfully evaluated expressions.
-///   The actual value is stored in the evaluator's internal cache.
+/**
+ * @file ConstEvaluator.hpp
+ *
+ * @responsibility Compile-time constant folding: the public entry
+ *                 points, the internal per-form folders, and the
+ *                 operator-specific helpers the evaluator is split
+ *                 across.
+ *
+ * ─── What the evaluator does ──────────────────────────────────────────────
+ * A `const_expr` is a syntactic class: literals, arithmetic on
+ * literals, and the fixed-table sugar `T.Member`. The grammar puts a
+ * `const_expr` in three positions:
+ *
+ *   - a cell of a `@fixed`/`@readonly` table's inline `= [ ... ]`
+ *     initializer (§4.1.1c);
+ *   - a top-level `const` binding's initializer (§4.3);
+ *   - a `switch` case value (§12.2).
+ *
+ * The evaluator folds a constant expression to a `ConstantValue`. The
+ * folding happens once, during compilation; the result is cached on
+ * the expression via `expr->isConst` / `expr->constValue` and read by
+ * every later pass.
+ *
+ * ─── Design: three return states, one entry point ─────────────────────────
+ * `evaluate` returns a `ConstantValue` in one of three states:
+ *
+ *   - **Evaluated** — the expression is a compile-time constant, and
+ *     its value is in the returned `ConstantValue`.
+ *   - **Unknown** — the expression is not a compile-time constant. No
+ *     diagnostic. The caller decides whether that is acceptable.
+ *   - **Error** — the expression *is* a constant-shaped expression
+ *     whose fold failed (division by zero, integer overflow, ...). A
+ *     diagnostic has already been emitted.
+ *
+ * The three states are distinguished by `isEvaluated()`, `isUnknown()`,
+ * and `isError()` on the returned value. A caller that requires a
+ * constant checks `isEvaluated()`; a caller that wants "fold if
+ * possible, else leave it" checks `isEvaluated()` and ignores the
+ * `Unknown` case.
+ *
+ * ─── Design: no diagnostic for Unknown ───────────────────────────────────
+ * "This expression is not a compile-time constant" is not an error in
+ * general — it is only an error in the positions that require one. The
+ * evaluator returns `Unknown` and lets the caller decide. A `switch`
+ * case that is not constant emits `Type_Mismatch` at the case's
+ * location; an ordinary expression that happens not to be constant
+ * emits nothing.
+ *
+ * The evaluator does emit diagnostics for actual fold failures —
+ * division by zero, shift by a negative, integer overflow. Those go
+ * through `ctx.diagnostics.error` with a code from the value band.
+ *
+ * ─── Design: the evaluator returns; the caller caches ─────────────────────
+ * The evaluator never writes to the expression tree. It returns a
+ * `ConstantValue` and the caller decides whether to cache it. In
+ * practice every caller caches, but the separation makes the evaluator
+ * a pure function of `(expr, ctx)` — testable without an AST to
+ * mutate.
+ *
+ * ─── Design: the file split ───────────────────────────────────────────────
+ * The evaluator is split across four `.cpp` files, mirroring the
+ * operator categories the grammar defines:
+ *
+ *   - `ConstEvaluator.cpp`   — the dispatcher, plus the identifier,
+ *                              field-access, and array-literal cases.
+ *   - `ConstEvalLiteral.cpp` — `evaluateLiteral` and the numeric-lexeme
+ *                              parsers.
+ *   - `ConstEvalUnary.cpp`   — `foldUnary`.
+ *   - `ConstEvalBinary.cpp`  — `foldBinary` and its category helpers.
+ *
+ * The split is historical: the old design had the same four files, and
+ * keeping the split lets each operator category stay in one place as
+ * the evaluator grows. A single `ConstEvaluator.cpp` would be about
+ * 600 lines and fits in one read; the four-file split is about 700
+ * lines with comments and is more searchable.
+ */
 
 #pragma once
 
-#include "core/ast/BaseAST.hpp"
-#include "../context/SemaContext.hpp"
-#include "../support/TypeNarrowHelpers.hpp"
+#include "core/ast/BaseAST.hpp"    // for ConstantValue
+#include "core/ast/ExprAST.hpp"    // for ExprAST, LiteralExprAST
 
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-#include <optional>
+#include "sema/context/SemaContext.hpp"
 
-namespace sema {
+namespace lucid::sema {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RAII Guards
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Public entry points
+// ═════════════════════════════════════════════════════════════════════════════
 
-/// @brief RAII guard for tracking declarations being evaluated.
-/// Prevents infinite recursion in circular dependencies.
-class EvaluationGuard {
-public:
-    EvaluationGuard(std::unordered_set<DeclAST*>& evaluating,
-                    DeclAST* decl)
-        : m_evaluating(evaluating), m_decl(decl) {
-        m_evaluating.insert(decl);
-    }
-    
-    ~EvaluationGuard() {
-        m_evaluating.erase(m_decl);
-    }
-    
-    EvaluationGuard(const EvaluationGuard&) = delete;
-    EvaluationGuard& operator=(const EvaluationGuard&) = delete;
-
-private:
-    std::unordered_set<DeclAST*>& m_evaluating;
-    DeclAST* m_decl;
-};
-
-/// @brief RAII guard for const function evaluation context.
-/// Pushes a function context and scope for evaluating const functions.
+/// @brief Fold an expression to a compile-time constant.
 ///
-/// This guard therefore requires `func->init` to be an AnonFuncExprAST. If
-/// `func`'s init is a reference (a pure alias to another function) or null
-/// (a foreign declaration), there is no body to execute, and the guard is
-/// a no-op — which is exactly right: there is nothing to evaluate.
-class ConstFunctionContext {
-public:
-    ConstFunctionContext(SemaContext& ctx, FuncDeclAST* func)
-        : m_ctx(ctx)
-        , m_pushed(false)
-    {
-        if (!func || !func->init) {
-            return;   // nothing to push — foreign or missing body
-        }
-        if (!func->init->isa<AnonFuncExprAST>()) {
-            return;   // reference body — no body of its own to evaluate
-        }
+/// Returns:
+///   - a real `ConstantValue` if the expression is a compile-time
+///     constant;
+///   - `ConstantValue::unknown()` if the expression is not a
+///     compile-time constant (no diagnostic; the caller decides);
+///   - `ConstantValue::error()` if the expression *is* a constant-shaped
+///     expression whose fold failed (a diagnostic has been emitted).
+///
+/// The three states are distinguished by `isEvaluated()`, `isUnknown()`,
+/// and `isError()`. A caller that requires a constant checks
+/// `isEvaluated()`; a caller that wants "fold if possible, else leave
+/// it" checks `isEvaluated()` and ignores `Unknown`.
+///
+/// The evaluator is idempotent: if the expression has already been
+/// folded (its `isConst` flag is set), the cached value is returned
+/// without re-walking the tree.
+ConstantValue evaluate(ExprAST* expr, SemaContext& ctx);
 
-        AnonFuncExprAST* body = func->init->as<AnonFuncExprAST>();
+/// @brief Read a single literal node's value.
+///
+/// The parser stores a numeric literal's raw lexeme — `"42"`, `"0xFF"`,
+/// `"3.14"`. This function parses it and returns the typed value. For a
+/// string or char literal, the value is the interned lexeme.
+///
+/// Returns `ConstantValue::unknown()` if `lit` is null or its kind is
+/// not one of the eight literal kinds (a compiler bug, since the parser
+/// only produces those eight).
+///
+/// Returns `ConstantValue::error()` if a numeric lexeme cannot be
+/// parsed — also a compiler bug, since the parser rejects a malformed
+/// numeric token at parse time. The `Error` state lets the caller
+/// propagate the failure instead of silently misreading the literal.
+ConstantValue evaluateLiteral(LiteralExprAST* lit, SemaContext& ctx);
 
-        m_ctx.stack.pushAnonFunction(
-            body,
-            body->funcType ? body->funcType->returnType : nullptr
-        );
-        m_ctx.pushScope();
-        m_pushed = true;
-    }
+// ═════════════════════════════════════════════════════════════════════════════
+// Internal per-form folders
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// These are the dispatch cases of `evaluate`. They are declared here,
+// not `static` in `ConstEvaluator.cpp`, because a future caller may
+// want to fold a single node of a known kind without going through the
+// general dispatcher. Today the only callers are inside the evaluator
+// itself.
 
-    ~ConstFunctionContext() {
-        if (m_pushed) {
-            m_ctx.popScope();
-            m_ctx.stack.pop();
-        }
-    }
+/// @brief Fold a bare identifier.
+///
+/// A bare identifier in a `const_expr` position is one of two things:
+///
+///   - a top-level `FN` name, which produces a `Function` constant;
+///   - a reference to a `const` binding whose initializer has already
+///     been folded, which produces the binding's cached value.
+///
+/// Everything else — a `let`, an unfolder `const`, a parameter, a table
+/// name, a module alias — is not a compile-time constant, and this
+/// function returns `Unknown`.
+ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx);
 
-private:
-    SemaContext& m_ctx;
-    bool m_pushed;
-};
+/// @brief Fold a field access.
+///
+/// The only field access that is a compile-time constant is the
+/// fixed-table sugar `Direction.North`. The resolver in
+/// `resolveTableMemberAccess` sets `isFixedRowSugar` and
+/// `hasResolvedFixedRow` when it recognizes the shape and resolves it
+/// to a specific row of a `@fixed` or `@readonly` table. The constant
+/// value is that row's index, as an `Int`.
+///
+/// Everything else — a cell access `row.name`, a column view
+/// `Person.age`, a module member `math.sqrt`, a `by<Column>` lookup —
+/// is either a runtime operation or a function value, and this
+/// function returns `Unknown`.
+ConstantValue evaluateFieldAccess(FieldAccessExprAST* expr, SemaContext& ctx);
 
-/// @brief RAII guard for recursion depth tracking.
-class DepthGuard {
-public:
-    DepthGuard(size_t& depth) : m_depth(depth) { ++m_depth; }
-    ~DepthGuard() { --m_depth; }
-    
-private:
-    size_t& m_depth;
-};
+/// @brief Fold an array literal.
+///
+/// An array literal is a compile-time constant iff every element is.
+/// The elements are folded in order; the first non-constant element
+/// makes the whole literal non-constant. An error in any element
+/// propagates as an error.
+///
+/// The result is a `ConstantValue` of `Kind::Array`, holding the folded
+/// element values.
+ConstantValue evaluateArrayLiteral(ArrayLiteralExprAST* expr, SemaContext& ctx);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ConstEvaluator - Main Class
-// ─────────────────────────────────────────────────────────────────────────────
+/// @brief Fold a unary expression.
+///
+/// Folds the operand, then applies `foldUnary`. If the operand is not a
+/// constant, returns `Unknown`; if the operand's fold errored, returns
+/// the error.
+ConstantValue evaluateUnaryExpr(UnaryExprAST* expr, SemaContext& ctx);
 
-/// @brief Evaluates const expressions at compile-time.
-/// All methods are static - no instance state needed.
-/// @note Callers should provide an AST free of syntax errors. Public entry
-///       points defensively reject nodes marked with `hasSyntaxError`.
-/// 
-/// ─── Phase Responsibilities ──────────────────────────────────────────────
-/// | Field            | Set By      | Read By               | Notes                     |
-/// | -----------------| ----------- | --------------------- | ------------------------- |
-/// | `isConst`        | Evaluator   | Sema, CodeGen         | True if const evaluated   |
-/// | `resolvedType`   | Evaluator   | Sema, CodeGen         | Set during evaluation     |
-/// | `valueState`     | Evaluator   | Sema, CodeGen         | Nil/Err/Definite/Unknown  |
-class ConstEvaluator {
-public:
-    static constexpr size_t MAX_RECURSION = 1000;
-    static constexpr size_t MAX_ITERATIONS = 10000;
+/// @brief Fold a binary expression.
+///
+/// Folds both operands, then applies `foldBinary`. If either operand is
+/// not a constant, returns `Unknown`; if either operand's fold errored,
+/// returns the error.
+///
+/// The evaluator folds *both* sides of `and` / `or` before applying the
+/// operator. This differs from the runtime's short-circuit semantics,
+/// but a constant expression has no side effects, and folding both
+/// sides lets the evaluator catch a fold error in the right operand
+/// even when the left would short-circuit.
+ConstantValue evaluateBinaryExpr(BinaryExprAST* expr, SemaContext& ctx);
 
-    // ─── Main Entry Points ───────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Operator folders
+// ═════════════════════════════════════════════════════════════════════════════
 
-    /// @brief Evaluate a const variable declaration.
-    /// @note Syntax-broken declarations are rejected without new diagnostics.
-    static ConstantValue evaluateDecl(SemaContext& ctx, VarDeclAST* decl);
+/// @brief Apply a unary operator to a folded operand.
+///
+/// Returns `Unknown` if the operand's kind does not match the operator
+/// (e.g. `not 42`, `~3.14`). A kind mismatch is not an error — the type
+/// checker, not the evaluator, is responsible for reporting it.
+///
+/// No diagnostics are emitted by this function. The three unary
+/// operators (`-`, `not`, `~`) have no runtime failure modes on a
+/// well-typed operand.
+ConstantValue foldUnary(UnaryOp op, const ConstantValue& operand,
+                        SemaContext& ctx);
 
-    /// @brief Evaluate an expression with optional target type.
-    /// 
-    /// This is the main entry point for evaluating any expression.
-    /// It uses an internal cache to avoid re-evaluating the same expression.
-    /// Sets expr->isConst = true and expr->resolvedType on success.
-    /// 
-    /// @param ctx The semantic context.
-    /// @param expr The expression to evaluate.
-    /// @param targetType Optional expected type (for type checking).
-    /// @return The evaluated constant value, or error/unknown on failure.
-    /// @note Syntax-broken expressions are rejected without new diagnostics.
-    static ConstantValue evaluate(SemaContext& ctx, ExprAST* expr,
-                                  TypeAST* targetType = nullptr);
+/// @brief Apply a binary operator to two folded operands.
+///
+/// Returns `Unknown` if the operands' kinds do not match the operator
+/// (e.g. `1 + "a"`). Returns `Error` (after emitting a diagnostic) for
+/// a real fold failure: division by zero, modulo by zero, integer
+/// overflow, or a shift amount out of range.
+///
+/// `+` is special: it is numeric addition on numeric operands and string
+/// concatenation on two-string operands. The other arithmetic operators
+/// are numeric-only.
+ConstantValue foldBinary(BinaryOp op,
+                         const ConstantValue& left,
+                         const ConstantValue& right,
+                         SemaContext& ctx);
 
-    /// @brief Check if an expression is compile-time constant.
-    static bool isConstExpr(SemaContext& ctx, ExprAST* expr,
-                            TypeAST* targetType = nullptr);
+// ═════════════════════════════════════════════════════════════════════════════
+// Numeric-lexeme parsers
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The parser stores a numeric literal's raw lexeme. These functions
+// read the lexeme and return the value. They are declared here because
+// they are defined in `ConstEvalLiteral.cpp` and called from that file;
+// keeping them here rather than in a separate `ConstEvalHelpers.hpp`
+// avoids an extra header for two functions.
+//
+// Both return `false` on a malformed lexeme — a compiler bug, since the
+// parser rejects a malformed numeric token at parse time. The caller
+// decides how to report it.
 
-    /// @brief Get the constant value of an expression if it's const.
-    static ConstantValue getConstValue(SemaContext& ctx, ExprAST* expr,
-                                       TypeAST* targetType = nullptr);
+/// @brief Parse a decimal, hex, binary, or octal integer lexeme.
+///
+/// Recognizes the three prefix forms (`0x` / `0X`, `0b` / `0B`,
+/// `0o` / `0O`) and decimal. A leading `0` without a letter prefix is
+/// decimal — the language has no C-style leading-zero octal.
+///
+/// Returns true and writes `out` on success, false on failure.
+bool parseIntLexeme(std::string_view lexeme, int64_t& out);
 
-    /// @brief Evaluate an expression as an integer.
-    static std::optional<int64_t> evaluateAsInt(SemaContext& ctx, ExprAST* expr);
+/// @brief Parse a decimal float lexeme.
+///
+/// Accepts the lexical form `d+.d+([eE][-+]?d+)?` that the grammar
+/// defines for `FLOAT_LIT`.
+///
+/// Returns true and writes `out` on success, false on failure.
+bool parseFloatLexeme(std::string_view lexeme, double& out);
 
-    /// @brief Evaluate an expression as a boolean.
-    static std::optional<bool> evaluateAsBool(SemaContext& ctx, ExprAST* expr);
-
-    /// @brief Report a circular dependency.
-    static void reportCycle(SemaContext& ctx, const std::vector<DeclAST*>& cycle);
-
-    /// @brief Build the dependency graph for const declarations.
-    static void buildDependencyGraph(SemaContext& ctx);
-
-    /// @brief Get the const value of a declaration from the cache.
-    static ConstantValue getConstValue(VarDeclAST* decl);
-
-    // ─── Binary Operation Evaluators ────────────────────────────────────
-
-    static ConstantValue evalAdd(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalSub(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalMul(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalDiv(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalMod(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalPow(SemaContext& ctx, const ConstantValue& left,
-                                  const ConstantValue& right,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalNeg(SemaContext& ctx, const ConstantValue& operand,
-                                  BaseAST* node,
-                                  TypeAST* targetType);
-
-    static ConstantValue evalNot(SemaContext& ctx, const ConstantValue& operand,
-                                  BaseAST* node);
-
-    static ConstantValue evalBitNot(SemaContext& ctx, const ConstantValue& operand,
-                                     BaseAST* node);
-
-private:
-    // ─── Expression Evaluators ──────────────────────────────────────────
-
-    static ConstantValue evalLiteral(SemaContext& ctx, LiteralExprAST* expr);
-    static ConstantValue evalIdentifier(SemaContext& ctx, IdentifierExprAST* expr);
-    static ConstantValue evalBinary(SemaContext& ctx, BinaryExprAST* expr,
-                                     TypeAST* targetType);
-    static ConstantValue evalUnary(SemaContext& ctx, UnaryExprAST* expr,
-                                    TypeAST* targetType);
-    static ConstantValue evalCall(SemaContext& ctx, CallExprAST* expr);
-    static ConstantValue evalStructLiteral(SemaContext& ctx, StructLiteralExprAST* expr);
-    static ConstantValue evalArrayLiteral(SemaContext& ctx, ArrayLiteralExprAST* expr);
-    static ConstantValue evalFieldAccess(SemaContext& ctx, FieldAccessExprAST* expr);
-    static ConstantValue evalNullCoalesce(SemaContext& ctx, NullCoalesceExprAST* expr);
-    static ConstantValue evalIfExpr(SemaContext& ctx, IfExprAST* expr);
-    static ConstantValue evalRangeExpr(SemaContext& ctx, RangeExprAST* expr);
-
-    // ─── Intrinsic Folding ──────────────────────────────────────────────
-    //
-    // Compiler-handled intrinsics whose value is fully determined at
-    // compile time are evaluated here. Intrinsics that need codegen
-    // (#sqrt, #memcpy, ...) return ConstantValue::unknown() so the
-    // caller can fall back to the intrinsic's normal return type.
-    //
-    // Four intrinsics are foldable today:
-    //   #typeof(T)   -> string literal naming the resolved type
-    //   #nameof(x)   -> string literal naming the entity
-    //   #sizeof(T)   -> int64, only for primitive types
-    //   #alignof(T)  -> int64, only for primitive types
-    //
-    // Non-foldable intrinsics (#sizeof(MyStruct), #tostr(x), ...) return
-    // Unknown, which is a "cannot be folded" signal, not an error.
-    static ConstantValue evalIntrinsicCall(SemaContext& ctx, IntrinsicCallExprAST* expr);
-    static ConstantValue evalIntrinsicTypeof(SemaContext& ctx, IntrinsicCallExprAST* expr);
-    static ConstantValue evalIntrinsicNameof(SemaContext& ctx, IntrinsicCallExprAST* expr);
-    static ConstantValue evalIntrinsicSizeof(SemaContext& ctx, IntrinsicCallExprAST* expr);
-    static ConstantValue evalIntrinsicAlignof(SemaContext& ctx, IntrinsicCallExprAST* expr);
-
-    // ─── Statement Execution (for const functions) ──────────────────────
-
-    static ConstantValue executeStmt(SemaContext& ctx, StmtAST* stmt);
-    static ConstantValue executeBlock(SemaContext& ctx, BlockStmtAST* block);
-    static ConstantValue executeReturn(SemaContext& ctx, ReturnStmtAST* stmt);
-    static ConstantValue executeIf(SemaContext& ctx, IfStmtAST* stmt);
-    static ConstantValue executeWhile(SemaContext& ctx, WhileStmtAST* stmt);
-    static ConstantValue executeFor(SemaContext& ctx, ForStmtAST* stmt);
-    static ConstantValue executeSwitch(SemaContext& ctx, SwitchStmtAST* stmt);
-    static ConstantValue executeExprStmt(SemaContext& ctx, ExprStmtAST* stmt);
-    static ConstantValue executeDeclStmt(SemaContext& ctx, DeclStmtAST* stmt);
-
-    static ConstantValue executeFunction(SemaContext& ctx, FuncDeclAST* func,
-                                          const std::vector<ConstantValue>& args);
-
-    // ─── Binary Operation Dispatcher ────────────────────────────────────
-
-    static ConstantValue evalBinaryOp(SemaContext& ctx, BinaryOp op,
-                                       const ConstantValue& left,
-                                       const ConstantValue& right,
-                                       BaseAST* node,
-                                       TypeAST* targetType);
-
-    // ─── Comparison Helpers ──────────────────────────────────────────────
-
-    static bool compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
-    static int compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
-
-    // ─── Internal State ──────────────────────────────────────────────────
-    // These are static because the evaluator is stateless across calls.
-    // The cache stores evaluated expressions to avoid re-computation.
-
-    static std::vector<DeclAST*> m_constDecls;
-    static std::unordered_map<DeclAST*, std::vector<DeclAST*>> m_deps;
-    static std::unordered_map<ExprAST*, ConstantValue> m_evalCache;  // Value cache
-    static std::unordered_set<DeclAST*> m_evaluating;                 // Cycle detection
-    static size_t m_recursionDepth;
-
-    /// @brief Per-call parameter bindings during const function evaluation.
-    ///
-    /// Keyed by the ParamAST* the body's identifiers resolve to. Populated
-    /// by executeFunction before body execution and erased after; the
-    /// evaluator never leaves a stale entry behind, so a recursive call
-    /// to the same function sees only its own bindings in this map.
-    ///
-    /// Why a side table rather than a field on ParamAST:
-    ///   1. ParamAST is a parser-owned node. Adding semantic-only state to
-    ///      it is the same leak the FuncDeclAST redesign removed (see the
-    ///      "Two funcType Fields" note in DeclAST.hpp).
-    ///   2. The value is a property of *this call*, not of the parameter.
-    ///      Two recursive evaluations of the same function bind different
-    ///      values to the same ParamAST*; a field on the node could only
-    ///      hold one at a time.
-    ///   3. The table mirrors m_evalCache's shape — evaluator-owned,
-    ///      keyed by AST node, populated and torn down per evaluation —
-    ///      so there is one pattern for "where does the const evaluator
-    ///      stash per-node values" rather than two.
-    static std::unordered_map<ParamAST*, ConstantValue> m_paramBindings;
-};
-
-} // namespace sema
+} // namespace lucid::sema
