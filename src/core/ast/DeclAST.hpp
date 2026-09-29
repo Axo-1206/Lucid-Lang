@@ -230,10 +230,44 @@ struct TableDeclAST : TypeDeclAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
 
+    /// True if the table carries `@fixed` (row set decided at declaration,
+    /// cells writable). Distinct from `isReadonly`, which also freezes cells.
     bool isFixed = false;
+
+    /// True if the table carries `@readonly` (row set decided at
+    /// declaration, no cell writes). A `@readonly` table is inherently a
+    /// fixed-row-set table — `isFixedRowSet()` reports true for either.
     bool isReadonly = false;
+
+    /// True if the table carries `@packed`. Requires `@fixed` or `@readonly`
+    /// on the same declaration; Sema checks that requirement.
     bool isPacked = false;
+
+    /// True if the table carries `@reserve(N)`. The value is in
+    /// `reservedCount`.
+    bool isReserved = false;
+
+    /// N from `@reserve(N)`. Meaningful only when `isReserved` is true.
+    /// Non-negative; `@reserve(0)` means "no reservation" but the attribute
+    /// is still present.
+    uint64_t reservedCount = 0;
+
+    /// True if the table carries `@columnar`.
+    bool isColumnar = false;
+
+    /// True if the table carries `@request`. Only valid on a host-backed
+    /// table; Sema checks.
     bool isRequest = false;
+
+    // ─── Derived queries ────────────────────────────────────────────────
+
+    /// True if the row set is fixed at declaration. `@fixed` and `@readonly`
+    /// both make the row set fixed; `@readonly` additionally freezes cells.
+    /// This is what `ADD`/`REMOVE`/`CLEAR`/`SHRINK` availability keys on.
+    bool hasFixedRowSet() const { return isFixed || isReadonly; }
+
+    /// True if cells cannot be written. Only `@readonly` implies this.
+    bool hasFrozenCells() const { return isReadonly; }
 
     TableDeclAST(InternedString n) : TypeDeclAST(ASTKind::TableDecl, n) {}
 };
@@ -345,8 +379,6 @@ struct FnDeclAST : ValueDeclAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     bool isSequence = false;
-
-    InternedString deprecationMessage;  // invalid if no `@deprecated`
 
     FnDeclAST(InternedString n)
         : ValueDeclAST(ASTKind::FnDecl, n, /*type=*/nullptr,

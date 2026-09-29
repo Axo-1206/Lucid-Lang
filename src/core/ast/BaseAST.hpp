@@ -348,6 +348,11 @@ struct DeclAST : BaseAST {
     /// when the declaration's attribute list contains `@export`.
     bool isExported = false;
 
+    /// The message from `@deprecated("msg")`, if present. Invalid
+    /// otherwise. On `DeclAST` because the attribute is legal on tables,
+    /// functions, and top-level variables alike.
+    InternedString deprecationMessage;
+
     explicit DeclAST(ASTKind k, InternedString n)
         : BaseAST(k), name(n) {}
 
