@@ -61,11 +61,30 @@ struct InternedString {
 //
 // Specializing std::hash for a user type is legal regardless of the type's
 // namespace. Defined here, in the header, so any translation unit that
-// includes InternedString.hpp can use it in an unordered_map.
+// includes InternedString.hpp can use it in an unordered_map or
+// unordered_set.
+//
+// ─── The two typedefs are required ──────────────────────────────────────────
+// libc++'s internal hash-table machinery (`std::_Hash`,
+// `std::_Uset_traits`, `std::_Umap_traits`) reaches for the `argument_type`
+// and `result_type` typedefs on a user-provided `std::hash<T>`
+// specialization. It uses them to synthesize its own internal traits.
+//
+// If the typedefs are missing, the compiler emits an error that mentions
+// `node_type` on the traits class — a message that points at the wrong
+// thing. The fix is to supply the two typedefs; `node_type` then appears on
+// its own.
+//
+// libstdc++ does not require the typedefs, so a missing-typedef
+// specialization compiles under GCC. The error only appears under libc++.
+// Supplying the typedefs makes the specialization portable across both.
 
 namespace std {
     template <>
     struct hash<InternedString> {
+        using argument_type = InternedString;
+        using result_type   = size_t;
+
         size_t operator()(const InternedString& s) const noexcept {
             return hash<uint32_t>{}(s.id);
         }
