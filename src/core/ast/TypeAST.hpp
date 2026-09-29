@@ -6,19 +6,25 @@
  *
  * @hierarchy BaseAST → TypeAST → [Concrete Type Nodes]
  *
- * ─── Design: five kinds of type ───────────────────────────────────────────
- * A type in Lucid is exactly one of:
+ * ─── Design: five base types, plus a nilability suffix ────────────────────
+ * A type in Lucid is a base type with an optional `?` suffix (§5's
+ * `type ::= base_type [ '?' ]`). The five base types are:
  *
  *   - a primitive             (`int`, `float`, `string`, `bool`, `char`, ...)
  *   - a named type            (`Person`, `SpriteRef`, `Direction`)
- *   - an array                (`[T]`, `[N]T`)
+ *   - an array                (`[T]`, `[N, T]`)
  *   - a row reference         (`&T`)
  *   - a function type         (`(T, U) -> R`)
  *
- * There is no nullable type, no fallible type, no value reference. A row
- * reference (`&T`) is inherently nilable; `nil` is an ordinary value of
- * that type (grammar §5.2). Primitives are never nilable. Tables are
- * global and reference-typed; a bare `Person` is the sheet itself.
+ * A `?` suffix makes the base type nilable: `int?`, `SpriteRef?`,
+ * `[int]?`, `[N, T]?` (grammar §5.3). Nilability is meaningful for
+ * primitives, host types, and arrays. It is redundant on `&T` — a row
+ * reference is inherently nilable, and Sema treats `&T?` as `&T` — and
+ * an error on a bare table type, a function type, or `unit`.
+ *
+ * Tables are global and reference-typed; a bare `Person` is the sheet
+ * itself. There is no value reference (`&int`); primitives are always
+ * copied (§5.1.1).
  *
  * ─── Design: no `fn`/`cls` marker ─────────────────────────────────────────
  * Every function value is a bare code pointer (grammar §4.2.5). A
@@ -149,7 +155,7 @@ inline bool isNumericKind(PrimitiveKind kind) noexcept {
 ///
 /// - `Dynamic` — `[T]`. Grows and shrinks via `.ADD`/`.REMOVE`. Owns its
 ///   backing buffer.
-/// - `Fixed`   — `[N]T`. Compile-time length. Inline storage.
+/// - `Fixed`   — `[N, T]`. Compile-time length. Inline storage.
 ///
 /// A slice (`[_]T`) existed in the old grammar; it is removed. A
 /// non-owning view over an array is expressed by passing the array
@@ -157,7 +163,7 @@ inline bool isNumericKind(PrimitiveKind kind) noexcept {
 /// type level.
 enum class ArrayKind : uint8_t {
     Dynamic,  // [T]
-    Fixed,    // [N]T
+    Fixed,    // [N, T]
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -190,16 +196,24 @@ struct PrimitiveTypeAST : TypeAST {
 /// @brief A user-declared type referenced by name.
 ///
 /// A `NamedTypeAST` names a table (the sheet itself) or a host type.
-/// There are no generic arguments in the new grammar; a name is a name.
+/// It appears in two positions:
+///
+///   - as a base type on its own — `let p: Person`, `let s: SpriteRef`;
+///   - as the inner type of a `RowRefTypeAST` — `&Person`, `&weapons.Item`.
+///
+/// Both uses resolve through the same name-lookup path; the difference
+/// is only the node the `NamedTypeAST` is nested inside.
+///
+/// There are no generic arguments; a name is a name.
 ///
 /// The parser produces this node for any identifier that appears in a
 /// type position. Sema resolves the name against the type namespace and
 /// writes the resolved declaration to `resolvedDecl`.
 ///
 /// @example
-///   let p: Person        → name = "Person"
-///   let s: SpriteRef     → name = "SpriteRef"
-///   let d: Direction     → name = "Direction"
+///   let p: Person         → name = "Person",  qualifier = invalid
+///   let s: SpriteRef      → name = "SpriteRef", qualifier = invalid
+///   let t: weapons.Item   → name = "Item",    qualifier = "weapons"
 ///
 /// Resolution targets:
 ///   - `TableDeclAST` — a table (the sheet itself).
@@ -289,6 +303,10 @@ struct ArrayTypeAST : TypeAST {
 /// `&int`, the parser produces this node with a non-table inner type,
 /// and Sema reports "row reference requires a table type".
 ///
+/// A `?` after a row reference (`&T?`) is accepted but redundant: Sema
+/// treats it as `&T`. It is a readability hint, not a distinct type
+/// (grammar §5.3).
+///
 /// The name is `RowRefTypeAST`, not `RefTypeAST`, because the new
 /// grammar has exactly one reference kind and its referent is always a
 /// table row. The old grammar's `RefTypeAST` (a value reference) is
@@ -316,6 +334,11 @@ struct RowRefTypeAST : TypeAST {
 /// function value in Lucid is a bare code pointer with no captures and
 /// no environment; a function type therefore describes only the
 /// signature, not a runtime representation.
+///
+/// A function type is never nilable. A trailing `?` in `(int) ->
+/// string?` binds to the *return type* `string`, producing a function
+/// that returns a nilable string; it does not make the function type
+/// itself nilable (grammar §5.3).
 ///
 /// A function value is produced by:
 ///   - a top-level `FN` declaration, referred to by name;
@@ -352,14 +375,19 @@ struct FunctionTypeAST : TypeAST {
 /// Wraps any type that may hold `nil`. The inner type is the type
 /// without the nilability suffix.
 ///
-/// Nilability is meaningful for primitives, host types, and arrays.
-/// It is redundant on `&T` (which is already nilable) and an error on
-/// bare table types, function types, and `unit`.
+/// Nilability is meaningful for primitives, host types, and arrays. It
+/// is redundant on `&T` (which is already nilable — Sema treats `&T?`
+/// as `&T`) and an error on bare table types,/// @brief An array type: 
+// `[T]` (dynamic) or `[N, T]` (function types, and `unit`.
 ///
-/// The parser produces this node when it sees a `?` after a base type
-/// (§5.3). The wrapper is transparent to consumers that only care
-/// about the underlying type; a caller that needs to know whether a
-/// value may be nil checks for this node.
+/// The parser produces this node whenever it sees a `?` after a base
+/// type (§5.3), without checking whether the suffix is meaningful
+/// there. Sema reports the error for the cases where it is not. This
+/// keeps the parser from having to know the applicability rules.
+///
+/// The wrapper is transparent to consumers that only care about the
+/// underlying type; a caller that needs to know whether a value may be
+/// nil checks for this node.
 ///
 /// @example
 ///   int?            → NullableTypeAST{ inner = PrimitiveTypeAST(Int32) }

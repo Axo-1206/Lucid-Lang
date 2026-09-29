@@ -10,36 +10,31 @@
  * ─── Design: attributes are juxtaposed ────────────────────────────────────
  * §9's grammar has no brackets and no commas between attributes:
  *
- *     @export @on(EventKind.KeyDown)
+ *     @export @reserve(1000)
  *
  * is two attributes on one declaration. The parser reads them as a
  * sequence: each attribute starts with `@`; the sequence ends at the
  * first token that is not `@`.
  *
- * The old `@[...]` syntax is gone.
+ * ─── Design: attribute arguments are literals ─────────────────────────────
+ * An attribute argument is a literal — string, integer, float, or bool
+ * (§9's `attr_arg`). It is not an arbitrary expression: no arithmetic,
+ * no calls, no array literals, no identifiers. The parser enforces this
+ * directly: a token that is not one of the literal forms is reported
+ * and skipped.
  *
- * ─── Design: attribute arguments are not general expressions ──────────────
- * An attribute argument is a literal, an identifier, or a dotted
- * identifier (§9's `attr_arg`). It is not an arbitrary expression: no
- * arithmetic, no calls, no array literals. The parser enforces this
- * directly — a token that cannot begin one of the permitted forms is
- * reported and skipped.
- *
- * The parser produces:
+ * The parser produces one node per argument:
  *   - a literal argument    → LiteralExprAST
- *   - a bare identifier     → IdentifierExprAST
- *   - a dotted identifier   → a chain of FieldAccessExprAST
  *
- * For `EventKind.KeyDown`, the chain is:
- *   FieldAccessExprAST{ object = IdentifierExprAST("EventKind"),
- *                       fieldName = "KeyDown" }
+ * A bare identifier or a dotted identifier is no longer valid; the
+ * grammar removed the dotted-identifier form when it removed `@on`.
  *
  * ─── Design: the parser does not validate attribute semantics ─────────────
  * The parser does not check that `@export` is a known attribute, that
- * `@on` takes a dotted identifier, or that `@deprecated` takes a string.
- * It produces the node and lets Sema validate. This keeps the parser from
- * having to know the attribute set, and keeps a typo in an attribute
- * name a name-resolution error rather than a parse error.
+ * `@reserve` takes an integer, or that `@deprecated` takes a string.
+ * It produces the node and lets Sema validate. This keeps the parser
+ * from having to know the attribute set, and keeps a typo in an
+ * attribute name a name-resolution error rather than a parse error.
  */
 
 #include "parser/Parser.hpp"
@@ -53,74 +48,6 @@
 using namespace lucid::diag;
 
 namespace lucid::parser {
-
-// =============================================================================
-// parseAttributeArgIdent — a bare or dotted identifier
-// =============================================================================
-
-namespace {
-
-/// @brief Parse an identifier or a dotted identifier as an attribute
-///        argument.
-///
-/// The grammar's `attr_arg` allows `IDENTIFIER { '.' IDENTIFIER }`. A
-/// single identifier produces an IdentifierExprAST; each `.` wraps the
-/// current expression in a FieldAccessExprAST whose object is the
-/// previous expression and whose fieldName is the identifier after the
-/// dot.
-///
-/// @example
-///   `EventKind`           → IdentifierExprAST("EventKind")
-///   `EventKind.KeyDown`   → FieldAccessExprAST{
-///                              object    = IdentifierExprAST("EventKind"),
-///                              fieldName = "KeyDown"
-///                          }
-///   `a.b.c`               → FieldAccessExprAST{
-///                              object    = FieldAccessExprAST{
-///                                              object    = IdentifierExprAST("a"),
-///                                              fieldName = "b"
-///                                          },
-///                              fieldName = "c"
-///                          }
-ExprAST* parseAttributeArgIdent(TokenStream& stream,
-                                ParserContext& ctx) {
-    const SourceLocation loc = stream.currentLoc();
-
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        // Caller checked; defensive only.
-        return nullptr;
-    }
-
-    Token firstTok = stream.consume();
-    ExprAST* expr = ctx.arena.make<IdentifierExprAST>(firstTok.value);
-    expr->loc = loc;
-
-    // Dotted chain.
-    while (stream.check(TokenType::DOT)) {
-        stream.consume();   // `.`
-
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.diag.errorAt(DiagCode::Syntax_ExpectedIdentifier,
-                               stream.currentLoc(),
-                               "expected an identifier after '.' in an "
-                               "attribute argument, got '",
-                               stream.peekValueView(ctx.pool), "'");
-            expr->hasSyntaxError = true;
-            break;
-        }
-
-        Token fieldTok = stream.consume();
-
-        auto* access = ctx.arena.make<FieldAccessExprAST>(fieldTok.value);
-        access->loc = expr->loc;
-        access->object = expr;
-        expr = access;
-    }
-
-    return expr;
-}
-
-} // namespace
 
 // =============================================================================
 // parseAttributes
@@ -272,9 +199,10 @@ ExprAST* parseAttributeArg(TokenStream& stream, ParserContext& ctx) {
 
     // ─── Literal ──────────────────────────────────────────────────────────
     //
-    // The grammar's `attr_arg` lists `STRING_LIT | INT_LIT | FLOAT_LIT |
-    // BOOL_LIT`. An `INT_LIT` can be decimal, hex, binary, or octal
-    // (they are distinct token types). A `BOOL_LIT` is `true` or `false`.
+    // §9's `attr_arg` is `STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT`.
+    // The lexer distinguishes the integer radix forms as separate token
+    // types (HEX_LITERAL, BINARY_LITERAL, OCTAL_LITERAL), all of which
+    // are `INT_LIT` at the grammar level; the parser accepts all four.
     LiteralKind kind;
     switch (current) {
         case TokenType::STRING_LITERAL:     kind = LiteralKind::String; break;
@@ -286,13 +214,10 @@ ExprAST* parseAttributeArg(TokenStream& stream, ParserContext& ctx) {
         case TokenType::KW_TRUE:            kind = LiteralKind::True;   break;
         case TokenType::KW_FALSE:           kind = LiteralKind::False;  break;
 
-        case TokenType::IDENTIFIER:
-            return parseAttributeArgIdent(stream, ctx);
-
         default:
             ctx.diag.errorAt(DiagCode::Syntax_ExpectedLiteral, loc,
-                               "expected a literal or identifier as an "
-                               "attribute argument, got '",
+                               "expected a literal as an attribute "
+                               "argument, got '",
                                stream.peekValueView(ctx.pool), "'");
 
             // Consume the offending token so the argument loop can make

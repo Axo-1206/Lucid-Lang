@@ -25,10 +25,14 @@
  * only reference its own parameters and module-level declarations; it is
  * lowered to an ordinary top-level function by the compiler.
  *
- * ─── Design: no nullable or fallible type suffixes ────────────────────────
- * There is no `T?` or `T!`. A row reference (`&T`) is inherently nilable;
- * `nil` is an ordinary value of that type. Primitives and bare tables
- * are never nilable. The `??` operator coalesces `nil` to a fallback.
+ * ─── Design: nilability is a `?` suffix ──────────────────────────────────
+ * A type that may hold `nil` is written with a `?` suffix: `int?`,
+ * `SpriteRef?`, `[int]?`, `[N, T]?` (grammar §5.3). A row reference
+ * (`&T`) is inherently nilable — `nil` is an ordinary value of that
+ * type — so `&T?` is accepted but redundant, and Sema treats it as
+ * `&T`. Bare table types and function types are never nilable; a `?`
+ * on either is a Sema error. The `??` operator coalesces `nil` to a
+ * fallback.
  *
  * ─── Design: attributes are juxtaposed ────────────────────────────────────
  * An attribute is `@` followed by an identifier, optionally with a
@@ -93,7 +97,6 @@ struct LiteralExprAST;
 struct IdentifierExprAST;
 struct ArrayLiteralExprAST;
 struct FieldAccessExprAST;
-struct ModuleAccessExprAST;
 struct IndexExprAST;
 struct CallExprAST;
 struct LambdaExprAST;
@@ -184,7 +187,6 @@ enum class ASTKind : uint16_t {
     StartExpr,
     UnaryExpr,
     BinaryExpr,
-    AssignExpr,
     ParenExpr,
     RangeExpr,
 
@@ -478,14 +480,15 @@ struct ConstantValue {
 /// `constValue` fields carry the constant-evaluation result when the
 /// expression is a compile-time constant.
 ///
-/// There is no `valueState` field in the redesigned grammar. The old
-/// design's `ValueState` tracked a value's nil/err/definite state for
-/// flow-sensitive narrowing. Under the new grammar, only row references
-/// are nilable, and narrowing is a check against `nil` (`x == nil`,
-/// `x != nil`), which the type checker can handle through ordinary
-/// flow analysis without a dedicated `ValueState` per expression. If a
-/// future feature needs richer flow-state tracking, a field can be
-/// added; today it would be dead weight.
+/// There is no `valueState` field. Narrowing is a check against `nil`
+/// (`x == nil`, `x != nil`, `x ?? fallback`, `&&` chaining, early
+/// return — grammar §6.13), applied to any `T?` value: primitives,
+/// host types, and arrays, as well as the inherently-nilable `&T`. The
+/// type checker tracks the narrowed state through ordinary control-flow
+/// analysis within a single function body. A per-expression
+/// `ValueState` field would be a second representation of the same
+/// fact, and would have to be kept consistent with the flow analysis
+/// the checker already runs; today it would be dead weight.
 struct ExprAST : BaseAST {
     /// The resolved type of this expression. Set by Sema.
     TypeAST* resolvedType = nullptr;
@@ -525,8 +528,7 @@ struct ExprAST : BaseAST {
 ///
 /// @example
 ///   @export                       → name="export", args={}
-///   @on(EventKind.KeyDown)        → name="on", args=[Direction.Member ref]
-///   @capped(1000)                 → name="capped", args=[Int(1000)]
+///   @reserve(1000)                → name="reserve", args=[Int(1000)]
 ///   @deprecated("use new")        → name="deprecated", args=[String("use new")]
 struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
@@ -534,9 +536,8 @@ struct AttributeAST : BaseAST {
     InternedString name;
 
     /// Attribute arguments, if any. The grammar restricts attribute
-    /// arguments to literals and dotted identifiers; the parser enforces
-    /// this by producing only `LiteralExprAST`, `IdentifierExprAST`, or
-    /// `FieldAccessExprAST` nodes here.
+    /// arguments to literals (`attr_arg`); the parser produces only
+    /// `LiteralExprAST` nodes here.
     ArenaSpan<ExprAST*> args;
 
     AttributeAST() : BaseAST(ASTKind::Attribute) {}

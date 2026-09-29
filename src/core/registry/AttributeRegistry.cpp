@@ -146,17 +146,6 @@ const AttributeInfo ATTRIBUTE_TABLE[] = {
         }
     },
 
-    // `@on(EventKind.Member)`: registers the function as a callback for
-    // the named event kind. Requires @export.
-    {
-        "on",
-        AttrArgShape::OneDottedName,
-        /*repeatable=*/false,
-        {
-            ASTKind::FnDecl,
-        }
-    },
-
     // `@sequence`: declares a suspension-capable function.
     {
         "sequence",

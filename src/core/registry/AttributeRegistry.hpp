@@ -31,12 +31,11 @@
 /// cannot introduce new attributes.
 ///
 /// ─── Design: argument shape is an enum, not a bool ────────────────────────
-/// The grammar's attributes have four argument shapes:
+/// The grammar's attributes have three argument shapes:
 ///
 ///   - None:           `@export`, `@sequence`, `@readonly`, ...
 ///   - OneString:      `@deprecated("...")`
 ///   - OneInteger:     `@reserve(1000)`
-///   - OneDottedName:  `@on(EventKind.KeyDown)`
 ///
 /// The old design's `requiresStringArgs: bool` + `minArgs/maxArgs` was
 /// too coarse to express this. A single enum value per attribute is
@@ -71,10 +70,6 @@ enum class AttrArgShape : uint8_t {
     /// The attribute takes exactly one integer literal.
     /// `@reserve(1000)`.
     OneInteger,
-
-    /// The attribute takes exactly one dotted identifier.
-    /// `@on(EventKind.KeyDown)`.
-    OneDottedName,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

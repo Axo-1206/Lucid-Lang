@@ -911,7 +911,7 @@ A lambda is `(params) -> expr`. See §6.9.
 
 `(expr)` groups an expression. The AST keeps the paren node for source reconstruction.
 
-### 6.8 Equality and comparison
+### 6.8 Equality, comparison, and `+`
 
 | Operators         | Valid operand types                  | Meaning                                                                               |
 | ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
@@ -922,10 +922,14 @@ A lambda is `(params) -> expr`. See §6.9.
 | `==` `!=`         | `[T]` / `[N, T]`                     | structural: same length, each element equal (element-wise identity for `&T` elements) |
 | `==` `!=`         | function types                       | identity — same underlying `FN`/lambda or not                                         |
 | `<` `<=` `>` `>=` | numeric primitives, `string`, `char` | ordering (lexicographic for `string`)                                                 |
+| `+`               | numeric primitives                   | addition                                                                              |
+| `+`               | `string`                             | concatenation                                                                         |
 
 Comparing two bare table-typed expressions (`Person == Person`) is a compile error — there is exactly one sheet per table name, so the comparison is always trivially true and carries no information. Ordering operators are not defined for `&T`, table, or array types.
 
 **Comparing a `T?` to a non-nil `T` is a compile error.** The RHS must be `T?` or `nil`. This prevents the common bug of comparing a possibly-nil value to a real value.
+
+**`+` is resolved by operand type, the same as `==` above** — it is not a second overloading mechanism, and there is no coercion between its two cases. `int + float`, `string + int`, and `char + char` are all compile errors; there is no implicit conversion in either direction (§5.8). To build a string from a mix of text and numbers, convert the numeric part first: `"Score: " + toStr(score)`. `-`, `*`, `/`, `%`, and `**` remain numeric-only; `string` has no other arithmetic operator.
 
 ### 6.9 Lambda expressions and function values
 
@@ -1359,7 +1363,6 @@ attribute_list ::= { attribute }
 attribute      ::= '@' attr_name
 attr_name      ::= IDENTIFIER [ '(' attr_arg { ',' attr_arg } ')' ]
 attr_arg       ::= STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT
-                 | IDENTIFIER { '.' IDENTIFIER }
 ```
 
 Attributes are juxtaposed, not comma-separated in a bracket — there is exactly one way to write a multi-attribute declaration:
@@ -1616,7 +1619,7 @@ A `suspend_stmt` node parses wherever any statement is allowed — the parser do
 
 ### 12.1 Compound assignment
 
-`lvalue op= expr` desugars to `lvalue = lvalue op expr`. Valid for every numeric and bitwise binary operator; not defined for `&T`, table, or array lvalues. Not defined for `??` (there is no `??=`).
+`lvalue op= expr` desugars to `lvalue = lvalue op expr`. Valid for every numeric and bitwise binary operator, and for `+=` on a `string` lvalue (§6.8); not defined for `&T`, table, or array lvalues. Not defined for `??` (there is no `??=`).
 
 ### 12.2 `switch`
 

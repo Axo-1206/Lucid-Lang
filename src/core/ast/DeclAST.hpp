@@ -234,8 +234,6 @@ struct RowAST {
 /// @field isImmutable     True if `@immutable` is present.
 /// @field isPacked        True if `@packed` is present.
 /// @field isRequest       True if `@request` is present.
-/// @field cappedCount     N from `@capped(N)`, or 0 if no cap.
-/// @field sortedColumn    The column from `@sorted("column")`, if any.
 struct TableDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TableDecl;
 
@@ -290,14 +288,6 @@ struct TableDeclAST : TypeDeclAST {
     /// True if the table has `@request`: an opaque host handle usable
     /// with `waitForRequest` (§9.2.3). Only valid on a host-backed table.
     bool isRequest = false;
-
-    /// N from `@capped(N)`, or 0 if the table has no cap. Meaningful
-    /// only on a growing table; a `FIXED` table has no cap to apply.
-    uint64_t cappedCount = 0;
-
-    /// The column named by `@sorted("column")`, or an invalid
-    /// InternedString if the table has no `@sorted` attribute.
-    InternedString sortedColumn;
 
     TableDeclAST(InternedString n) : TypeDeclAST(ASTKind::TableDecl, n) {}
 };
@@ -361,11 +351,6 @@ struct ParamAST : ValueDeclAST {
 /// always returns `unit` and cannot have a `host(...)` body (grammar
 /// §9.2.5).
 ///
-/// ─── `@on(...)` callbacks ─────────────────────────────────────────────────
-/// A function tagged `@on(EventKind.Member)` is registered as a callback
-/// for that event. Registration requires `@export`. Sema decodes the
-/// attribute into `onEventKind` and `onEventMember`.
-///
 /// ─── Body representation ──────────────────────────────────────────────────
 /// A Lucid-bodied function stores its body as a `BlockStmtAST*`. There
 /// is no `AnonFuncExprAST` wrapper, no currying chain — the body is one
@@ -378,7 +363,6 @@ struct ParamAST : ValueDeclAST {
 ///
 ///   - `@export`          → `isExported` (on `DeclAST`)
 ///   - `@deprecated(msg)` → `deprecationMessage`
-///   - `@on(EventKind.X)` → `onEventKind`, `onEventMember`
 ///   - `@sequence`        → `isSequence`
 ///
 /// @field params        The function's parameters, in order.
@@ -387,10 +371,6 @@ struct ParamAST : ValueDeclAST {
 /// @field hostName      The name inside `= host("name")`, if host-bound.
 /// @field isHostBound   True if the body is a `host(...)` target.
 /// @field isSequence    True if the function has `@sequence`.
-/// @field onEventKind   The fixed table naming the event kind, if `@on`
-///                      is present. Invalid otherwise.
-/// @field onEventMember The member name inside `@on(Kind.Member)`, if
-///                      present. Invalid otherwise.
 /// @field deprecationMessage The message from `@deprecated(msg)`, if
 ///                      present. Invalid otherwise.
 struct FnDeclAST : ValueDeclAST {
@@ -419,9 +399,6 @@ struct FnDeclAST : ValueDeclAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     bool isSequence = false;
-
-    InternedString onEventKind;    // invalid if no `@on`
-    InternedString onEventMember;  // invalid if no `@on`
 
     InternedString deprecationMessage;  // invalid if no `@deprecated`
 

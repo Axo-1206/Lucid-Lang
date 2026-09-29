@@ -71,10 +71,6 @@
 /// `BlockStmtAST`. The semantic pass opens a new scope when entering a
 /// block and closes it on exit; names declared inside are not visible
 /// outside.
-///
-/// A block's `scope_exits` metadata from the old design is gone. The
-/// language has no `scope_exit` construct; the sequence suspend points
-/// are the closest thing, and they are handled as statements.
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
@@ -212,9 +208,10 @@ struct ContinueStmtAST : StmtAST {
 
 /// @brief An if statement: `if cond { ... } [else ...]`.
 ///
-/// The condition is evaluated by the truthiness rules (§6.8 and §5.2):
-/// `bool` uses its runtime value; `&T` is a nil check (false if nil); a
-/// non-nullable primitive is a compile-time fold to true.
+/// The condition must be a `bool` (§6.14). There is no truthiness:
+/// `if x` where `x` is an `int`, `&T`, `T?`, array, or string is a
+/// compile error. A `bool?` must be narrowed or defaulted first
+/// (`if (flag ?? false)`).
 ///
 /// The `elseBranch` is:
 ///   - `nullptr`          — no else clause
@@ -297,8 +294,8 @@ struct SwitchStmtAST : StmtAST {
 
 /// @brief A while loop: `[label:] while cond { ... }`.
 ///
-/// The condition is tested before each iteration. The truthiness rules
-/// apply, same as for `if`.
+/// The condition is tested before each iteration and must be a `bool`
+/// (§6.14), same as for `if`. There is no truthiness.
 ///
 /// A label, if present, is used by `break label` / `continue label` to
 /// target this loop specifically from inside a nested one.
@@ -318,14 +315,14 @@ struct WhileStmtAST : StmtAST {
 
 /// @brief A for loop: `[label:] for binding[, binding] in iterable { ... }`.
 ///
-/// The form of the binding list depends on the iterable:
+/// The form of the binding list depends on the iterable (§12.3):
 ///
 ///   - **Range.** One binding — the loop counter. The counter's type
 ///     must match the range's bound type.
 ///       for i: int in 0..<10 { ... }
 ///       for i: int in 0..10..2 { ... }        -- step of 2
 ///
-///   - **Table or table view.** One binding — a row reference.
+///   - **Table or `FIND` view.** One binding — a row reference.
 ///       for r: &Person in Person { ... }
 ///
 ///   - **Column view.** One binding — the column's value type.
@@ -336,21 +333,10 @@ struct WhileStmtAST : StmtAST {
 ///       for x: int in scores { ... }
 ///       for i: uint, x: int in scores { ... }
 ///
-///   - **Key/value iterable (a Map).** Two bindings — the key and the
-///     value.
-///       for k: string, v: int in scores { ... }
-///
 /// A binding may be `_` to discard its value; a discard is represented
 /// as a `nullptr` in the corresponding field. The parser produces
 /// whichever bindings the source wrote; Sema validates that the shape
 /// matches the iterable's type.
-///
-/// @field label       The loop's optional label.
-/// @field firstVar    The first binding, or null for a discard.
-/// @field secondVar   The second binding, or null (no second binding
-///                    written, or a discard at that position).
-/// @field iterable    The iterable expression. May be a RangeExprAST.
-/// @field body        The loop body block.
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 

@@ -8,7 +8,7 @@
  *
  * @hierarchy BaseAST → ExprAST → [Concrete Expression Nodes]
  *
- * ─── Design: twelve expression forms ──────────────────────────────────────
+ * ─── Design: eleven expression forms ──────────────────────────────────────
  * An expression is exactly one of:
  *
  *   - a literal               (`42`, `"hi"`, `'a'`, `true`, `nil`)
@@ -21,8 +21,11 @@
  *   - a start expression      (`start f(args)`)
  *   - a unary operation       (`-x`, `not x`, `~x`)
  *   - a binary operation      (`a + b`, `a == b`, `a ?? b`, ...)
- *   - an assignment           (`a = b`, `a += b`, ...)
  *   - a parenthesized expr    (`(expr)`)
+ *
+ * An assignment is not an expression. §12 says: "An `assign_stmt` is a
+ * statement only — there is no assignment form in the `expr` grammar."
+ * The AST has `AssignStmtAST` (in StmtAST.hpp), not `AssignExprAST`.
  *
  * `a.b` is a field access, `a[i]` is an index, `f(args)` is a call.
  * Module member access (`mod.Member`) is a field access whose object
@@ -139,8 +142,11 @@ enum class UnaryOp : uint8_t {
 ///
 /// A compound assignment (`+=`, `-=`, etc.) is stored with its own
 /// operator tag; Sema desugars `x op= y` to `x = x op y`. There is no
-/// `AssignOp` for `**=` — the grammar's assignment operator list does
-/// not include it (see §6.11).
+/// `AssignOp` for `**=` — the grammar's assignment operator list
+/// (§12's `assign_op` production) does not include it.
+///
+/// `AssignOp` is used by `AssignStmtAST` in StmtAST.hpp. There is no
+/// `AssignExprAST`: §12 makes assignment a statement, not an expression.
 enum class AssignOp : uint8_t {
     Assign,       // =
     AddAssign,    // +=
@@ -492,35 +498,6 @@ struct BinaryExprAST : ExprAST {
 
     explicit BinaryExprAST(BinaryOp o)
         : ExprAST(ASTKind::BinaryExpr), op(o) {}
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AssignExprAST
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief An assignment: `lhs = rhs` or a compound form.
-///
-/// The left-hand side must be an lvalue: an identifier, a field access
-/// on an lvalue, or an index on an lvalue. Sema checks this.
-///
-/// Compound assignments desugar to `lhs = lhs op rhs` at Sema time; the
-/// AST carries the compound operator tag, and Sema produces the
-/// equivalent tree. There is no separate assignment *statement* node;
-/// an assignment is an expression, wrapped in an `ExprStmtAST` when it
-/// appears as a statement.
-///
-/// @example
-///   x = 5        → op = Assign
-///   x += 1       → op = AddAssign
-struct AssignExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::AssignExpr;
-
-    const AssignOp op;
-    ExprAST*       lhs = nullptr;
-    ExprAST*       rhs = nullptr;
-
-    explicit AssignExprAST(AssignOp o)
-        : ExprAST(ASTKind::AssignExpr), op(o) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

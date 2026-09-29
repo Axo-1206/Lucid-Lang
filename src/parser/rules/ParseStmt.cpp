@@ -7,16 +7,15 @@
  *   - parseBlock             `{ stmt* }`
  *   - parseVarDeclStmt       a `let`/`const` inside a block
  *   - parseAssignOrExprStmt  an assignment or an expression statement
- *   - parseReturnStmt        `return [expr] ;`
- *   - parseBreakStmt         `break [label] ;`
- *   - parseContinueStmt      `continue [label] ;`
+ *   - parseReturnStmt        `return [expr]`
+ *   - parseBreakStmt         `break [label]`
+ *   - parseContinueStmt      `continue [label]`
  *   - parseIfStmt            `if cond { ... } [else ...]`
  *   - parseSwitchStmt        `switch expr { case ...; default: ... }`
  *   - parseSwitchCase        one `case` clause
  *   - parseWhileStmt         `[label:] while cond { ... }`
  *   - parseForStmt           `[label:] for binding [, binding] in iter { ... }`
  *   - parseForBinding        one `for` binding
- *   - parseIterable          a `for` iterable (range or expression)
  *   - the five suspend statements
  *
  * ─── Design: assignment is a statement, not an expression ─────────────────
@@ -38,11 +37,16 @@
  *
  * ─── Design: recovery in the block loop ───────────────────────────────────
  * `parseBlock`'s loop calls `parseStmt`. If `parseStmt` returns `nullptr`
- * — meaning it could not produce even a marked node — the loop
- * synchronizes to the next block boundary: any statement start, any local
- * declaration start, `;`, or `}`. The stop set is a file-local predicate
- * (`isBlockBoundary`) so the dispatch set and the recovery set stay
- * aligned.
+ * — meaning it could not produce even a marked node — and did not
+ * advance the stream, the loop synchronizes to the next block boundary:
+ * any statement start, any local declaration start, `;`, or `}`. The
+ * stop set is `isBlockBoundary` (GrammarPositions.hpp), so the dispatch
+ * set and the recovery set stay aligned.
+ *
+ * The "did not advance" check is what prevents a `parseStmt` that
+ * already consumed tokens on the failed path from being synchronized
+ * past them. A `parseStmt` call that produced a partial node has
+ * advanced; the loop resumes at whatever the partial parse left behind.
  *
  * ─── Design: top-level declarations inside a block ───────────────────────
  * §12.5 forbids `TABLE` and `FN` inside a block. When `parseStmt` sees one,
