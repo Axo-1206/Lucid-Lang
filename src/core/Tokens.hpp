@@ -26,7 +26,7 @@
  * punctuation rather than identifiers.
  *
  * ─── Design: attributes are juxtaposed, not bracketed ─────────────────────
- * The grammar writes `@export @on(EventKind.KeyDown)` — `@` followed by an
+ * The grammar writes `@export` — `@` followed by an
  * identifier, repeated. There are no `[...]` brackets around attribute
  * lists. The lexer emits `AT_SIGN` and the identifier as separate tokens;
  * the parser reads the pair.
@@ -75,7 +75,6 @@ enum class TokenType : uint16_t {
     // The three declaration forms plus `import`, plus the `host` target
     // modifier, plus `as` for import aliases.
 
-    KW_FIXED,       // FIXED
     KW_TABLE,       // TABLE
     KW_FN,          // FN
     KW_LET,         // let
@@ -276,7 +275,7 @@ struct Token {
 // detail; the predicates are the contract.
 
 inline bool isKeyword(TokenType t) noexcept {
-    return t >= TokenType::KW_FIXED && t <= TokenType::KW_NIL;
+    return t >= TokenType::KW_TABLE && t <= TokenType::KW_NIL;
 }
 
 /// @brief True for a keyword that begins a suspend statement (§9.2.2).

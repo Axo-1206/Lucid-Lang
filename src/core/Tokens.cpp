@@ -52,7 +52,6 @@ const char* tokenTypeName(TokenType t) noexcept {
         case TokenType::IDENTIFIER:             return "IDENTIFIER";
 
         // ─── Declaration keywords ───────────────────────────────────────
-        case TokenType::KW_FIXED:               return "KW_FIXED";
         case TokenType::KW_TABLE:               return "KW_TABLE";
         case TokenType::KW_FN:                  return "KW_FN";
         case TokenType::KW_LET:                 return "KW_LET";
@@ -217,7 +216,6 @@ const char* tokenTypeDescription(TokenType t) noexcept {
         case TokenType::IDENTIFIER:             return "identifier";
 
         // ─── Declaration keywords ───────────────────────────────────────
-        case TokenType::KW_FIXED:               return "'FIXED'";
         case TokenType::KW_TABLE:               return "'TABLE'";
         case TokenType::KW_FN:                  return "'FN'";
         case TokenType::KW_LET:                 return "'let'";

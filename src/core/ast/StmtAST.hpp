@@ -239,7 +239,7 @@ struct IfStmtAST : StmtAST {
 /// A case matches one or more values, separated by commas in source. The
 /// body is a block.
 ///
-/// Each value is a constant expression — typically a fixed-table member
+/// Each value is a constant expression — typically a readonly table member
 /// reference (`Direction.North`), a literal, a small arithmetic
 /// combination of literals, or a range. Sema enforces constant-ness.
 ///
@@ -264,7 +264,7 @@ struct SwitchCaseAST : BaseAST {
 /// @brief A switch statement: `switch expr { case ...: { ... } default: { ... } }`.
 ///
 /// The subject's type determines what `case` expressions are valid. For
-/// a subject of type `&T` where `T` is a fixed table, Sema checks the
+/// a subject of type `&T` where `T` is a readonly table, Sema checks the
 /// cases against the table's members and emits a **warning** (not an
 /// error) if any member is missing. The `default` clause is always
 /// present and always reachable, so a missing case is never a
@@ -399,10 +399,10 @@ struct WaitUntilStmtAST : StmtAST {
 
 /// @brief `waitForEvent(EventKind.Member);` — suspend until an event fires.
 ///
-/// The argument is a fixed-table member reference naming the event kind.
+/// The argument is a readonly-table member reference naming the event kind.
 /// The sequence resumes the next time that event kind fires. No polling.
 ///
-/// @field event  The event kind expression (a fixed-table member).
+/// @field event  The event kind expression (a readonly-table member).
 struct WaitForEventStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WaitForEventStmt;
 

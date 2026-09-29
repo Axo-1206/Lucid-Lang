@@ -5,8 +5,8 @@
  * ─── What this file implements ────────────────────────────────────────────
  *   - parseDecl          dispatch on the current declaration keyword
  *   - parseImportDecl    `import a.b.c [as d]`
- *   - parseTableDecl     `[FIXED] TABLE X { ... } [= [ rows ]]` or
- *                        `[FIXED] TABLE X = host("name")`
+ *   - parseTableDecl     `TABLE X { ... } [= [ rows ]]` or
+ *                        `TABLE X = host("name")`
  *   - parseTableBody     (file-local) the `{ column* }` loop
  *   - parseTableInit     (file-local) the `= [ row* ]` loop
  *   - parseColumnDecl    `[attrs] name: type`
@@ -28,14 +28,6 @@
  * parseColumnDecl is the exception: a column's attributes are part of the
  * column's own parse. The table-body loop sees `@` and calls
  * parseColumnDecl, which reads the attributes then the column.
- *
- * ─── Design: `FIXED` is a leading modifier, not an attribute ──────────────
- * `FIXED TABLE X { ... }` declares a table whose row set is decided at
- * declaration. `FIXED` is a keyword modifier before `TABLE`, like `const`
- * before a `let` name — not an attribute. The parser reads it in
- * parseTableDecl and sets `TableDeclAST::isFixed` from it. The presence
- * or absence of an inline `= [ ... ]` initializer does not affect
- * `isFixed`.
  *
  * ─── Design: `;` is optional ─────────────────────────────────────────────
  * A declaration ends at the first token that cannot continue it (§12.6).
@@ -97,9 +89,6 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     ArenaSpan<AttributeAST*> attrs = parseAttributes(stream, ctx);
 
     // ─── Dispatch on the declaration keyword ──────────────────────────────
-    //
-    // `FIXED` and `TABLE` share a dispatch path: `parseTableDecl` reads
-    // the optional `FIXED` modifier itself. The two cases are one branch.
     const TokenType keyword = stream.peekType();
 
     DeclAST* decl = nullptr;
@@ -109,7 +98,6 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
             decl = parseImportDecl(stream, ctx);
             break;
 
-        case TokenType::KW_FIXED:
         case TokenType::KW_TABLE:
             decl = parseTableDecl(stream, ctx);
             break;
@@ -381,31 +369,17 @@ void parseTableInit(TokenStream& stream,
 } // namespace
 
 // =============================================================================
-// parseTableDecl — `[FIXED] TABLE X { ... } [= [ rows ]]` or
-//                  `[FIXED] TABLE X = host("name")`
+// parseTableDecl — `TABLE X { ... } [= [ rows ]]` or
+//                  `TABLE X = host("name")`
 // =============================================================================
 
 TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
     const SourceLocation loc = stream.currentLoc();
 
-    // ─── Optional FIXED modifier ──────────────────────────────────────────
-    //
-    // `FIXED TABLE X { ... }` declares a table whose row set is decided
-    // at declaration. `TABLE X { ... }` is a growing table. The keyword
-    // is what determines `isFixed`; the presence of an inline
-    // `= [ ... ]` initializer does not.
-    const bool isFixed = stream.match(TokenType::KW_FIXED);
-
     if (!stream.match(TokenType::KW_TABLE)) {
-        if (isFixed) {
-            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                               "expected 'TABLE' after 'FIXED', got '",
-                               stream.peekValueView(ctx.pool), "'");
-        } else {
-            ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
-                               "expected 'TABLE', got '",
-                               stream.peekValueView(ctx.pool), "'");
-        }
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                            "expected 'TABLE', got '",
+                            stream.peekValueView(ctx.pool), "'");
         return nullptr;
     }
 
@@ -422,7 +396,6 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
 
     auto* table = ctx.arena.make<TableDeclAST>(name);
     table->loc = loc;
-    table->isFixed = isFixed;
 
     // ─── Body or host target ──────────────────────────────────────────────
     //
@@ -466,7 +439,7 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
         InternedString hostName;
         if (!parseHostTarget(stream, ctx, hostName)) {
             table->hasSyntaxError = true;
-            return table;   // partial-parse: name and FIXED survive
+            return table;   // partial-parse: name survive
         }
 
         table->isHostBacked = true;
@@ -485,7 +458,7 @@ TableDeclAST* parseTableDecl(TokenStream& stream, ParserContext& ctx) {
     synchronizeUntilDepth(stream, isTopLevelRecoveryStop);
 
     table->hasSyntaxError = true;
-    return table;   // partial-parse: the name and FIXED survive
+    return table;   // partial-parse: the name survive
 }
 
 // =============================================================================

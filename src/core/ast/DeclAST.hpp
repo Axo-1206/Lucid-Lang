@@ -142,13 +142,13 @@ struct ColumnDeclAST : DeclAST {
 ///
 /// The initializer may appear on either table kind:
 ///
-///   - On a `FIXED TABLE`, the row list is the table's entire row set.
+///   - On a `@fixed` or `@readonly` TABLE, the row list is the table's entire row set.
 ///   - On a plain `TABLE`, the row list seeds the growing table; more
 ///     rows can be added with `T.ADD(...)` at runtime.
 ///
 /// In both cases the cells must be constant expressions (§4.1.1a):
 /// literals, arithmetic/unary operations on literals, `T.Member`
-/// references to other fixed tables, and — for a function-typed column
+/// references to other readonly tables, and — for a function-typed column
 /// (§5.0) — a bare top-level `FN` name. The parser produces ordinary
 /// `ExprAST*` nodes; Sema validates that each is a `const_expr`.
 ///
@@ -160,40 +160,11 @@ struct RowAST {
     ArenaSpan<ExprAST*> cells;
 };
 
-/// @brief A table declaration: `[FIXED] TABLE X { ... }` or
-///        `[FIXED] TABLE X = host("name")`.
+/// @brief A table declaration: `TABLE X { ... }`
 ///
 /// A table is a named, global container of rows. Its shape (columns, in
 /// source order) is fixed at declaration. Its rows are either growing
 /// (added via `T.ADD(...)` at runtime) or fixed (decided at declaration).
-///
-/// ─── The FIXED keyword ────────────────────────────────────────────────────
-///
-/// A table is declared as either `TABLE X { ... }` (a growing table) or
-/// `FIXED TABLE X { ... }` (a fixed table). The `FIXED` keyword is what
-/// determines `isFixed`; the presence or absence of an inline
-/// `= [ ... ]` initializer does not.
-///
-/// A fixed table's row set is decided at declaration:
-///
-///   - With `= [ ... ]`, the rows are those written.
-///   - Without, the table has zero rows and never gains any.
-///
-/// Sema warns on a `FIXED` table with no rows — a table that can never
-/// have a row is almost certainly a mistake — but it is not a compile
-/// error.
-///
-/// A growing table starts empty, or, if it has an inline initializer,
-/// starts with those rows. More rows can be added later with
-/// `T.ADD(...)`.
-///
-/// ─── The inline initializer ───────────────────────────────────────────────
-///
-/// A `= [ ... ]` initializer may appear on either table kind. Its cells
-/// are always constant expressions (§4.1.1a) — the parser produces
-/// ordinary `ExprAST*` cells and Sema validates const-ness. A
-/// `FIXED TABLE` uses the initializer as its row set; a plain `TABLE`
-/// uses it as a seed.
 ///
 /// ─── The two declaration shapes ───────────────────────────────────────────
 ///
@@ -222,16 +193,12 @@ struct RowAST {
 ///
 /// @field columns         The table's columns, in source order. Empty for a
 ///                        host-backed table.
-/// @field rows            Inline `= [ ... ]` rows, if any. Present on
-///                        both table kinds; on a `FIXED` table it is the
-///                        row set, on a plain table it is a seed.
+/// @field rows            Inline `= [ ... ]` rows, if any. on a `@fixed` or `@readonly` 
+//                         table it is the row set, on a plain table it is a seed.
 /// @field hostName        The name inside `= host("name")`, if host-backed.
 /// @field isHostBacked    True if this is a host-backed table.
-/// @field isFixed         True if this table was declared with `FIXED`.
-///                        Set by the parser from the keyword. Determines
-///                        whether `ADD`/`REMOVE` are available.
+/// @field isFixed         True if `@fixed` is present.
 /// @field isReadonly      True if `@readonly` is present.
-/// @field isImmutable     True if `@immutable` is present.
 /// @field isPacked        True if `@packed` is present.
 /// @field isRequest       True if `@request` is present.
 struct TableDeclAST : TypeDeclAST {
@@ -245,7 +212,7 @@ struct TableDeclAST : TypeDeclAST {
     /// Inline `= [ ... ]` rows, if any.
     ///
     /// Present on either table kind:
-    ///   - On a `FIXED` table, these rows are the table's row set.
+    ///   - On a `@fixed` or `@readonly` table, these rows are the table's row set.
     ///   - On a plain table, these rows seed the growing table.
     ///
     /// Each `RowAST*` holds one `ExprAST*` per column, in order. The
@@ -253,17 +220,6 @@ struct TableDeclAST : TypeDeclAST {
     /// parser produces them as ordinary `ExprAST*` nodes and Sema
     /// validates.
     ArenaSpan<RowAST*> rows;
-
-    /// True if this table was declared with the `FIXED` keyword.
-    ///
-    /// Set by the parser from the declaration's leading keyword. A
-    /// fixed table's row set is decided at declaration; `ADD` and
-    /// `REMOVE` are not available on it.
-    ///
-    /// A `FIXED` table without inline rows is a zero-row table that can
-    /// never gain a row. Sema warns on this shape, but it is not a
-    /// compile error.
-    bool isFixed = false;
 
     /// True if this is a host-backed table (`TABLE X = host("name")`).
     bool isHostBacked = false;
@@ -274,19 +230,9 @@ struct TableDeclAST : TypeDeclAST {
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
 
-    /// True if the table has `@readonly`: no `ADD`, `REMOVE`, or cell write.
+    bool isFixed = false;
     bool isReadonly = false;
-
-    /// True if the table has `@immutable`: no `ADD`/`REMOVE`, but cells
-    /// may be written. Mutually exclusive with `isReadonly`.
-    bool isImmutable = false;
-
-    /// True if the table has `@packed`: contiguous storage for a table
-    /// whose columns are all primitive or host types.
     bool isPacked = false;
-
-    /// True if the table has `@request`: an opaque host handle usable
-    /// with `waitForRequest` (§9.2.3). Only valid on a host-backed table.
     bool isRequest = false;
 
     TableDeclAST(InternedString n) : TypeDeclAST(ASTKind::TableDecl, n) {}

@@ -37,7 +37,7 @@
  * ─── Design: attributes are juxtaposed ────────────────────────────────────
  * An attribute is `@` followed by an identifier, optionally with a
  * parenthesized argument list. Attributes are juxtaposed without
- * brackets or commas: `@export @on(EventKind.KeyDown)`. The parser reads
+ * brackets or commas: `@export`. The parser reads
  * them as a sequence of `AttributeAST` nodes attached to the declaration
  * that follows.
  *
@@ -369,7 +369,7 @@ struct StmtAST : BaseAST {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // The grammar evaluates constant expressions during compilation. In the
-// redesigned language, the primary use is fixed-table rows (§4.1.1a):
+// redesigned language, the primary use is readonly-table rows (§4.1.1a):
 // every inline row is resolvable entirely at compile time, and the
 // compiler bakes the result into the compiled artifact.
 //
@@ -382,12 +382,6 @@ struct StmtAST : BaseAST {
 /// A default-constructed `ConstantValue` has `Kind::Unknown`, which
 /// `isEvaluated()` reports as false. The invariant `isConst ==
 /// constValue.isEvaluated()` is maintained by the constant evaluator.
-///
-/// The set of kinds is smaller than the previous design's because the
-/// grammar has fewer expression forms. `Struct` and `Enum` are gone
-/// (tables replace both), and `Array` remains for fixed-size array
-/// constants. `Function` remains because a fixed table can hold a
-/// function-typed column (§6.9) initialized from a top-level `FN` name.
 struct ConstantValue {
     enum class Kind : uint8_t {
         Unknown,    ///< Not yet evaluated

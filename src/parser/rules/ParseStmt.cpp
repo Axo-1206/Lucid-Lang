@@ -202,13 +202,10 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
     // shape it produces is indistinguishable from a correctly-placed
     // declaration reached through an unwind — so Sema cannot tell the
     // two cases apart. The parser can, and does.
-    if (current == TokenType::KW_FIXED || current == TokenType::KW_TABLE) {
+    if (current == TokenType::KW_TABLE) {
         ctx.diag.errorAt(
             DiagCode::Syntax_UnexpectedToken, loc,
-            current == TokenType::KW_FIXED
-                ? "a FIXED TABLE declaration is not allowed inside a block; "
-                  "move it to the top level"
-                : "a TABLE declaration is not allowed inside a block; "
+                "a TABLE declaration is not allowed inside a block; "
                   "move it to the top level");
 
         // Consume the whole declaration. parseTableDecl reports its own

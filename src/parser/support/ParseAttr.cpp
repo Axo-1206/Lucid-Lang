@@ -26,9 +26,6 @@
  * The parser produces one node per argument:
  *   - a literal argument    → LiteralExprAST
  *
- * A bare identifier or a dotted identifier is no longer valid; the
- * grammar removed the dotted-identifier form when it removed `@on`.
- *
  * ─── Design: the parser does not validate attribute semantics ─────────────
  * The parser does not check that `@export` is a known attribute, that
  * `@reserve` takes an integer, or that `@deprecated` takes a string.

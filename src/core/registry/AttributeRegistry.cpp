@@ -47,7 +47,21 @@ const AttributeInfo ATTRIBUTE_TABLE[] = {
 
     // ─── Table attributes ──────────────────────────────────────────────
 
-    // `@readonly`: no ADD, no REMOVE, no cell writes.
+    // `@fixed`: the row set is decided at declaration. No ADD, REMOVE,
+    // CLEAR, or SHRINK; cells stay writable. Requires an initializer
+    // (Sema checks). Mutually exclusive with `@readonly`.
+    {
+        "fixed",
+        AttrArgShape::None,
+        /*repeatable=*/false,
+        {
+            ASTKind::TableDecl,
+        }
+    },
+
+    // `@readonly`: no ADD, REMOVE, CLEAR, SHRINK, or cell write.
+    // Complete on its own; already forbids everything `@fixed`
+    // forbids, so it is never written alongside `@fixed`.
     {
         "readonly",
         AttrArgShape::None,
@@ -58,18 +72,9 @@ const AttributeInfo ATTRIBUTE_TABLE[] = {
         }
     },
 
-    // `@immutable`: no ADD/REMOVE after initialization; cell writes
-    // allowed. On a FIXED table it is redundant; Sema warns.
-    {
-        "immutable",
-        AttrArgShape::None,
-        /*repeatable=*/false,
-        {
-            ASTKind::TableDecl,
-        }
-    },
-
-    // `@packed`: contiguous storage with no slack; implies @immutable.
+    // `@packed`: contiguous storage with no slack. Requires `@fixed`
+    // or `@readonly` on the same declaration (Sema checks); never
+    // inferred.
     {
         "packed",
         AttrArgShape::None,

@@ -137,8 +137,8 @@ ModuleAST* parseFile(std::string_view path,
         // ─── Check for a declaration start ────────────────────────────────
         //
         // A top-level declaration begins with one of the declaration
-        // keywords (including `FIXED`), with `import`, or with `@` for an
-        // attribute list. isDeclarationStart (GrammarPositions.hpp) is the
+        // keywords, with `import`, or with `@` for an attribute list. 
+        // isDeclarationStart (GrammarPositions.hpp) is the
         // source of truth for that set.
         if (!isDeclarationStart(stream.peekType())) {
             ctx.diag.errorAt(

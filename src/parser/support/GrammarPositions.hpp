@@ -67,7 +67,7 @@ namespace lucid::parser {
 /// `}` is missing, and the recovery scan should stop there and report
 /// the unclosed `{`.
 ///
-/// The set is `TABLE`, `FIXED`, `import`, and `FN` followed by an
+/// The set is `TABLE`, `import`, and `FN` followed by an
 /// identifier. `FN` alone is not strong: the grammar's `function_type`
 /// is `(T, U) -> R` with no `FN` (§5), so a bare `FN` is never a type,
 /// but the parser still wants to distinguish "`FN` that begins a
@@ -81,7 +81,6 @@ inline bool isStrongDeclarationStart(TokenType first,
                                      TokenType second) noexcept {
     switch (first) {
         case TokenType::KW_TABLE:
-        case TokenType::KW_FIXED:
         case TokenType::KW_IMPORT:
             return true;
 
@@ -259,7 +258,6 @@ inline bool isBlockStatementStart(TokenType t) noexcept {
 /// parse returns `nullptr`.
 inline bool isBlockBoundary(TokenType t) noexcept {
     return isBlockStatementStart(t)
-        || t == TokenType::KW_FIXED
         || t == TokenType::KW_TABLE
         || t == TokenType::KW_FN
         || t == TokenType::AT_SIGN

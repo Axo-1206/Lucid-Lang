@@ -78,7 +78,6 @@ inline std::string astKindToString(ASTKind kind) {
         case ASTKind::StartExpr:        return "StartExpr";
         case ASTKind::UnaryExpr:        return "UnaryExpr";
         case ASTKind::BinaryExpr:       return "BinaryExpr";
-        case ASTKind::AssignExpr:       return "AssignExpr";
         case ASTKind::ParenExpr:        return "ParenExpr";
         case ASTKind::RangeExpr:        return "RangeExpr";
 
@@ -411,7 +410,6 @@ inline std::string declToString(DeclAST* decl, StringPool& pool) {
     if (decl->isa<TableDeclAST>()) {
         auto* table = decl->as<TableDeclAST>();
         std::string result;
-        if (table->isFixed) result += "FIXED ";
         result += "TABLE ";
         result += std::string(pool.lookupView(table->name));
 

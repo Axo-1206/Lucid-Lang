@@ -87,8 +87,7 @@ const BuiltinMethodInfo METHOD_TABLE[] = {
         MethodResultShape::RowRef,
     },
 
-    // `VERSION`: structural version counter. Available on every table,
-    // including FIXED (always 0).
+    // `VERSION`: structural version counter. Available on every table
     {
         "VERSION",
         { ReceiverKind::TableSheet },

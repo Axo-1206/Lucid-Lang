@@ -155,7 +155,6 @@ namespace {
 
 TokenType keywordToType(std::string_view word) noexcept {
     // ─── Declaration keywords ───────────────────────────────────────────
-    if (word == "FIXED")            return TokenType::KW_FIXED;
     if (word == "TABLE")            return TokenType::KW_TABLE;
     if (word == "FN")               return TokenType::KW_FN;
     if (word == "let")              return TokenType::KW_LET;

@@ -138,7 +138,7 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx);
 ///   - a jump keyword → the matching parser
 ///   - a suspend keyword (`wait`, `waitFrames`, ...) → the matching parser
 ///   - an expression start → parseAssignOrExprStmt (see below)
-///   - a top-level declaration keyword (`TABLE`, `FIXED`, `FN`) or `@`
+///   - a top-level declaration keyword (`TABLE`, `FN`) or `@`
 ///     → reports "not allowed inside a block" and consumes the whole
 ///       declaration, then returns nullptr
 ///   - anything else → "expected a statement" and nullptr
@@ -221,7 +221,7 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx);
 ///
 /// The return type is optional; a missing return type means `unit`. The
 /// parser produces a FnDeclAST; Sema checks the parameters against the
-/// body, resolves `@sequence` and `@on` attributes, and validates the
+/// body, resolves `@sequence` attribute, and validates the
 /// host binding.
 ///
 /// Error behavior: partial-parse. If the body is malformed, the returned
