@@ -13,17 +13,21 @@
  * The bands follow the language's structure: the lexer, the parser, name
  * resolution, the type system, mutability, the host registry, tables,
  * sequences, attributes, bytecode, runtime memory, warnings. Each band
- * is 100 codes; none will be filled.
+ * is 100 codes wide except the syntax band, which is 300 wide to
+ * accommodate the new grammar's declaration and statement forms.
  *
  * ─── Categories and severity ──────────────────────────────────────────────
  * Severity is a pure function of the code's range: 8000+ is a warning;
  * everything else is an error.
  *
  *   1000-1099  Lexical
- *   2000-2299  Syntax
+ *   2000-2399  Syntax
  *   3000-3199  Name resolution
  *   4000-4299  Type and value
- *   5000-5399  Host, tables, sequences, attributes
+ *   5000-5099  Host registry
+ *   5100-5199  Tables
+ *   5200-5299  Sequences
+ *   5300-5399  Attributes
  *   6000-6099  Bytecode
  *   7000-7099  Memory and runtime panics
  *   8000-8299  Warnings
@@ -82,21 +86,21 @@ enum class DiagCategory : uint8_t {
 
 inline const char* categoryName(DiagCategory c) noexcept {
     switch (c) {
-        case DiagCategory::Lexical:   return "Lexical";
-        case DiagCategory::Syntax:    return "Syntax";
-        case DiagCategory::Name:      return "Name";
-        case DiagCategory::Type:      return "Type";
-        case DiagCategory::Value:     return "Value";
+        case DiagCategory::Lexical:    return "Lexical";
+        case DiagCategory::Syntax:     return "Syntax";
+        case DiagCategory::Name:       return "Name";
+        case DiagCategory::Type:       return "Type";
+        case DiagCategory::Value:      return "Value";
         case DiagCategory::Mutability: return "Mutability";
-        case DiagCategory::Host:      return "Host";
-        case DiagCategory::Table:     return "Table";
-        case DiagCategory::Sequence:  return "Sequence";
-        case DiagCategory::Attribute: return "Attribute";
-        case DiagCategory::Bytecode:  return "Bytecode";
-        case DiagCategory::Memory:    return "Memory";
-        case DiagCategory::Warning:   return "Warning";
-        case DiagCategory::Internal:  return "Internal";
-        case DiagCategory::Unknown:   return "Unknown";
+        case DiagCategory::Host:       return "Host";
+        case DiagCategory::Table:      return "Table";
+        case DiagCategory::Sequence:   return "Sequence";
+        case DiagCategory::Attribute:  return "Attribute";
+        case DiagCategory::Bytecode:   return "Bytecode";
+        case DiagCategory::Memory:     return "Memory";
+        case DiagCategory::Warning:    return "Warning";
+        case DiagCategory::Internal:   return "Internal";
+        case DiagCategory::Unknown:    return "Unknown";
     }
     return "Unknown";
 }
@@ -126,10 +130,10 @@ enum class DiagCode : uint32_t {
     Lex_NewlineInString          = 1010,
 
     // ═════════════════════════════════════════════════════════════════════════
-    // SYNTAX (2000-2299)
+    // SYNTAX (2000-2399)
     // ═════════════════════════════════════════════════════════════════════════
 
-    // General
+    // General (2000-2099)
     Syntax_ExpectedIdentifier      = 2001,
     Syntax_ExpectedType            = 2002,
     Syntax_ExpectedExpression      = 2003,
@@ -141,29 +145,36 @@ enum class DiagCode : uint32_t {
     Syntax_TrailingComma           = 2009,
     Syntax_ExpectedModulePath      = 2010,
 
-    // Declarations
+    // Declarations (2100-2199)
     Syntax_ExpectedDeclTarget      = 2101,
     Syntax_ExpectedHostTarget      = 2102,
     Syntax_InvalidTargetShape      = 2103,
+    Syntax_ExpectedAttribute       = 2104,
+    Syntax_MultipleDefaults        = 2105,
 
-    // Tables
+    // Tables (2200-2249)
     Syntax_ExpectedColumn          = 2201,
     Syntax_ExpectedTableBody       = 2202,
     Syntax_ExpectedRow             = 2203,
+    Syntax_ExpectedTableInit       = 2204,
 
-    // Statements
+    // Statements (2250-2399)
     Syntax_ExpectedSwitchSubject   = 2301,
     Syntax_ExpectedCaseValue       = 2302,
     Syntax_ExpectedForBinding      = 2303,
     Syntax_ExpectedRangeBound      = 2304,
-    Syntax_MultipleDefaults        = 2305,
-    Syntax_ExpectedAttribute       = 2306,
+    Syntax_ExpectedFnName          = 2305,
+    Syntax_ExpectedFnParams        = 2306,
+    Syntax_ExpectedArrow           = 2307,
+    Syntax_ExpectedAssignOp        = 2308,
+    Syntax_ExpectedLValue          = 2309,
+    Syntax_ExpectedSuspendArg      = 2310,
 
     // ═════════════════════════════════════════════════════════════════════════
     // NAME RESOLUTION (3000-3199)
     // ═════════════════════════════════════════════════════════════════════════
 
-    // Values and types
+    // Values and types (3000-3099)
     Name_UndefinedValue           = 3001,
     Name_UndefinedType            = 3002,
     Name_UndefinedModule          = 3003,
@@ -176,15 +187,16 @@ enum class DiagCode : uint32_t {
     Name_PrivateMember            = 3010,
     Name_ImportAliasRedeclaration = 3011,
 
-    // Tables
+    // Tables (3100-3199)
     Name_ColumnNotFound           = 3101,
     Name_ColumnDuplicate          = 3102,
+    Name_RowNotFound              = 3103,
 
     // ═════════════════════════════════════════════════════════════════════════
     // TYPE AND VALUE (4000-4299)
     // ═════════════════════════════════════════════════════════════════════════
 
-    // Types
+    // Types (4000-4099)
     Type_Mismatch                 = 4001,
     Type_ArgCountMismatch         = 4002,
     Type_MissingInitializer       = 4003,
@@ -202,9 +214,11 @@ enum class DiagCode : uint32_t {
     Type_RangeBoundTypeMismatch   = 4015,
     Type_RangeStepZero            = 4016,
     Type_InvalidArraySize         = 4017,
-    Type_MissingCase              = 4018,   // fixed-table switch warning (see §12.2)
+    Type_MissingCase              = 4018,
+    Type_NotLValue                = 4019,
+    Type_InvalidAttributeArg      = 4020,
 
-    // Values and numerics
+    // Values and numerics (4100-4199)
     Value_DivisionByZero          = 4101,
     Value_ModuloByZero            = 4102,
     Value_IntegerOverflow         = 4103,
@@ -217,14 +231,17 @@ enum class DiagCode : uint32_t {
     Value_InvalidCast             = 4110,
     Value_CircularDependency      = 4111,
     Value_InvalidIterator         = 4112,
+    Value_InvalidConcatenation    = 4113,
 
-    // Mutability
+    // Mutability (4200-4299)
     Mut_ConstAssignment           = 4201,
     Mut_ConstParamAssignment      = 4202,
     Mut_ReadOnlyField             = 4203,
     Mut_ModuleReadOnly            = 4204,
     Mut_NonLValueAssignment       = 4205,
     Mut_LoopBindingAssignment     = 4206,
+    Mut_ConstNullableType         = 4207,
+    Mut_ConstRowRefType           = 4208,
 
     // ═════════════════════════════════════════════════════════════════════════
     // HOST REGISTRY (5000-5099)
@@ -235,11 +252,13 @@ enum class DiagCode : uint32_t {
     Host_TypeNotRegistered        = 5003,
     Host_TypeKindMismatch         = 5004,
     Host_HostOnlyCalledFromLucid  = 5005,
+    Host_VariadicSignatureMismatch = 5006,
 
     // ═════════════════════════════════════════════════════════════════════════
     // TABLES (5100-5199)
     // ═════════════════════════════════════════════════════════════════════════
 
+    // Sheet-level operations
     Table_AddArgCountMismatch     = 5101,
     Table_AddArgTypeMismatch      = 5102,
     Table_AddOnFixed              = 5103,
@@ -249,6 +268,8 @@ enum class DiagCode : uint32_t {
     Table_RemoveOnReadonly        = 5107,
     Table_DuplicateUniqueValue    = 5108,
     Table_IndexOutOfBounds        = 5109,
+
+    // Column rules
     Table_MultiplePrimary         = 5110,
     Table_SortedColumnNotFound    = 5111,
     Table_CappedExclusiveWithRows = 5112,
@@ -256,6 +277,19 @@ enum class DiagCode : uint32_t {
     Table_RequestOnNonHost        = 5114,
     Table_FixedCellNotConstant    = 5115,
     Table_FixedCycle              = 5116,
+
+    // New table-shape codes for the current grammar
+    Table_PackedRequiresFixed     = 5117,
+    Table_FixedReadonlyConflict   = 5118,
+    Table_ReserveOnFixedTable     = 5119,
+    Table_FixedTableEmpty         = 5120,
+    Table_PrimaryNotHashable      = 5121,
+    Table_PrimaryAtMostOne        = 5122,
+    Table_NameCollidesWithMethod  = 5123,
+    Table_GeneratedNameCollides   = 5124,
+    Table_DuplicateInitializerValue = 5125,
+    Table_HostReserveNotAllowed   = 5126,
+    Table_SchemaMismatch          = 5127,
 
     // ═════════════════════════════════════════════════════════════════════════
     // SEQUENCES (5200-5299)
@@ -271,6 +305,9 @@ enum class DiagCode : uint32_t {
     Seq_WaitUntilArgTypeMismatch  = 5208,
     Seq_WaitForEventNotAFixedTable = 5209,
     Seq_WaitForRequestNotARequest = 5210,
+    Seq_WaitArgTypeMismatch       = 5211,
+    Seq_WaitFramesArgTypeMismatch = 5212,
+    Seq_SequenceNotLaunched       = 5213,
 
     // ═════════════════════════════════════════════════════════════════════════
     // ATTRIBUTES (5300-5399)
@@ -281,8 +318,12 @@ enum class DiagCode : uint32_t {
     Attr_InvalidArgValue          = 5303,
     Attr_Duplicate                = 5304,
     Attr_NotApplicable            = 5305,
-    Attr_ExportInLocalScope       = 5306,
-    Attr_OnRequiresExport         = 5307,
+    Attr_NotAllowedOnLocal        = 5306,
+    Attr_InvalidCombination       = 5307,
+    Attr_ExportInLocalScope       = 5308,
+    Attr_DeprecatedInLocalScope   = 5309,
+    Attr_SequenceOnNonFn          = 5310,
+    Attr_RequestOnNonHostTable    = 5311,
 
     // ═════════════════════════════════════════════════════════════════════════
     // BYTECODE (6000-6099)
@@ -315,6 +356,10 @@ enum class DiagCode : uint32_t {
     Panic_StackOverflow           = 7102,
     Panic_HostCallFailed          = 7103,
     Panic_UnsupportedOperation    = 7104,
+    Panic_NilDereference          = 7105,
+    Panic_StaleReference          = 7106,
+    Panic_DuplicateKey            = 7107,
+    Panic_GenerationExhausted     = 7108,
 
     // ═════════════════════════════════════════════════════════════════════════
     // WARNINGS (8000-8299)
@@ -333,14 +378,18 @@ enum class DiagCode : uint32_t {
     Warn_RedundantNilCheck        = 8010,
     Warn_PotentialOverflow        = 8011,
     Warn_Deprecated               = 8012,
+    Warn_ImmutableOnFixed         = 8013,
 
     // Tables (8100-8199)
     Warn_SwitchMissingMember      = 8101,
     Warn_TableNeverPopulated      = 8102,
+    Warn_UnusedUniqueColumn       = 8103,
+    Warn_ReserveBelowInitialRows  = 8104,
 
     // Sequences (8200-8299)
     Warn_SequenceNeverSuspends    = 8201,
     Warn_SequenceOnlySuspends     = 8202,
+    Warn_SequenceUnusedHandle     = 8203,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
