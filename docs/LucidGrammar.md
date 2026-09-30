@@ -175,6 +175,8 @@ Because tables are references (§5.2), a cyclic type dependency (`TABLE A { b: &
 
 **Lucid has no `main` and no concept of "the first file."** Nothing runs at module load time, so there is no ordering question to answer at the language level. Which module(s) are loaded, and what they're attached to, is entirely a host-side decision (a scene file, a manifest, an engine API call) — the same way scripting works in Unity or Godot.
 
+**A consequence worth stating plainly: a top-level `let`/`const`'s initializer must be a compile-time constant (§4.3).** Since nothing runs at load, there is no moment at which a runtime expression like a function call could execute to produce the binding's starting value. To compute something at runtime — load a config, query the host — write it inside an `@export`ed function and have the host call that function; assign the result to a top-level `let` from there if the value needs to outlive the call.
+
 Execution happens only through two host-driven mechanisms:
 
 - **Direct call.** The host calls an `@export`ed function by name at a time of its choosing (an update tick, a game-specific hook).
@@ -618,6 +620,19 @@ A variable holds a value: a primitive (copied), or a row/table reference (shared
 
 - `let` — the binding may be reassigned; if it holds a reference, mutation through it is allowed.
 - `const` — the binding may not be reassigned, and no mutation through it is allowed.
+
+**At module level, the initializer must be a `const_expr` (§4.1.1c) — the identical rule already governing a fixed-table's inline rows.** Nothing runs at module load (§3.4), so a top-level binding cannot start from a value that requires running code — a function call, in particular, is never allowed here, the same as inside a fixed table's row. `let` and `const` differ only in what happens *after* this shared, constant starting value: a top-level `let` may later be reassigned by an `@export`ed function the host calls; a top-level `const` may never be reassigned by anything.
+
+```
+const maxHealth: int = 100        -- OK: literal
+let   score:     int = 0          -- OK: literal; score may change later
+let   total:     int = maxHealth + 1   -- OK: const_expr over an already-declared const
+let   bad:       int = computeSeed()   -- error: computeSeed() is a call, not a const_expr
+```
+
+A name used inside another top-level initializer must already be folded, which means **declared earlier in the same module** — the same order-dependent folding a fixed table's rows already have (§4.1.1c), including its cycle rejection: two top-level bindings whose initializers refer to each other are a compile error, for the same reason two fixed tables cannot cyclically reference each other's constant rows.
+
+**Inside a function body, a `let`/`const` has no such restriction.** `let a: int = computeSeed()` in a function is ordinary code — it runs when the function is called, not at load time, so there is no question of what value it should have before the program starts.
 
 `const` restricts the *binding*, not the underlying data:
 
