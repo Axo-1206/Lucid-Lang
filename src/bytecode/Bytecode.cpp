@@ -78,6 +78,12 @@ void Bytecode::checkInvariants() const {
     // The pool does not know the function count, so this is the
     // place where that check happens.
     const uint32_t functionCount = static_cast<uint32_t>(m_functions.size());
+
+    // Every RowRef constant's table index is in range of the
+    // artifact's static-data tables, and every row index is in range
+    // of that table's rows.
+    const uint32_t tableCount = static_cast<uint32_t>(m_staticData.tables().size());
+
     for (size_t ci = 0; ci < m_constants.size(); ++ci) {
         const Constant& c = m_constants.at(static_cast<uint32_t>(ci));
         if (c.kind != Constant::Kind::Function) continue;
@@ -88,6 +94,19 @@ void Bytecode::checkInvariants() const {
             "that is outside the artifact's function list — "
             "the compiler interned a constant against a function that "
             "was never added");
+
+
+        if (c.kind != Constant::Kind::RowRef) continue;
+        
+        const auto& rr = std::get<RowRefConstant>(c.value);
+        AST_ASSERT_MSG(rr.tableIndex < tableCount,
+            "Bytecode: a RowRef constant names a table index that is "
+            "outside the artifact's static-data table list");
+
+        const BakedTable& table = m_staticData.tables()[rr.tableIndex];
+        AST_ASSERT_MSG(rr.rowIndex < table.rows.size(),
+            "Bytecode: a RowRef constant names a row index that is "
+            "outside the referenced table's row list");
     }
 
     // Every host symbol referenced by a StaticData BakedTable's

@@ -124,6 +124,12 @@ void encodeValue(std::string& out, const Constant& c) {
         case Constant::Kind::Function:
             encodeU32(out, std::get<uint32_t>(c.value));
             break;
+        case Constant::Kind::RowRef: {
+            const auto& rr = std::get<RowRefConstant>(c.value);
+            encodeU32(out, rr.tableIndex);
+            encodeU32(out, rr.rowIndex);
+            break;
+        }
     }
 }
 
@@ -235,6 +241,12 @@ void ConstantPool::checkInvariants() const {
                     "ConstantPool: kind is Function but the value is not a "
                     "function index");
                 break;
+            case Constant::Kind::RowRef:
+                AST_ASSERT_MSG(
+                    std::holds_alternative<RowRefConstant>(c.value),
+                    "ConstantPool: kind is RowRef but the value is not "
+                    "a RowRefConstant");
+                break;    
         }
     }
 }

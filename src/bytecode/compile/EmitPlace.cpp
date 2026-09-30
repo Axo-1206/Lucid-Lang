@@ -73,45 +73,46 @@ void emitPlace(ExprAST* lhs, CompilerContext& ctx) {
 
     switch (lhs->kind) {
 
-    // ─── Identifier: a local, a parameter, or a top-level binding ──────
+    // ─── Identifier: local, parameter, or top-level binding ────────────
     case ASTKind::IdentifierExpr: {
         auto* id = lhs->as<IdentifierExprAST>();
         AST_ASSERT_MSG(id->resolvedDecl != nullptr,
-            "emitPlace: an lvalue identifier has no resolvedDecl — "
-            "Sema should have resolved it");
+            "emitStoreIntoPlace: an lvalue identifier has no "
+            "resolvedDecl");
 
         DeclAST* decl = id->resolvedDecl;
 
         if (decl->isa<ParamAST>() || decl->isa<VarDeclAST>()) {
-            // The place's "operand" is the slot number. But for a
-            // local store, the slot is an *operand of the store
-            // opcode*, not a value on the stack. So emitPlace emits
-            // nothing — the store opcode carries the slot directly.
-            //
-            // This means emitPlace is a no-op for locals. That is
-            // correct: the operands a local store needs are zero
-            // (the slot is in the opcode), and the store opcode
-            // consumes only the value.
-            return;
-        }
-
-        // A top-level binding: the store's operand is the binding's
-        // static-data offset, which is an opcode operand, not a
-        // stack value. Same reasoning as for locals — emitPlace
-        // emits nothing, and emitStoreIntoPlace carries the offset.
-        //
-        // Phase 3 does not yet resolve static-data offsets; the
-        // store case in emitStoreIntoPlace asserts when it reaches
-        // this path.
-        if (decl->isa<VarDeclAST>()) {
-            // Fall through to emitStoreIntoPlace, which asserts.
+            // A local or parameter: the slot allocator knows about it.
+            auto slot = ctx.slots().slotFor(decl->name);
+            if (slot.has_value()) {
+                ctx.emitOpcode(Opcode::StoreLocal);
+                ctx.emitU16(*slot);
+                return;
+            }
+            // Otherwise, a top-level binding. Store into its static-
+            // data slot.
+            if (decl->isa<VarDeclAST>()) {
+                const auto offset =
+                    ctx.compiler().staticDataOffsetOf(decl->mangledName);
+                AST_ASSERT_MSG(offset.has_value(),
+                    "emitStoreIntoPlace: a top-level binding has no "
+                    "static-data offset — the compiler's pass A did "
+                    "not register it");
+                ctx.emitOpcode(Opcode::StoreStaticData);
+                ctx.emitU32(*offset);
+                return;
+            }
+            AST_ASSERT_MSG(false,
+                "emitStoreIntoPlace: a parameter has no slot — the "
+                "function's prologue should have allocated one");
             return;
         }
 
         AST_ASSERT_MSG(false,
-            "emitPlace: an lvalue identifier resolved to something "
-            "other than a variable or parameter — Sema should have "
-            "rejected this assignment");
+            "emitStoreIntoPlace: an lvalue identifier resolved to "
+            "something other than a variable or parameter — Sema "
+            "should have rejected this assignment");
         return;
     }
 

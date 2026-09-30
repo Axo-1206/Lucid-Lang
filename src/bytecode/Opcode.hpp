@@ -1,24 +1,17 @@
 /**
  * @file Opcode.hpp
  *
- * @responsibility The instruction set. A closed enum plus operand-
- *                 encoding rules. The only file besides Bytecode.hpp
- *                 that interp/ includes from this folder.
+ * @responsibility The instruction set. A closed enum, the operand
+ *                 shapes, and the stack effects. The only file besides
+ *                 Bytecode.hpp that interp/ includes from this folder.
  *
  * ─── Design: typed opcodes, not a dispatch-on-type at runtime ─────────────
- * Sema resolved every operand's type at compile time. The compiler emits
- * a typed opcode (Add_I32, Add_F64, ...) rather than a generic Add with
- * a type operand. The interpreter's dispatch is therefore a flat switch
- * with no secondary type dispatch. This is the standard shape for a
- * bytecode with a resolved type system and it is what makes the
- * interpreter's inner loop small.
+ * Sema resolved every operand's type at compile time. The compiler
+ * emits a typed opcode (Add_I32, Add_F64, ...) rather than a generic
+ * Add with a type operand. The interpreter's dispatch is a flat switch
+ * with no secondary type dispatch.
  *
- * ─── Design: opcodes are grouped by band ──────────────────────────────────
- * The enum is ordered so that related opcodes are contiguous. The bands
- * are: load/store, arithmetic, comparison, logical, bitwise, null,
- * calls, aggregate, control, sequence, return, panic, resource.
- *
- * ─── Design: two numeric spaces, disjoint by construction ─────────────────
+ * ─── Design: two numeric ranges, disjoint by construction ─────────────────
  * The byte encoding uses one byte for most opcodes, and a two-byte
  * escape (0x00 followed by a second byte) for the rest. The Opcode
  * enum mirrors this with two numeric ranges:
@@ -28,22 +21,28 @@
  *       reserved as the escape prefix and is never a valid opcode, so
  *       the single-byte range starts at 0x0001.
  *
- *   - Extended opcodes:    0x0100 .. 0x01FF
+ *   - Extended opcodes:    0x0101 .. 0x01FF
  *       The low byte is the second byte of the two-byte encoding; the
  *       high byte (0x01) marks "this is an extended opcode". 0x0100 is
- *       reserved (it would mean "escape followed by 0x00", which is not
- *       a valid encoding), so the extended range starts at 0x0101.
+ *       reserved, so the extended range starts at 0x0101.
  *
- * This makes the enum values themselves unambiguous: a value in
- * 0x00xx is a single-byte opcode, and a value in 0x01xx is an extended
- * opcode. No separate tag field is needed, and opcodeInfo can dispatch
- * with one comparison on the high byte.
+ * A value in 0x00xx is a single-byte opcode; a value in 0x01xx is an
+ * extended opcode. No separate tag field is needed.
  *
- * ─── Design: operand encoding lives here ──────────────────────────────────
- * Each opcode has a fixed operand shape. OpcodeInfo records it so the
- * serializer, the disassembler, and the interp's operand validator can
- * walk code without a per-opcode switch. The actual encoder/decoder
- * (variable-length u32, etc.) lives in Serialize.cpp and Dispatch.cpp.
+ * ─── Design: stack effects are part of the instruction set ────────────────
+ * Every opcode has a fixed, or operand-determined, effect on the value
+ * stack. OpcodeInfo records it (pops, pushes). The compiler's
+ * CompilerContext uses it to track stack depth automatically; the
+ * interpreter uses it to validate bytecode. A fixed-effect opcode has
+ * non-negative pops and pushes. A variable-effect opcode (a call, an
+ * array construction, a table insert) sets both to -1; the emitter
+ * resolves the actual effect and calls noteStackEffect.
+ *
+ * ─── Design: no opcodes without a design ──────────────────────────────────
+ * Every opcode in the enum is emitted by some emitter and has a
+ * documented stack effect. There are no placeholder opcodes. When a
+ * new subsystem is designed (resource management, say), its opcodes
+ * are added then, with a real stack effect and a real emitter.
  */
 
 #pragma once
@@ -61,22 +60,13 @@ namespace lucid::bytecode {
 /// Values 0x0001..0x00FF are single-byte opcodes; values 0x0101..0x01FF
 /// are extended opcodes (a 0x00 prefix byte followed by the low byte in
 /// the code stream). 0x0000 and 0x0100 are reserved and never appear.
-///
-/// The underlying type is uint16_t so the two ranges are representable.
-/// The enum is not uint8_t because a single-byte opcode and an extended
-/// opcode would then share a numeric value, which is an alias in the
-/// enum — the exact bug this revision fixes.
 enum class Opcode : uint16_t {
     // ═══════════════════════════════════════════════════════════════════════
     // Single-byte opcodes: 0x0001 .. 0x00FF
     // ═══════════════════════════════════════════════════════════════════════
-    //
-    // In the code stream, a single-byte opcode is written as one byte:
-    // the low byte of its enum value. 0x00 is reserved as the escape
-    // prefix and never appears here.
 
     // ─── No operation ───────────────────────────────────────────────────
-    Nop              = 0x0001,  ///< no effect; carries no operand
+    Nop              = 0x0001,  ///< no effect
 
     // ─── Load/store ─────────────────────────────────────────────────────
     LoadLocal        = 0x0002,  ///< u16 slot
@@ -84,13 +74,13 @@ enum class Opcode : uint16_t {
     LoadConst        = 0x0004,  ///< u32 constant index
     LoadStaticData   = 0x0005,  ///< u32 static-data offset
     StoreStaticData  = 0x0006,  ///< u32 static-data offset
-    LoadFunction     = 0x0007,  ///< u32 function index (a code address)
-    LoadField        = 0x0008,  ///< u16 column index (row ref on stack)
-    StoreField       = 0x0009,  ///< u16 column index (row ref + value on stack)
-    LoadRow          = 0x000A,  ///< u8 table index (index on stack)
-    StoreRow         = 0x000B,  ///< u8 table index (index + value on stack)
-    LoadIndex        = 0x000C,  ///< array (index on stack)
-    StoreIndex       = 0x000D,  ///< array (index + value on stack)
+    LoadFunction     = 0x0007,  ///< u32 function index
+    LoadField        = 0x0008,  ///< u16 column index; row ref on stack
+    StoreField       = 0x0009,  ///< u16 column index; row ref + value on stack
+    LoadRow          = 0x000A,  ///< u32 table index; row index on stack
+    StoreRow         = 0x000B,  ///< u32 table index; row index + value on stack
+    LoadIndex        = 0x000C,  ///< array + index on stack
+    StoreIndex       = 0x000D,  ///< array + index + value on stack
 
     // ─── Arithmetic — signed integers ───────────────────────────────────
     Add_I8   = 0x0010, Add_I16 = 0x0011, Add_I32 = 0x0012, Add_I64 = 0x0013,
@@ -133,8 +123,8 @@ enum class Opcode : uint16_t {
     Eq_U8   = 0x0084, Eq_U16 = 0x0085, Eq_U32 = 0x0086, Eq_U64 = 0x0087,
     Eq_F32  = 0x0088, Eq_F64 = 0x0089,
     Eq_Bool = 0x008A, Eq_Char = 0x008B, Eq_Str = 0x008C,
-    Eq_RowRef = 0x008D,       ///< identity comparison on a &T
-    Eq_Function = 0x008E,     ///< identity comparison on a function value
+    Eq_RowRef = 0x008D,
+    Eq_Function = 0x008E,
 
     // ─── Comparison — Ne ────────────────────────────────────────────────
     Ne_I8   = 0x0090, Ne_I16 = 0x0091, Ne_I32 = 0x0092, Ne_I64 = 0x0093,
@@ -190,25 +180,19 @@ enum class Opcode : uint16_t {
     // ═══════════════════════════════════════════════════════════════════════
     // Extended opcodes: 0x0101 .. 0x01FF
     // ═══════════════════════════════════════════════════════════════════════
-    //
-    // In the code stream, an extended opcode is written as two bytes:
-    // 0x00 (the escape prefix) followed by the low byte of its enum
-    // value. The high byte of the enum value (0x01) is the marker that
-    // distinguishes extended opcodes from single-byte opcodes; it is
-    // never written to the stream.
-    //
-    // 0x0100 is reserved (it would mean "escape followed by 0x00",
-    // which is not a valid encoding). The range starts at 0x0101.
 
     // ─── Bitwise — Shr (unsigned, logical) ──────────────────────────────
     Ext_Shr_U8  = 0x0101, Ext_Shr_U16 = 0x0102,
     Ext_Shr_U32 = 0x0103, Ext_Shr_U64 = 0x0104,
 
+    // ─── Stack manipulation ─────────────────────────────────────────────
+    Ext_Dup = 0x0110,  ///< duplicate the top of stack
+    Ext_Pop = 0x0111,  ///< discard the top of stack
+
     // ─── Null handling ──────────────────────────────────────────────────
-    Ext_IsNil    = 0x0110,  ///< pop value; push bool (is it nil?)
-    Ext_Coalesce = 0x0111,  ///< full ?? lowering; used when LHS is not
-                            ///< a simple load. See EmitExpr.
-    Ext_CheckNil = 0x0112,  ///< pop value; panic with PanicNilDeref if nil
+    Ext_IsNil    = 0x0112,  ///< pop value; push bool (is it nil?)
+    Ext_Coalesce = 0x0113,  ///< full ?? lowering (see EmitExpr)
+    Ext_CheckNil = 0x0114,  ///< pop value; panic with PanicNilDeref if nil
 
     // ─── Calls ──────────────────────────────────────────────────────────
     Ext_Call          = 0x0120,  ///< u32 function index; args on stack
@@ -223,21 +207,21 @@ enum class Opcode : uint16_t {
     Ext_ArrayRemove    = 0x0133,  ///< receiver + index on stack
     Ext_ArrayClear     = 0x0134,
     Ext_ArraySort      = 0x0135,  ///< u8 flag: 0 = natural, 1 = comparator
-    Ext_ArrayContains  = 0x0136,
+    Ext_ArrayContains  = 0x0136,  ///< receiver + element on stack
 
     // ─── Aggregate — tables ─────────────────────────────────────────────
     Ext_TableAdd       = 0x0137,  ///< u32 table index; cells on stack
     Ext_TableRemove    = 0x0138,  ///< u32 table index; index on stack
-    Ext_TableClear     = 0x0139,
-    Ext_TableShrink    = 0x013A,
-    Ext_TableCount     = 0x013B,
-    Ext_TableVersion   = 0x013C,
-    Ext_TableFind      = 0x013D,
-    Ext_TableAt        = 0x013E,
+    Ext_TableClear     = 0x0139,  ///< u32 table index
+    Ext_TableShrink    = 0x013A,  ///< u32 table index
+    Ext_TableCount     = 0x013B,  ///< u32 table index
+    Ext_TableVersion   = 0x013C,  ///< u32 table index
+    Ext_TableFind      = 0x013D,  ///< u32 table index; predicate on stack
+    Ext_TableAt        = 0x013E,  ///< u32 table index; index on stack
     Ext_TableByPrimary = 0x013F,  ///< u32 table index, u16 column index
 
     // ─── Aggregate — column views ───────────────────────────────────────
-    Ext_ColumnToArray  = 0x0140,
+    Ext_ColumnToArray  = 0x0140,  ///< column view on stack
 
     // ─── Control ────────────────────────────────────────────────────────
     Ext_Jump         = 0x0150,  ///< i32 relative offset
@@ -247,10 +231,10 @@ enum class Opcode : uint16_t {
 
     // ─── Sequences ──────────────────────────────────────────────────────
     Ext_SuspendWait           = 0x0160,  ///< u32 resume index
-    Ext_SuspendWaitFrames     = 0x0161,
-    Ext_SuspendWaitUntil      = 0x0162,
-    Ext_SuspendWaitForEvent   = 0x0163,
-    Ext_SuspendWaitForRequest = 0x0164,
+    Ext_SuspendWaitFrames     = 0x0161,  ///< u32 resume index
+    Ext_SuspendWaitUntil      = 0x0162,  ///< u32 resume index
+    Ext_SuspendWaitForEvent   = 0x0163,  ///< u32 resume index
+    Ext_SuspendWaitForRequest = 0x0164,  ///< u32 resume index
     Ext_StartSequence         = 0x0165,  ///< u32 function index
 
     // ─── Return ─────────────────────────────────────────────────────────
@@ -263,35 +247,21 @@ enum class Opcode : uint16_t {
     Ext_PanicStaleRef            = 0x0182,
     Ext_PanicDuplicateKey        = 0x0183,
     Ext_PanicGenerationExhausted = 0x0184,
-
-    // ─── Resource management ────────────────────────────────────────────
-    Ext_Retain  = 0x0190,  ///< ResourceKind-driven; retain a value
-    Ext_Release = 0x0191,  ///< ResourceKind-driven; release a value
-    Ext_Copy    = 0x0192,  ///< deep copy per ResourceKind
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Opcode arithmetic
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// The two numeric ranges are the contract. These helpers are the only
-// sanctioned way to ask "which range is this opcode in?" — a caller
-// that compares the raw value against a magic constant is a caller
-// that will break when the ranges change.
 
-/// The numeric marker for extended opcodes. A raw opcode value >= this
-/// constant is an extended opcode; a value < this constant is a
-/// single-byte opcode.
+/// The numeric marker for extended opcodes.
 constexpr uint16_t OPCODE_EXTENDED_MARKER = 0x0100;
 
-/// True if the opcode is a single-byte opcode (its stream encoding is
-/// one byte).
+/// True if the opcode is a single-byte opcode.
 constexpr bool isSingleByteOp(Opcode op) noexcept {
     return static_cast<uint16_t>(op) < OPCODE_EXTENDED_MARKER;
 }
 
-/// True if the opcode is an extended opcode (its stream encoding is
-/// 0x00 followed by one byte).
+/// True if the opcode is an extended opcode.
 constexpr bool isExtendedOp(Opcode op) noexcept {
     return static_cast<uint16_t>(op) >= OPCODE_EXTENDED_MARKER;
 }
@@ -301,16 +271,14 @@ constexpr bool isExtendedOp(Opcode op) noexcept {
 ///   - Single-byte opcode: the one byte to emit.
 ///   - Extended opcode: the second byte to emit, after the 0x00 prefix.
 ///
-/// The caller that writes an extended opcode is responsible for
-/// emitting the 0x00 prefix first; this helper returns only the second
-/// byte, because the prefix is a property of the encoding, not of the
-/// opcode.
+/// A caller that writes an extended opcode must emit the 0x00 prefix
+/// first; this helper returns only the second byte.
 constexpr uint8_t opcodeStreamByte(Opcode op) noexcept {
     return static_cast<uint8_t>(static_cast<uint16_t>(op) & 0x00FF);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OpcodeInfo
+// OperandShape
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief The operand shape of one opcode.
@@ -325,36 +293,48 @@ enum class OperandShape : uint8_t {
     SwitchTable,     ///< u32 count, then count * (u32 case index + i32 offset)
 };
 
-/// @brief Static information about an opcode, used by the serializer,
-///        the disassembler, and the interpreter's operand validator.
+// ─────────────────────────────────────────────────────────────────────────────
+// OpcodeInfo
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Static information about an opcode.
+///
+/// Used by the serializer, the disassembler, the interpreter's operand
+/// validator, and the compiler's stack-depth tracking.
 struct OpcodeInfo {
     Opcode       opcode;
     OperandShape shape;
     const char*  name;
+
+    /// The number of values this opcode pops off the value stack.
+    /// -1 means the effect depends on an operand; the emitter calls
+    /// noteStackEffect with the resolved count.
+    int8_t pops;
+
+    /// The number of values this opcode pushes onto the value stack.
+    /// -1 means the effect depends on an operand.
+    int8_t pushes;
 };
 
 /// @brief Look up an opcode's info.
 ///
-/// Precondition: op is a valid opcode (its value is not 0x0000, not
-/// 0x0100, and appears in either the single-byte or the extended
-/// table). Callers that have a raw value from untrusted input should
-/// validate with isSingleByteOpcode / isExtendedOpcode first.
-///
-/// The returned reference points into a static table and is valid for
-/// the program's lifetime.
+/// Precondition: op is a valid opcode. Callers that have a raw value
+/// from untrusted input should validate with isSingleByteOpcode /
+/// isExtendedOpcode first.
 const OpcodeInfo& opcodeInfo(Opcode op) noexcept;
 
 /// @brief True if the byte is a valid single-byte opcode.
-///
-/// A single-byte opcode is a byte value in 0x01..0xFF. The byte 0x00 is
-/// the escape prefix and is not a valid opcode.
 bool isSingleByteOpcode(uint8_t byte) noexcept;
 
 /// @brief True if the byte is a valid extended opcode.
-///
-/// An extended opcode's byte is the second byte after a 0x00 prefix.
-/// Its valid range is 0x01..0xFF (0x00 would mean "escape followed by
-/// 0x00", which is not a valid encoding).
 bool isExtendedOpcode(uint8_t byte) noexcept;
+
+/// @brief Validate the opcode tables against the Opcode enum.
+///
+/// Fires an assert if any enum value has no table row, or if a table
+/// row's `opcode` field does not match the byte at which it is stored.
+/// Call once at startup (the interpreter's load path, or a test's
+/// setup) to catch enum/table drift early.
+void checkOpcodeTable();
 
 } // namespace lucid::bytecode

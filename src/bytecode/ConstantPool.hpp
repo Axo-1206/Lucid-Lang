@@ -58,6 +58,17 @@
 
 namespace lucid::bytecode {
 
+/// @brief The payload of a RowRef constant.
+///
+/// Identifies a specific row of a specific table by position:
+/// the table's index in StaticData::tables, and the row's index in
+/// the table's rows list. The interpreter reconstructs a runtime &T
+/// from this pair at load time.
+struct RowRefConstant {
+    uint32_t tableIndex;
+    uint32_t rowIndex;
+};
+
 /// @brief One constant.
 struct Constant {
     enum class Kind : uint8_t {
@@ -69,19 +80,21 @@ struct Constant {
         Nil,
         Array,      ///< a fixed-size array of constants
         Function,   ///< a code address; payload is a FunctionProto index
+        RowRef,     ///< a &T; payload is (table index, row index)
     };
 
     Kind           kind = Kind::Nil;
     TypeDescriptor type;
 
     std::variant<
-        std::monostate,          ///< Nil
-        bool,                    ///< Bool
-        int64_t,                 ///< Int
-        double,                  ///< Float
-        std::string,             ///< String / Char
-        std::vector<Constant>,   ///< Array
-        uint32_t                 ///< Function: FunctionProto index
+        std::monostate,          // Nil
+        bool,                    // Bool
+        int64_t,                 // Int
+        double,                  // Float
+        std::string,             // String, Char
+        std::vector<Constant>,   // Array
+        uint32_t,                // Function: FunctionProto index
+        RowRefConstant           // RowRef: (table index, row index)
     > value;
 };
 

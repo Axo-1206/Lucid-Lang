@@ -403,12 +403,109 @@ bool resolveIfStmt(IfStmtAST* stmt, CompilerContext& ctx) {
 // the subject after the switch).
 
 bool resolveSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
-    (void)stmt;
-    (void)ctx;
-    AST_ASSERT_MSG(false,
-        "resolveSwitchStmt: switch statements are not yet supported — "
-        "they need Dup/Pop opcodes and the RowRef constant kind "
-        "(Phase 4 additions)");
+    AST_ASSERT_MSG(stmt->subject != nullptr,
+        "resolveSwitchStmt: a switch has no subject");
+    AST_ASSERT_MSG(stmt->defaultBody != nullptr,
+        "resolveSwitchStmt: a switch has no default body — the "
+        "grammar requires one");
+
+    // ─── Emit the subject ──────────────────────────────────────────────
+    emitExpr(stmt->subject, ctx);
+
+    // ─── Emit the case comparisons ─────────────────────────────────────
+    //
+    // Each case is a list of values. The lowering compares the subject
+    // against each value and jumps to the case's body on a match. The
+    // subject is duplicated before each comparison, so it survives the
+    // Eq_RowRef (which pops both operands).
+    //
+    // The list of case bodies to patch after emission: for each case,
+    // the offsets of the JumpIfTrue operands that jump to the case's
+    // body.
+    std::vector<std::vector<uint32_t>> caseJumpOperands;
+    caseJumpOperands.reserve(stmt->cases.size());
+
+    for (auto* c : stmt->cases) {
+        AST_ASSERT_MSG(c != nullptr,
+            "resolveSwitchStmt: a case clause is null");
+        std::vector<uint32_t> jumpsForThisCase;
+        for (auto* value : c->values) {
+            AST_ASSERT_MSG(value != nullptr,
+                "resolveSwitchStmt: a case value is null");
+
+            // Duplicate the subject: [S] → [S, S].
+            ctx.emitOpcode(Opcode::Ext_Dup);
+
+            // Emit the case value. For a fixed-table switch, this is a
+            // fixed-row sugar; the emitter handles it and leaves a &T
+            // on the stack.
+            emitExpr(value, ctx);
+
+            // Compare. Eq_RowRef pops the two operands and pushes the
+            // match bool.
+            ctx.emitOpcode(Opcode::Eq_RowRef);
+
+            // Jump to the case body on a match. The target is patched
+            // later, once the body's code offset is known.
+            ctx.emitOpcode(Opcode::Ext_JumpIfTrue);
+            const uint32_t operandOffset = ctx.here();
+            ctx.emitI32(0);
+            jumpsForThisCase.push_back(operandOffset);
+        }
+        caseJumpOperands.push_back(std::move(jumpsForThisCase));
+    }
+
+    // ─── No case matched: discard the subject and fall to default ─────
+    ctx.emitOpcode(Opcode::Ext_Pop);
+    ctx.emitOpcode(Opcode::Ext_Jump);
+    const uint32_t toDefaultOffset = ctx.here();
+    ctx.emitI32(0);
+
+    // ─── Emit the case bodies ──────────────────────────────────────────
+    std::vector<uint32_t> bodyEndJumps;
+    for (size_t i = 0; i < stmt->cases.size(); ++i) {
+        auto* c = stmt->cases[i];
+
+        // Patch every jump for this case to land at this body's start.
+        for (uint32_t operandOffset : caseJumpOperands[i]) {
+            const int32_t target = static_cast<int32_t>(ctx.here());
+            const int32_t base   = static_cast<int32_t>(operandOffset + 4);
+            ctx.patchU32(operandOffset,
+                         static_cast<uint32_t>(target - base));
+        }
+
+        // Discard the subject copy that the Dup-based comparison left
+        // on the stack.
+        ctx.emitOpcode(Opcode::Ext_Pop);
+
+        // Emit the case body.
+        emitStmt(c->body, ctx);
+
+        // Jump to the end of the switch.
+        ctx.emitOpcode(Opcode::Ext_Jump);
+        bodyEndJumps.push_back(ctx.here());
+        ctx.emitI32(0);
+    }
+
+    // ─── Patch the no-match jump to land at the default body ──────────
+    {
+        const int32_t target = static_cast<int32_t>(ctx.here());
+        const int32_t base   = static_cast<int32_t>(toDefaultOffset + 4);
+        ctx.patchU32(toDefaultOffset,
+                     static_cast<uint32_t>(target - base));
+    }
+
+    // ─── Default body ──────────────────────────────────────────────────
+    emitStmt(stmt->defaultBody, ctx);
+
+    // ─── Patch the end jumps ───────────────────────────────────────────
+    for (uint32_t operandOffset : bodyEndJumps) {
+        const int32_t target = static_cast<int32_t>(ctx.here());
+        const int32_t base   = static_cast<int32_t>(operandOffset + 4);
+        ctx.patchU32(operandOffset,
+                     static_cast<uint32_t>(target - base));
+    }
+
     return false;
 }
 

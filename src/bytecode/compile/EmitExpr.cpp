@@ -475,19 +475,34 @@ void emitIdentifierExpr(IdentifierExprAST* e, CompilerContext& ctx) {
 
     DeclAST* decl = e->resolvedDecl;
 
-    // ─── A local or parameter ──────────────────────────────────────────
+    // ─── A local, a parameter, or a top-level binding ──────────────────
+    //
+    // A ParamAST or a VarDeclAST is a local binding if the slot
+    // allocator has a slot for its name; otherwise it is a top-level
+    // binding (a VarDeclAST whose value lives in the artifact's
+    // static data).
     if (decl->isa<ParamAST>() || decl->isa<VarDeclAST>()) {
-        // A local declaration's slot is the one the slot allocator
-        // assigned when the declaration was emitted. Look it up by
-        // name; the slot allocator's map is keyed by the interned
-        // name.
         auto slot = ctx.slots().slotFor(decl->name);
-        AST_ASSERT_MSG(slot.has_value(),
-            "emitIdentifierExpr: an identifier resolved to a local "
-            "binding that has no slot — the declaration's slot was "
-            "never allocated");
-        ctx.emitOpcode(Opcode::LoadLocal);
-        ctx.emitU16(*slot);
+        if (slot.has_value()) {
+            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitU16(*slot);
+            return;
+        }
+        if (decl->isa<VarDeclAST>()) {
+            // Top-level binding.
+            const auto offset =
+                ctx.compiler().staticDataOffsetOf(decl->mangledName);
+            AST_ASSERT_MSG(offset.has_value(),
+                "emitIdentifierExpr: a top-level binding has no "
+                "static-data offset — the compiler's pass A did not "
+                "register it");
+            ctx.emitOpcode(Opcode::LoadStaticData);
+            ctx.emitU32(*offset);
+            return;
+        }
+        AST_ASSERT_MSG(false,
+            "emitIdentifierExpr: a parameter has no slot — the "
+            "function's prologue should have allocated one");
         return;
     }
 
@@ -582,6 +597,16 @@ void emitArrayLiteralExpr(ArrayLiteralExprAST* e, CompilerContext& ctx) {
         ctx.emitOpcode(Opcode::Ext_NewFixedArray);
     }
     ctx.emitU32(count);
+
+    AST_ASSERT_MSG(count <= 127,
+        "emitArrayLiteralExpr: an array literal with more than 127 "
+        "elements — the noteStackEffect parameter is int8_t. Widen "
+        "noteStackEffect's signature or split the construction.");
+
+    // The opcode's stack effect depends on the element count: it pops
+    // `count` element values and pushes one array. OpcodeInfo carries
+    // -1 for both, so the emitter supplies the actual effect.
+    ctx.noteStackEffect(static_cast<int8_t>(count), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -627,21 +652,49 @@ void emitFieldAccessExpr(FieldAccessExprAST* e, CompilerContext& ctx) {
     }
 
     // ─── Fixed-row sugar (Direction.North) ─────────────────────────────
+    //
+    // A fixed-table member reference is a compile-time &T constant: the
+    // row's index in its table. Sema resolved the sugar's target table
+    // (resolvedDecl) and the row's index (resolvedFixedRowIndex) during
+    // resolution. The compiler translates those into a RowRef constant
+    // and emits LoadConst with the constant's pool index.
+    //
+    // The compiler's table-index map (populated in pass A) gives the
+    // table's artifact index. The pool dedups the constant, so two
+    // references to the same member produce the same pool entry.
     if (e->isFixedRowSugar) {
-        // A fixed-table member reference is a compile-time constant:
-        // the row's index in its table. It is a &T value; the
-        // artifact does not yet have a way to embed a &T as a
-        // constant (the Constant kind set has no RowRef alternative),
-        // so we emit the constant as a table-index / row-index pair
-        // that the interpreter reconstructs.
-        //
-        // Phase 3 simplification: emit LoadConst with a Nil constant
-        // and a note. The full implementation is a Phase 4 addition
-        // that adds a RowRef constant kind.
-        AST_ASSERT_MSG(false,
-            "emitFieldAccessExpr: fixed-row sugar is not yet "
-            "supported — a RowRef constant kind is a Phase 4 "
-            "addition");
+        AST_ASSERT_MSG(e->resolvedDecl != nullptr,
+            "emitFieldAccessExpr: a fixed-row sugar has no "
+            "resolvedDecl — Sema should have resolved it");
+        AST_ASSERT_MSG(e->resolvedDecl->isa<TableDeclAST>(),
+            "emitFieldAccessExpr: a fixed-row sugar resolved to a "
+            "non-table declaration — Sema should have rejected this");
+        const auto* table = e->resolvedDecl->as<TableDeclAST>();
+
+        const auto tableIdx =
+            ctx.compiler().tableIndexOf(table->mangledName);
+        AST_ASSERT_MSG(tableIdx.has_value(),
+            "emitFieldAccessExpr: the fixed-row sugar's table has no "
+            "artifact index — the compiler's pass A did not register "
+            "it");
+        AST_ASSERT_MSG(e->hasResolvedFixedRow,
+            "emitFieldAccessExpr: a fixed-row sugar has no resolved "
+            "row index — Sema's resolveTableMemberAccess should have "
+            "set it");
+
+        Constant c;
+        c.kind = Constant::Kind::RowRef;
+        // The type is a &T. Sema resolved the expression's type; the
+        // emitter translates it.
+        c.type = translateType(e->resolvedType, ctx.compiler().pool());
+        c.value = RowRefConstant{
+            *tableIdx,
+            e->resolvedFixedRowIndex
+        };
+
+        const uint32_t index = ctx.pool().add(std::move(c));
+        ctx.emitOpcode(Opcode::LoadConst);
+        ctx.emitU32(index);
         return;
     }
 
@@ -681,16 +734,29 @@ void emitIndexExpr(IndexExprAST* e, CompilerContext& ctx) {
     }
 
     if (targetType.isNamed()) {
-        // Table row access: Person[i]. The table is a compile-time
-        // identity, not a runtime value. Emit the index, then
-        // LoadRow with a table index operand.
+        // Table row access. The table is a compile-time identity; the
+        // target expression is an identifier that Sema resolved to a
+        // TableDeclAST. Emit the index, then LoadRow with the table's
+        // artifact index.
         emitExpr(e->index, ctx);
-        // The table index is the table's identity in the artifact.
-        // Phase 4 adds a table-index map; for Phase 3 we emit a
-        // placeholder.
-        AST_ASSERT_MSG(false,
-            "emitIndexExpr: table row indexing is not yet supported — "
-            "the table-index map is a Phase 4 addition");
+
+        AST_ASSERT_MSG(e->target->isa<IdentifierExprAST>(),
+            "emitIndexExpr: a table row access has a non-identifier "
+            "target — Sema should have rejected this form");
+        auto* id = e->target->as<IdentifierExprAST>();
+        AST_ASSERT_MSG(id->resolvedDecl != nullptr
+                    && id->resolvedDecl->isa<TableDeclAST>(),
+            "emitIndexExpr: a table row access target did not resolve "
+            "to a table — Sema should have resolved it");
+        const auto* table = id->resolvedDecl->as<TableDeclAST>();
+
+        const auto tableIdx =
+            ctx.compiler().tableIndexOf(table->mangledName);
+        AST_ASSERT_MSG(tableIdx.has_value(),
+            "emitIndexExpr: a table has no artifact index — the "
+            "compiler's pass A did not register it");
+        ctx.emitOpcode(Opcode::LoadRow);
+        ctx.emitU32(*tableIdx);
         return;
     }
 
@@ -745,6 +811,20 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
             "the driver's two passes are out of sync");
         ctx.emitOpcode(Opcode::Ext_Call);
         ctx.emitU32(*idx);
+
+        // The opcode's stack effect depends on the argument count and
+        // the callee's return type. Sema resolved the CallExpr's type
+        // to the callee's return type; a void return pushes nothing.
+        const TypeDescriptor retType =
+            translateType(e->resolvedType, ctx.compiler().pool());
+        const bool returnsValue = !(retType.isPrimitive()
+                                    && retType.primitive == PrimitiveKind::Void);
+        const int8_t pushes = returnsValue ? 1 : 0;
+        const int8_t pops = static_cast<int8_t>(e->args.size());
+        AST_ASSERT_MSG(pops >= 0,
+            "emitCallExpr: negative pops — an int8_t overflow in the "
+            "argument count");
+        ctx.noteStackEffect(pops, pushes);
         return;
     }
 
@@ -961,37 +1041,44 @@ void emitBinaryExpr(BinaryExprAST* e, CompilerContext& ctx) {
     // ─── Null coalescing ───────────────────────────────────────────────
     //
     // `a ?? b`: if `a` is not nil, the result is `a`; otherwise it is
-    // `b`. The lowering:
+    // `b`. The lowering keeps a copy of the LHS on the stack while it
+    // checks nil, so neither path needs to re-evaluate the LHS.
     //
-    //   <LHS>
-    //   Ext_IsNil                ; pop LHS, push (LHS is nil)
-    //   Ext_JumpIfFalse  keep    ; if not nil, keep LHS
-    //   <RHS>                    ; replace LHS with RHS
-    //   keep:
+    //   <LHS>                    ; stack: [LHS]
+    //   Dup                      ; stack: [LHS, LHS]
+    //   IsNil                    ; stack: [LHS, isNil]
+    //   JumpIfFalse  keep        ; pops isNil; if LHS is not nil, jump
+    //   Pop                      ; stack: []       (discard the nil LHS)
+    //   <RHS>                    ; stack: [RHS]
+    //   keep:                    ; stack: [LHS] or [RHS]
     //
-    // The `keep` branch leaves the LHS on the stack and skips the
-    // RHS. The `replace` path leaves the RHS on the stack.
-    //
-    // Wait — the stack shape after IsNil is one value (the bool), so
-    // the LHS is gone. This is the classic problem with coalesce on
-    // a stack machine. The correct lowering:
-    //
-    //   <LHS>
-    //   Dup                      ; duplicate LHS: [LHS, LHS]
-    //   Ext_IsNil                ; pop top, push (top is nil): [LHS, isNil]
-    //   Ext_JumpIfFalse  keep    ; if not nil, jump
-    //   Pop                      ; discard the LHS copy: []
-    //   <RHS>                    ; push RHS: [RHS]
-    //   keep:                    ; stack is [LHS] on the taken path
-    //
-    // This needs a Dup and a Pop, which the current opcode set lacks.
-    // Phase 3 rejects coalesce; Phase 4 adds Dup/Pop and the
-    // lowering.
+    // The stack after the sequence holds exactly one value — the
+    // expression's result — regardless of which path was taken.
     if (e->op == BinaryOp::NullCoalesce) {
-        AST_ASSERT_MSG(false,
-            "emitBinaryExpr: null-coalescing (?\?) is not yet "
-            "supported — it needs Dup and Pop opcodes, which are a "
-            "Phase 4 addition");
+        // The LHS is a nilable type; its non-nil form is the RHS's
+        // type. Both are already resolved by Sema; the emitter does
+        // not need to know which is which — it just emits the two
+        // sub-expressions and the branch sequence.
+        emitExpr(e->left, ctx);
+
+        ctx.emitOpcode(Opcode::Ext_Dup);
+        ctx.emitOpcode(Opcode::Ext_IsNil);
+
+        // The JumpIfFalse pops the isNil bool and branches if false
+        // (i.e., if the LHS is *not* nil, keep it).
+        ctx.emitOpcode(Opcode::Ext_JumpIfFalse);
+        const uint32_t keepBranchOffset = ctx.here();
+        ctx.emitI32(0);   // placeholder
+
+        // Discard the nil LHS and evaluate the RHS.
+        ctx.emitOpcode(Opcode::Ext_Pop);
+        emitExpr(e->right, ctx);
+
+        // Patch the branch to land here (after the RHS).
+        const int32_t target = static_cast<int32_t>(ctx.here());
+        const int32_t base   = static_cast<int32_t>(keepBranchOffset + 4);
+        ctx.patchU32(keepBranchOffset,
+                     static_cast<uint32_t>(target - base));
         return;
     }
 

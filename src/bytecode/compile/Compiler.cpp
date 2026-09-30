@@ -5,12 +5,10 @@
 #include "BakeConstant.hpp"
 #include "CompilerContext.hpp"
 #include "EmitDecl.hpp"
-
 #include "EmitStmt.hpp"
+
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"
-
-#include <unordered_map>
 
 namespace lucid::bytecode::compile {
 
@@ -27,38 +25,27 @@ Compiler::Compiler(lucid::diag::DiagnosticEngine& diagnostics,
 // compile — the entry point
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The driver walks the module set twice:
+// Two passes over the module set:
 //
-//   Pass A — for each module, in source order:
-//     1. Collect the module's declarations into the Manifest's Module
-//        entry (functions, bindings, tables).
-//     2. Collect the module's imports into the Manifest.
-//     3. Bake every fixed/readonly table's rows into StaticData.
-//     4. Bake every top-level binding's initial value into StaticData.
-//     5. Collect every host(...) reference into HostSymbolTable.
-//     6. Register each Lucid-bodied FN for emission and reserve its
-//        FunctionProto index.
+//   Pass A — collect, bake, register. For each module, in source order:
+//     1. Record its imports in the Manifest.
+//     2. Bake each fixed/readonly table into StaticData, and register
+//        the table's artifact index in m_tableIndices.
+//     3. Bake each top-level let/const into StaticData, and register
+//        the binding's offset in m_staticDataOffsets.
+//     4. Register each host(...) reference in HostSymbolTable.
+//     5. Register each Lucid-bodied FN, reserving its FunctionProto
+//        index.
 //
-//   Pass B — for each function in the work list, in registration order:
-//     1. Create a CompilerContext for the function.
-//     2. Emit the function's prologue (parameter slots, etc.).
-//     3. Emit the function's body. (Phase 3; empty in Phase 2.)
-//     4. Emit an implicit ReturnVoid if the body does not end in a
-//        return.
-//     5. Finalize the FunctionProto and append it to the function list.
-//
-// The two passes exist because a function may reference another
-// function (a call, a function value in a fixed-table cell) before the
-// referenced function's proto has been emitted. Pass A reserves every
-// index; pass B fills them in. A forward reference in pass B resolves
-// through the index map populated in pass A.
+//   Pass B — emit function bodies. For each Lucid-bodied function:
+//     1. Construct a CompilerContext.
+//     2. Emit the prologue (emitDecl).
+//     3. Emit the body (emitStmt).
+//     4. Emit an implicit ReturnVoid.
+//     5. Finalize the proto and replace the pass-A placeholder.
 
 Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
     // ─── Preconditions ─────────────────────────────────────────────────
-    //
-    // Every module reaching the compiler must be Sema-validated. A
-    // module with hasErrors set is a pipeline bug: the CLI should not
-    // have invoked the compiler on it.
     for (ModuleAST* module : modules) {
         AST_ASSERT_MSG(module != nullptr,
             "Compiler::compile: a null module was passed — the caller "
@@ -70,24 +57,18 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
     }
 
     // ─── The artifact under construction ───────────────────────────────
-    Manifest        manifest;
-    ConstantPool    constants;
-    StaticData      staticData;
-    HostSymbolTable hostSymbols;
+    Manifest                   manifest;
+    ConstantPool               constants;
+    StaticData                 staticData;
+    HostSymbolTable            hostSymbols;
     std::vector<FunctionProto> functions;
-    std::unordered_map<const FnDeclAST*, uint32_t> functionIndex;
 
     // ─── Pass A — collect, bake, register ──────────────────────────────
     for (ModuleAST* module : modules) {
-        // Every module gets a Manifest entry, in the order the modules
-        // were passed to the compiler. The order is the source order
-        // the CLI chose when it assembled the module list.
         Manifest::Module modEntry;
         modEntry.modulePath = m_pool.lookup(module->filePath);
 
-        // Imports: the manifest records what each module imported, by
-        // alias and target path. Sema already resolved the imports;
-        // the manifest's job is to record them, not to re-resolve.
+        // ─── Imports ───────────────────────────────────────────────────
         for (DeclAST* decl : module->decls) {
             if (decl == nullptr) continue;
             if (!decl->isa<ImportDeclAST>()) continue;
@@ -98,26 +79,28 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
             modEntry.imports.push_back(std::move(m));
         }
 
-        // Declarations: walk the module's top-level declarations.
+        // ─── Declarations ──────────────────────────────────────────────
         for (DeclAST* decl : module->decls) {
             if (decl == nullptr) continue;
             if (decl->hasSyntaxError) continue;
 
-            // A table declaration contributes:
-            //   - its name to the manifest's table list
-            //   - its baked rows to StaticData (if it has an initializer)
-            //   - its host type symbol to HostSymbolTable (if host-backed)
+            // ─── Table ─────────────────────────────────────────────────
             if (decl->isa<TableDeclAST>()) {
                 const auto* table = decl->as<TableDeclAST>();
                 modEntry.tables.push_back(m_pool.lookup(table->mangledName));
+
+                // Register the table's artifact index before baking,
+                // so the map is populated even if the bake is a no-op
+                // (a host-backed table has no rows to bake).
+                const uint32_t tableIdx =
+                    static_cast<uint32_t>(staticData.tables().size());
+                registerTableIndex(table->mangledName, tableIdx);
+
                 bakeTable(table, staticData, hostSymbols);
                 continue;
             }
 
-            // A function declaration contributes:
-            //   - its name to the manifest's function list
-            //   - its host symbol to HostSymbolTable (if host-bound)
-            //   - a FunctionProto index reservation (if Lucid-bodied)
+            // ─── Function ──────────────────────────────────────────────
             if (decl->isa<FnDeclAST>()) {
                 const auto* fn = decl->as<FnDeclAST>();
                 modEntry.functions.push_back(m_pool.lookup(fn->mangledName));
@@ -130,53 +113,36 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
                     continue;
                 }
 
-                // Reserve a FunctionProto index. The proto itself is
-                // appended in pass B; for now we only record the
-                // function's index so forward references can be
-                // resolved.
-                const uint32_t index = static_cast<uint32_t>(functions.size());
-                functionIndex.emplace(fn, index);
-
-                // Append a placeholder FunctionProto. It will be
-                // replaced in pass B. The placeholder is valid (it
-                // satisfies FunctionProto's invariants — see the
-                // placeholder construction below), so a forward
-                // reference from another function's emission can look
-                // it up without tripping the invariant check.
+                // Reserve the function's artifact index and append a
+                // placeholder proto. Pass B replaces it.
+                const uint32_t index =
+                    static_cast<uint32_t>(functions.size());
+                m_functionIndex.emplace(fn, index);
                 functions.push_back(makePlaceholderProto(fn));
                 continue;
             }
 
-            // A top-level variable declaration contributes:
-            //   - its name to the manifest's binding list
-            //   - its initial value to StaticData
+            // ─── Top-level binding ─────────────────────────────────────
             if (decl->isa<VarDeclAST>()) {
                 const auto* var = decl->as<VarDeclAST>();
                 modEntry.bindings.push_back(m_pool.lookup(var->mangledName));
+
+                // Register the binding's offset before baking, so the
+                // offset matches its eventual position in
+                // StaticData::bindings.
+                const uint32_t bindingIdx =
+                    static_cast<uint32_t>(staticData.bindings().size());
+                registerStaticDataOffset(var->mangledName, bindingIdx);
+
                 bakeTopLevelBinding(var, staticData);
                 continue;
             }
-
-            // An import is already handled above. No other declaration
-            // kind exists at module level.
         }
 
         manifest.modules.push_back(std::move(modEntry));
     }
 
     // ─── Pass B — emit function bodies ─────────────────────────────────
-    //
-    // For each Lucid-bodied function, build a CompilerContext, emit
-    // the prologue (parameter slots), emit the body, emit an implicit
-    // ReturnVoid, and finalize the proto. The pass-A placeholder is
-    // replaced by the real proto.
-    //
-    // Forward references in pass B resolve through the function-index
-    // map populated in pass A: when a function's body calls another
-    // function, the callee's index is already reserved (though its
-    // proto may still be a placeholder at the moment of the call).
-    // The interpreter resolves calls by index at run time, by which
-    // point every proto is real.
     for (ModuleAST* module : modules) {
         for (DeclAST* decl : module->decls) {
             if (decl == nullptr) continue;
@@ -191,31 +157,14 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
                 "registered in pass A — the driver's two passes are "
                 "out of sync");
 
-            // Build the per-function context. It holds references to
-            // the artifact-wide containers, to this Compiler (for
-            // function-index lookups and pool access), and to the
-            // current module (for line entries).
             CompilerContext ctx(constants, hostSymbols, staticData,
                                 *this, module);
             ctx.setCurrentFn(fn);
 
-            // Prologue: parameter slots and the function's opening
-            // line entry.
             emitDecl(fn, ctx);
-
-            // Body.
             emitStmt(fn->body, ctx);
-
-            // Implicit ReturnVoid. A function whose body already ended
-            // in a Return emitted one; the extra ReturnVoid is dead
-            // code the interpreter never reaches. Emitting it
-            // unconditionally is simpler than inspecting the last
-            // statement's kind.
             ctx.emitOpcode(Opcode::Ext_ReturnVoid);
 
-            // Finalize: assemble the FunctionProto from the accumulated
-            // code, line table, slot counts, and resume table. Replaces
-            // the pass-A placeholder.
             functions[it->second] = ctx.finalizeProto();
         }
     }
@@ -227,19 +176,59 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
                 std::move(hostSymbols),
                 std::move(functions));
 
-    // The Bytecode constructor runs checkInvariants. Any cross-
-    // component invariant violation fires there.
     return bc;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Function index lookup
+// Artifact index lookups
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::optional<uint32_t> Compiler::functionIndexOf(const FnDeclAST* fn) const {
+std::optional<uint32_t> Compiler::functionIndexOf(
+    const FnDeclAST* fn) const {
     auto it = m_functionIndex.find(fn);
     if (it == m_functionIndex.end()) return std::nullopt;
     return it->second;
+}
+
+std::optional<uint32_t> Compiler::staticDataOffsetOf(
+    InternedString mangledName) const {
+    auto it = m_staticDataOffsets.find(mangledName);
+    if (it == m_staticDataOffsets.end()) return std::nullopt;
+    return it->second;
+}
+
+std::optional<uint32_t> Compiler::tableIndexOf(
+    InternedString mangledName) const {
+    auto it = m_tableIndices.find(mangledName);
+    if (it == m_tableIndices.end()) return std::nullopt;
+    return it->second;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Registration helpers (called from compile() during pass A)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Compiler::registerStaticDataOffset(InternedString mangledName,
+                                        uint32_t offset) {
+    AST_ASSERT_MSG(mangledName.isValid(),
+        "Compiler::registerStaticDataOffset: an invalid mangled name — "
+        "Sema's mangling pass should have run for every declaration");
+    auto [it, inserted] = m_staticDataOffsets.emplace(mangledName, offset);
+    AST_ASSERT_MSG(inserted,
+        "Compiler::registerStaticDataOffset: two bindings share a "
+        "mangled name — the mangling scheme produced a collision");
+    (void)it;
+}
+
+void Compiler::registerTableIndex(InternedString mangledName,
+                                  uint32_t index) {
+    AST_ASSERT_MSG(mangledName.isValid(),
+        "Compiler::registerTableIndex: an invalid mangled name");
+    auto [it, inserted] = m_tableIndices.emplace(mangledName, index);
+    AST_ASSERT_MSG(inserted,
+        "Compiler::registerTableIndex: two tables share a mangled "
+        "name — the mangling scheme produced a collision");
+    (void)it;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,33 +253,22 @@ void Compiler::bakeTable(const TableDeclAST* table,
     }
 
     if (table->isHostBacked) {
-        // A host-backed table has no columns and no rows. Its type
-        // symbol goes into the host symbol table.
         HostSymbol sym;
         sym.kind = HostSymbol::Kind::Type;
         sym.name = m_pool.lookup(table->hostName);
         const uint32_t symIndex = hostSymbols.add(std::move(sym));
         baked.hostTypeSymbolIndex = static_cast<int32_t>(symIndex);
     } else {
-        // A columned table: bake its columns and rows.
         for (const auto* col : table->columns) {
             BakedTable::Column c;
             c.mangledName = m_pool.lookup(col->mangledName);
             c.isUnique    = col->isUnique;
             c.isPrimary   = col->isPrimary;
             c.isReadonly  = col->isReadonly;
-
-            // Translate the column's type. The type was resolved by
-            // Sema; TypeDescriptor::fromTypeAST is a helper defined
-            // in EmitDecl.cpp. In Phase 2 it does not exist yet; this
-            // call is a placeholder.
-            c.type = makeUnknownTypeDescriptor();
+            c.type        = makeUnknownTypeDescriptor();  // Phase 3 stub
             baked.columns.push_back(std::move(c));
         }
 
-        // Bake the table's initial rows. Each row's cells are
-        // ConstantValue expressions folded by Sema. The BakeConstant
-        // translation turns each into a Constant.
         for (const auto* row : table->rows) {
             std::vector<Constant> bakedRow;
             bakedRow.reserve(row->cells.size());
@@ -332,7 +310,7 @@ void Compiler::bakeTopLevelBinding(const VarDeclAST* var,
 
     BakedBinding baked;
     baked.mangledName = m_pool.lookup(var->mangledName);
-    baked.type        = makeUnknownTypeDescriptor();   // Phase 3: real type
+    baked.type        = makeUnknownTypeDescriptor();  // Phase 3 stub
     baked.initialValue = bakeConstant(m_pool, var->init->constValue,
                                       baked.type, UINT32_MAX);
 
@@ -342,16 +320,6 @@ void Compiler::bakeTopLevelBinding(const VarDeclAST* var,
 // ─────────────────────────────────────────────────────────────────────────────
 // Placeholders
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Phase 2 needs two things that will be provided by Phase 3:
-//
-//   1. A TypeDescriptor built from a resolved TypeAST.
-//   2. A FunctionProto with the function's final code.
-//
-// In Phase 2, both are placeholders. The placeholders are valid values
-// that satisfy their respective invariants, so the artifact assembles
-// cleanly and can be inspected. When Phase 3 lands, the placeholders
-// are replaced by real values.
 
 TypeDescriptor Compiler::makeUnknownTypeDescriptor() const {
     TypeDescriptor d;
@@ -360,18 +328,13 @@ TypeDescriptor Compiler::makeUnknownTypeDescriptor() const {
 }
 
 FunctionProto Compiler::makePlaceholderProto(const FnDeclAST* fn) const {
-    // The placeholder proto names the function and carries a minimal
-    // legal code stream: a single ReturnVoid instruction. Its
-    // signature is empty for now (Phase 3 fills it in from the
-    // function's resolved parameter and return types).
-    //
-    // A ReturnVoid is one byte: its stream encoding is 0x00 (escape)
-    // followed by its low byte. That's two bytes total.
+    // A minimal legal code stream: a single ReturnVoid. Replaced in
+    // pass B by the real proto.
     std::vector<uint8_t> code;
     code.push_back(0x00);                                // escape
     code.push_back(opcodeStreamByte(Opcode::Ext_ReturnVoid));
 
-    FunctionSignature sig;   // empty; Phase 3 fills in
+    FunctionSignature sig;   // empty; pass B fills in
     return FunctionProto(m_pool.lookup(fn->mangledName),
                          std::move(sig),
                          std::move(code),

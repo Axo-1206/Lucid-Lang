@@ -383,6 +383,12 @@ void writeConstant(std::ostream& os, const Constant& c) {
         case Constant::Kind::Function:
             writeU32(os, std::get<uint32_t>(c.value));
             break;
+        case Constant::Kind::RowRef: {
+            const auto& rr = std::get<RowRefConstant>(c.value);
+            writeU32(os, rr.tableIndex);
+            writeU32(os, rr.rowIndex);
+            break;
+        }
     }
 }
 
@@ -444,6 +450,15 @@ bool readConstant(Reader& r, Constant& out, int depth) {
             uint32_t idx;
             if (!r.readU32(idx)) return false;
             out.value = idx;
+            return true;
+        }
+        case Constant::Kind::RowRef: {
+            uint32_t tableIdx;
+            uint32_t rowIdx;
+            if (!r.readU32(tableIdx)) return false;
+            if (!r.readU32(rowIdx)) return false;
+            RowRefConstant rr{tableIdx, rowIdx};
+            out.value = rr;
             return true;
         }
     }
