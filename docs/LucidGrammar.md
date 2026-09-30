@@ -494,8 +494,7 @@ Note what each operation returns and why: `ADD` gives you a row reference so you
 ### 4.2 Function declarations
 
 ```
-fn_decl    ::= attribute_list 'FN' IDENTIFIER '(' [ param_list ] ')'
-               [ '->' type ] fn_body
+fn_decl    ::= attribute_list 'FN' IDENTIFIER '(' [ param_list ] ')' '->' type fn_body
 fn_body    ::= block
              | '=' 'host' '(' STRING_LIT ')'
 
@@ -511,16 +510,17 @@ FN createPerson(name: string, age: int) -> &Person {
     return Person.ADD(name, age)
 }
 
-FN incrementAge(const p: &Person) {
+FN incrementAge(const p: &Person) -> void {
     p.age = p.age + 1     -- compile error: p is a const parameter
 }
 ```
 
 #### 4.2.1 Return
 
-- No `-> type`: the function returns `unit`.
-- `-> type`: the function returns one value. `-> unit` may be written explicitly for symmetry with the no-arrow form.
-- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `unit`. A function never returns a bare table. A function never returns a function type (no first-class functions, §4.2.5).
+- `'->' type` is mandatory on every function declaration, matching `function_type` (§4.2.5), which already required it. There is no implicit return type and no way to omit the arrow.
+- A function with no meaningful result writes `-> void` explicitly. This is the only function-declaration form the grammar has; nothing is inferred.
+- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `void`. A function never returns a bare table. A function never returns a function type (no first-class functions, §4.2.5).
+- `void` is valid **only** in this position. It is a semantic error to declare a `let`/`const`, a parameter, a column, or an array element of type `void` — a `void` value carries no information and supports no operations, so there is never a reason to bind one. A function returning `void` is called as a bare statement (§12.6), never assigned.
 
 #### 4.2.2 Parameters and `const`
 
@@ -554,7 +554,7 @@ sum()                 -- nums = [], returns 0
 A normal parameter may come before the variadic one, as long as the variadic parameter is last:
 
 ```
-FN spawnEnemies(kind: string, positions: ...int) {
+FN spawnEnemies(kind: string, positions: ...int) -> void {
     for p: int in positions {
         spawnAt(kind, p)
     }
@@ -672,7 +672,7 @@ function_type  ::= '(' [ type { ',' type } ] ')' '->' type
 import weapons
 import consumables
 
-FN repairAll(kit: &weapons.RepairKit, target: &weapons.Item) { ... }
+FN repairAll(kit: &weapons.RepairKit, target: &weapons.Item) -> void { ... }
 ```
 
 One level of qualification is as deep as this ever needs to go — a module only ever reaches another module through its own local alias (§3.1), never by re-spelling a full `module_path`, so `weapons.Item` is already the fully-qualified form from the referencing module's point of view.
@@ -737,7 +737,7 @@ let z: [int]?   = nil
 
 The suffix applies to primitives, host types, and arrays. The following are nilable types:
 
-- `T?` for a primitive `T` (`int?`, `float?`, `bool?`, `char?`, `string?`, `unit?`).
+- `T?` for a primitive `T` (`int?`, `float?`, `bool?`, `char?`, `string?`). `void?` is separately forbidden — see below.
 - `T?` for a host type `T` (`SpriteRef?`).
 - `T?` for an array type (`[int]?`, `[4, int]?`).
 
@@ -745,7 +745,7 @@ The following are type errors:
 
 - `T?` for a bare table type: a table is a global; "the table is nil" is meaningless.
 - `T?` for a function type: a function value is always defined.
-- `T?` for `unit`: `unit` already means "no value"; `unit?` is redundant and forbidden.
+- `T?` for `void`: `void` already means "no value"; `void?` is redundant and forbidden. `void` may not be the type of a `let`/`const`, a parameter, a column, or an array element at all (only a function's return type) — see §4.2.1.
 - `T?` for a `&T`: `&T` is already nilable; `&T?` is accepted but the `?` is redundant.
 
 A `?` written after a function type is a type error, but the parser's attachment of the `?` is different from what a reader might expect. In `(int) -> string?`, the `?` binds to the **return type** `string`, producing a function that returns a nilable `string`. There is no way to write "a nilable function type": the trailing `?` after `string` is always consumed by the return type's `type` production (which is `base_type [ '?' ]`), and a second `?` (as in `(int) -> string??`) attaches to the whole function type and is rejected by Sema. A function value is always a valid code address; nilability of a function value is meaningless.
@@ -971,7 +971,7 @@ Because a function value is a compile-time-known address rather than something c
 @fixed
 TABLE StateHandler {
     name:    string
-    onEnter: (&Enemy) -> unit
+    onEnter: (&Enemy) -> void
 } = [
     { "Idle",   onIdleEnter },
     { "Attack", onAttackEnter },
@@ -1107,9 +1107,9 @@ if (flag ?? false) { ... }           -- a `bool?` must be defaulted or narrowed 
 | Operation             | Result       | Notes                                                                                                                                                                                                                                                                                                            |
 | --------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `T.ADD(args...)`      | `&T`         | Append a row (§4.1.1a). Panics on a duplicate `@unique`/`@primary` value. Growing mutable tables only (see Availability below).                                                                                                                                                                                  |
-| `T.REMOVE(i)`         | `unit`       | Remove row `i`. O(1); every `&T` to the row becomes stale (§7.6). Rows after `i` are not shifted; slot `i` is reused by a future `ADD`. Growing mutable tables only.                                                                                                                                             |
-| `T.CLEAR()`           | `unit`       | Remove every row and keep the allocated storage. Every `&T` into the table becomes stale in O(1); the `@primary` index is emptied (§4.1.1a, §4.1.1d). Growing mutable tables only.                                                                                                                               |
-| `T.SHRINK()`          | `unit`       | Best-effort release of unused trailing storage. Rows never move and no reference changes. The amount released is not guaranteed (§4.1.1d). Growing mutable tables only.                                                                                                                                          |
+| `T.REMOVE(i)`         | `void`       | Remove row `i`. O(1); every `&T` to the row becomes stale (§7.6). Rows after `i` are not shifted; slot `i` is reused by a future `ADD`. Growing mutable tables only.                                                                                                                                             |
+| `T.CLEAR()`           | `void`       | Remove every row and keep the allocated storage. Every `&T` into the table becomes stale in O(1); the `@primary` index is emptied (§4.1.1a, §4.1.1d). Growing mutable tables only.                                                                                                                               |
+| `T.SHRINK()`          | `void`       | Best-effort release of unused trailing storage. Rows never move and no reference changes. The amount released is not guaranteed (§4.1.1d). Growing mutable tables only.                                                                                                                                          |
 | `T[i]`                | `&T`         | Row at slot `i`. **Panics** if `i` is out of bounds or refers to a removed slot.                                                                                                                                                                                                                                 |
 | `T.AT(i)`             | `&T`         | Row at slot `i`; returns `nil` instead of panicking if `i` is out of bounds or dead.                                                                                                                                                                                                                             |
 | `T.COUNT()`           | `uint`       | Number of live rows.                                                                                                                                                                                                                                                                                             |
@@ -1147,7 +1147,7 @@ TABLE Display {
     y: int
 }
 
-FN rebuildDisplay() {
+FN rebuildDisplay() -> void {
     -- 1. select: references only, nothing is copied yet
     let visible: [&Unit] = []
     let alive: Unit = Unit.FIND((u) -> u.hp > 0)
@@ -1173,7 +1173,7 @@ FN rebuildDisplay() {
 | Operation          | Result | Notes                                                                                 |
 | ------------------ | ------ | ------------------------------------------------------------------------------------- |
 | `r.column`         | value  | Read a cell.                                                                          |
-| `r.column = value` | `unit` | Write a cell. Not available if the table is `@readonly` or the column is `@readonly`. |
+| `r.column = value` | `void` | Write a cell. Not available if the table is `@readonly` or the column is `@readonly`. |
 
 ### 7.3 Panic vs. nil — which operations do which
 
@@ -1249,13 +1249,13 @@ A column whose type is `[T]` holds one array per row. The runtime stores the arr
 | Operation         | Result | Available on                                             |
 | ----------------- | ------ | -------------------------------------------------------- |
 | `arr[i]`          | `T`    | `[T]`, `[N, T]`                                          |
-| `arr.ADD(x)`      | `unit` | `[T]` only                                               |
-| `arr.REMOVE(i)`   | `unit` | `[T]` only                                               |
+| `arr.ADD(x)`      | `void` | `[T]` only                                               |
+| `arr.REMOVE(i)`   | `void` | `[T]` only                                               |
 | `arr.COUNT()`     | `uint` | `[T]`, `[N, T]`                                          |
-| `arr.CLEAR()`     | `unit` | `[T]` only                                               |
+| `arr.CLEAR()`     | `void` | `[T]` only                                               |
 | `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan)                            |
-| `arr.SORT()`      | `unit` | `[T]`, `[N, T]` (element type must have a natural order) |
-| `arr.SORT(less)`  | `unit` | `[T]`, `[N, T]`                                          |
+| `arr.SORT()`      | `void` | `[T]`, `[N, T]` (element type must have a natural order) |
+| `arr.SORT(less)`  | `void` | `[T]`, `[N, T]`                                          |
 
 These reuse the table's own vocabulary (`ADD`/`REMOVE`/`COUNT`/`CLEAR`) rather than a second naming convention, so every collection in the language looks the same from the outside.
 
@@ -1323,9 +1323,9 @@ So a bare `T` binding is correct for an array (matching its element type) but al
 
 ### 8.3 `CLEAR` and `SORT`
 
-**`arr.CLEAR()`** removes every element of a dynamic array `[T]` and returns `unit`. The array keeps its allocated capacity, as `T.CLEAR()` does for a table; to release the memory, assign a fresh `[]`. It is not available on a fixed-size `[N, T]`, whose length cannot change.
+**`arr.CLEAR()`** removes every element of a dynamic array `[T]` and returns `void`. The array keeps its allocated capacity, as `T.CLEAR()` does for a table; to release the memory, assign a fresh `[]`. It is not available on a fixed-size `[N, T]`, whose length cannot change.
 
-**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `unit`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not on tables or views, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
+**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `void`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not on tables or views, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
 
 `arr.SORT()` sorts ascending in the element type's natural order. It is available only when the element type is an integer type, a `float` type, `bool`, `char`, or `string`; any other element type is a semantic error that asks for a comparator. Numbers sort numerically (a `float` NaN sorts last), `false` sorts before `true`, `char` sorts by code point, and `string` sorts by its UTF-8 bytes, independent of locale.
 
@@ -1403,7 +1403,7 @@ There are two different *reasons* a sequence pauses, and the design gives each i
 
 ```
 @sequence
-FN playIntro() {
+FN playIntro() -> void {
     fadeOutOver(1.0)
     wait(1.0)
     showDialogueLine("Welcome, traveler.")
@@ -1452,7 +1452,7 @@ suspend_stmt   ::= ( 'wait' | 'waitFrames' ) '(' expr ')'
 
 ```
 @sequence
-FN playIntro() {
+FN playIntro() -> void {
     let req: &LoadRequest = requestLoadTexture("intro_bg.png")
     waitForRequest(req)                 -- resumes the instant the load finishes, however long that took
     let bg: TextureRef = result(req)
@@ -1498,7 +1498,7 @@ if skipRequested {
 
 These keep the feature to "suspend one sequence," not "a general concurrency system":
 
-- **A `@sequence` function always returns `unit`.** No `-> T`. If a caller needs a result, have the sequence write it into a table row, or call an ordinary `FN` as its last step.
+- **A `@sequence` function always returns `void`.** Its declaration still writes `-> void` explicitly, like any other function. If a caller needs a result, have the sequence write it into a table row, or call an ordinary `FN` as its last step.
 - **A `@sequence` function cannot have a `host(...)` body.** Its body is compiled Lucid; suspension only makes sense for code the compiler itself is lowering.
 - **A `@sequence` function cannot call another `@sequence` function directly.** To compose sequences, `start` the other one and `waitUntil(isDone, handle)` — this avoids nested-state-machine composition in the compiler for v1, at the cost of one extra line at each composition point.
 - **A `@sequence` function is not a valid function-typed value** (§5.0) — it can't be passed to `FIND` or stored in a function-typed column, since calling it means "start it," not "run and return a value."
