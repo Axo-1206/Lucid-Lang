@@ -4,6 +4,7 @@
 #include "CompilerContext.hpp"
 #include "Compiler.hpp"
 
+#include "TypeTranslation.hpp"
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/memory/StringPool.hpp"
 
@@ -123,6 +124,72 @@ void CompilerContext::noteLine(SourceLocation loc, InternedString file) {
     entry.column     = loc.column();
     entry.filePath   = std::move(filePath);
     m_lineTable.push_back(std::move(entry));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CompilerContext::finalizeProto()
+// ─────────────────────────────────────────────────────────────────────────────
+
+FunctionProto CompilerContext::finalizeProto() {
+    // ─── Preconditions ─────────────────────────────────────────────────
+    AST_ASSERT_MSG(m_currentFn != nullptr,
+        "CompilerContext::finalizeProto: no function is being compiled");
+    AST_ASSERT_MSG(!m_code.empty(),
+        "CompilerContext::finalizeProto: the function's code is empty — "
+        "every function has at least an implicit ReturnVoid");
+
+    // ─── Signature ─────────────────────────────────────────────────────
+    //
+    // The function's signature is built from its declared parameter
+    // types and its declared return type. Both are Sema-resolved. The
+    // finalize step translates them through the pool.
+    //
+    // The translation is done here rather than at emission start so
+    // that a function whose body emission failed partway does not
+    // leave a half-built signature in the artifact — finalizeProto
+    // is only called on a successful emission.
+    FunctionSignature sig;
+    sig.params.reserve(m_currentFn->params.size());
+    for (const auto* param : m_currentFn->params) {
+        AST_ASSERT_MSG(param->type != nullptr,
+            "CompilerContext::finalizeProto: a parameter has no "
+            "resolved type — Sema should have resolved it");
+        sig.params.push_back(translateType(param->type, m_compiler.pool()));
+    }
+    AST_ASSERT_MSG(m_currentFn->returnType != nullptr,
+        "CompilerContext::finalizeProto: the function has no resolved "
+        "return type — Sema should have resolved it (every FN writes "
+        "'-> T', including '-> void')");
+    sig.returnType = translateType(m_currentFn->returnType,
+                                   m_compiler.pool());
+
+    // ─── Resume table ──────────────────────────────────────────────────
+    //
+    // The slot allocator recorded a (resumeIndex, liveSlots) pair for
+    // every suspend point in a @sequence function. Non-sequence
+    // functions have none. The recording order is emission order,
+    // which is source order; the resume table preserves it.
+    std::vector<ResumeEntry> resumeTable;
+    for (const auto& [index, slots] : m_slots.suspendPoints()) {
+        ResumeEntry entry;
+        entry.resumeIndex = index;
+        entry.liveSlots   = slots;
+        resumeTable.push_back(std::move(entry));
+    }
+
+    // ─── Assemble ──────────────────────────────────────────────────────
+    //
+    // FunctionProto's constructor runs checkInvariants, which
+    // validates the name, code, line table monotonicity, resume table
+    // consistency, and slot bounds.
+    return FunctionProto(m_compiler.pool().lookup(m_currentFn->mangledName),
+                         std::move(sig),
+                         std::move(m_code),
+                         std::move(m_lineTable),
+                         m_slots.localSlotCount(),
+                         m_slots.maxStackDepth(),
+                         m_currentFn->isSequence,
+                         std::move(resumeTable));
 }
 
 } // namespace lucid::bytecode::compile

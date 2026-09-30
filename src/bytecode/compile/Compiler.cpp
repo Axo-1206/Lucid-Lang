@@ -6,6 +6,7 @@
 #include "CompilerContext.hpp"
 #include "EmitDecl.hpp"
 
+#include "EmitStmt.hpp"
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"
 
@@ -165,46 +166,57 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
 
     // ─── Pass B — emit function bodies ─────────────────────────────────
     //
-    // In Phase 2, the body emitters do not exist yet. Every function's
-    // proto remains the placeholder constructed in pass A. In Phase 3,
-    // this loop is where the emitters run: for each function, build a
-    // CompilerContext, call EmitDecl to emit the prologue, call
-    // EmitStmt on the body, emit an implicit ReturnVoid, and replace
-    // the placeholder with the final proto.
+    // For each Lucid-bodied function, build a CompilerContext, emit
+    // the prologue (parameter slots), emit the body, emit an implicit
+    // ReturnVoid, and finalize the proto. The pass-A placeholder is
+    // replaced by the real proto.
     //
-    // The loop is written here in Phase 2 (rather than deferred) so
-    // the Phase 3 change is local to this function.
-
+    // Forward references in pass B resolve through the function-index
+    // map populated in pass A: when a function's body calls another
+    // function, the callee's index is already reserved (though its
+    // proto may still be a placeholder at the moment of the call).
+    // The interpreter resolves calls by index at run time, by which
+    // point every proto is real.
     for (ModuleAST* module : modules) {
         for (DeclAST* decl : module->decls) {
             if (decl == nullptr) continue;
             if (!decl->isa<FnDeclAST>()) continue;
 
-            const auto* fn = decl->as<FnDeclAST>();
+            auto* fn = decl->as<FnDeclAST>();
             if (fn->isHostBound) continue;
 
-            auto it = functionIndex.find(fn);
-            AST_ASSERT_MSG(it != functionIndex.end(),
+            auto it = m_functionIndex.find(fn);
+            AST_ASSERT_MSG(it != m_functionIndex.end(),
                 "Compiler::compile: a Lucid-bodied function was not "
                 "registered in pass A — the driver's two passes are "
                 "out of sync");
 
-            // ── Phase 2: emit nothing ──
-            //
-            // Phase 3 will replace this block with:
-            //
-            //   CompilerContext ctx(constants, hostSymbols, staticData,
-            //                       *this, module);
-            //   ctx.setCurrentFn(fn);
-            //   emitDecl(fn, ctx);
-            //   emitStmt(fn->body, ctx);
-            //   ctx.emitOpcode(Opcode::Ext_ReturnVoid);
-            //   functions[it->second] = ctx.finalizeProto();
-            //
-            // For Phase 2, the placeholder remains. It is a valid
-            // FunctionProto that names the function and carries an
-            // empty-but-legal code stream.
-            (void)it;
+            // Build the per-function context. It holds references to
+            // the artifact-wide containers, to this Compiler (for
+            // function-index lookups and pool access), and to the
+            // current module (for line entries).
+            CompilerContext ctx(constants, hostSymbols, staticData,
+                                *this, module);
+            ctx.setCurrentFn(fn);
+
+            // Prologue: parameter slots and the function's opening
+            // line entry.
+            emitDecl(fn, ctx);
+
+            // Body.
+            emitStmt(fn->body, ctx);
+
+            // Implicit ReturnVoid. A function whose body already ended
+            // in a Return emitted one; the extra ReturnVoid is dead
+            // code the interpreter never reaches. Emitting it
+            // unconditionally is simpler than inspecting the last
+            // statement's kind.
+            ctx.emitOpcode(Opcode::Ext_ReturnVoid);
+
+            // Finalize: assemble the FunctionProto from the accumulated
+            // code, line table, slot counts, and resume table. Replaces
+            // the pass-A placeholder.
+            functions[it->second] = ctx.finalizeProto();
         }
     }
 
