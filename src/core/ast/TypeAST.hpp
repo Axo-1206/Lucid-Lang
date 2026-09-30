@@ -20,7 +20,7 @@
  * `[int]?`, `[N, T]?` (grammar §5.3). Nilability is meaningful for
  * primitives, host types, and arrays. It is redundant on `&T` — a row
  * reference is inherently nilable, and Sema treats `&T?` as `&T` — and
- * an error on a bare table type, a function type, or `unit`.
+ * an error on a bare table type, a function type, or `void`.
  *
  * Tables are global and reference-typed; a bare `Person` is the sheet
  * itself. There is no value reference (`&int`); primitives are always
@@ -66,7 +66,7 @@ enum class PrimitiveKind : uint8_t {
     Bool,
     Char,
     String,
-    Unit,
+    Void,
 
     Int8,
     Int16,
@@ -85,7 +85,7 @@ enum class PrimitiveKind : uint8_t {
 // ─── PrimitiveKind predicates ─────────────────────────────────────────────
 
 /// @brief The bit width of a primitive numeric kind. Returns 0 for
-///        `bool`, `char`, `string`, and `unit`.
+///        `bool`, `char`, `string`, and `void`.
 inline size_t primitiveBitWidth(PrimitiveKind kind) noexcept {
     switch (kind) {
         case PrimitiveKind::Int8:
@@ -105,7 +105,7 @@ inline size_t primitiveBitWidth(PrimitiveKind kind) noexcept {
         case PrimitiveKind::Bool:
         case PrimitiveKind::Char:
         case PrimitiveKind::String:
-        case PrimitiveKind::Unit:
+        case PrimitiveKind::Void:
             return 0;
     }
     return 0;
@@ -355,7 +355,7 @@ struct RowRefTypeAST : TypeAST {
 /// `ParamAST*`.
 ///
 /// @example
-///   () -> unit                       → params = {},  returnType = unit
+///   () -> void                       → params = {},  returnType = void
 ///   (&Person) -> bool                → params = [&Person], returnType = bool
 ///   (int, string) -> float           → params = [int, string], returnType = float
 struct FunctionTypeAST : TypeAST {
@@ -364,7 +364,6 @@ struct FunctionTypeAST : TypeAST {
     /// The parameter types, in order. May be empty.
     ArenaSpan<TypeAST*> params;
 
-    /// The return type. Never null.
     TypeAST* returnType = nullptr;
 
     FunctionTypeAST() : TypeAST(ASTKind::FunctionType) {}
@@ -378,7 +377,7 @@ struct FunctionTypeAST : TypeAST {
 /// Nilability is meaningful for primitives, host types, and arrays. It
 /// is redundant on `&T` (which is already nilable — Sema treats `&T?`
 /// as `&T`) and an error on bare table types,/// @brief An array type: 
-// `[T]` (dynamic) or `[N, T]` (function types, and `unit`.
+// `[T]` (dynamic) or `[N, T]` (function types, and `void`.
 ///
 /// The parser produces this node whenever it sees a `?` after a base
 /// type (§5.3), without checking whether the suffix is meaningful

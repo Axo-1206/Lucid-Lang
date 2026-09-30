@@ -94,7 +94,7 @@ enum class TokenType : uint16_t {
     KW_BOOL,
     KW_CHAR,
     KW_STRING,
-    KW_UNIT,
+    KW_VOID,
 
     KW_INT8,    KW_INT16,   KW_INT32,   KW_INT64,
     KW_UINT8,   KW_UINT16,  KW_UINT32,  KW_UINT64,

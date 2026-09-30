@@ -167,7 +167,7 @@ TokenType keywordToType(std::string_view word) noexcept {
     if (word == "bool")             return TokenType::KW_BOOL;
     if (word == "char")             return TokenType::KW_CHAR;
     if (word == "string")           return TokenType::KW_STRING;
-    if (word == "unit")             return TokenType::KW_UNIT;
+    if (word == "void")             return TokenType::KW_VOID;
 
     if (word == "int8")             return TokenType::KW_INT8;
     if (word == "int16")            return TokenType::KW_INT16;

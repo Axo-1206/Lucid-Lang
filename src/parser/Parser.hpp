@@ -219,14 +219,18 @@ RowAST* parseRow(TokenStream& stream, ParserContext& ctx);
 ///   `FN name(params) -> Ret { ... }`          a Lucid-bodied function
 ///   `FN name(params) -> Ret = host("name")`   a host-bound function
 ///
-/// The return type is optional; a missing return type means `unit`. The
-/// parser produces a FnDeclAST; Sema checks the parameters against the
-/// body, resolves `@sequence` attribute, and validates the
-/// host binding.
+/// The `-> Ret` is mandatory. A function that returns nothing writes
+/// `-> void` explicitly; there is no default. The parser produces a
+/// FnDeclAST with a non-null `returnType` in every path — a real type
+/// when the arrow is present, an `UnknownTypeAST` when it is missing.
+/// Sema checks the parameters against the body, resolves `@sequence`
+/// attributes, and validates the host binding.
 ///
 /// Error behavior: partial-parse. If the body is malformed, the returned
-/// FnDeclAST has a null body or a marked block, marked `hasSyntaxError`.
-/// If the function's name is missing, returns nullptr.
+/// FnDeclAST has a marked block, marked `hasSyntaxError`. If the name or
+/// the arrow is missing, the corresponding field is a marked placeholder
+/// and `hasSyntaxError` is set. Returns nullptr only when the function's
+/// name itself is missing.
 FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx);
 
 /// @brief Parse a variable declaration: `let x: T = expr` or

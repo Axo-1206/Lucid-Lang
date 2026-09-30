@@ -4,7 +4,7 @@
  *
  * ─── What this file implements ────────────────────────────────────────────
  *   - parseType            the entry point; dispatches on the leading token
- *   - parsePrimitiveType   `int`, `float`, `bool`, `string`, `char`, `unit`
+ *   - parsePrimitiveType   `int`, `float`, `bool`, `string`, `char`, `void`
  *   - parseNamedType       `Person`, `alias.Person`, `SpriteRef`
  *   - parseArrayType       `[T]` (dynamic) or `[N, T]` (fixed-size)
  *   - parseRowRefType      `&T`
@@ -22,10 +22,16 @@
  * parseType dispatches on the leading token; each branch has its own
  * parser below.
  *
- * ─── Design: no suffix types ──────────────────────────────────────────────
- * There is no `T?` or `T!`. Nilability is a property of `&T` (§5.2), not
- * a suffix. There is no `parseTypeWithQualifier`; a type is what its
- * leading token says it is, and nothing follows it.
+ * ─── Design: a `?` suffix ─────────────────────────────────────────────────
+ * A type is a base type with an optional `?` suffix (§5.3). The suffix
+ * makes the base type nilable: `int?`, `SpriteRef?`, `[int]?`. Nilability
+ * is meaningful for primitives, host types, and arrays; it is redundant
+ * on `&T` (which is already nilable) and an error on bare table types,
+ * function types, and `void`.
+ *
+ * The parser produces a `NullableTypeAST` wrapping the base type
+ * uniformly, without checking whether the suffix is meaningful at that
+ * position. Sema reports the error for the cases where it is not.
  *
  * ─── Design: primitive names are keywords ─────────────────────────────────
  * The primitive type names are keywords (§2.2), recognized by the lexer.
@@ -183,7 +189,7 @@ PrimitiveTypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
         case TokenType::KW_BOOL:    kind = PrimitiveKind::Bool;    break;
         case TokenType::KW_CHAR:    kind = PrimitiveKind::Char;    break;
         case TokenType::KW_STRING:  kind = PrimitiveKind::String;  break;
-        case TokenType::KW_UNIT:    kind = PrimitiveKind::Unit;    break;
+        case TokenType::KW_VOID:    kind = PrimitiveKind::Void;    break;
 
         case TokenType::KW_INT8:    kind = PrimitiveKind::Int8;    break;
         case TokenType::KW_INT16:   kind = PrimitiveKind::Int16;   break;

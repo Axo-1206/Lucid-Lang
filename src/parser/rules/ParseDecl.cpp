@@ -647,8 +647,23 @@ FnDeclAST* parseFnDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
 
-    // ─── Optional return type ─────────────────────────────────────────────
-    if (stream.match(TokenType::ARROW)) {
+    // ─── Return type (mandatory) ──────────────────────────────────────────
+    //
+    // Every FN writes `-> T` explicitly. A function that returns nothing
+    // writes `-> void`.
+    if (!stream.match(TokenType::ARROW)) {
+        ctx.diag.errorAt(DiagCode::Syntax_ExpectedToken,
+                           stream.currentLoc(),
+                           "expected '->' and a return type after the "
+                           "parameter list, got '",
+                           stream.peekValueView(ctx.pool), "'");
+
+        auto* unk = ctx.arena.make<UnknownTypeAST>();
+        unk->loc = stream.currentLoc();
+        unk->hasSyntaxError = true;
+        fn->returnType = unk;
+        fn->hasSyntaxError = true;
+    } else {
         TypeAST* ret = parseType(stream, ctx);
         if (ret == nullptr) {
             ctx.diag.errorAt(DiagCode::Syntax_ExpectedType,

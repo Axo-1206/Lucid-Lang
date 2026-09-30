@@ -359,12 +359,12 @@ struct FnDeclAST : ValueDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<ParamAST*> params;
 
-    /// The declared return type. Null means the function returns `unit`.
-    /// (The grammar also allows writing `-> unit` explicitly; the parser
-    /// stores the explicit `PrimitiveTypeAST(Unit)` in that case, so a
-    /// null `returnType` means "no arrow was written" and a non-null one
-    /// with `PrimitiveKind::Unit` means "the arrow was written and named
-    /// `unit`." Both are semantically the same.)
+    /// The declared return type. Never null after parsing: every FN
+    /// writes `-> T` explicitly, and a function that returns nothing
+    /// writes `-> void`.
+    ///
+    /// If the arrow is missing in the source, the parser stores an
+    /// `UnknownTypeAST` here and marks the node `hasSyntaxError`.
     TypeAST* returnType = nullptr;
 
     /// The body block. Null for a host-bound function.

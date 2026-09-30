@@ -64,7 +64,7 @@ const char* tokenTypeName(TokenType t) noexcept {
         case TokenType::KW_BOOL:                return "KW_BOOL";
         case TokenType::KW_CHAR:                return "KW_CHAR";
         case TokenType::KW_STRING:              return "KW_STRING";
-        case TokenType::KW_UNIT:                return "KW_UNIT";
+        case TokenType::KW_VOID:                return "KW_VOID";
 
         case TokenType::KW_INT8:                return "KW_INT8";
         case TokenType::KW_INT16:               return "KW_INT16";
@@ -228,7 +228,7 @@ const char* tokenTypeDescription(TokenType t) noexcept {
         case TokenType::KW_BOOL:                return "'bool'";
         case TokenType::KW_CHAR:                return "'char'";
         case TokenType::KW_STRING:              return "'string'";
-        case TokenType::KW_UNIT:                return "'unit'";
+        case TokenType::KW_VOID:                return "'unit'";
 
         case TokenType::KW_INT8:                return "'int8'";
         case TokenType::KW_INT16:               return "'int16'";
