@@ -424,7 +424,7 @@ bool readConstant(Reader& r, Constant& out, int depth) {
             return true;
         }
         case Constant::Kind::Nil:
-            out.value = false;   // monostate surrogate; see ConstantPool
+            out.value = std::monostate{};
             return true;
         case Constant::Kind::Array: {
             uint32_t count;

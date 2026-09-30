@@ -219,14 +219,9 @@ void ConstantPool::checkInvariants() const {
                 break;
             }
             case Constant::Kind::Nil:
-                AST_ASSERT_MSG(std::holds_alternative<bool>(c.value) == false
-                            && std::holds_alternative<int64_t>(c.value) == false
-                            && std::holds_alternative<double>(c.value) == false
-                            && std::holds_alternative<std::string>(c.value) == false
-                            && std::holds_alternative<std::vector<Constant>>(c.value) == false
-                            && std::holds_alternative<uint32_t>(c.value) == false,
-                    "ConstantPool: kind is Nil but the value has an active "
-                    "alternative");
+                AST_ASSERT_MSG(std::holds_alternative<std::monostate>(c.value),
+                    "ConstantPool: kind is Nil but the value is not the "
+                    "monostate sentinel");
                 break;
             case Constant::Kind::Array: {
                 AST_ASSERT_MSG(

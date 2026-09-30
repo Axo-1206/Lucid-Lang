@@ -75,10 +75,11 @@ struct Constant {
     TypeDescriptor type;
 
     std::variant<
-        bool,
-        int64_t,
-        double,
-        std::string,
+        std::monostate,          ///< Nil
+        bool,                    ///< Bool
+        int64_t,                 ///< Int
+        double,                  ///< Float
+        std::string,             ///< String / Char
         std::vector<Constant>,   ///< Array
         uint32_t                 ///< Function: FunctionProto index
     > value;
