@@ -14,7 +14,7 @@
 #include <atomic>
 #include <chrono>
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 static std::atomic<bool> g_running{true};
 
@@ -107,4 +107,4 @@ int runCommand(const CLIOptions& opts) {
     return 0;
 }
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

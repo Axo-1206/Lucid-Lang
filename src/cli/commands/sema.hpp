@@ -5,7 +5,7 @@
 
 #include "../CLIOptions.hpp"
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 /// @brief Execute the 'lucid sema' command.
 /// 
@@ -16,4 +16,4 @@ namespace cli::commands {
 /// @return 0 on success (no errors), 1 if semantic analysis failed
 int semaCommand(const CLIOptions& opts);
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

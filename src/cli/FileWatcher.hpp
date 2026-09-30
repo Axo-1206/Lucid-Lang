@@ -12,7 +12,7 @@
 #include <chrono>
 #include <mutex>
 
-namespace cli {
+namespace lucid::cli {
 
 using FileChangeCallback = std::function<void(const std::string& filePath)>;
 
@@ -115,4 +115,4 @@ private:
     std::unordered_map<std::string, std::time_t> watchedFiles_;
 };
 
-} // namespace cli
+} // namespace lucid::cli

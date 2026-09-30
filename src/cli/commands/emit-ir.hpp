@@ -5,7 +5,7 @@
 
 #include "../CLIOptions.hpp"
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 /// @brief Execute the 'lucid emit-ir' command.
 /// 
@@ -28,4 +28,4 @@ namespace cli::commands {
 /// @return 0 on success, 1 if any pipeline stage failed
 int emitIRCommand(const CLIOptions& opts);
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

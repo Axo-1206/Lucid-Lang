@@ -18,7 +18,7 @@
 #include <iostream>
 #include <filesystem>
 
-namespace cli::pipeline {
+namespace lucid::cli::pipeline {
 
 // ─── File I/O Helpers ──────────────────────────────────────────────────
 
@@ -429,4 +429,4 @@ int writePipelineOutput(const CLIOptions& opts,
     return 0;
 }
 
-} // namespace cli::pipeline
+} // namespace lucid::cli::pipeline

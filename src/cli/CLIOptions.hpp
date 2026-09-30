@@ -9,7 +9,7 @@
 #include <vector>
 #include <optional>
 
-namespace cli {
+namespace lucid::cli {
 
 /// @brief Pipeline stages where execution can stop.
 enum class PipelineStage {
@@ -119,4 +119,4 @@ struct CLIOptions {
     interpreter::InterpreterOptions interpreter;
 };
 
-} // namespace cli
+} // namespace lucid::cli

@@ -9,7 +9,7 @@
 
 #include <filesystem>
 
-namespace cli {
+namespace lucid::cli {
 
 /**
  * @brief Shared context for a CLI run session.
@@ -38,4 +38,4 @@ struct CLIContext {
     CLIContext& operator=(const CLIContext&) = delete;
 };
 
-} // namespace cli
+} // namespace lucid::cli

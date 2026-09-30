@@ -5,7 +5,7 @@
 
 #include "../CLIOptions.hpp"
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 /// @brief Execute the 'lucid parse' command.
 /// 
@@ -16,4 +16,4 @@ namespace cli::commands {
 /// @return 0 on success (no errors), 1 if parsing failed
 int parseCommand(const CLIOptions& opts);
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

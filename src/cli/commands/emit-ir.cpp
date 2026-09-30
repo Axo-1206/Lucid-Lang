@@ -11,7 +11,7 @@
 #include <fstream>
 #include <iostream>
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 int emitIRCommand(const CLIOptions& opts) {
     // ─── Initialize context ────────────────────────────────────────────
@@ -47,4 +47,4 @@ int emitIRCommand(const CLIOptions& opts) {
     return 0;
 }
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

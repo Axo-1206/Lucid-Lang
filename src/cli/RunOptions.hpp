@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace cli {
+namespace lucid::cli {
 
 /**
  * @brief Command-line options for `lucid run`.
@@ -34,4 +34,4 @@ struct RunOptions {
     int watchDelaySeconds = 1;
 };
 
-} // namespace cli
+} // namespace lucid::cli

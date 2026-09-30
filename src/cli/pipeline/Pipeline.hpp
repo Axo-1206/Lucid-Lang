@@ -12,7 +12,7 @@
 #include <vector>
 #include <string>
 
-namespace cli::pipeline {
+namespace lucid::cli::pipeline {
 
 /// @brief Result of running the compiler pipeline.
 struct PipelineResult {
@@ -77,4 +77,4 @@ int writePipelineOutput(const CLIOptions& opts,
                         const PipelineResult& result, 
                         CLIContext& ctx);
 
-} // namespace cli::pipeline
+} // namespace lucid::cli::pipeline

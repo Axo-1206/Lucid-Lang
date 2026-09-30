@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 // ─── Main Entry Point ──────────────────────────────────────────────────
 
@@ -93,4 +93,4 @@ extern std::atomic<bool> g_running;
 /// @param signum Signal number (SIGINT, SIGTERM, etc.)
 void signalHandler(int signum);
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands

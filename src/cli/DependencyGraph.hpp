@@ -12,7 +12,7 @@
 #include <queue>
 #include <string>
 
-namespace cli {
+namespace lucid::cli {
 
 /**
  * @brief Bi‑directional dependency graph built from ModuleAST::imports.
@@ -125,4 +125,4 @@ private:
     std::set<InternedString> allModules_;
 };
 
-} // namespace cli
+} // namespace lucid::cli

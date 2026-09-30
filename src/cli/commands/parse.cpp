@@ -7,7 +7,7 @@
 #include "../CLIOptions.hpp"
 #include "core/trace/Trace.hpp"
 
-namespace cli::commands {
+namespace lucid::cli::commands {
 
 int parseCommand(const CLIOptions& opts) {
     // ─── Initialize context ────────────────────────────────────────────
@@ -31,4 +31,4 @@ int parseCommand(const CLIOptions& opts) {
     return pipeline::writePipelineOutput(opts, result, ctx);
 }
 
-} // namespace cli::commands
+} // namespace lucid::cli::commands
