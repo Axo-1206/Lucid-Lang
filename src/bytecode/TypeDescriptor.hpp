@@ -4,84 +4,73 @@
  * @responsibility The serializable form of a Lucid type. The artifact
  *                 cannot store TypeAST* pointers; it stores these.
  *
- * ─── Design: a flat tagged union, not a graph ─────────────────────────────
- * A TypeDescriptor is a small, fully-owned value. Nested types (arrays
- * of arrays, function types, row references) are held by value in a
- * vector of component descriptors. There are no cycles: the compiler
- * flattens a recursive type at the point of use, and the language has
- * no recursive types (a table references itself only through &T, which
- * is a single index, not a nested TypeDescriptor).
+ * ─── Design: no mirrors ───────────────────────────────────────────────────
+ * PrimitiveKind and ArrayKind live in core/PrimitiveKind.hpp and
+ * core/ArrayKind.hpp. This file includes those headers directly, not a
+ * mirrored copy. One definition per concept; no drift.
  *
- * ─── Design: kinds mirror TypeAST's concrete subclasses ───────────────────
- * One Kind per concrete TypeAST subclass. The translation from TypeAST
- * to TypeDescriptor is in BakeConstant.cpp / EmitDecl.cpp and is a
- * direct structural copy.
+ * ─── Design: a tree of owned descriptors, not a graph ─────────────────────
+ * A TypeDescriptor is a small, fully-owned value. Nested types (arrays
+ * of arrays, function types, row references) are held by shared_ptr so
+ * a recursive shape is representable without an infinite-size struct.
+ * In practice a Lucid type is finite and the recursion depth is small.
+ *
+ * ─── Design: one Kind per concrete TypeAST subclass ───────────────────────
+ * The translation from TypeAST to TypeDescriptor is a structural copy,
+ * performed by the compiler when it reads a resolved type. It happens
+ * in EmitDecl.cpp / EmitExpr.cpp via a small helper.
  */
 
 #pragma once
 
+#include "core/PrimitiveKind.hpp"
+#include "core/ArrayKind.hpp"
+
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <variant>
 #include <vector>
 
 namespace lucid::bytecode {
 
-// Forward — PrimitiveKind is defined in core/ast/TypeAST.hpp. The
-// bytecode layer mirrors it rather than including the AST header, so
-// this header has no dependency on the frontend.
-enum class PrimitiveKindMirror : uint8_t {
-    Bool, Char, String, Void,
-    Int8, Int16, Int32, Int64,
-    Uint8, Uint16, Uint32, Uint64,
-    Float32, Float64,
-};
-
-enum class ArrayKindMirror : uint8_t {
-    Dynamic, Fixed,
-};
-
 struct TypeDescriptor;
-using TypeDescriptorList = std::vector<TypeDescriptor>;
 
 /// @brief A serializable type.
 struct TypeDescriptor {
     enum class Kind : uint8_t {
-        Primitive,     ///< PrimitiveKindMirror
-        Named,         ///< a table or host type, by mangled name
-        Array,         ///< ArrayKindMirror + element type
-        RowRef,        ///< &T; inner is a Named
-        Function,      ///< params + return
-        Nullable,      ///< inner is the non-nil type
+        Primitive,     ///< payload: primitive
+        Named,         ///< payload: namedMangled (a table or host type)
+        Array,         ///< payload: arrayKind + fixedSize + component
+        RowRef,        ///< payload: component (a Named)
+        Function,      ///< payload: params + component (the return type)
+        Nullable,      ///< payload: component (the non-nil type)
         Unknown,       ///< error-recovery placeholder
     };
 
     Kind kind = Kind::Unknown;
 
     // Primitive
-    PrimitiveKindMirror primitive = PrimitiveKindMirror::Void;
+    PrimitiveKind primitive = PrimitiveKind::Void;
 
     // Named
     std::string namedMangled;   ///< mangled name of the table/host type
 
     // Array
-    ArrayKindMirror  arrayKind = ArrayKindMirror::Dynamic;
+    ArrayKind arrayKind = ArrayKind::Dynamic;
     uint64_t         fixedSize = 0;
 
-    // Array / RowRef / Nullable — the single component type
-    // Function — params[0..n-1], and `component` holds the return type
-    // Held indirectly so a recursive structure is a heap allocation,
-    // not an infinite-size struct. In practice a Lucid type is finite.
-    std::shared_ptr<TypeDescriptor>      component;
+    // Array / RowRef / Nullable — the single component type.
+    // Function — the return type. Parameters are in `params`.
+    std::shared_ptr<TypeDescriptor> component;
     std::vector<std::shared_ptr<TypeDescriptor>> params;  ///< Function only
 
     // ─── Factories ──────────────────────────────────────────────────────
-    static TypeDescriptor makePrimitive(PrimitiveKindMirror p);
+    static TypeDescriptor makePrimitive(PrimitiveKind p);
     static TypeDescriptor makeNamed(std::string mangled);
-    static TypeDescriptor makeArray(ArrayKindMirror k, uint64_t size,
+    static TypeDescriptor makeArray(ArrayKind k, uint64_t size,
                                     TypeDescriptor element);
     static TypeDescriptor makeRowRef(TypeDescriptor inner);
-    static TypeDescriptor makeFunction(TypeDescriptorList params,
+    static TypeDescriptor makeFunction(std::vector<TypeDescriptor> params,
                                        TypeDescriptor returnType);
     static TypeDescriptor makeNullable(TypeDescriptor inner);
 
@@ -95,8 +84,8 @@ struct TypeDescriptor {
 
 /// @brief A serializable function signature. Matches FunctionTypeAST.
 struct FunctionSignature {
-    TypeDescriptorList params;
-    TypeDescriptor     returnType;
+    std::vector<TypeDescriptor> params;
+    TypeDescriptor              returnType;
 };
 
 } // namespace lucid::bytecode

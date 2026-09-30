@@ -20,6 +20,7 @@
 #include "../HostSymbolTable.hpp"
 #include "../StaticData.hpp"
 #include "../FunctionProto.hpp"
+#include "../Opcode.hpp"
 
 #include "core/ast/DeclAST.hpp"
 

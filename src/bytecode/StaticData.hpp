@@ -1,29 +1,44 @@
 /**
  * @file StaticData.hpp
  *
- * @responsibility Baked constant data: the initial contents of every
- *                 persistent declaration. Replaces the old design's
- *                 "module state" — in the new grammar there is no
- *                 module-load-time execution, only static data the
- *                 module starts with.
+ * @responsibility The initial state of every persistent declaration.
+ *                 StaticData is a SEED, not storage: the interpreter
+ *                 reads it once at load time, allocates mutable slots
+ *                 for each binding and each table cell, and copies
+ *                 these values in. After load, StaticData is not
+ *                 consulted again.
  *
- * ─── Design: everything here is a compile-time constant ───────────────────
- * Per §3.4 and §4.1.1c, a top-level let/const initializer and a
- * @fixed/@readonly table's inline rows are all const_expr. Sema folded
- * them; the compiler copies the folded values here.
+ * ─── Why "initial", not "constant" ────────────────────────────────────────
+ * A @fixed table's cells are writable; only @readonly freezes them. A
+ * top-level `let` may be reassigned by an exported function the host
+ * calls; only `const` forbids it. So the values here are INITIAL values,
+ * not the only values. The interpreter allocates live storage for each
+ * one and copies the initial value in. The doc comment must say
+ * "initial" everywhere to keep that clear.
  *
- * ─── Design: growing tables' initializers are also static data ────────────
- * A growing table's = [ ... ] initializer is a compile-time constant
- * block, seeded into the runtime's storage at startup. It lives here
- * alongside the fixed tables' rows.
+ * ─── Where the values come from ───────────────────────────────────────────
+ * Sema folded every top-level let/const initializer and every baked row
+ * of a @fixed/@readonly/growing-with-initializer table (grammar §3.4,
+ * §4.1.1c). The compiler reads those folded values and copies them here
+ * via BakeConstant. It does not evaluate anything.
+ *
+ * ─── What lives here ──────────────────────────────────────────────────────
+ *   - every top-level let/const, keyed by mangled name
+ *   - every @fixed/@readonly table's row set
+ *   - every growing table's inline `= [ ... ]` initializer
+ *
+ * ─── What does NOT live here ──────────────────────────────────────────────
+ *   - constants referenced by instructions (ConstantPool)
+ *   - runtime state (the interpreter's live storage, allocated at load)
  */
 
 #pragma once
 
-#include "ConstantPool.hpp"
+#include "ConstantPool.hpp"   // for Constant
 #include "TypeDescriptor.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,7 +48,6 @@ namespace lucid::bytecode {
 struct BakedTable {
     std::string  mangledName;
 
-    /// Column schema. One per column, in source order.
     struct Column {
         std::string     mangledName;
         TypeDescriptor  type;
@@ -43,10 +57,11 @@ struct BakedTable {
     };
     std::vector<Column> columns;
 
-    /// Baked rows. Each row has exactly one Constant per column.
+    /// The table's initial row set. Each row has exactly one Constant
+    /// per column. These are INITIAL contents; a @fixed table's cells
+    /// are writable after load, and a growing table may add rows.
     std::vector<std::vector<Constant>> rows;
 
-    // Attribute flags (from §4.1.4)
     bool isFixed      = false;
     bool isReadonly   = false;
     bool isPacked     = false;
@@ -54,11 +69,10 @@ struct BakedTable {
     bool isRequest    = false;
     bool isHostBacked = false;
 
-    /// Only meaningful if isHostBacked; the host symbol index for the
-    /// table's type registration. -1 if not host-backed.
+    /// Only meaningful if isHostBacked. The host symbol index for the
+    /// table's type registration; -1 if not host-backed.
     int32_t hostTypeSymbolIndex = -1;
 
-    /// Only meaningful if @reserve was written.
     std::optional<uint64_t> reservedCount;
 };
 
@@ -66,7 +80,7 @@ struct BakedTable {
 struct BakedBinding {
     std::string    mangledName;
     TypeDescriptor type;
-    Constant       value;
+    Constant       initialValue;   ///< INITIAL, not final
 };
 
 /// @brief The whole set.
@@ -74,17 +88,16 @@ class StaticData {
 public:
     StaticData() = default;
 
-    std::vector<BakedTable>&        tables()   noexcept { return m_tables; }
-    std::vector<BakedBinding>&      bindings() noexcept { return m_bindings; }
-    const std::vector<BakedTable>&  tables()   const noexcept { return m_tables; }
+    std::vector<BakedTable>&         tables()   noexcept { return m_tables; }
+    std::vector<BakedBinding>&       bindings() noexcept { return m_bindings; }
+    const std::vector<BakedTable>&   tables()   const noexcept { return m_tables; }
     const std::vector<BakedBinding>& bindings() const noexcept { return m_bindings; }
 
     /// @brief Invariants. A violation is a compiler bug.
-    ///   - every BakedTable has at least one column, unless it is
-    ///     host-backed.
+    ///   - every non-host-backed BakedTable has at least one column.
     ///   - every row has exactly columns.size() cells.
     ///   - every @fixed/@readonly table has at least one row (§4.1.1b).
-    ///   - every BakedBinding's value.kind matches its type's shape.
+    ///   - every BakedBinding's initialValue.kind matches its type's shape.
     void checkInvariants() const;
 
 private:
