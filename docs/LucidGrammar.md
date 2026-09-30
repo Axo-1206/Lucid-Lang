@@ -208,8 +208,11 @@ host_target  ::= '=' 'host' '(' STRING_LIT ')'
 const_expr   ::= literal
              | const_expr binary_op const_expr    -- primitive operands only
              | unary_op const_expr
+             | qualified_const                    -- a top-level let/const binding (see §4.1.1c)
              | qualified_table '.' IDENTIFIER     -- T.Member, or module.T.Member, on another fixed (@fixed/@readonly) table only
-             | IDENTIFIER                         -- a top-level FN name, for function-typed columns
+             | IDENTIFIER                         -- a bare top-level FN name, for function-typed columns
+
+qualified_const ::= [ IDENTIFIER '.' ] IDENTIFIER   -- NAME, or module.NAME
 ```
 
 `qualified_table` (§5) is deliberately reused here rather than repeating a narrower two-level form: a fixed-table member reference inside another module's rows needs the same one-level module qualification a `&T` type does, e.g. `directions.Direction.North` inside a `table_init` in a module that `import`s `directions`.

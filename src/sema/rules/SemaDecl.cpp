@@ -314,29 +314,71 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 
     // ─── 5. Resolve the initializer ─────────────────────────────────────
     //
-    // Every `let`/`const` has an initializer in the new grammar. The
-    // initializer is resolved against the declared type — this is what
-    // lets an empty array literal `[]` take its element type from the
-    // binding's annotation, and what lets an integer literal adapt to
-    // whatever concrete numeric type the annotation names.
-    if (decl->init) {
-        TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
-        if (!initType || initType->isa<UnknownTypeAST>()) {
-            return;
-        }
+    // The initializer is resolved against the declared type, so that an
+    // empty array literal `[]` takes its element type from the binding's
+    // annotation and an integer literal adapts to the concrete numeric
+    // type the annotation names.
+    //
+    // A parser error-recovery node — a `let`/`const` whose source was
+    // missing the `= expr` — never reaches here; the `hasSyntaxError`
+    // guard at the top of this function returned it early. So `decl->init`
+    // is always non-null by the time this runs, and no defensive check
+    // is needed.
+    TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
+    if (!initType || initType->isa<UnknownTypeAST>()) {
+        return;
     }
 
-    // ─── 6. Constant folding for `const` ────────────────────────────────
+    // ─── 6. Top-level initializer must be a `const_expr` ────────────────
     //
-    // A `const` binding whose initializer is a compile-time constant has
-    // that constant cached on the initializer expression. The evaluator
-    // does not rewrite the expression tree.
-    if (decl->isConst && decl->init) {
+    // The rule (grammar §3.4 and §4.3): a top-level `let`/`const` binding
+    // starts at a value the compiler knows. Nothing runs at module load
+    // time, so the initializer must be a compile-time constant — the
+    // same `const_expr` shape fixed-table rows use (§4.1.1c).
+    //
+    // A local `let` inside a function body has no such restriction: its
+    // initializer evaluates when the function runs, which is real
+    // execution, not load-time evaluation.
+    //
+    // The check is decided by `isModuleLevelDeclaration`, which asks
+    // whether this declaration is one of the module's top-level `decls`.
+    // It is the same helper `AttributeValidator` uses to enforce
+    // `@export`'s module-level-only rule.
+    if (isModuleLevelDeclaration(decl, ctx)) {
         ConstantValue val = evaluate(decl->init, ctx);
-        if (val.isEvaluated() && !val.isError()) {
-            decl->init->isConst    = true;
-            decl->init->constValue = val;
+
+        if (val.isError()) {
+            // The evaluator emitted its own diagnostic (division by
+            // zero, integer overflow, ...). Nothing more to add; the
+            // declaration is rejected.
+            return;
         }
+
+        if (!val.isEvaluated()) {
+            // The initializer is not a compile-time constant. Under
+            // the new rule, that is a diagnostic, not a silent
+            // "unfolded" state.
+            ctx.diagnostics.error(DiagCode::Type_TopLevelInitNotConstant,
+                                  decl->init,
+                                  "the initializer of top-level '",
+                                  (decl->isConst ? "const" : "let"), " ",
+                                  ctx.pool.lookup(decl->name),
+                                  "' must be a compile-time constant");
+            ctx.diagnostics.note(decl->init,
+                                 "nothing runs at module load time; "
+                                 "a top-level binding starts at a value known "
+                                 "at compile time. To compute a value at "
+                                 "runtime, declare the binding without an "
+                                 "initializer's runtime call — initialize it "
+                                 "inside an @export'ed function the host calls");
+            return;
+        }
+
+        // The fold succeeded. Cache the value on the expression; every
+        // later pass (the bytecode emitter's static-data writer, a
+        // future `.lucb` serializer) reads it from there.
+        decl->init->isConst    = true;
+        decl->init->constValue = val;
     }
 
     // ─── 7. Mangled name for @export ────────────────────────────────────

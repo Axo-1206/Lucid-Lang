@@ -160,7 +160,7 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
     // later point is not determined by the initializer.
     if (lv.kind == ValueLookup::Kind::Variable) {
         VarDeclAST* var = lv.variable;
-        if (var->isConst && var->init && var->init->isConst) {
+        if (var->init && var->init->isConst) {
             return var->init->constValue;
         }
     }
@@ -181,54 +181,106 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
 // evaluateFieldAccess
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// The only field access that is a compile-time constant is the
-// fixed-table sugar `Direction.North`. The resolver in
-// `resolveFieldAccessExpr` sets `isFixedRowSugar` when it recognizes
-// the shape and resolves it to a specific row of a `@fixed` or
-// `@readonly` table. The constant value is that row's index.
+// A field access is a compile-time constant in two shapes:
 //
-// Everything else — a cell access `row.name`, a column view
-// `Person.age`, a module member `math.sqrt`, a `by<Column>` lookup —
-// is either a runtime operation (a cell read) or a function value (a
-// module member, a `by<Column>` lookup). Neither is a `const_expr`.
+//   ─── Fixed-row sugar: `T.Member` ───────────────────────────────────────
+//   On a `@fixed`/`@readonly` table, `T.Member` resolves at compile time
+//   to a specific row of `T`. The constant value is the row's index.
+//   The field-access resolver sets `isFixedRowSugar` and
+//   `hasResolvedFixedRow`; the evaluator reads them.
+//
+//   ─── Cross-module member: `module.NAME` ────────────────────────────────
+//   A reference to a top-level `let`/`const` binding in an imported
+//   module, or to a top-level `FN` in an imported module. The
+//   field-access resolver classifies the access as `isModuleAccess`
+//   and stores the member's declaration on `resolvedDecl`; the
+//   evaluator reads it.
+//
+//   - If the member is a `const` binding whose initializer has already
+//     been folded, the constant is the binding's cached value.
+//   - If the member is a `FN` declaration, the constant is a `Function`
+//     holding the `FnDeclAST*` — the same `ConstantValue` a same-module
+//     `FN` reference produces.
+//   - If the member is a `let` binding whose initializer has already
+//     been folded, the constant is the binding's *initial value*. A
+//     later reassignment by user code does not change what the fold
+//     sees (grammar §4.1.1c).
+//   - Anything else — an unfolder binding, a table name, a `by<Column>`
+//     lookup, a module member that is not a `let`/`const`/`FN` — is not
+//     a compile-time constant.
+//
+// Everything else that reaches this function is not a constant. A cell
+// read `row.name` is a runtime operation. A column view `Person.age` is
+// a live view, not a value. A `by<Column>` lookup is a function value
+// synthesized at each use — it is not one of the two constant shapes
+// above.
 
 ConstantValue evaluateFieldAccess(FieldAccessExprAST* expr, SemaContext& ctx) {
     if (!expr) return ConstantValue::unknown();
 
-    if (!expr->isFixedRowSugar) {
-        return ConstantValue::unknown();
-    }
-
     // ─── Fixed-row sugar: the value is the row's index ──────────────────
-    //
-    // The resolver that set `isFixedRowSugar` also resolved the field
-    // name to a specific row of the fixed table. The row's index within
-    // the table's `rows` span is the compile-time value.
-    //
-    // The row index is stored on the resolved `ColumnDeclAST` — no,
-    // there is no column here. The row index is derived from the
-    // table's rows span by finding the row whose first string cell's
-    // value matches the field name. The resolver already did that
-    // search; the index is what it found, but the resolver does not
-    // currently store the index on the AST node.
-    //
-    // ─── What we do here ────────────────────────────────────────────────
-    //
-    // Rather than re-search the table's rows, this evaluator reads the
-    // index from `expr->resolvedFixedRowIndex`, a new field the resolver
-    // is expected to set alongside `isFixedRowSugar`. If the field is
-    // not set (a resolver that forgot to fill it in, or an AST that
-    // predates the field), the fold returns Unknown rather than guess.
-    //
-    // This makes the fixed-row constant's value available to any caller
-    // that wants it — the switch-coverage check, the bytecode emitter,
-    // a future `.lucb` serializer — without those callers having to
-    // re-derive the index from the row span.
-    if (!expr->hasResolvedFixedRow) {
+    if (expr->isFixedRowSugar) {
+        if (!expr->hasResolvedFixedRow) return ConstantValue::unknown();
+        return ConstantValue(static_cast<int64_t>(expr->resolvedFixedRowIndex));
+    }
+
+    // ─── Cross-module member: `module.NAME` ─────────────────────────────
+    if (expr->isModuleAccess) {
+        DeclAST* member = expr->resolvedDecl;
+
+        // Defensive: a caller that evaluates a node in isolation (a
+        // hover tooltip, a diagnostic renderer) may see a field
+        // access that the resolver has not classified yet. Resolve
+        // the member here rather than returning Unknown for a shape
+        // that is actually foldable.
+        if (!member && expr->object &&
+            expr->object->isa<IdentifierExprAST>()) {
+            IdentifierExprAST* objId =
+                expr->object->as<IdentifierExprAST>();
+            ModuleAST* module = ctx.lookupImport(objId->name);
+            if (module) {
+                // Value member first (variables, then functions).
+                member = ctx.lookupModuleValueMember(module, expr->fieldName);
+                if (!member) {
+                    // A table member is not a `ValueDeclAST`; look it up
+                    // through the table-specific path. It is not a
+                    // `const_expr` value today, but resolving it keeps
+                    // the diagnostic ("a table name is not a
+                    // compile-time constant") anchored on the right
+                    // declaration rather than on an unresolved member.
+                    member = ctx.lookupModuleTableMember(module,
+                                                         expr->fieldName);
+                }
+            }
+        }
+
+        if (!member) return ConstantValue::unknown();
+
+        // A `const` or `let` binding: the cached value of its
+        // initializer, provided it has already been folded. The two
+        // are treated identically here because the fold is over the
+        // *initial value*; `let`'s mutability affects what the user
+        // may do afterwards, not what the fold reads.
+        if (member->isa<VarDeclAST>()) {
+            VarDeclAST* var = member->as<VarDeclAST>();
+            if (var->init && var->init->isConst) {
+                return var->init->constValue;
+            }
+            return ConstantValue::unknown();
+        }
+
+        // A `FN` name: a compile-time-known code address. Same
+        // representation as a same-module `FN` reference.
+        if (member->isa<FnDeclAST>()) {
+            return ConstantValue(member->as<FnDeclAST>());
+        }
+
+        // A `TABLE` name: the sheet itself, not a `const_expr` value
+        // in any supported position. Unknown.
         return ConstantValue::unknown();
     }
 
-    return ConstantValue(static_cast<int64_t>(expr->resolvedFixedRowIndex));
+    return ConstantValue::unknown();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

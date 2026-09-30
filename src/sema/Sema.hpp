@@ -153,10 +153,45 @@ void resolveParam(ParamAST* param, SemaContext& ctx);
 
 /// @brief Resolve a `VarDeclAST`'s type, resource kind, and initializer.
 ///
-/// Called from `resolveModuleDeclarations` for a top-level `let` (pass 2),
-/// and from `resolveVarDeclStmt` in `SemaStmt.cpp` for a local `let`
-/// (pass 3). The caller is responsible for having registered the name;
-/// this function does not.
+/// Called from two places:
+///   - `resolveModuleDeclarations` for a top-level `let`/`const`, during
+///     pass 2;
+///   - `resolveVarDeclStmt` (in `SemaStmt.cpp`) for a local `let`/`const`,
+///     during pass 3.
+///
+/// The two call sites differ only in *when the name is registered*:
+///   - A top-level declaration's name is registered in pass 1, so by the
+///     time this function runs the name is already in the module table.
+///   - A local declaration's name is registered by `resolveVarDeclStmt`
+///     *before* it calls this function, into the enclosing block's scope.
+///
+/// ─── Top-level initializers must be `const_expr` ──────────────────────────
+///
+/// The grammar (§3.4, §4.3) requires a top-level `let`/`const`'s
+/// initializer to be a compile-time constant. Nothing runs at module
+/// load time, so the binding starts at a value the compiler already
+/// knows; the value is written into the module's static data, and no
+/// code is emitted for the declaration.
+///
+/// This function enforces the rule: when the declaration is
+/// module-level (`isModuleLevelDeclaration`), the initializer is folded
+/// by `evaluate`, and a fold failure emits `Type_TopLevelInitNotConstant`.
+/// A local `let` is not subject to the rule; its initializer evaluates
+/// when the enclosing function runs, which is real execution, not
+/// load-time evaluation.
+///
+/// ─── Cross-module references ──────────────────────────────────────────────
+///
+/// A `const_expr` may name a top-level `let`/`const`/`FN` in an imported
+/// module (`module.NAME`). The fold reads the referenced binding's
+/// cached `constValue` when it has already been folded. The fold order
+/// is declaration order within a module and *host load order* across
+/// modules; a cross-module forward reference (a reference to a binding
+/// whose module has not yet been folded) is rejected by the same
+/// `Type_TopLevelInitNotConstant` diagnostic that a same-module forward
+/// reference produces. The evaluator's module-member case handles the
+/// cross-module lookup; this function does not need to distinguish the
+/// two cases.
 void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx);
 
 // ═════════════════════════════════════════════════════════════════════════════

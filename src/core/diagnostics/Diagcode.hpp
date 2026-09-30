@@ -217,6 +217,7 @@ enum class DiagCode : uint32_t {
     Type_MissingCase              = 4018,
     Type_NotLValue                = 4019,
     Type_InvalidAttributeArg      = 4020,
+    Type_TopLevelInitNotConstant   = 4021,
 
     // Values and numerics (4100-4199)
     Value_DivisionByZero          = 4101,
