@@ -180,7 +180,7 @@ Because tables are references (§5.2), a cyclic type dependency (`TABLE A { b: &
 Execution happens only through two host-driven mechanisms:
 
 - **Direct call.** The host calls an `@export`ed function by name at a time of its choosing (an update tick, a game-specific hook).
-- **Callback.** The host calls an `@export`ed function by name in response to something happening (an input event, a network message). There is no attribute for this — it is an ordinary exported function the host looks up and calls; how a game or library organizes "call the right function for this event" (registration, dispatch order, an event-kind table) is not a language concept and is specified in `Architecture.md`.
+- **Callback.** The host calls an `@export`ed function in response to something happening (an input event, a network message). A function that answers a host-defined event marks itself with `@hook("name")` (§9.1), and the host finds it by that hook name. The attribute is only a marker: how a game or library organizes "call the right function for this event" (registration, dispatch order, an event-kind table) is not a language concept and is specified in `Architecture.md`.
 
 **Loading is two-tiered when mods/extensions are involved:**
 
@@ -211,6 +211,7 @@ const_expr   ::= literal
              | qualified_const                    -- a top-level let/const binding (see §4.1.1c)
              | qualified_table '.' IDENTIFIER     -- T.Member, or module.T.Member, on another fixed (@fixed/@readonly) table only
              | IDENTIFIER                         -- a bare top-level FN name, for function-typed columns
+             | lambda_expr                        -- a lambda (§6.9), for function-typed columns
 
 qualified_const ::= [ IDENTIFIER '.' ] IDENTIFIER   -- NAME, or module.NAME
 ```
@@ -268,6 +269,10 @@ A `&T` into a growing table is a pair `{slot, generation}`. It is **valid** when
 
 **Iteration order is slot order.** Rows are visited in the order of their slot indices, not in the order they were added. This order may change after a `REMOVE` and subsequent `ADD`. Rows never move between slots, so a table has no built-in sorted order; a program that needs one builds it from an array of row references and `arr.SORT` (§8.3).
 
+**Slot numbering.** Slot indices visible to a program are **0-based**: `T[0]` is the row in the first slot, `T[1]` the second, and so on, for growing and fixed tables alike (§7.1). *(Informative: a runtime may number its internal slots from 1 and reserve internal slot 0 to encode `nil`, shifting by one at the language boundary. The shift is not observable. A program never sees an internal slot number, and a `&T` to a live row is never `nil`.)*
+
+**Rows never shift.** `REMOVE` leaves a dead slot at the row's position; a later `ADD` may reuse it with a new generation. A dead slot is not a valid index: `T.AT(i)` returns `nil` and `T[i]` panics (§7.3).
+
 **A table with `@fixed` or `@readonly` has no slot array, no free list, and no generation counters.** Its full row set is known at compile time, so there is nothing to reclaim or reuse. Its rows are indexed 0..N-1 in declaration order, and its `&T` references are simple indices, smaller than a growing table's.
 
 #### 4.1.1b `@fixed`/`@readonly` tables: initializer and errors
@@ -280,7 +285,7 @@ A table whose row set can never change cannot hold any data if it starts empty, 
 
 #### 4.1.1c Constant expressions in a `@fixed`/`@readonly` table's rows
 
-A `@fixed`/`@readonly` table's inline `row` cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time fixed-row sugar), and — for a function-typed column (§5.0) — a bare top-level `FN` name. **Function calls and references to a growing table's contents are not allowed inside a `@fixed`/`@readonly` table's inline rows:**
+A `@fixed`/`@readonly` table's inline `row` cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time fixed-row sugar), and — for a function-typed column (§5.0) — a bare top-level `FN` name or a lambda (§6.9). **Function calls and references to a growing table's contents are not allowed inside a `@fixed`/`@readonly` table's inline rows:**
 
 ```
 @fixed
@@ -291,14 +296,14 @@ TABLE Loadout {
 ]
 ```
 
-A bare function name is allowed specifically because it isn't a call — `onIdleEnter` in §6.9's `StateHandler` example names a compile-time-known code address, the same as `Direction.North` names a compile-time-known row; neither one runs anything.
+A bare function name is allowed specifically because it isn't a call — `onIdleEnter` in §6.9's `StateHandler` example names a compile-time-known code address, the same as `Direction.North` names a compile-time-known row; neither one runs anything. A lambda (§6.9) is also a valid `const_expr` for a function-typed cell, since it desugars to a compiler-generated top-level function.
 
 This isn't an arbitrary restriction — it's what makes fixed-table construction free at runtime. Because every inline row is resolvable entirely at compile time, the compiler evaluates it once during compilation and bakes the result into the compiled artifact as constant data — the same way a string literal is baked in, not constructed when the program starts. That has two consequences worth being explicit about:
 
 - **There is no table load order to define.** `@fixed`/`@readonly` tables aren't sequenced relative to each other or to growing tables at load time, because nothing about them runs at load time — their rows already exist as compiled constant data before the host loads anything (§3.4). Growing tables need no ordering either: they simply start as an empty header (row count zero), with no expression to evaluate.
 - **A cross-reference between two `@fixed`/`@readonly` tables is a compile-time dependency**, resolved by the compiler the same way it already resolves `Direction.North` to a specific row. A genuine cycle between two fixed tables' constant rows (`A`'s row referencing `B.SomeMember` while `B`'s row references `A.SomeMember`) is a **compile error**, not a runtime problem — unlike the type-level cycles in §3.3, a *value* cycle between constants has no pointer trick to fall back on, so it's simply rejected.
 
-**A growing table's `= [ ... ]` initializer is also evaluated at compile time.** Its rows are the same as `const_expr` rows in a fixed table; the difference is only that a growing table may add more rows at runtime. A growing table's initializer is a compile-time constant block, seeded into the runtime's storage at startup.
+**A growing table's `= [ ... ]` initializer is also evaluated at compile time.** Its rows are the same as `const_expr` rows in a fixed table; the difference is only that a growing table may add more rows at runtime. A growing table's initializer is a compile-time constant block, seeded into the runtime's storage at startup. The rules above apply identically to fixed and growing tables: a function-typed cell in a growing table's initializer is a `const_expr` (a bare `FN` name or a lambda), exactly as it would be in a fixed table.
 
 #### 4.1.1d Reclaiming memory: `CLEAR` and `SHRINK`
 
@@ -363,7 +368,8 @@ TABLE LoadRequest = host("LoadRequest")
 - A column's type is fixed at declaration.
 - Every row supplies a value for every column.
 - Duplicate rows are allowed by default (this is a data container, not a set); use `@unique`/`@primary` on a column to forbid duplicates.
-- A column's type may be a primitive, a host type, a row reference (`&T`), or an array (`[T]`, `[N, T]`). **A column may not be a bare table type or a function type** — the former is a meaningless whole-sheet reference in a cell; the latter is a code pointer that a data container should not hold (use a bare `FN` name in a function-typed column of a fixed table, §4.1.1c, or store a `&T` to a table row that holds the function value).
+- A column's type may be a primitive, a host type, a row reference (`&T`), an array (`[T]`, `[N, T]`), or a function type (§5.0). **A column may not be a bare table type** — a whole-sheet reference in a cell is meaningless.
+- **A function-typed column may appear in any table, growing or fixed.** Its cells hold **function values**: references to compile-time-known functions (top-level `FN` names or lambdas, §6.9). A function value is a code address tagged with its signature (§5.0); it has no lifetime, captures no state, and is never constructed at runtime. Assigning a function value to a cell is therefore no different from assigning a literal. A function-typed column is never nilable: every cell in it holds a valid function value (§5.0, §5.3).
 - **Any column type may be nilable (`T?`)** for primitives, host types, and arrays. A nilable cell may hold `nil`; a non-nilable one may not.
 - **A `@fixed`/`@readonly` table's row set is decided at declaration**; a growing table's is not.
 
@@ -401,7 +407,7 @@ No table attribute derives another's meaning. Each one is complete and self-cont
 
 **`@primary` never generates values.** The caller supplies every key: every `ADD` and every inline initializer row provides one, exactly like any other column (§7.1), and it can never be `nil` because the column type may not be nilable. A program that wants sequential ids keeps its own counter in a wrapper function. A `&T` already identifies a row while the program runs; a key is for identity that outlives it (ids from data files, network ids).
 
-**Key types.** `@primary` is valid on a column whose type is an integer type, `bool`, `char`, `string`, or a host type whose registration provides equality and hashing. `float` types are excluded because NaN and -0.0 make equality and hashing unreliable. A `@primary` on a nilable, row-reference, array, function-typed, or `unit` column is a semantic error.
+**Key types.** `@primary` is valid on a column whose type is an integer type, `bool`, `char`, `string`, or a host type whose registration provides equality and hashing. `float` types are excluded because NaN and -0.0 make equality and hashing unreliable. A `@primary` on a nilable, row-reference, array, function-typed, or `unit` column is a semantic error. The restriction is about meaning, not mechanics: a nilable or `unit` column can lack a value, so it has no identity to key on; a row reference or array is a composite value with no natural key semantics; and a function value, though it is an ordinary code address, is not a meaningful row identity (a row's key is a name or an id, not the function it holds).
 
 **Keys are writable.** A write to a `@primary` cell removes the old key from the index and inserts the new one; writing the value the cell already holds does nothing. A write that would duplicate another row's key panics, exactly as `ADD` does (§7.3). Only writes to the `@primary` column pay this check. Because the check is per write, two rows cannot swap keys directly (the first write would create a duplicate); go through a temporary unused value. A key that must never change is declared `@primary @readonly`. `REMOVE` and `CLEAR` remove keys from the index.
 
@@ -612,6 +618,7 @@ The one narrow exception is the lambda form (§6.9), which is sugar for a compil
 | `@export`          | Visible outside the module.                               |
 | `@deprecated(msg)` | Using the function produces a compile warning with `msg`. |
 | `@sequence`        | Declares a suspension-capable function — see §9.2.        |
+| `@hook("name")`    | Marks the function as the host's `name` hook — see §9.1.  |
 
 ### 4.3 Variable declarations
 
@@ -710,6 +717,8 @@ A function-typed value can be reassigned to any named `FN` or lambda whose param
 
 Function types are not nilable: a function value is always a valid code address. `((&Person) -> bool)?` is a type error.
 
+This holds for function-typed columns (§4.1.3) too. A function-typed cell is always assigned before its row is visible: every `ADD` and every initializer row supplies a value for every column (§4.1.3, §7.1), and row creation is atomic from the program's point of view, so a cell that has not yet been assigned is never observable. A column cannot express "no function here"; a row that may lack a handler is modeled with a separate `bool` column, or by moving the handler into a table of its own and holding a nilable `&T` to it.
+
 ### 5.1 The reference model
 
 Removing value references (`&int`) — see 5.1.1 below — leaves exactly two reference kinds, both spelled with identifiers rather than a shared ambiguous sigil doing double duty:
@@ -762,7 +771,7 @@ The suffix applies to primitives, host types, and arrays. The following are nila
 The following are type errors:
 
 - `T?` for a bare table type: a table is a global; "the table is nil" is meaningless.
-- `T?` for a function type: a function value is always defined.
+- `T?` for a function type: a function value is always defined. This includes a function-typed column (§4.1.3): it is never nilable, and every cell in it holds a valid function value.
 - `T?` for `void`: `void` already means "no value"; `void?` is redundant and forbidden. `void` may not be the type of a `let`/`const`, a parameter, a column, or an array element at all (only a function's return type) — see §4.2.1.
 - `T?` for a `&T`: `&T` is already nilable; `&T?` is accepted but the `?` is redundant.
 
@@ -922,7 +931,7 @@ paren_expr    ::= '(' expr ')'
 
 ### 6.4 Call
 
-`f(args)` calls a function. `callee` may be a named `FN`, a lambda, a table method (`Person.ADD`), or a module function (`math.sqrt`). No currying.
+`f(args)` calls a function. `callee` may be a named `FN`, a lambda, **an expression of function type** (a `let`/`const`, a parameter, or a table cell; §6.9), a table method (`Person.ADD`), or a module function (`math.sqrt`). No currying.
 
 ### 6.5 Array literal
 
@@ -997,7 +1006,24 @@ TABLE StateHandler {
 ]
 ```
 
-This is a state machine expressed as a plain fixed table — no `switch` needed to dispatch on state, and the designer sees which function each state calls directly in the sheet view.
+This is a state machine expressed as a plain fixed table — no `switch` needed to dispatch on state, and the designer sees which function each state calls directly in the sheet view. A growing table may hold function values in the same way (§4.1.3), seeded from its initializer or added at runtime with `ADD` (§7.1).
+
+**Calling a function value.** A function value is callable: `f(args)` invokes the function `f` refers to, whether `f` is a local, a parameter, or a table cell. The call's argument types must match the function's signature exactly (§5.0), and its result type is the signature's return type.
+
+```
+TABLE Behavior {
+    @primary name: string
+    onUpdate:      (&Enemy, float) -> void
+}
+
+for b: &Behavior in Behavior {
+    b.onUpdate(self, dt)                 -- call whatever function this row holds
+}
+
+Behavior.byName("Idle").onUpdate(self, dt)
+```
+
+A call through a cell of a `@readonly` table (`StateHandler.Idle.onEnter(e)`) names a compile-time-known function, so the compiler may resolve it statically and inline it. A `@fixed` table's cells are writable, so a call through one is dynamic like any other cell read. A call through a cell of a growing table, or through a local or parameter, is dispatched at runtime by a registry lookup on the function value's handle. That lookup is O(1) but not free, so prefer a `@readonly` table for hot dispatch paths.
 
 ### 6.10 Operators are fixed tokens
 
@@ -1137,7 +1163,9 @@ if (flag ?? false) { ... }           -- a `bool?` must be defaulted or narrowed 
 | `T.column`            | (view, §5.6) | Iterable view over one column's values across all rows; `.TOARRAY()` copies it into an array (§7.4).                                                                                                                                                                                                             |
 | `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                                                                                                                                                                           |
 
-**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. Until a `REMOVE` frees a slot, slot order is insertion order, and `CLEAR` starts it over: refilling a cleared table gives slot order equal to the order of the `ADD`s (§4.1.1a). Once removals and reuse have happened, a program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
+**Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. Iteration over a table (`for r: &T in T`) or a `FIND` view visits only **live** rows; dead slots are skipped. Until a `REMOVE` frees a slot, slot order is insertion order, and `CLEAR` starts it over: refilling a cleared table gives slot order equal to the order of the `ADD`s (§4.1.1a). Once removals and reuse have happened, a program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
+
+**Function-typed arguments to `ADD`.** When a column's type is a function type, its argument in `T.ADD(...)` is a function value (§6.9), typically a bare `FN` name or a lambda: `StateTable.ADD("Idle", idleEnter, idleUpdate, idleExit)`. The compiler resolves a bare `FN` name or lambda to its function handle at compile time and emits a constant; no runtime lookup occurs. The argument may also be any other expression of the matching function type, such as a parameter or a `let`.
 
 **Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table — one carrying none of `@fixed`, `@readonly`, `@packed` (§4.1.4). `VERSION`, `COUNT`, `AT`, `FIND`, and `by<Column>` are available on every table.
 
@@ -1246,7 +1274,7 @@ for v: int in Person.age { ... }
 for i: uint, r: &Person in Person { ... }
 ```
 
-The `for` binding over a table or view is always a row reference; mutating through it mutates the underlying row. **The declared binding type must be exactly `&T`, never bare `T`** — iterating `Person` or a `FIND` view of it never produces a `Person` (a whole sheet), only `&Person` (one of its rows):
+Iteration visits only live rows, in slot order; dead slots are skipped (§7.1). The `for` binding over a table or view is always a row reference; mutating through it mutates the underlying row. **The declared binding type must be exactly `&T`, never bare `T`** — iterating `Person` or a `FIND` view of it never produces a `Person` (a whole sheet), only `&Person` (one of its rows):
 
 ```
 for p: Person in Person { ... }     -- error: iterating Person yields &Person, not Person
@@ -1404,9 +1432,26 @@ TABLE Unit {
 
 Attributes never change what the parser reads for the declaration that follows — they're metadata Sema interprets, not syntax that reshapes the declaration. The full set is listed in §4.1.4, §4.1.5, and §4.2.6.
 
-### 9.1 Event callbacks
+### 9.1 Event callbacks and `@hook`
 
-There is no `@on` attribute and no built-in event-dispatch mechanism. A callback is just an `@export`ed function the host looks up by name and calls (§3). How "run the right function when X happens" is organized — registration, an event-kind table, dispatch order, ordering trusted code ahead of mods — is a library concern, not a language one, and is specified in `Architecture.md` rather than here.
+There is no `@on` attribute and no built-in event-dispatch mechanism. A callback is an `@export`ed function the host calls in response to an event. To tell the host *which* event a function answers, the function carries `@hook("name")`:
+
+```
+@export
+@hook("on_update")
+FN updatePlayer(self: &Entity, dt: float) -> void { ... }
+```
+
+`name` is a string literal, the same shape as `host("name")` (§4.2.3), and for the same reason: it is a key in the **host's** registry, not a name in the language's scope. The compiler does not resolve it to anything and passes it through to the host. The function's own name is free, and attribute arguments stay literals (§9), so `@hook` needs no grammar change.
+
+Sema checks:
+
+- `@hook` requires `@export` on the same function. It is never implied (the same rule as `@packed` and `@fixed`, §4.1.4); a hook the host cannot see is an error.
+- A function has at most one `@hook`, and within a module at most one function carries a given hook name.
+- A `@sequence` function cannot be a hook (§9.2.5): the host calls a hook and expects it to run and return.
+- When the host has declared a signature for the hook name (§9.3), the function's signature must match it exactly, with no coercion (§5.8). A mismatch is an error. A hook name the host does not know is reported by the host at load time, since the language cannot know the host's set.
+
+`@hook` is only a marker. It does not register the function anywhere or order it relative to other hooks. How "run the right function when X happens" is organized — registration, an event-kind table, dispatch order, ordering trusted code ahead of mods — is a library concern, not a language one, and is specified in `Architecture.md` rather than here. The hook names the current engine defines are listed in §9.3.
 
 ### 9.2 Sequences (the suspension primitive)
 
@@ -1519,12 +1564,29 @@ These keep the feature to "suspend one sequence," not "a general concurrency sys
 - **A `@sequence` function always returns `void`.** Its declaration still writes `-> void` explicitly, like any other function. If a caller needs a result, have the sequence write it into a table row, or call an ordinary `FN` as its last step.
 - **A `@sequence` function cannot have a `host(...)` body.** Its body is compiled Lucid; suspension only makes sense for code the compiler itself is lowering.
 - **A `@sequence` function cannot call another `@sequence` function directly.** To compose sequences, `start` the other one and `waitUntil(isDone, handle)` — this avoids nested-state-machine composition in the compiler for v1, at the cost of one extra line at each composition point.
-- **A `@sequence` function is not a valid function-typed value** (§5.0) — it can't be passed to `FIND` or stored in a function-typed column, since calling it means "start it," not "run and return a value."
+- **A `@sequence` function is not a valid function-typed value** (§5.0) — it can't be passed to `FIND` or stored in a function-typed column, since calling it means "start it," not "run and return a value." When a function name is used as a function value (in a `const_expr`, an assignment, or an argument), the compiler checks that the function is not `@sequence`; otherwise it is a compile error: "a @sequence function cannot be used as a function value."
+- **A `@sequence` function cannot carry `@hook`** (§9.1): a hook is called by the host and must run and return, not start a sequence.
 - No `try`/`finally` exists anywhere in the language (§10), so `stop`ping a sequence mid-suspend runs no cleanup code — write any necessary teardown as something explicit the caller does after `stop`, not as an implicit guarantee of the primitive.
 
 #### 9.2.6 How it's compiled (informative)
 
 A `@sequence` function is lowered by the compiler into a small generated state machine: a struct holding a state id plus whichever local variables are live across a suspend point (found by ordinary liveness analysis), and a step function that runs from one suspend point to the next. The runtime keeps two lists rather than one: **polled** coroutines (paused on `wait`/`waitFrames`/`waitUntil`), advanced once per engine tick, in `start` order, before any per-tick library callback (e.g. an `Update` event, `Architecture.md`) runs that tick; and **parked** coroutines (paused on `waitForEvent`/`waitForRequest`), which do no work at all and aren't touched by the tick loop until the host or the event registration explicitly resumes them. Either way, advancement is cooperative and single-threaded: only one coroutine is ever actually executing at a time, in a fixed, deterministic order — there is no preemption and no data race to guard against, which is what keeps this from becoming the general concurrency model §13.1 already argued against.
+
+### 9.3 Host hooks
+
+The host defines a set of hook names and a signature for each. A function answers one by carrying `@hook("name")` (§9.1). This section documents the **current engine's** set so a script author knows which names to write. It is a contract between that engine and its scripts, not part of the language; another host may define a different set.
+
+| Hook           | Signature                                 | When                                       |
+| -------------- | ----------------------------------------- | ------------------------------------------ |
+| `on_load`      | `() -> void`                              | When the module is loaded                  |
+| `on_unload`    | `() -> void`                              | When the module is unloaded                |
+| `on_spawn`     | `(self: &Entity) -> void`                 | When an entity with this script is created |
+| `on_update`    | `(self: &Entity, dt: float) -> void`      | Every frame                                |
+| `on_collision` | `(self: &Entity, other: &Entity) -> void` | When the entity collides                   |
+| `on_destroy`   | `(self: &Entity) -> void`                 | When the entity is destroyed               |
+| `on_render`    | `(self: &Entity) -> void`                 | During render, for immediate-mode draws    |
+
+The host collects the `@hook` functions of a module at load time and calls the ones that exist; a script declares only the hooks it needs. A function that is merely *named* `on_update` is not a hook: the attribute is the contract, not the name.
 
 ---
 
@@ -1790,7 +1852,7 @@ Because `;` is optional, the parser cannot rely on it to find the next statement
 - Table compaction (`T.compact()`) (§4.1.1d) — it would move rows and silently retarget references; memory comes back through slot reuse, `CLEAR`, and `SHRINK`.
 - Auto-generated `@primary` values (§4.1.5) — the caller supplies every key.
 - Built-in aggregation on column views (`SUM`, `AVG`) (§7.4) — it would need a numeric-only rule on column views; aggregation is a loop or a library function over an array.
-- An `@on` attribute or any other built-in event-dispatch mechanism (§9.1) — a callback is an ordinary `@export`ed function the host looks up by name; registration and dispatch are a library concern, specified in `Architecture.md`.
+- An `@on` attribute or any other built-in event-dispatch mechanism (§9.1) — `@hook("name")` only marks which host event an `@export`ed function answers; registration and dispatch are a library concern, specified in `Architecture.md`. (The engine's hook names are listed in §9.3.)
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
