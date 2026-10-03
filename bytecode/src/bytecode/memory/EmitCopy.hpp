@@ -31,10 +31,13 @@
  *   with a refcount).
  * For heap-copy kinds, a runtime-call opcode is emitted.
  *
- * ─── Design: not all kinds are implemented yet ────────────────────────────
- * The `DeepCopyString` and `DeepCopyArray` cases need runtime-call
- * opcodes that aren't in the enum yet. They assert with a message
- * naming the missing opcode. Every other case is complete.
+ * ─── Design: only ElementWise is unimplemented ────────────────────────────
+ * Every CopyKind except `ElementWise` is implemented. The
+ * `DeepCopyString`, `DeepCopyArray`, and `Retain` cases emit
+ * `Ext_RtCall <RuntimeOp::CopyString | CopyArray | Retain>`, which
+ * exist in RuntimeOp.hpp. The `ElementWise` case — a fixed-size
+ * aggregate with resource-typed elements — asserts; its lowering
+ * needs an element walk that is not yet written.
  */
 
 #pragma once

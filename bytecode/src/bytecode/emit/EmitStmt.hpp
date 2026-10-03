@@ -8,13 +8,18 @@
  * emitters (emitBlock, emitIfStmt, ...) are declared here and defined
  * in EmitStmt.cpp.
  *
- * ─── Design: the boolean return ───────────────────────────────────────────
- * Every per-form emitter returns bool: true if the statement transfers
- * control out of the enclosing block (a return, break, or continue),
- * false otherwise. emitStmt's return value is the same flag. Callers
- * use it to decide whether subsequent statements are reachable. Phase 3
- * ignores the flag (dead code is emitted and never executed); the flag
- * is the interface a future dead-code-elimination pass will use.
+ * ─── The boolean return (currently unused) ────────────────────────────────
+ * Every per-form emitter returns bool. The intended meaning is: true
+ * if the statement transfers control out of the enclosing block (a
+ * return, break, or continue), false otherwise. emitStmt's return
+ * value would be the same flag.
+ *
+ * The flag is not yet implemented consistently. Every emitter
+ * currently returns false, including emitBlock, which ignores its
+ * last statement's flag. The protocol is documented here as the
+ * intended interface; no caller reads it today. Before any consumer
+ * relies on the flag, every emitter must be updated to return the
+ * correct value.
  *
  * ─── Design: scopes and drops ─────────────────────────────────────────────
  * emitBlock pushes a scope on the slot allocator when it enters, and
@@ -39,8 +44,12 @@ namespace lucid::bytecode::compile {
 
 /// Lower a statement.
 ///
-/// @return true if the statement transfers control out of the enclosing
-///         block (a return, break, or continue); false otherwise.
+/// @return The intended meaning is: true if the statement transfers
+///         control out of the enclosing block (a return, break, or
+///         continue); false otherwise. This flag is not yet
+///         implemented consistently — every emitter currently
+///         returns false. Do not rely on it until the emitters are
+///         updated. See the file-level note above.
 bool emitStmt(StmtAST* stmt, CompilerContext& ctx);
 
 // ─── Per-form emitters ──────────────────────────────────────────────────────

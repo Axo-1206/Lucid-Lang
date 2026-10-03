@@ -617,10 +617,21 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
     }
 
     // Array and table iteration are not yet supported.
+    //
+    // The access encodings exist: LoadIndex and LoadRow read an
+    // element or a row; Ext_TableCount gives a table's row count.
+    // Two things are missing:
+    //
+    //   1. The lowering logic for the four iterable shapes (array,
+    //      array-with-index, table or FIND view, column view).
+    //
+    //   2. An array-count opcode. Ext_TableCount exists; there is no
+    //      Ext_ArrayCount. An array loop needs the array's length.
     AST_ASSERT_MSG(false,
         "emitForStmt: array and table iteration are not yet "
-        "supported — they need the array/table access encodings "
-        "(Phase 4 additions)");
+        "supported — the emitter for the non-range iterable shapes "
+        "has not been written, and an array-count opcode does not "
+        "yet exist");
     return false;
 }
 

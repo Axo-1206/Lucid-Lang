@@ -47,6 +47,21 @@
 /// So only the local case needs a compiler-emitted drop. The other
 /// cases are handled by the interpreter, which knows the destination's
 /// storage layout and schema.
+///
+/// ─── Compound assignment ──────────────────────────────────────────────────
+/// Compound assignment (`x op= y`) is not yet implemented in
+/// emitAssignStmt; it asserts. The intended lowering is:
+///
+///     x = x op y
+///
+/// with the place's operands evaluated once. For a local slot, the
+/// lowering is LoadLocal <x>, <y>, <op>, then the ordinary store
+/// sequence (which drops the old value). For a field or index lvalue,
+/// the place's operands must be duplicated before the load, so the
+/// same operands can be reused for the store. The drop-of-old-value
+/// behavior of emitStoreIntoPlace applies unchanged: a compound
+/// assignment to a resource-typed local drops the old value, exactly
+/// as a plain assignment does.
 
 #include "EmitPlace.hpp"
 #include "EmitExpr.hpp"

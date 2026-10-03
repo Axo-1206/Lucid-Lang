@@ -82,6 +82,20 @@ void Bytecode::checkInvariants() const {
     // Every RowRef constant's table index is in range of the
     // artifact's static-data tables, and every row index is in range
     // of that table's rows.
+    //
+    // A RowRef constant is only produced for a table whose row set is
+    // fixed at declaration (@fixed or @readonly). For such a table,
+    // the rows are baked into StaticData::tables[i].rows, and the
+    // row index is stable. The check below validates the index
+    // against that baked row set.
+    //
+    // KNOWN BUG: this loop is structured so that the RowRef check is
+    // unreachable. The first `continue` skips every non-Function
+    // constant, so `c.kind` can never be RowRef at the second check.
+    // RowRef constants are currently never validated. The fix is to
+    // dispatch on `c.kind` with if/else-if instead of a pair of
+    // `continue` guards. (Left as-is here so the comment fix and the
+    // code fix are separate changes.)
     const uint32_t tableCount = static_cast<uint32_t>(m_staticData.tables().size());
 
     for (size_t ci = 0; ci < m_constants.size(); ++ci) {

@@ -61,6 +61,10 @@ void emitCopy(compile::CompilerContext& ctx, const ResourcePlan& plan) {
         }
 
         case CopyKind::ElementWise:
+            // A fixed-size aggregate with resource-typed elements.
+            // The lowering walks the elements and copies each. Not
+            // yet implemented. (All other CopyKinds are implemented;
+            // this is the only gap in EmitCopy.)
             AST_ASSERT_MSG(false,
                 "emitCopy: ElementWise copy (a fixed-size aggregate "
                 "with resource-typed elements) requires a lowering "

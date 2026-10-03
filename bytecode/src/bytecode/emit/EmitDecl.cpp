@@ -176,6 +176,14 @@ void emitDeclArtifacts(DeclAST* decl, ArtifactBuildState& state) {
             // nothing else. It has no FunctionProto (its body is a
             // single CallHost emitted by the call site, not a proto
             // of its own).
+            //
+            // KNOWN GAP: the returned symbol index is discarded. A
+            // call site that names this function has no way to
+            // recover it, so emitCallExpr cannot emit
+            // Ext_CallHost <symbol index>. Host-bound call sites are
+            // therefore unimplemented. The fix is to record
+            // (fn -> symbol index) in a compiler-owned map, the way
+            // Lucid-bodied functions record (fn -> function index).
             HostSymbol sym;
             sym.kind = HostSymbol::Kind::Function;
             sym.name = state.pool.lookup(fn->hostName);

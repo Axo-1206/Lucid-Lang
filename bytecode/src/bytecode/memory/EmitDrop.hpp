@@ -9,11 +9,14 @@
  * A drop is the inverse of a copy:
  *
  *   - None: nothing to release; the value is discarded.
- *   - FreeString / FreeArray: a runtime call frees the heap buffer.
- *   - Release: Ext_Release decrements the host handle's refcount.
- *   - ElementWise: walk an aggregate's elements and drop each.
  *   - Discard: Ext_Pop discards the value (used for a discarded
  *     result whose type owns no resources).
+ *   - FreeString / FreeArray: Ext_RtCall <RuntimeOp::FreeString |
+ *     FreeArray> frees the heap buffer.
+ *   - Release: Ext_RtCall <RuntimeOp::Release> decrements the host
+ *     handle's refcount.
+ *   - ElementWise: walk an aggregate's elements and drop each.
+ *     Not yet implemented; the emitter asserts.
  *
  * ─── Stack effect ─────────────────────────────────────────────────────────
  * emitDrop consumes the value on top of the stack. After the call,
@@ -37,6 +40,9 @@ namespace lucid::bytecode::memory {
 ///
 /// Postconditions: the value is consumed; the value stack and
 /// ownership stack each have one fewer entry.
+///
+/// All DropKinds except `ElementWise` are implemented. The
+/// `ElementWise` case asserts.
 void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan);
 
 /// @brief Emit a drop only if the value actually owns resources

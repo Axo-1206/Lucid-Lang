@@ -537,25 +537,16 @@ void emitIdentifierExpr(IdentifierExprAST* e, CompilerContext& ctx) {
         return;
     }
 
-    // ─── A top-level binding ───────────────────────────────────────────
-    // Any other resolved declaration at module level is a let/const.
-    // Its value lives in the artifact's static data, indexed by the
-    // binding's position in the static-data table list. The compiler
-    // recorded that offset during baking; the identifier emits a
-    // LoadStaticData with it.
-    //
-    // In Phase 3 we don't yet have a static-data offset map; the
-    // identifier emits LoadStaticData with a placeholder offset that
-    // Phase 4 will fill in. The static-data offsets are computed by
-    // a second pass over the manifest after all bindings are baked.
-    //
-    // Placeholder: emit LoadStaticData with offset 0 and a note that
-    // the offset must be resolved later. This is the one place where
-    // Phase 3 depends on a future pass.
+    // ─── Unreachable ───────────────────────────────────────────────────
+    // Every resolved declaration form is handled above: a ParamAST or
+    // VarDeclAST with a slot (local), a VarDeclAST without a slot
+    // (top-level binding), a FnDeclAST, or a TableDeclAST. This point
+    // is reached only if Sema produced a declaration kind the emitter
+    // does not know about.
     AST_ASSERT_MSG(false,
-        "emitIdentifierExpr: a top-level binding reference is not yet "
-        "supported — static-data offset resolution is a Phase 4 "
-        "addition");
+        "emitIdentifierExpr: an identifier resolved to a declaration "
+        "kind the emitter does not handle — the emitter is out of "
+        "sync with the declaration set");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,6 +768,13 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
         "produced one");
 
     // ─── Direct call to a top-level FN ─────────────────────────────────
+    //
+    // KNOWN GAP: a host-bound function (FN x = host("...")) has no
+    // FunctionProto, so functionIndexOf returns nullopt for it and
+    // the assert below fires. The compiler registered the function's
+    // host symbol in pass A but discarded the returned index, so the
+    // call site cannot emit Ext_CallHost <symbol index>. Host-bound
+    // call sites are unimplemented; see the note in emitDeclArtifacts.
     if (e->callee->isa<IdentifierExprAST>()) {
         auto* id = e->callee->as<IdentifierExprAST>();
         AST_ASSERT_MSG(id->resolvedDecl != nullptr
@@ -842,34 +840,51 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
         }
 
         // A table method: T.ADD(...), T.FIND(...), T.COUNT(), etc.
+        //
+        // The opcodes for the table methods (Ext_TableAdd,
+        // Ext_TableFind, Ext_TableCount, ...) and the table-index
+        // lookup (Compiler::tableIndexOf) both exist. The emitter
+        // for this branch is not yet written.
         if (fa->isTableMethod) {
             AST_ASSERT_MSG(false,
                 "emitCallExpr: table methods are not yet supported — "
-                "they need the table-method dispatch table and the "
-                "table-index map (Phase 4)");
+                "the emitter for this branch has not been written");
             return;
         }
 
         // A column-view method: Person.age.TOARRAY().
+        //
+        // The opcode Ext_ColumnToArray exists. The emitter for this
+        // branch is not yet written.
         if (fa->isColumnView) {
             AST_ASSERT_MSG(false,
                 "emitCallExpr: column-view methods are not yet "
-                "supported — they need the column-view operand "
-                "encoding (Phase 4)");
+                "supported — the emitter for this branch has not "
+                "been written");
             return;
         }
 
-        // A cell whose value is a function (a function-typed cell,
-        // §4.1.1c and §5.0). The call is indirect: the callee is
-        // the loaded function value on the stack.
+        // The callee is a field access that is not a module access,
+        // a table method, or a column view. Two possibilities remain:
         //
-        // The opcode set has no indirect call. Phase 4 adds one
-        // (or lowers it to a jump table). For Phase 3, this is
-        // rejected.
+        //   1. An array method (arr.ADD(x), arr.SORT(), ...). The
+        //      opcodes for these exist (Ext_ArrayAdd, Ext_ArraySort,
+        //      ...). The emitter for this branch has not been
+        //      written.
+        //
+        //   2. An indirect call through a function-typed cell
+        //      (§4.1.1c, §5.0). The opcode set has no indirect
+        //      call; this is a genuine opcode-set gap.
+        //
+        // The emitter does not yet distinguish the two. Both
+        // currently fall through to this assert.
         AST_ASSERT_MSG(false,
-            "emitCallExpr: indirect call through a function-typed "
-            "value is not yet supported — the opcode set has no "
-            "indirect call (Phase 4 addition)");
+            "emitCallExpr: a field-access callee is neither a module "
+            "access, a table method, nor a column view — the callee "
+            "is either an array method (emitter not yet written) or "
+            "an indirect call through a function-typed cell (no "
+            "opcode exists). The emitter does not yet distinguish "
+            "the two cases.");
         return;
     }
 

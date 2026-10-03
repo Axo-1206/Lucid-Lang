@@ -29,8 +29,16 @@ uint16_t SlotAllocator::allocateParam(InternedString name,
     m_slotTypes.push_back(type);
 
     // Parameters are not recorded in any scope's dropSlots. Their
-    // lifetime is the function's, not any block's; the return path
-    // drops them.
+    // lifetime is the function's, not any block's, so the scope-exit
+    // drop mechanism does not apply to them.
+    //
+    // KNOWN BUG: nothing drops parameters on return. The drop
+    // scheduler (DropSchedule::emitReturnDrops) iterates the open
+    // scopes' dropSlots, and a parameter is in none of them. A
+    // parameter whose type owns a resource (a string, a host handle)
+    // leaks its resource when the function returns. The fix is to
+    // record parameter slots on the allocator and have
+    // emitReturnDrops walk them in addition to the open scopes.
     return slot;
 }
 

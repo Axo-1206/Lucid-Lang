@@ -49,6 +49,10 @@ void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan) {
         }
 
         case DropKind::ElementWise:
+            // A fixed-size aggregate with resource-typed elements.
+            // The lowering walks the elements and drops each. Not
+            // yet implemented. (All other DropKinds are implemented;
+            // this is the only gap in EmitDrop.)
             AST_ASSERT_MSG(false,
                 "emitDrop: ElementWise drop (a fixed-size aggregate "
                 "with resource-typed elements) requires a lowering "
