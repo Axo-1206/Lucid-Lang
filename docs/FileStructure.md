@@ -123,52 +123,51 @@ lucid/
 │   │   ├── Manifest.hpp
 │   │   ├── TypeDescriptor.hpp
 │   │   ├── Opcode.hpp
+│   │   ├── RuntimeOp.hpp
 │   │   ├── Serialize.hpp
 │   │   └── compile/
 │   │       └── Compiler.hpp
 │   └── src/bytecode/
 │       ├── Bytecode.cpp
-│       ├── FunctionProto.cpp
 │       ├── ConstantPool.cpp
-│       ├── StaticData.cpp
+│       ├── FunctionProto.cpp
 │       ├── HostSymbolTable.cpp
 │       ├── Manifest.cpp
-│       ├── TypeDescriptor.cpp
 │       ├── Opcode.cpp
 │       ├── Serialize.cpp
+│       ├── StaticData.cpp
+│       ├── TypeDescriptor.cpp
 │       ├── compile/
 │       │   ├── ArtifactBuildState.hpp
+│       │   ├── BakeConstant.hpp
+│       │   ├── BakeConstant.cpp
 │       │   ├── Compiler.cpp
 │       │   ├── CompilerContext.hpp
 │       │   ├── CompilerContext.cpp
 │       │   ├── SlotAllocator.hpp
 │       │   ├── SlotAllocator.cpp
 │       │   ├── TypeTranslation.hpp
-│       │   ├── TypeTranslation.cpp
-│       │   ├── BakeConstant.hpp
-│       │   └── BakeConstant.cpp
+│       │   └── TypeTranslation.cpp
 │       ├── emit/
 │       │   ├── EmitDecl.hpp
 │       │   ├── EmitDecl.cpp
-│       │   ├── EmitStmt.hpp
-│       │   ├── EmitStmt.cpp
 │       │   ├── EmitExpr.hpp
 │       │   ├── EmitExpr.cpp
 │       │   ├── EmitPlace.hpp
 │       │   ├── EmitPlace.cpp
-│       │   ├── OpcodeSelection.hpp
-│       │   └── OpcodeSelection.cpp
+│       │   ├── EmitStmt.hpp
+│       │   └── EmitStmt.cpp
 │       └── memory/
-│           ├── ResourcePlan.hpp
-│           ├── ResourcePlan.cpp
-│           ├── OwnedValue.hpp
-│           ├── OwnedValue.cpp
+│           ├── DropSchedule.hpp
+│           ├── DropSchedule.cpp
 │           ├── EmitCopy.hpp
 │           ├── EmitCopy.cpp
 │           ├── EmitDrop.hpp
 │           ├── EmitDrop.cpp
-│           ├── DropSchedule.hpp
-│           └── DropSchedule.cpp
+│           ├── OwnedValue.hpp
+│           ├── OwnedValue.cpp
+│           ├── ResourcePlan.hpp
+│           └── ResourcePlan.cpp
 │
 ├── interp/ (not implemented)
 │   ├── include/interp/
