@@ -721,16 +721,12 @@ lucid/                                 # the language runtime (standalone, embed
 ├── LICENSE
 ├── CMakeLists.txt
 ├── .gitignore
-├── .patches/
 │
 ├── docs/
 │   ├── grammar/
 │   │   ├── LUCID_GRAMMAR.md            # the language specification
-│   │   ├── CORE_SCRIPTS.md             # the standard core scripts
-│   │   └── BUILTIN_REGISTRY.md         # the #builtin / #native names
+│   │   └── CORE_SCRIPTS.md             # the standard core scripts
 │   ├── ARCHITECTURE.md                 # this document
-│   ├── EMBEDDING.md                    # how an application embeds the runtime
-│   ├── API.md                          # the public C++ API
 │   ├── BUILD.md
 │   └── examples/
 │
@@ -756,6 +752,9 @@ lucid/                                 # the language runtime (standalone, embed
     │   │   ├── ArenaSpan.hpp
     │   │   ├── InternedString.hpp
     │   │   └── StringPool.hpp/cpp
+    │   ├── registry/
+    │   │   ├── AttributeRegistry.hpp/cpp       # A lookup table for the language's built-in attribute
+    │   │   └── BuiltinMethodRegistry.hpp/cpp   # A lookup table for the built-in method on a table, a column view, a row, or an array
     │   ├── diagnostics/
     │   │   ├── DiagCode.hpp
     │   │   ├── Diagnostic.hpp/cpp
@@ -765,7 +764,6 @@ lucid/                                 # the language runtime (standalone, embed
     │
     ├── parser/                         # frontend stage 1 — source text → AST
     │   ├── Parser.hpp/cpp
-    │   ├── ModuleResolver.hpp/cpp
     │   ├── lexer/
     │   │   └── Lexer.hpp/cpp
     │   ├── context/
@@ -775,20 +773,18 @@ lucid/                                 # the language runtime (standalone, embed
     │   │   ├── ParseDecl.cpp
     │   │   ├── ParseExpr.cpp
     │   │   ├── ParseStmt.cpp
-    │   │   ├── ParseType.cpp
-    │   │   └── ParseConcurrency.cpp
+    │   │   └── ParseType.cpp
     │   └── support/
-    │       ├── ErrorRecovery.hpp/cpp
+    │       ├── ErrorRecovery.hpp
     │       ├── Helpers.cpp
-    │       └── LookAhead.cpp
+    │       ├── ParseAttr.cpp           # The attribute parsers
+    │       └── GrammarPositions.cpp    # The token sets that name grammatical positions in Lucid
     │
     ├── sema/                           # frontend stage 2 — AST → validated AST
     │   ├── Sema.hpp/cpp
     │   ├── context/
     │   │   ├── SemaContext.hpp/cpp
-    │   │   ├── ContextStack.hpp/cpp
-    │   │   ├── Generic.hpp/cpp
-    │   │   └── Instantiation.cpp
+    │   │   └── ContextStack.hpp/cpp
     │   ├── rules/
     │   │   ├── SemaDecl.cpp
     │   │   ├── SemaExpr.cpp
@@ -803,18 +799,17 @@ lucid/                                 # the language runtime (standalone, embed
     │   │   ├── ConstEvaluator.hpp/cpp
     │   │   ├── ConstEvalBinary.cpp
     │   │   ├── ConstEvalUnary.cpp
-    │   │   ├── ConstEvalStatement.cpp
-    │   │   └── ConstEvalHelpers.hpp/cpp
+    │   │   ├── ConstEvalLiteral.cpp
+    │   │   └── ConstEvalHelpers.hpp
     │   ├── registry/
     │   │   ├── AttributeValidator.hpp/cpp
     │   │   ├── IntrinsicValidator.hpp/cpp
     │   │   └── ArgTypeValidators.hpp/cpp
     │   └── support/
-    │       ├── CaptureAnalysis.hpp/cpp
     │       ├── MangledName.hpp/cpp
-    │       ├── Truthiness.hpp
-    │       ├── TypeNarrowHelpers.hpp/cpp
-    │       └── SwitchHelpers.hpp/cpp
+    │       ├── SequenceChecker.hpp/cpp
+    │       ├── TableConstraintChecker.hpp/cpp
+    │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── bytecode/                       # AST → bytecode module
     │   ├── Bytecode.hpp/cpp
@@ -854,7 +849,7 @@ lucid/                                 # the language runtime (standalone, embed
     ├── runtime-abi/                    # the ABI surface shared by the compiler, runtime, and interpreter
     │   ├── functions.def
     │   ├── lucid_abi.h
-    │   └── lucid_runtime.h
+    │   └── lucid_runtime.h,
     │
     ├── runtime/                        # the runtime library implementation
     │   ├── StringRuntime.cpp
@@ -894,6 +889,7 @@ lucid/                                 # the language runtime (standalone, embed
     │   ├── RunOptions.hpp
     │   ├── DependencyGraph.hpp
     │   ├── FileWatcher.hpp
+    │   ├── ModuleResolver.hpp/cpp
     │   ├── commands/
     │   │   ├── run.hpp/cpp
     │   │   ├── parse.hpp/cpp

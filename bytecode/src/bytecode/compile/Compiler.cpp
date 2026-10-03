@@ -1,11 +1,11 @@
 /// @file bytecode/compile/Compiler.cpp
 /// @brief The driver: walk a resolved module set, produce a Bytecode.
 
-#include "Compiler.hpp"
+#include "bytecode/compile/Compiler.hpp"
 #include "BakeConstant.hpp"
 #include "CompilerContext.hpp"
-#include "EmitDecl.hpp"
-#include "EmitStmt.hpp"
+#include "../emit/EmitDecl.hpp"
+#include "../emit/EmitStmt.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"

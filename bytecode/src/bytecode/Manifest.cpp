@@ -1,7 +1,7 @@
 /// @file bytecode/Manifest.cpp
 /// @brief Invariant checking for the module manifest.
 
-#include "Manifest.hpp"
+#include "bytecode/Manifest.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

@@ -34,11 +34,11 @@
 #pragma once
 
 #include "SlotAllocator.hpp"
-#include "../ConstantPool.hpp"
-#include "../HostSymbolTable.hpp"
-#include "../StaticData.hpp"
-#include "../FunctionProto.hpp"
-#include "../Opcode.hpp"
+#include "bytecode/ConstantPool.hpp"
+#include "bytecode/HostSymbolTable.hpp"
+#include "bytecode/StaticData.hpp"
+#include "bytecode/FunctionProto.hpp"
+#include "bytecode/Opcode.hpp"
 
 #include "core/ast/DeclAST.hpp"
 #include "core/SourceLocation.hpp"

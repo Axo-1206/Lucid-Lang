@@ -49,8 +49,8 @@
 
 #include "EmitPlace.hpp"
 #include "EmitExpr.hpp"
-#include "CompilerContext.hpp"
-#include "Compiler.hpp"
+#include "../compile/CompilerContext.hpp"
+#include "bytecode/compile/Compiler.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/ExprAST.hpp"

@@ -2,7 +2,7 @@
 /// @brief Per-function compilation state and byte-emission primitives.
 
 #include "CompilerContext.hpp"
-#include "Compiler.hpp"
+#include "bytecode/compile/Compiler.hpp"
 #include "TypeTranslation.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG

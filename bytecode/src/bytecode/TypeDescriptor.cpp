@@ -1,7 +1,7 @@
 /// @file bytecode/TypeDescriptor.cpp
 /// @brief Factory methods for the serializable type descriptor.
 
-#include "TypeDescriptor.hpp"
+#include "bytecode/TypeDescriptor.hpp"
 
 #include <utility>
 

@@ -35,12 +35,12 @@
 /// pre-pass; emitLambdaExpr emits LoadFunction for that lowered
 /// function.
 
+#include "../compile/BakeConstant.hpp"
+#include "../compile/CompilerContext.hpp"
+#include "../compile/TypeTranslation.hpp"
+#include "bytecode/compile/Compiler.hpp"
 #include "EmitExpr.hpp"
-#include "BakeConstant.hpp"
 #include "EmitPlace.hpp"
-#include "CompilerContext.hpp"
-#include "Compiler.hpp"
-#include "TypeTranslation.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/ExprAST.hpp"

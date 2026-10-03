@@ -11,8 +11,8 @@
 #pragma once
 
 #include "core/ast/DeclAST.hpp"
-#include "../Bytecode.hpp"
-#include "CompilerContext.hpp"
+#include "bytecode/Bytecode.hpp"
+#include "../compile/CompilerContext.hpp"
 
 namespace lucid::bytecode::compile {
 

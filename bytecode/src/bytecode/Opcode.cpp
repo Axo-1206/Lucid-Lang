@@ -1,7 +1,7 @@
 /// @file bytecode/Opcode.cpp
 /// @brief The opcode info table and the byte-classification helpers.
 
-#include "Opcode.hpp"
+#include "bytecode/Opcode.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

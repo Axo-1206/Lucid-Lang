@@ -1,7 +1,7 @@
 /// @file bytecode/ConstantPool.cpp
 /// @brief Interned constants for one Bytecode.
 
-#include "ConstantPool.hpp"
+#include "bytecode/ConstantPool.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

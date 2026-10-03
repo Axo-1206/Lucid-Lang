@@ -1,7 +1,7 @@
 /// @file bytecode/HostSymbolTable.cpp
 /// @brief The deduplicated name list for host(...) references.
 
-#include "HostSymbolTable.hpp"
+#include "bytecode/HostSymbolTable.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

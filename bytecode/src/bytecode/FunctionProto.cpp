@@ -1,7 +1,7 @@
 /// @file bytecode/FunctionProto.cpp
 /// @brief One compiled function: constructor, queries, invariants.
 
-#include "FunctionProto.hpp"
+#include "bytecode/FunctionProto.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

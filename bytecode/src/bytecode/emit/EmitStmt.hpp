@@ -28,7 +28,7 @@
 
 #pragma once
 
-#include "CompilerContext.hpp"
+#include "../compile/CompilerContext.hpp"
 
 #include "core/ast/StmtAST.hpp"
 

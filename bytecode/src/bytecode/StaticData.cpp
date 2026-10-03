@@ -1,7 +1,7 @@
 /// @file bytecode/StaticData.cpp
 /// @brief Invariant checking for the baked initial-state data.
 
-#include "StaticData.hpp"
+#include "bytecode/StaticData.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

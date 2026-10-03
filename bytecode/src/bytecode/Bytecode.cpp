@@ -1,7 +1,7 @@
 /// @file bytecode/Bytecode.cpp
 /// @brief The whole artifact: constructor, function lookup, invariants.
 
-#include "Bytecode.hpp"
+#include "bytecode/Bytecode.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 

@@ -31,7 +31,7 @@
 
 #pragma once
 
-#include "../ConstantPool.hpp"
+#include "bytecode/ConstantPool.hpp"
 #include "core/ast/BaseAST.hpp"     // for ConstantValue
 #include "core/memory/StringPool.hpp"
 

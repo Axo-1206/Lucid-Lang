@@ -23,7 +23,7 @@
 
 #pragma once
 
-#include "../TypeDescriptor.hpp"
+#include "bytecode/TypeDescriptor.hpp"
 
 class StringPool;
 struct TypeAST;

@@ -39,9 +39,9 @@
 #include "EmitStmt.hpp"
 #include "EmitExpr.hpp"
 #include "EmitPlace.hpp"
-#include "CompilerContext.hpp"
-#include "Compiler.hpp"
-#include "TypeTranslation.hpp"
+#include "../compile/CompilerContext.hpp"
+#include "../compile/TypeTranslation.hpp"
+#include "bytecode/compile/Compiler.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/StmtAST.hpp"

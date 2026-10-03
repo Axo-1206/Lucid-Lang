@@ -101,7 +101,7 @@
 /// remaining bytes. On failure, the function returns a SerializeError
 /// with a DiagCode. The caller decides what to do.
 
-#include "Serialize.hpp"
+#include "bytecode/Serialize.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 
