@@ -127,6 +127,122 @@ if(MSVC)
 endif()
 
 # =============================================================================
+# LIBRARY: runtime
+# =============================================================================
+#
+# The runtime library owns the operations both the compiler's emitters
+# and the interpreter need: string allocation and refcounting, array
+# buffer management, host-handle refcounting, and the Panic type.
+#
+# It depends on lucid_core only (for DiagCode.hpp and InternedString.hpp).
+# It does NOT depend on lucid_bytecode, lucid_parser, or lucid_sema.
+#
+# See DependencySummary.md: "That function lives in the runtime library
+# (runtime/), not in bytecode/memory/."
+
+file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime/*.cpp"
+)
+
+add_library(lucid_runtime STATIC ${RUNTIME_SOURCES})
+
+target_include_directories(lucid_runtime
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/runtime/src"
+)
+
+target_link_libraries(lucid_runtime PUBLIC lucid_core)
+
+target_compile_options(lucid_runtime PRIVATE ${LUCID_CXX_WARNINGS})
+if(MSVC)
+    target_compile_options(lucid_runtime PRIVATE ${LUCID_MSVC_FLAGS})
+endif()
+
+# =============================================================================
+# LIBRARY: interp
+# =============================================================================
+#
+# The interpreter consumes a Bytecode artifact and executes its
+# instructions. It depends on:
+#   - lucid_runtime  (for the RuntimeOp implementations: Retain, Release,
+#                     CopyString, FreeString, CopyArray, FreeArray,
+#                     ConcatString, Panic)
+#   - lucid_bytecode (for Bytecode.hpp, FunctionProto.hpp, ConstantPool.hpp,
+#                     StaticData.hpp, HostSymbolTable.hpp, Manifest.hpp,
+#                     TypeDescriptor.hpp, Opcode.hpp, RuntimeOp.hpp,
+#                     Serialize.hpp)
+#
+# It does NOT depend on lucid_parser or lucid_sema. See DependencySummary.md:
+# "The interpreter depends on the artifact and the instruction set (10
+# headers); the VM adds the compiler's entry point (Compiler.hpp)."
+
+file(GLOB_RECURSE INTERP_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/interp/src/interp/*.cpp"
+)
+
+add_library(lucid_interp STATIC ${INTERP_SOURCES})
+
+target_include_directories(lucid_interp
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/interp/include"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/interp/src"
+)
+
+target_link_libraries(lucid_interp PUBLIC
+    lucid_core
+    lucid_runtime
+    lucid_bytecode
+)
+
+target_compile_options(lucid_interp PRIVATE ${LUCID_CXX_WARNINGS})
+if(MSVC)
+    target_compile_options(lucid_interp PRIVATE ${LUCID_MSVC_FLAGS})
+endif()
+
+# =============================================================================
+# LIBRARY: vm
+# =============================================================================
+#
+# The VM is the embedding API: the host program uses it to compile
+# Lucid source at runtime, load a compiled .lucb, and run exported
+# functions. It depends on:
+#   - lucid_interp   (the execution engine)
+#   - lucid_runtime  (for the HostRegistry the host constructs)
+#   - lucid_bytecode (for Compiler.hpp — the compile entry point)
+#
+# The VM depends on exactly one compiler-internal file, Compiler.hpp,
+# and nothing else from compile/, emit/, or memory/. See
+# DependencySummary.md's "Summary table."
+
+file(GLOB_RECURSE VM_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/vm/src/vm/*.cpp"
+)
+
+add_library(lucid_vm STATIC ${VM_SOURCES})
+
+target_include_directories(lucid_vm
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/vm/include"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vm/src"
+)
+
+target_link_libraries(lucid_vm PUBLIC
+    lucid_core
+    lucid_runtime
+    lucid_bytecode
+    lucid_interp
+)
+
+target_compile_options(lucid_vm PRIVATE ${LUCID_CXX_WARNINGS})
+if(MSVC)
+    target_compile_options(lucid_vm PRIVATE ${LUCID_MSVC_FLAGS})
+endif()
+
+# =============================================================================
 # LIBRARY: cli
 # =============================================================================
 
@@ -146,6 +262,9 @@ target_link_libraries(lucid_cli PUBLIC
     lucid_parser
     lucid_sema
     lucid_bytecode
+    lucid_runtime
+    lucid_interp
+    lucid_vm
 )
 
 target_compile_options(lucid_cli PRIVATE ${LUCID_CXX_WARNINGS})
@@ -156,6 +275,10 @@ endif()
 # =============================================================================
 # EXECUTABLE: lucid-comp
 # =============================================================================
+#
+# The CLI binary drives the VM, not the raw compiler. This matches the
+# Scenario 2/3 shape from LinkSummary.md: one binary, one registry, the
+# compiler invoked in-process.
 
 add_executable(lucid-comp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
@@ -163,6 +286,9 @@ add_executable(lucid-comp
 
 target_link_libraries(lucid-comp PRIVATE
     lucid_cli
+    lucid_vm
+    lucid_interp
+    lucid_runtime
     lucid_bytecode
     lucid_sema
     lucid_parser
@@ -193,6 +319,9 @@ message(STATUS "  lucid_core      (core/)")
 message(STATUS "  lucid_parser    (parser/)")
 message(STATUS "  lucid_sema      (sema/)")
 message(STATUS "  lucid_bytecode  (bytecode/)")
+message(STATUS "  lucid_runtime   (runtime/)")
+message(STATUS "  lucid_interp    (interp/)")
+message(STATUS "  lucid_vm        (vm/)")
 message(STATUS "  lucid_cli       (cli/)")
 message(STATUS "  lucid-comp      (src/main.cpp)")
 message(STATUS "========================================")
