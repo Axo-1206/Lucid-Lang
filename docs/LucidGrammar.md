@@ -180,7 +180,7 @@ Because tables are references (§5.2), a cyclic type dependency (`TABLE A { b: &
 Execution happens only through two host-driven mechanisms:
 
 - **Direct call.** The host calls an `@export`ed function by name at a time of its choosing (an update tick, a game-specific hook).
-- **Callback.** The host calls an `@export`ed function in response to something happening (an input event, a network message). A function that answers a host-defined event marks itself with `@hook("name")` (§9.1), and the host finds it by that hook name. The attribute is only a marker: how a game or library organizes "call the right function for this event" (registration, dispatch order, an event-kind table) is not a language concept and is specified in `Architecture.md`.
+- **Callback.** The host calls an `@export`ed function in response to something happening (an input event, a network message). A function that answers a host-defined event is listed as a row of the module's **hook table** (§9.1): a `@readonly` table with `event: string` and `handler` columns, whose rows pair each event name with the function that answers it. The table is only a container for handlers; how a game or library organizes "call the right function for this event" (dispatch order, cross-module ordering) is not a language concept and is specified in `Architecture.md`.
 
 **Loading is two-tiered when mods/extensions are involved:**
 
@@ -618,7 +618,8 @@ The one narrow exception is the lambda form (§6.9), which is sugar for a compil
 | `@export`          | Visible outside the module.                               |
 | `@deprecated(msg)` | Using the function produces a compile warning with `msg`. |
 | `@sequence`        | Declares a suspension-capable function — see §9.2.        |
-| `@hook("name")`    | Marks the function as the host's `name` hook — see §9.1.  |
+
+There is no attribute for event callbacks — see §9.1.
 
 ### 4.3 Variable declarations
 
@@ -1432,26 +1433,35 @@ TABLE Unit {
 
 Attributes never change what the parser reads for the declaration that follows — they're metadata Sema interprets, not syntax that reshapes the declaration. The full set is listed in §4.1.4, §4.1.5, and §4.2.6.
 
-### 9.1 Event callbacks and `@hook`
+### 9.1 Event callbacks
 
-There is no `@on` attribute and no built-in event-dispatch mechanism. A callback is an `@export`ed function the host calls in response to an event. To tell the host *which* event a function answers, the function carries `@hook("name")`:
+There is no `@on` attribute, no `@hook` attribute, and no built-in event-dispatch mechanism. A callback is an ordinary function value stored in a **hook table**, and the host calls it in response to an event.
+
+A hook table is a `@readonly` table with exactly two columns, in order:
 
 ```
-@export
-@hook("on_update")
-FN updatePlayer(self: &Entity, dt: float) -> void { ... }
+@export @readonly
+TABLE Hook {
+    event:   string
+    handler: (&Entity) -> void
+} = [
+    { "on_update",    playerUpdate },
+    { "on_collision", playerCollide },
+]
 ```
 
-`name` is a string literal, the same shape as `host("name")` (§4.2.3), and for the same reason: it is a key in the **host's** registry, not a name in the language's scope. The compiler does not resolve it to anything and passes it through to the host. The function's own name is free, and attribute arguments stay literals (§9), so `@hook` needs no grammar change.
+- The `event` column has type `string`. Each cell holds one of the hook names the host defines (§9.3).
+- The `handler` column has a function type (§5.0). Each cell holds a function value — a bare top-level `FN` name or a lambda (§6.9).
+- Multiple rows may name the same event; the host calls them in row order.
+- A single function may appear in multiple rows, answering several events. The "one function, one event" restriction of an attribute-based model is gone by construction: every row is an independent `(event, handler)` pair.
+- The handler signature must match one of the host's event signatures (§9.3) exactly, with no coercion (§5.8). A mismatch is a compile error when the host's signatures are visible to Sema; otherwise the host reports it at load time, since the language cannot know the host's full set of signatures.
+- A `@sequence` function is not a valid function value (§9.2.5) and therefore cannot appear as a handler.
 
-Sema checks:
+**The table must be `@readonly`.** A `@fixed` table would suffice for the host's collection step — the host reads the table once, at load, and the row set is frozen either way — but `@fixed` leaves the cells writable. A hook table is a declaration of intent, not a mutable mapping: it says which handlers the module answers with, a fact about the module, not a runtime variable. `@readonly` also lets the compiler treat a call through a hook cell as a compile-time-known code address (§6.9), which a `@fixed` table would not.
 
-- `@hook` requires `@export` on the same function. It is never implied (the same rule as `@packed` and `@fixed`, §4.1.4); a hook the host cannot see is an error.
-- A function has at most one `@hook`, and within a module at most one function carries a given hook name.
-- A `@sequence` function cannot be a hook (§9.2.5): the host calls a hook and expects it to run and return.
-- When the host has declared a signature for the hook name (§9.3), the function's signature must match it exactly, with no coercion (§5.8). A mismatch is an error. A hook name the host does not know is reported by the host at load time, since the language cannot know the host's set.
+**How the host finds the table.** The table's name is `Hook`. The host collects every module's exported `Hook` table at load time, pairs each row's `event` with its `handler`, and dispatches on `event` at fire time. A module declares at most one `Hook` table — the module's normal name-uniqueness rule (§3.2, §3.3) already forbids two tables with the same name.
 
-`@hook` is only a marker. It does not register the function anywhere or order it relative to other hooks. How "run the right function when X happens" is organized — registration, an event-kind table, dispatch order, ordering trusted code ahead of mods — is a library concern, not a language one, and is specified in `Architecture.md` rather than here. The hook names the current engine defines are listed in §9.3.
+**The hook table is only a container for handlers.** It does not register anything or order anything relative to other modules' hooks; how "run the right function when X happens" is organized — an event-kind table, cross-module dispatch order, ordering trusted code ahead of mods — is a library concern, not a language one, and is specified in `Architecture.md` rather than here. The hook names the current engine defines are listed in §9.3.
 
 ### 9.2 Sequences (the suspension primitive)
 
@@ -1564,8 +1574,8 @@ These keep the feature to "suspend one sequence," not "a general concurrency sys
 - **A `@sequence` function always returns `void`.** Its declaration still writes `-> void` explicitly, like any other function. If a caller needs a result, have the sequence write it into a table row, or call an ordinary `FN` as its last step.
 - **A `@sequence` function cannot have a `host(...)` body.** Its body is compiled Lucid; suspension only makes sense for code the compiler itself is lowering.
 - **A `@sequence` function cannot call another `@sequence` function directly.** To compose sequences, `start` the other one and `waitUntil(isDone, handle)` — this avoids nested-state-machine composition in the compiler for v1, at the cost of one extra line at each composition point.
-- **A `@sequence` function is not a valid function-typed value** (§5.0) — it can't be passed to `FIND` or stored in a function-typed column, since calling it means "start it," not "run and return a value." When a function name is used as a function value (in a `const_expr`, an assignment, or an argument), the compiler checks that the function is not `@sequence`; otherwise it is a compile error: "a @sequence function cannot be used as a function value."
-- **A `@sequence` function cannot carry `@hook`** (§9.1): a hook is called by the host and must run and return, not start a sequence.
+- **A `@sequence` function is not a valid function-typed value** (§5.0) — it can't be passed to `FIND`, stored in a function-typed column, or listed as a `handler` in the hook table (§9.1), since calling it means "start it," not "run and return a value." When a function name is used as a function value (in a `const_expr`, an assignment, an argument, or a hook-table cell), the compiler checks that the function is not `@sequence`; otherwise it is a compile error: "a @sequence function cannot be used as a function value."
+- **A `@sequence` function cannot be a handler in the hook table** (§9.1), as it is not a valid function value (previous bullet). A handler is called by the host and must run to completion; a sequence suspends and resumes later.
 - No `try`/`finally` exists anywhere in the language (§10), so `stop`ping a sequence mid-suspend runs no cleanup code — write any necessary teardown as something explicit the caller does after `stop`, not as an implicit guarantee of the primitive.
 
 #### 9.2.6 How it's compiled (informative)
@@ -1574,7 +1584,7 @@ A `@sequence` function is lowered by the compiler into a small generated state m
 
 ### 9.3 Host hooks
 
-The host defines a set of hook names and a signature for each. A function answers one by carrying `@hook("name")` (§9.1). This section documents the **current engine's** set so a script author knows which names to write. It is a contract between that engine and its scripts, not part of the language; another host may define a different set.
+The host defines a set of hook names and a signature for each. A module answers a hook by listing it in its hook table (§9.1): a row whose `event` cell names the hook and whose `handler` cell holds a function whose signature matches the hook's. This section documents the **current engine's** set so a script author knows which names to write. It is a contract between that engine and its scripts, not part of the language; another host may define a different set.
 
 | Hook           | Signature                                 | When                                       |
 | -------------- | ----------------------------------------- | ------------------------------------------ |
@@ -1586,7 +1596,7 @@ The host defines a set of hook names and a signature for each. A function answer
 | `on_destroy`   | `(self: &Entity) -> void`                 | When the entity is destroyed               |
 | `on_render`    | `(self: &Entity) -> void`                 | During render, for immediate-mode draws    |
 
-The host collects the `@hook` functions of a module at load time and calls the ones that exist; a script declares only the hooks it needs. A function that is merely *named* `on_update` is not a hook: the attribute is the contract, not the name.
+The host collects the rows of a module's `Hook` table at load time and calls the handlers for the events that fire; a script lists only the hooks it needs. A function that is merely *named* `on_update` is not a hook: a row in the hook table is the contract, not the name.
 
 ---
 
@@ -1852,11 +1862,11 @@ Because `;` is optional, the parser cannot rely on it to find the next statement
 - Table compaction (`T.compact()`) (§4.1.1d) — it would move rows and silently retarget references; memory comes back through slot reuse, `CLEAR`, and `SHRINK`.
 - Auto-generated `@primary` values (§4.1.5) — the caller supplies every key.
 - Built-in aggregation on column views (`SUM`, `AVG`) (§7.4) — it would need a numeric-only rule on column views; aggregation is a loop or a library function over an array.
-- An `@on` attribute or any other built-in event-dispatch mechanism (§9.1) — `@hook("name")` only marks which host event an `@export`ed function answers; registration and dispatch are a library concern, specified in `Architecture.md`. (The engine's hook names are listed in §9.3.)
+- An `@on` attribute, an `@hook` attribute, or any built-in event-dispatch mechanism (§9.1) — a hook table only lists which host event a function answers; registration and dispatch are a library concern, specified in `Architecture.md`. (The engine's hook names are listed in §9.3.)
 
 ### 13.1 Why sequences (§9.2), not general concurrency
 
-Every async-shaped need identified so far, apart from one, reduces to a synchronous call from the script's point of view once a callback is registered and invoked (§9.1, `Architecture.md`):
+Every async-shaped need identified so far, apart from one, reduces to a synchronous call from the script's point of view once a callback is listed in the hook table and invoked (§9.1, `Architecture.md`):
 
 - **Input** — a library-dispatched callback, called once per event.
 - **Network** — sending is a fire-and-forget `host(...)` call; receiving is a library-dispatched callback when a response lands.
@@ -1872,6 +1882,7 @@ This is still a narrow, single-purpose addition, not general concurrency: `@sequ
 1. Direct sequence-to-sequence composition (today, a `@sequence` composes another only via `start` + `waitUntil(isDone, handle)`, §9.2.5 — a nested-composition form, if ever needed, is a bigger compiler change and deliberately not attempted yet).
 2. Registry-scoping tooling for Tier 2 mods (the *policy* — one-way dependency, Tier-1-only registration — is settled in §3.4; the concrete host-side API for defining a mod's registry view is not part of this document).
 3. Non-nil reference types (e.g. a type that means "a `&T` that is never `nil`"), which would let a constructor like `ADD` return a value that the caller can use without a nil-check. v1 has no such type; the caller checks.
+4. Whether the host's hook set needs a public declaration in the language, so Sema can check handler signatures at compile time. Today the hook table's `handler` column has a function type the script chooses; the host checks the signature against its own set at load time. A future `@hooks` attribute on the hook table (or a host-declared signature table) could move the check to compile time; the design deliberately leaves it to the host for now.
 
 ---
 
