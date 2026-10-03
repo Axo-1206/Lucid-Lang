@@ -157,8 +157,7 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
     case ASTKind::IdentifierExpr: {
         auto* id = lhs->as<IdentifierExprAST>();
         AST_ASSERT_MSG(id->resolvedDecl != nullptr,
-            "emitStoreIntoPlace: an lvalue identifier has no "
-            "resolvedDecl");
+            "emitStoreIntoPlace: an lvalue identifier has no resolvedDecl");
 
         DeclAST* decl = id->resolvedDecl;
 
@@ -166,8 +165,7 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
         auto slot = ctx.slots().slotFor(decl->name);
         if (slot.has_value()) {
             const TypeDescriptor& type = ctx.slots().typeOf(*slot);
-            const memory::ResourcePlan plan =
-                memory::planForType(type);
+            const memory::ResourcePlan plan = memory::planForType(type);
 
             if (plan.needsDropForStorage()) {
                 ctx.emitOpcode(Opcode::LoadLocal);
@@ -187,16 +185,14 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
             const auto offset =
                 ctx.compiler().staticDataOffsetOf(decl->mangledName);
             AST_ASSERT_MSG(offset.has_value(),
-                "emitStoreIntoPlace: a top-level binding has no "
-                "static-data offset");
+                "emitStoreIntoPlace: a top-level binding has no static-data offset");
             ctx.emitOpcode(Opcode::StoreStaticData);
             ctx.emitU32(*offset);
             ctx.owned().pop();
             return;
         }
 
-        AST_ASSERT_MSG(false,
-            "emitStoreIntoPlace: a parameter has no slot");
+        AST_ASSERT_MSG(false, "emitStoreIntoPlace: a parameter has no slot");
         return;
     }
 
@@ -208,8 +204,7 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
     case ASTKind::FieldAccessExpr: {
         auto* fa = lhs->as<FieldAccessExprAST>();
         AST_ASSERT_MSG(fa->resolvedColumn != nullptr,
-            "emitStoreIntoPlace: a field-access store has no "
-            "resolvedColumn");
+            "emitStoreIntoPlace: a field-access store has no resolvedColumn");
         const ColumnDeclAST* col = fa->resolvedColumn;
 
         ctx.emitOpcode(Opcode::StoreField);

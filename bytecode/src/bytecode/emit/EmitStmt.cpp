@@ -75,38 +75,22 @@ bool emitStmt(StmtAST* stmt, CompilerContext& ctx) {
     ctx.noteLine(stmt->loc, ctx.module()->filePath);
 
     switch (stmt->kind) {
-        case ASTKind::BlockStmt:
-            return emitBlock(stmt->as<BlockStmtAST>(), ctx);
-        case ASTKind::VarDeclStmt:
-            return emitVarDeclStmt(stmt->as<VarDeclStmtAST>(), ctx);
-        case ASTKind::AssignStmt:
-            return emitAssignStmt(stmt->as<AssignStmtAST>(), ctx);
-        case ASTKind::ExprStmt:
-            return emitExprStmt(stmt->as<ExprStmtAST>(), ctx);
-        case ASTKind::ReturnStmt:
-            return emitReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
-        case ASTKind::BreakStmt:
-            return emitBreakStmt(stmt->as<BreakStmtAST>(), ctx);
-        case ASTKind::ContinueStmt:
-            return emitContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
-        case ASTKind::IfStmt:
-            return emitIfStmt(stmt->as<IfStmtAST>(), ctx);
-        case ASTKind::SwitchStmt:
-            return emitSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
-        case ASTKind::WhileStmt:
-            return emitWhileStmt(stmt->as<WhileStmtAST>(), ctx);
-        case ASTKind::ForStmt:
-            return emitForStmt(stmt->as<ForStmtAST>(), ctx);
-        case ASTKind::WaitStmt:
-            return emitWaitStmt(stmt->as<WaitStmtAST>(), ctx);
-        case ASTKind::WaitFramesStmt:
-            return emitWaitFramesStmt(stmt->as<WaitFramesStmtAST>(), ctx);
-        case ASTKind::WaitUntilStmt:
-            return emitWaitUntilStmt(stmt->as<WaitUntilStmtAST>(), ctx);
-        case ASTKind::WaitForEventStmt:
-            return emitWaitForEventStmt(stmt->as<WaitForEventStmtAST>(), ctx);
-        case ASTKind::WaitForRequestStmt:
-            return emitWaitForRequestStmt(stmt->as<WaitForRequestStmtAST>(), ctx);
+        case ASTKind::BlockStmt:            return emitBlock(stmt->as<BlockStmtAST>(), ctx);
+        case ASTKind::VarDeclStmt:          return emitVarDeclStmt(stmt->as<VarDeclStmtAST>(), ctx);
+        case ASTKind::AssignStmt:           return emitAssignStmt(stmt->as<AssignStmtAST>(), ctx);
+        case ASTKind::ExprStmt:             return emitExprStmt(stmt->as<ExprStmtAST>(), ctx);
+        case ASTKind::ReturnStmt:           return emitReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
+        case ASTKind::BreakStmt:            return emitBreakStmt(stmt->as<BreakStmtAST>(), ctx);
+        case ASTKind::ContinueStmt:         return emitContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
+        case ASTKind::IfStmt:               return emitIfStmt(stmt->as<IfStmtAST>(), ctx);
+        case ASTKind::SwitchStmt:           return emitSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
+        case ASTKind::WhileStmt:            return emitWhileStmt(stmt->as<WhileStmtAST>(), ctx);
+        case ASTKind::ForStmt:              return emitForStmt(stmt->as<ForStmtAST>(), ctx);
+        case ASTKind::WaitStmt:             return emitWaitStmt(stmt->as<WaitStmtAST>(), ctx);
+        case ASTKind::WaitFramesStmt:       return emitWaitFramesStmt(stmt->as<WaitFramesStmtAST>(), ctx);
+        case ASTKind::WaitUntilStmt:        return emitWaitUntilStmt(stmt->as<WaitUntilStmtAST>(), ctx);
+        case ASTKind::WaitForEventStmt:     return emitWaitForEventStmt(stmt->as<WaitForEventStmtAST>(), ctx);
+        case ASTKind::WaitForRequestStmt:   return emitWaitForRequestStmt(stmt->as<WaitForRequestStmtAST>(), ctx);
         default:
             AST_ASSERT_MSG(false,
                 "emitStmt: unhandled StmtAST subclass — the emitter is "

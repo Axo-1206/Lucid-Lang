@@ -408,30 +408,18 @@ void emitExpr(ExprAST* expr, CompilerContext& ctx) {
     ctx.noteLine(expr->loc, ctx.module()->filePath);
 
     switch (expr->kind) {
-        case ASTKind::LiteralExpr:
-            emitLiteralExpr(expr->as<LiteralExprAST>(), ctx); return;
-        case ASTKind::IdentifierExpr:
-            emitIdentifierExpr(expr->as<IdentifierExprAST>(), ctx); return;
-        case ASTKind::ArrayLiteralExpr:
-            emitArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), ctx); return;
-        case ASTKind::FieldAccessExpr:
-            emitFieldAccessExpr(expr->as<FieldAccessExprAST>(), ctx); return;
-        case ASTKind::IndexExpr:
-            emitIndexExpr(expr->as<IndexExprAST>(), ctx); return;
-        case ASTKind::CallExpr:
-            emitCallExpr(expr->as<CallExprAST>(), ctx); return;
-        case ASTKind::LambdaExpr:
-            emitLambdaExpr(expr->as<LambdaExprAST>(), ctx); return;
-        case ASTKind::StartExpr:
-            emitStartExpr(expr->as<StartExprAST>(), ctx); return;
-        case ASTKind::UnaryExpr:
-            emitUnaryExpr(expr->as<UnaryExprAST>(), ctx); return;
-        case ASTKind::BinaryExpr:
-            emitBinaryExpr(expr->as<BinaryExprAST>(), ctx); return;
-        case ASTKind::ParenExpr:
-            emitParenExpr(expr->as<ParenExprAST>(), ctx); return;
-        case ASTKind::RangeExpr:
-            emitRangeExpr(expr->as<RangeExprAST>(), ctx); return;
+        case ASTKind::LiteralExpr:      emitLiteralExpr(expr->as<LiteralExprAST>(), ctx); return;
+        case ASTKind::IdentifierExpr:   emitIdentifierExpr(expr->as<IdentifierExprAST>(), ctx); return;
+        case ASTKind::ArrayLiteralExpr: emitArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), ctx); return;
+        case ASTKind::FieldAccessExpr:  emitFieldAccessExpr(expr->as<FieldAccessExprAST>(), ctx); return;
+        case ASTKind::IndexExpr:        emitIndexExpr(expr->as<IndexExprAST>(), ctx); return;
+        case ASTKind::CallExpr:         emitCallExpr(expr->as<CallExprAST>(), ctx); return;
+        case ASTKind::LambdaExpr:       emitLambdaExpr(expr->as<LambdaExprAST>(), ctx); return;
+        case ASTKind::StartExpr:        emitStartExpr(expr->as<StartExprAST>(), ctx); return;
+        case ASTKind::UnaryExpr:        emitUnaryExpr(expr->as<UnaryExprAST>(), ctx); return;
+        case ASTKind::BinaryExpr:       emitBinaryExpr(expr->as<BinaryExprAST>(), ctx); return;
+        case ASTKind::ParenExpr:        emitParenExpr(expr->as<ParenExprAST>(), ctx); return;
+        case ASTKind::RangeExpr:        emitRangeExpr(expr->as<RangeExprAST>(), ctx); return;
         default:
             AST_ASSERT_MSG(false,
                 "emitExpr: unhandled ExprAST subclass — the emitter is "
