@@ -296,7 +296,7 @@ TABLE Loadout {
 ]
 ```
 
-A bare function name is allowed specifically because it isn't a call — `onIdleEnter` in §6.9's `StateHandler` example names a compile-time-known code address, the same as `Direction.North` names a compile-time-known row; neither one runs anything. A lambda (§6.9) is also a valid `const_expr` for a function-typed cell, since it desugars to a compiler-generated top-level function.
+A bare function name is allowed specifically because it isn't a call — `onIdleEnter` in §6.9's `StateHandler` example names a compile-time-known code address, the same as `Direction.North` names a compile-time-known row; neither one runs anything. A lambda (§6.9) is also a valid `const_expr` for a function-typed cell, for the same reason: it desugars to a compiler-generated top-level function (§4.2.5), and its value at the `const_expr` position is that function's address. The only difference from a bare `FN` name is that the lambda's function is compiler-generated and unnamed; the value is the same kind of thing.
 
 This isn't an arbitrary restriction — it's what makes fixed-table construction free at runtime. Because every inline row is resolvable entirely at compile time, the compiler evaluates it once during compilation and bakes the result into the compiled artifact as constant data — the same way a string literal is baked in, not constructed when the program starts. That has two consequences worth being explicit about:
 
@@ -369,7 +369,7 @@ TABLE LoadRequest = host("LoadRequest")
 - Every row supplies a value for every column.
 - Duplicate rows are allowed by default (this is a data container, not a set); use `@unique`/`@primary` on a column to forbid duplicates.
 - A column's type may be a primitive, a host type, a row reference (`&T`), an array (`[T]`, `[N, T]`), or a function type (§5.0). **A column may not be a bare table type** — a whole-sheet reference in a cell is meaningless.
-- **A function-typed column may appear in any table, growing or fixed.** Its cells hold **function values**: references to compile-time-known functions (top-level `FN` names or lambdas, §6.9). A function value is a code address tagged with its signature (§5.0); it has no lifetime, captures no state, and is never constructed at runtime. Assigning a function value to a cell is therefore no different from assigning a literal. A function-typed column is never nilable: every cell in it holds a valid function value (§5.0, §5.3).
+- **A function-typed column may appear in any table, growing or fixed.** Its cells hold **function values**: references to compile-time-known functions (top-level `FN` names or lambdas, §6.9). A function value is a code address tagged with its signature (§5.0); it has no lifetime, captures no state, and is never constructed at runtime. Assigning a function value to a cell is therefore no different from assigning a literal: the cells are populated from the same `const_expr` forms as any other cell (§4.1.1c), a growing table's `ADD(...)` accepts a matching function value the same way it accepts any other cell's value (§7.1), and the cells of a non-`@readonly` table are writable like any other column's. A function-typed column is never nilable: every cell in it holds a valid function value (§5.0, §5.3).
 - **Any column type may be nilable (`T?`)** for primitives, host types, and arrays. A nilable cell may hold `nil`; a non-nilable one may not.
 - **A `@fixed`/`@readonly` table's row set is decided at declaration**; a growing table's is not.
 
@@ -530,7 +530,7 @@ FN incrementAge(const p: &Person) -> void {
 
 - `'->' type` is mandatory on every function declaration, matching `function_type` (§4.2.5), which already required it. There is no implicit return type and no way to omit the arrow.
 - A function with no meaningful result writes `-> void` explicitly. This is the only function-declaration form the grammar has; nothing is inferred.
-- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `void`. A function never returns a bare table. A function never returns a function type (no first-class functions, §4.2.5).
+0- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `void`. A function never returns a bare table. A function never returns a function type: a function value is a compile-time-known code address (§5.0), not something a function can construct and hand back, and there are no closures (§4.2.5).
 - `void` is valid **only** in this position. It is a semantic error to declare a `let`/`const`, a parameter, a column, or an array element of type `void` — a `void` value carries no information and supports no operations, so there is never a reason to bind one. A function returning `void` is called as a bare statement (§12.6), never assigned.
 
 #### 4.2.2 Parameters and `const`
@@ -716,9 +716,9 @@ let pred: (&Person) -> bool = isMinor
 
 A function-typed value can be reassigned to any named `FN` or lambda whose parameter and return types match exactly — no implicit conversion between different function types, same as everywhere else in the type system (§5.8).
 
-Function types are not nilable: a function value is always a valid code address. `((&Person) -> bool)?` is a type error.
+Function types are not nilable: a function value is always a valid code address. `((&Person) -> bool)?` is a type error. This applies to every position a function type can appear — a parameter, a `let`/`const`, an array element, and a function-typed column (§4.1.3).
 
-This holds for function-typed columns (§4.1.3) too. A function-typed cell is always assigned before its row is visible: every `ADD` and every initializer row supplies a value for every column (§4.1.3, §7.1), and row creation is atomic from the program's point of view, so a cell that has not yet been assigned is never observable. A column cannot express "no function here"; a row that may lack a handler is modeled with a separate `bool` column, or by moving the handler into a table of its own and holding a nilable `&T` to it.
+This holds for function-typed columns too. A function-typed cell is always assigned before its row is visible: every `ADD` and every initializer row supplies a value for every column (§4.1.3, §7.1), and row creation is atomic from the program's point of view, so a cell that has not yet been assigned is never observable. A column cannot express "no function here"; a row that may lack a handler is modeled with a separate `bool` column, or by moving the handler into a table of its own and holding a nilable `&T` to it.
 
 ### 5.1 The reference model
 
@@ -1025,6 +1025,8 @@ Behavior.byName("Idle").onUpdate(self, dt)
 ```
 
 A call through a cell of a `@readonly` table (`StateHandler.Idle.onEnter(e)`) names a compile-time-known function, so the compiler may resolve it statically and inline it. A `@fixed` table's cells are writable, so a call through one is dynamic like any other cell read. A call through a cell of a growing table, or through a local or parameter, is dispatched at runtime by a registry lookup on the function value's handle. That lookup is O(1) but not free, so prefer a `@readonly` table for hot dispatch paths.
+
+A function-typed column is legal in any table kind; the three kinds differ only in how a call through the cell is compiled. A `@readonly` cell never changes, so a call through it is compile-time-known and can be inlined. A `@fixed` or growing cell is writable — its initial value is a compile-time constant, but its current value is not — so a call through it is a runtime lookup on the cell's current function value. Storing a function value costs the same as storing an `int`: it is a constant-size code address with no allocation, capture, or lifetime. This is the same distinction the language draws for every other column type (a `@readonly` `int` cell can be folded to a constant at compile time; a `@fixed` or growing one is a runtime read), so the rule of thumb is the same: use `@readonly` when the function never changes, and pay for runtime dispatch only where the flexibility is needed.
 
 ### 6.10 Operators are fixed tokens
 
