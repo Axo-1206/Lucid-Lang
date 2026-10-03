@@ -42,7 +42,7 @@
 /// in) that belongs to the host. `analyze` runs over whatever span of
 /// modules it is given, in the order it is given.
 
-#include "Sema.hpp"
+#include "sema/Sema.hpp"
 
 #include "context/SemaContext.hpp"
 
