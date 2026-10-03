@@ -140,6 +140,7 @@ lucid/
 │       ├── Opcode.cpp
 │       ├── Serialize.cpp
 │       ├── compile/
+│       │   ├── ArtifactBuildState.hpp
 │       │   ├── Compiler.cpp
 │       │   ├── CompilerContext.hpp
 │       │   ├── CompilerContext.cpp
@@ -172,7 +173,7 @@ lucid/
 │           ├── DropSchedule.hpp
 │           └── DropSchedule.cpp
 │
-├── interp/
+├── interp/ (not implemented)
 │   ├── include/interp/
 │   │   └── Interpreter.hpp
 │   └── src/interp/
@@ -192,7 +193,7 @@ lucid/
 │           ├── OpsConcurrency.cpp
 │           └── OpsHost.cpp
 │
-├── vm/
+├── vm/ (not implemented)
 │   ├── include/vm/
 │   │   ├── VM.hpp
 │   │   ├── Registry.hpp

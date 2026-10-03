@@ -19,15 +19,11 @@ namespace lucid::bytecode::compile {
 // Every instruction is written by calling emitOpcode followed by the
 // operand-emitting calls that match the opcode's OperandShape. The
 // caller is responsible for emitting the right operands in the right
-// order; this class does not check that the operands match the shape
-// (that would require re-deriving the shape from the Opcode enum on
-// every emission, which the compiler already knows).
+// order; this class does not check that the operands match the shape.
 //
-// The invariant "the operands match the opcode's shape" is checked
-// after the fact: a compiler-side validator (and the interpreter's
-// Dispatch.cpp) walks the code and confirms that every opcode is
-// followed by the right number of operand bytes. That check happens
-// once per function, not once per emission.
+// The invariant "operands match the opcode's shape" is checked by the
+// interpreter's dispatch, and by a compiler-side validator. That check
+// happens once per function, not once per emission.
 //
 // emitOpcode also updates the value-stack depth tracker. For a
 // fixed-effect opcode, the update is automatic from OpcodeInfo. For a
@@ -87,11 +83,11 @@ void CompilerContext::emitI32(int32_t v) {
 // Patching
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A forward jump is emitted with a placeholder operand and patched
-// once the target is known. The patching writes the *relative* offset:
-// the difference between the target's code offset and the position
-// after the operand. The interpreter computes the target by adding
-// the operand to the position after the operand.
+// A forward jump is emitted with a placeholder operand and patched once
+// the target is known. The patching writes the *relative* offset: the
+// difference between the target's code offset and the position after
+// the operand. The interpreter computes the target by adding the
+// operand to the position after the operand.
 
 void CompilerContext::patchU32(uint32_t offset, uint32_t value) {
     AST_ASSERT_MSG(offset + 4 <= m_code.size(),
@@ -109,9 +105,10 @@ void CompilerContext::patchU32(uint32_t offset, uint32_t value) {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Called by the emitter for variable-effect opcodes, after the emitter
-// has resolved the actual (pops, pushes). See EmitExpr.cpp's
-// emitArrayLiteralExpr (NewArray / NewFixedArray) and emitCallExpr
-// (Ext_Call) for the two call sites in the current code base.
+// has resolved the actual (pops, pushes). The two current call sites
+// are EmitExpr's array-literal construction (NewArray / NewFixedArray)
+// and EmitExpr's call site (Ext_Call). EmitCopy/EmitDrop also call this
+// for Ext_RtCall.
 
 void CompilerContext::noteStackEffect(int8_t pops, int8_t pushes) {
     AST_ASSERT_MSG(pops >= 0,
@@ -184,6 +181,11 @@ FunctionProto CompilerContext::finalizeProto() {
         "at the end of the function — an expression was left unconsumed "
         "by the emitter");
 
+    // The ownership stack must match the value stack. Both being empty
+    // is the strongest form of the invariant; a mismatch here means
+    // the emitter left a value unaccounted for.
+    m_owned.assertEmpty();
+
     // ─── Signature ─────────────────────────────────────────────────────
     //
     // The function's signature is built from its declared parameter
@@ -207,8 +209,7 @@ FunctionProto CompilerContext::finalizeProto() {
     //
     // The slot allocator recorded a (resumeIndex, liveSlots) pair for
     // every suspend point in a @sequence function. Non-sequence
-    // functions have none. The recording order is emission order,
-    // which is source order.
+    // functions have none.
     std::vector<ResumeEntry> resumeTable;
     for (const auto& [index, slots] : m_slots.suspendPoints()) {
         ResumeEntry entry;
@@ -221,10 +222,7 @@ FunctionProto CompilerContext::finalizeProto() {
     //
     // The FunctionProto's maxStackDepth is the high-water mark of the
     // value stack during the function's emission. Clamp to at least 1
-    // so the interpreter can always allocate at least one slot
-    // (FunctionProto's invariant requires maxStackDepth >= 1, and a
-    // zero-depth function — one that just does ReturnVoid — would
-    // otherwise produce 0).
+    // so the interpreter can always allocate at least one slot.
     const uint32_t maxStackDepth =
         static_cast<uint32_t>(std::max<int32_t>(m_maxDepth, 1));
 

@@ -53,7 +53,9 @@ struct TypeDescriptor {
     PrimitiveKind primitive = PrimitiveKind::Void;
 
     // Named
-    std::string namedMangled;   ///< mangled name of the table/host type
+    std::string namedMangled;       ///< mangled name of the table/host type
+    bool        isHostType = false; ///< true if the named type is a
+                                    ///< host(...)-backed type
 
     // Array
     ArrayKind arrayKind = ArrayKind::Dynamic;

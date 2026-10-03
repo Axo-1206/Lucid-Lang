@@ -36,6 +36,16 @@ TypeDescriptor translateType(const TypeAST* type, StringPool& pool) {
         TypeDescriptor d;
         d.kind         = TypeDescriptor::Kind::Named;
         d.namedMangled = pool.lookup(decl->mangledName);
+
+        // A host type is a table declared with `= host("...")`. A
+        // table reference (an ordinary TABLE) is not a host type.
+        // The distinction drives resource-plan classification: a
+        // host type is Refcounted, an ordinary table is a reference.
+        if (decl->isa<TableDeclAST>()) {
+            const auto* table = decl->as<TableDeclAST>();
+            d.isHostType = table->isHostBacked;
+        }
+
         return d;
     }
 

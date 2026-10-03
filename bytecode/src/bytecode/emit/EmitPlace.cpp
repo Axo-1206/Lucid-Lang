@@ -64,54 +64,7 @@
 
 namespace lucid::bytecode::compile {
 
-using memory::DropKind;
-using memory::emitDropIfOwned;
 using memory::ResourcePlan;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Local helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-namespace {
-
-/// Build a ResourcePlan for a slot's resource kind.
-///
-/// The current slot allocator stores only the ResourceKind per slot,
-/// not the full TypeDescriptor, so the plan is synthesized from the
-/// kind. A future addition stores the full type per slot, at which
-/// point this helper is replaced by planForType(slotType).
-ResourcePlan planFromKind(ResourceKind kind) {
-    ResourcePlan plan;
-    plan.kind = kind;
-    switch (kind) {
-        case ResourceKind::None:
-            plan.copy = memory::CopyKind::BitCopy;
-            plan.drop = DropKind::None;
-            plan.move = memory::MoveKind::BitMove;
-            break;
-        case ResourceKind::Refcounted:
-            plan.copy = memory::CopyKind::Retain;
-            plan.drop = DropKind::Release;
-            plan.move = memory::MoveKind::TransferOwnership;
-            break;
-        case ResourceKind::OwnedBuffer:
-            // The current slot allocator cannot distinguish a string
-            // from an array. Assume a string for now; a future
-            // addition stores the full type and picks the right kind.
-            plan.copy = memory::CopyKind::DeepCopyString;
-            plan.drop = DropKind::FreeString;
-            plan.move = memory::MoveKind::TransferOwnership;
-            break;
-        case ResourceKind::Aggregate:
-            plan.copy = memory::CopyKind::ElementWise;
-            plan.drop = DropKind::ElementWise;
-            plan.move = memory::MoveKind::TransferOwnership;
-            break;
-    }
-    return plan;
-}
-
-} // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // emitPlace — the operands a store needs
@@ -209,66 +162,41 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
 
         DeclAST* decl = id->resolvedDecl;
 
-        // ─── Local or parameter ────────────────────────────────────────
-        //
-        // The slot allocator knows about it. Before storing, if the
-        // slot holds a resource-typed value, drop the old value.
+        // Local or parameter: the slot allocator knows it.
         auto slot = ctx.slots().slotFor(decl->name);
         if (slot.has_value()) {
-            const ResourceKind kind =
-                ctx.slots().resourceKindOf(*slot);
+            const TypeDescriptor& type = ctx.slots().typeOf(*slot);
+            const memory::ResourcePlan plan =
+                memory::planForType(type);
 
-            if (isResourceKind(kind)) {
-                // The slot owns a resource. Load its current value
-                // and drop it. The drop consumes the loaded value from
-                // the value stack; the store below then writes the
-                // new value in its place.
-                const ResourcePlan plan = planFromKind(kind);
-
+            if (plan.needsDropForStorage()) {
                 ctx.emitOpcode(Opcode::LoadLocal);
                 ctx.emitU16(*slot);
                 ctx.owned().pushOwned();
-
-                // Only drop if the loaded value is still owned (not
-                // moved out). A previously-moved slot's stack entry
-                // would be Moved, and emitDropIfOwned just Pops.
-                emitDropIfOwned(ctx, plan);
+                memory::emitDropIfOwned(ctx, plan);
             }
 
             ctx.emitOpcode(Opcode::StoreLocal);
             ctx.emitU16(*slot);
-
-            // StoreLocal consumed the new value (which the caller
-            // pushed before this call). Consume its ownership entry.
             ctx.owned().pop();
             return;
         }
 
-        // ─── Top-level binding ─────────────────────────────────────────
-        //
-        // The static-data slot's old value is the interpreter's
-        // responsibility: the StoreStaticData opcode replaces the
-        // slot's contents, and the interpreter drops the old one
-        // using the binding's type. No compiler-emitted drop here.
+        // Top-level binding: static-data slot.
         if (decl->isa<VarDeclAST>()) {
             const auto offset =
                 ctx.compiler().staticDataOffsetOf(decl->mangledName);
             AST_ASSERT_MSG(offset.has_value(),
                 "emitStoreIntoPlace: a top-level binding has no "
-                "static-data offset — the compiler's pass A did not "
-                "register it");
-
+                "static-data offset");
             ctx.emitOpcode(Opcode::StoreStaticData);
             ctx.emitU32(*offset);
-
-            // StoreStaticData consumed the new value.
             ctx.owned().pop();
             return;
         }
 
         AST_ASSERT_MSG(false,
-            "emitStoreIntoPlace: a parameter has no slot — the "
-            "function's prologue should have allocated one");
+            "emitStoreIntoPlace: a parameter has no slot");
         return;
     }
 

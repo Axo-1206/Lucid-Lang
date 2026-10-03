@@ -67,13 +67,6 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
                 "resolved it");
             c.type = translateType(col->type, state.pool);
 
-            // The column's resource kind is a fact about its type.
-            // If we want to store it on the baked column (for the
-            // interpreter's load-time use), this is where to do it.
-            // For now, the type descriptor carries the information
-            // and the interpreter derives the kind from the type.
-            (void)classifyResourceKind(col->type);
-
             baked.columns.push_back(std::move(c));
         }
 
@@ -124,18 +117,6 @@ void bakeTopLevelBinding(const VarDeclAST* var, ArtifactBuildState& state) {
     AST_ASSERT_MSG(var->init->constValue.isEvaluated(),
         "bakeTopLevelBinding: a top-level initializer's constValue is "
         "not evaluated — Sema should have folded it");
-
-    // ─── Assert Sema's resource kind matches the type ──────────────────
-    //
-    // ValueDeclAST::resourceKind is set by Sema. If it's None and the
-    // type is a resource (OwnedBuffer, Refcounted, Aggregate), Sema
-    // failed to classify the binding. classifyResourceKind is the
-    // authoritative answer; compare it against the cached value.
-    const ResourceKind expected = classifyResourceKind(var->type);
-    AST_ASSERT_MSG(expected == var->resourceKind,
-        "bakeTopLevelBinding: a top-level binding's resourceKind does "
-        "not match its type's classification — Sema's cache is stale "
-        "or the declaration was not classified");
 
     BakedBinding baked;
     baked.mangledName = state.pool.lookup(var->mangledName);
@@ -300,8 +281,14 @@ void emitDeclPrologue(FnDeclAST* fn, CompilerContext& ctx) {
             "emitDeclPrologue: a parameter has no resolved type — "
             "Sema should have resolved it");
 
-        const ResourceKind kind = classifyResourceKind(param->type);
-        ctx.slots().allocateParam(param->name, kind);
+        // Translate the parameter's type and record it on the slot.
+        // The slot allocator no longer takes a ResourceKind — it takes
+        // the full TypeDescriptor, so the scope-exit drop emitter can
+        // consult planForType and get the right drop for the type.
+        const TypeDescriptor type =
+            translateType(param->type, ctx.compiler().pool());
+
+        ctx.slots().allocateParam(param->name, type);
     }
 
     // ─── Return-type setup ─────────────────────────────────────────────

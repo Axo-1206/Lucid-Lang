@@ -2,7 +2,8 @@
  * @file compile/SlotAllocator.hpp
  *
  * @responsibility Assign a frame slot to every local binding and
- *                 parameter; track liveness across suspend points.
+ *                 parameter; record each slot's type; track liveness
+ *                 across suspend points.
  *
  * ─── Naming note ──────────────────────────────────────────────────────────
  * The FileStructure calls this Frame.hpp/cpp. It was renamed to avoid
@@ -13,7 +14,24 @@
  * Stack-depth tracking is not this class's job. The value stack's
  * high-water mark is a property of the emitted code, not of the frame
  * slots, and it is tracked by CompilerContext (see noteStackEffect).
- * This class knows about frame slots and suspend-point liveness only.
+ *
+ * ─── Types, not kinds ─────────────────────────────────────────────────────
+ * Every slot is tagged with its full TypeDescriptor, not just its
+ * ResourceKind. The type is what the drop scheduler consults: a
+ * `[string]` and a `string` are both OwnedBuffer, but their drops
+ * differ. The plan (from planForType) is a function of the type, so
+ * the type is what the compiler keeps.
+ *
+ * ─── Scopes ───────────────────────────────────────────────────────────────
+ * The emitter pushes a scope when it enters a block, and pops it when
+ * it exits. The slots allocated between the marker and the pop belong
+ * to that block. The scope records only the slots whose types need a
+ * drop, so the drop scheduler iterates them directly.
+ *
+ * Popping a scope does NOT reclaim slots. The frame's size is fixed at
+ * function entry (the interpreter allocates `localSlotCount()` slots
+ * once per call). Scopes are a drop-emission concept, not a storage
+ * concept.
  */
 
 #pragma once
@@ -24,55 +42,89 @@
 #include <utility>
 #include <vector>
 
+#include "bytecode/TypeDescriptor.hpp"
+
 #include "core/memory/InternedString.hpp"
 
 namespace lucid::bytecode::compile {
+
+/// @brief One scope's record: which slots were allocated in it.
+struct ScopeRecord {
+    /// The slot index at which this scope started (the value of
+    /// m_nextSlot when the scope was pushed).
+    uint32_t startSlot;
+
+    /// The slots allocated in this scope whose types require a drop
+    /// at scope exit, in allocation order. The drop scheduler emits
+    /// drops for them in reverse order.
+    std::vector<uint16_t> dropSlots;
+};
 
 class SlotAllocator {
 public:
     SlotAllocator() = default;
 
-    /// Allocate a slot for a parameter. Parameters get the lowest
-    /// slots, in declaration order.
-    uint16_t allocateParam(InternedString name);
+    // ─── Slot assignment ────────────────────────────────────────────────
 
-    /// Allocate a slot for a local. Locals get slots after parameters.
+    /// Allocate a slot for a parameter.
     ///
-    /// A local that shadows an outer binding gets a fresh slot; the
-    /// map is updated to point at the new one. The outer binding's
-    /// slot is not reclaimed (the function's frame is allocated for
-    /// the whole function), but the outer binding is unreachable by
-    /// name from this point on, which matches its scope.
-    uint16_t allocateLocal(InternedString name);
+    /// Parameters get the lowest slots, in declaration order. The
+    /// parameter's type is recorded alongside the slot.
+    uint16_t allocateParam(InternedString name, const TypeDescriptor& type);
 
-    /// The slot for a name, or nullopt if the name has no slot in this
-    /// function. A name with no slot is either a top-level binding or
-    /// an error; the emitter distinguishes by the resolved declaration.
+    /// Allocate a slot for a local.
+    ///
+    /// Locals get slots after parameters, in allocation order. The
+    /// local's type is recorded alongside the slot.
+    ///
+    /// If a scope is currently open and the type requires a drop at
+    /// scope exit, the slot is also recorded in the scope's dropSlots
+    /// list.
+    uint16_t allocateLocal(InternedString name, const TypeDescriptor& type);
+
+    /// The slot for a name, or nullopt if the name has no slot in
+    /// this function.
     std::optional<uint16_t> slotFor(InternedString name) const;
+
+    /// The type of a slot. Precondition: slot < localSlotCount().
+    const TypeDescriptor& typeOf(uint16_t slot) const;
 
     /// The number of slots allocated (params + locals).
     uint32_t localSlotCount() const noexcept { return m_nextSlot; }
 
-    // ─── Suspend-point liveness ─────────────────────────────────────────
-    //
-    // For a @sequence function, the emitter records which local slots
-    // are live at each suspend point. At finalize time, the recorded
-    // sets become ResumeEntry rows on the FunctionProto.
+    // ─── Scopes ─────────────────────────────────────────────────────────
 
-    /// Record the live-slot set at a suspend point. The resume index
-    /// must be unique within the function. Every slot must be within
-    /// the frame.
+    /// Push a scope. Slots allocated after this belong to it until
+    /// popScope is called.
+    void pushScope();
+
+    /// Pop the innermost scope and return it.
+    ScopeRecord popScope();
+
+    /// The innermost scope's drop slots, in allocation order.
+    const std::vector<uint16_t>& currentScopeDropSlots() const;
+
+    /// The drop slots of every open scope, innermost first.
+    std::vector<const std::vector<uint16_t>*> openScopeDropSlots() const;
+
+    /// The number of open scopes.
+    size_t openScopeCount() const noexcept { return m_scopes.size(); }
+
+    // ─── Suspend-point liveness ─────────────────────────────────────────
+
     void recordSuspendPoint(uint32_t resumeIndex,
                             std::vector<uint16_t> liveSlots);
 
-    /// The recorded suspend points, in the order they were recorded
-    /// (which is emission order, and therefore source order).
     const std::vector<std::pair<uint32_t, std::vector<uint16_t>>>&
         suspendPoints() const noexcept { return m_suspendPoints; }
 
 private:
     std::unordered_map<InternedString, uint16_t> m_slots;
+    std::vector<TypeDescriptor>                  m_slotTypes;   // by slot index
     uint32_t                                     m_nextSlot = 0;
+
+    std::vector<ScopeRecord> m_scopes;
+
     std::vector<std::pair<uint32_t, std::vector<uint16_t>>> m_suspendPoints;
 };
 

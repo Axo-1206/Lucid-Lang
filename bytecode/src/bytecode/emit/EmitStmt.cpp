@@ -9,6 +9,7 @@
 #include "bytecode/compile/CompilerContext.hpp"
 #include "bytecode/compile/TypeTranslation.hpp"
 #include "bytecode/memory/DropSchedule.hpp"
+#include "bytecode/memory/EmitDrop.hpp"
 #include "bytecode/memory/ResourcePlan.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
@@ -154,32 +155,22 @@ bool emitVarDeclStmt(VarDeclStmtAST* stmt, CompilerContext& ctx) {
         "emitVarDeclStmt: a local declaration has no resolved type — "
         "Sema should have resolved it");
 
-    // Assert that Sema classified the declaration's resource kind.
-    // classifyResourceKind is the authoritative answer; compare it
-    // against the cached value.
-    const ResourceKind expectedKind = classifyResourceKind(decl->type);
-    AST_ASSERT_MSG(expectedKind == decl->resourceKind,
-        "emitVarDeclStmt: a local declaration's resourceKind does not "
-        "match its type's classification — Sema's cache is stale");
-
     // Evaluate the initializer. The value ends up on top of the stack.
     emitExpr(decl->init, ctx);
 
-    // Allocate the local's slot, tagging it with the resource kind so
-    // the scope-exit drop emitter knows whether this slot needs a drop.
-    const uint16_t slot = ctx.slots().allocateLocal(decl->name,
-                                                    decl->resourceKind);
+    // Translate the declared type and record it on the slot.
+    const TypeDescriptor type =
+        translateType(decl->type, ctx.compiler().pool());
 
-    // Store the value into the slot. The value's ownership flag on the
-    // ownership stack is Owned (the initializer produced a fresh value
-    // or a bit copy). StoreLocal consumes the value; the slot now owns
-    // it.
+    const uint16_t slot = ctx.slots().allocateLocal(decl->name, type);
+
+    // Store the value into the slot. The value's ownership flag on
+    // the ownership stack is Owned; StoreLocal consumes the value,
+    // and the slot now owns it.
     ctx.emitOpcode(Opcode::StoreLocal);
     ctx.emitU16(slot);
 
     // Consume the ownership entry for the value that was just stored.
-    // The value's resources are now owned by the slot, not by anything
-    // on the value stack.
     ctx.owned().pop();
 
     return false;
@@ -235,7 +226,7 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
         if (plan.needsDropForStorage()) {
             // The value is on top of the stack and owns a resource.
             // Emit the drop, which consumes it.
-            emitExprDropOfTop(ctx, plan);
+            memory::emitDrop(ctx, plan);
         } else {
             // The value owns nothing. Pop it off the stack.
             ctx.emitOpcode(Opcode::Ext_Pop);
@@ -517,9 +508,13 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
 
         ctx.slots().pushScope();
 
+        // The counter's type is the range's bound type (an integer).
+        const TypeDescriptor counterType =
+            translateType(range->lo->resolvedType,
+                          ctx.compiler().pool());
+
         const uint16_t counterSlot =
-            ctx.slots().allocateLocal(stmt->firstVar->name,
-                                      ResourceKind::None);
+            ctx.slots().allocateLocal(stmt->firstVar->name, counterType);
         ctx.emitOpcode(Opcode::StoreLocal);
         ctx.emitU16(counterSlot);
         ctx.owned().pop();
@@ -629,8 +624,8 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
 
         ctx.loops().pop_back();
 
-        // Pop the scope. The loop variable's slot has ResourceKind::None,
-        // so its scope has no resource slots and emits no drops.
+        // Pop the scope. The counter's type is an integer, so its
+        // plan has no drop and the scope has no drop slots.
         const ScopeRecord scope = ctx.slots().popScope();
         DropSchedule::emitScopeDrops(ctx, scope);
 

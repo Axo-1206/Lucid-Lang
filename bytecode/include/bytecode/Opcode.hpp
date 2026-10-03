@@ -241,6 +241,16 @@ enum class Opcode : uint16_t {
     Ext_Return     = 0x0170,
     Ext_ReturnVoid = 0x0171,
 
+    // ─── Runtime calls ──────────────────────────────────────────────────
+    //
+    // A runtime call invokes one of the language's own runtime
+    // operations (retain, release, string free, array copy, panic).
+    // The operand is a u8 selecting the RuntimeOp. The stack effect
+    // depends on the operation; Ext_RtCall's OpcodeInfo entry has
+    // pops = -1 and pushes = -1, and the emitter calls
+    // noteStackEffect with the operation's resolved effect.
+    Ext_RtCall = 0x0172,  ///< u8 RuntimeOp; args on stack
+
     // ─── Panic ──────────────────────────────────────────────────────────
     Ext_Panic                    = 0x0180,  ///< u32 DiagCode; msg on stack
     Ext_PanicNilDeref            = 0x0181,

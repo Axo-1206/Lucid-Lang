@@ -350,6 +350,9 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
     t[0x70] = {Opcode::Ext_Return,     OperandShape::None, "Return",     1, 0};
     t[0x71] = {Opcode::Ext_ReturnVoid, OperandShape::None, "ReturnVoid", 0, 0};
 
+    // ─── Runtime Call ───────────────────────────────────────────────────
+    t[0x72] = {Opcode::Ext_RtCall, OperandShape::U8, "RtCall", -1, -1};
+
     // ─── Panic ─────────────────────────────────────────────────────────
     t[0x80] = {Opcode::Ext_Panic,                    OperandShape::U32, "Panic",                    1, 0};
     t[0x81] = {Opcode::Ext_PanicNilDeref,            OperandShape::None, "PanicNilDeref",           0, 0};
