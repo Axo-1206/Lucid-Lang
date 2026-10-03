@@ -60,7 +60,6 @@
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
-#include "core/ast/ResourceKind.hpp"
 
 namespace lucid::bytecode::compile {
 

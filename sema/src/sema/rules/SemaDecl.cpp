@@ -43,8 +43,7 @@
 ///     `resolveVarDeclStmt` in `SemaStmt.cpp`, *before* it calls
 ///     `resolveVarDecl`, into the block's scope.
 ///
-/// `resolveVarDecl` itself does not register. It resolves the declared
-/// type, classifies the binding's `resourceKind`, and resolves the
+/// `resolveVarDecl` itself does not register. It resolves the
 /// initializer against the declared type. Both callers have already
 /// registered the name — the only difference is where.
 
@@ -296,13 +295,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     }
     decl->type = declaredType;
 
-    // ─── 3. Classify the resource kind ──────────────────────────────────
-    //
-    // A binding's ownership behavior is fixed by its type alone, before
-    // any value-specific information is considered.
-    decl->resourceKind = classifyResourceKind(declaredType);
-
-    // ─── 4. Const-binding validation ────────────────────────────────────
+    // ─── 3. Const-binding validation ────────────────────────────────────
     //
     // A `const` binding must have a definite type: not a nullable type
     // (`T?`), not a row reference (`&T`). `let` accepts any type.
@@ -312,7 +305,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 5. Resolve the initializer ─────────────────────────────────────
+    // ─── 4. Resolve the initializer ─────────────────────────────────────
     //
     // The initializer is resolved against the declared type, so that an
     // empty array literal `[]` takes its element type from the binding's
@@ -329,7 +322,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 6. Top-level initializer must be a `const_expr` ────────────────
+    // ─── 5. Top-level initializer must be a `const_expr` ────────────────
     //
     // The rule (grammar §3.4 and §4.3): a top-level `let`/`const` binding
     // starts at a value the compiler knows. Nothing runs at module load
@@ -381,7 +374,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         decl->init->constValue = val;
     }
 
-    // ─── 7. Mangled name for @export ────────────────────────────────────
+    // ─── 6. Mangled name for @export ────────────────────────────────────
     //
     // Only top-level `let`/`const` can be `@export`ed, and the attribute
     // validator has already rejected `@export` on a local.
@@ -509,10 +502,7 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
                                        param->type);
     }
 
-    // ─── 4. Classify the resource kind ──────────────────────────────────
-    param->resourceKind = classifyResourceKind(param->type);
-
-    // ─── 5. Const-parameter validation ──────────────────────────────────
+    // ─── 4. Const-parameter validation ──────────────────────────────────
     //
     // A `const` parameter may not be reassigned and may not have
     // mutation applied through it. The check is on the parameter's

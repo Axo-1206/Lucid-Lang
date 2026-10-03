@@ -259,26 +259,6 @@ inline std::string arrayKindToString(ArrayKind kind) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ResourceKind to String
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// ResourceKind lives in core/ast/ResourceKind.hpp. It is stringified here
-// alongside the other AST enums because it appears on ValueDeclAST and is
-// useful in debug output.
-
-inline std::string resourceKindToString(ResourceKind kind) {
-    switch (kind) {
-        case ResourceKind::None:         return "None";
-        case ResourceKind::Refcounted:   return "Refcounted";
-        case ResourceKind::OwnedBuffer:  return "OwnedBuffer";
-        case ResourceKind::Aggregate:    return "Aggregate";
-        default:
-            return "Unknown(" +
-                   std::to_string(static_cast<int>(kind)) + ")";
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Type to String — full type signature
 // ─────────────────────────────────────────────────────────────────────────────
 

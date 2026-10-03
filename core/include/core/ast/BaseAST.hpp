@@ -62,7 +62,6 @@
 #include "../memory/InternedString.hpp"
 #include "../memory/ArenaSpan.hpp"
 #include "../diagnostics/StackTrace.hpp"
-#include "ResourceKind.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -575,11 +574,6 @@ struct ValueDeclAST : DeclAST {
     /// parameter. A `const` binding cannot be reassigned and no mutation
     /// through it is allowed.
     bool isConst = false;
-
-    /// What kind of heap resource this binding owns, if any. Set once by
-    /// Sema when the declaration's type is resolved; read by every later
-    /// pass that needs to know the binding's ownership behavior.
-    ResourceKind resourceKind = ResourceKind::None;
 
     explicit ValueDeclAST(ASTKind k, InternedString n, TypeAST* t, bool isConst)
         : DeclAST(k, n), type(t), isConst(isConst) {}

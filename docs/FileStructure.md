@@ -27,8 +27,7 @@ lucid/
 │   │   │   ├── DeclAST.hpp
 │   │   │   ├── ExprAST.hpp
 │   │   │   ├── StmtAST.hpp
-│   │   │   ├── TypeAST.hpp
-│   │   │   └── ResourceKind.hpp
+│   │   │   └── TypeAST.hpp
 │   │   ├── memory/
 │   │   │   ├── ASTArena.hpp
 │   │   │   ├── ArenaSpan.hpp
@@ -46,8 +45,6 @@ lucid/
 │   └── src/core/
 │       ├── Tokens.cpp
 │       ├── JSONFormatter.cpp
-│       ├── ast/
-│       │   └── ResourceKind.cpp
 │       ├── memory/
 │       │   └── StringPool.cpp
 │       ├── registry/

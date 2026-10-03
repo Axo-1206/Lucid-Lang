@@ -16,10 +16,10 @@
  * slots, and it is tracked by CompilerContext (see noteStackEffect).
  *
  * ─── Types, not kinds ─────────────────────────────────────────────────────
- * Every slot is tagged with its full TypeDescriptor, not just its
- * ResourceKind. The type is what the drop scheduler consults: a
- * `[string]` and a `string` are both OwnedBuffer, but their drops
- * differ. The plan (from planForType) is a function of the type, so
+ * Every slot is tagged with its full TypeDescriptor The type 
+ * is what the drop scheduler consults: a `[string]` and a `string` 
+ * are both OwnedBuffer, but their drops differ. 
+ * The plan (from planForType) is a function of the type, so
  * the type is what the compiler keeps.
  *
  * ─── Scopes ───────────────────────────────────────────────────────────────

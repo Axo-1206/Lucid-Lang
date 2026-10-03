@@ -10,7 +10,6 @@
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/StmtAST.hpp"
-#include "core/ast/ResourceKind.hpp"   // for classifyResourceKind
 
 namespace lucid::bytecode::compile {
 
@@ -282,9 +281,6 @@ void emitDeclPrologue(FnDeclAST* fn, CompilerContext& ctx) {
             "Sema should have resolved it");
 
         // Translate the parameter's type and record it on the slot.
-        // The slot allocator no longer takes a ResourceKind — it takes
-        // the full TypeDescriptor, so the scope-exit drop emitter can
-        // consult planForType and get the right drop for the type.
         const TypeDescriptor type =
             translateType(param->type, ctx.compiler().pool());
 

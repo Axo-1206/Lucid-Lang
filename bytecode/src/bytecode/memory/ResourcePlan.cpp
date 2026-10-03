@@ -30,7 +30,7 @@ namespace lucid::bytecode::memory {
 //
 // ─── Design: no summary input ─────────────────────────────────────────────
 // planForType reads only the TypeDescriptor. It does not consult any
-// cached classification; there is no ResourceKind field in the plan.
+// cached classification;
 // The plan is a total function of the type, so it cannot disagree with
 // the type it describes.
 

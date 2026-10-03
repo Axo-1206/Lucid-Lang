@@ -336,16 +336,6 @@ void JSONDumper::serializeVarDecl(JSONWriter& json, VarDeclAST* decl) {
     json.kv("mangledName", str(decl->mangledName));
     json.kv("isConst", decl->isConst);
 
-    // ResourceKind — emit as a stable string tag. The enum is small and
-    // closed; a switch keeps the JSON self-describing.
-    switch (decl->resourceKind) {
-        case ResourceKind::None:      json.kv("resourceKind", "None");      break;
-        // ... other ResourceKind cases as defined in ResourceKind.hpp ...
-        // (Add arms for each enumerator. Omitted here only to avoid
-        //  inventing names; the pattern is obvious.)
-        default:                      json.kv("resourceKind", "Unknown");   break;
-    }
-
     if (decl->type) {
         json.key("type");
         serializeType(json, decl->type);

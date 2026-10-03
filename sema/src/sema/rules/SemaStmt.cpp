@@ -737,7 +737,6 @@ bool resolveRangeForBindings(ForStmtAST* stmt, TypeAST* boundType, SemaContext& 
     }
 
     stmt->firstVar->type = declared;
-    stmt->firstVar->resourceKind = classifyResourceKind(declared);
     ctx.insertLocal(stmt->firstVar);
 
     return false;
@@ -813,7 +812,6 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                                           typeToString(idxType, ctx.pool));
                 }
                 stmt->firstVar->type = idxType;
-                stmt->firstVar->resourceKind = classifyResourceKind(idxType);
                 ctx.insertLocal(stmt->firstVar);
             }
         }
@@ -830,7 +828,6 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                                       typeToString(rowType, ctx.pool));
             } else {
                 stmt->secondVar->type = rowType;
-                stmt->secondVar->resourceKind = classifyResourceKind(rowType);
                 ctx.insertLocal(stmt->secondVar);
             }
         }
@@ -856,7 +853,6 @@ bool resolveTableForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
         }
 
         stmt->firstVar->type = rowType;
-        stmt->firstVar->resourceKind = classifyResourceKind(rowType);
         ctx.insertLocal(stmt->firstVar);
     }
 
@@ -895,7 +891,6 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                                           typeToString(idxType, ctx.pool));
                 }
                 stmt->firstVar->type = idxType;
-                stmt->firstVar->resourceKind = classifyResourceKind(idxType);
                 ctx.insertLocal(stmt->firstVar);
             }
         }
@@ -912,7 +907,6 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
                                       typeToString(valueType, ctx.pool));
             } else {
                 stmt->secondVar->type = valueType;
-                stmt->secondVar->resourceKind = classifyResourceKind(valueType);
                 ctx.insertLocal(stmt->secondVar);
             }
         }
@@ -938,7 +932,6 @@ bool resolveArrayForBindings(ForStmtAST* stmt, TypeAST* iterableType, SemaContex
         }
 
         stmt->firstVar->type = valueType;
-        stmt->firstVar->resourceKind = classifyResourceKind(valueType);
         ctx.insertLocal(stmt->firstVar);
     }
 
