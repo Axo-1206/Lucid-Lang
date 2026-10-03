@@ -24,7 +24,6 @@ endif()
 
 set(LUCID_CXX_WARNINGS
     # Add warning flags here as the project grows.
-    # Example: $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
 set(LUCID_MSVC_FLAGS
@@ -35,6 +34,10 @@ set(LUCID_MSVC_FLAGS
 # =============================================================================
 # LIBRARY: core
 # =============================================================================
+#
+# The smallest shared library: PrimitiveKind, ArrayKind, DiagCode,
+# SourceLocation, InternedString, StringPool, and the AST headers.
+# No dependency on any other lucid library.
 
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/core/src/core/*.cpp"
@@ -52,6 +55,45 @@ target_include_directories(lucid_core
 target_compile_options(lucid_core PRIVATE ${LUCID_CXX_WARNINGS})
 if(MSVC)
     target_compile_options(lucid_core PRIVATE ${LUCID_MSVC_FLAGS})
+endif()
+
+# =============================================================================
+# LIBRARY: contract
+# =============================================================================
+#
+# The interface between the compiler and the interpreter. Everything
+# both sides must agree on:
+#   - Opcode.hpp          the instruction set
+#   - RuntimeOp.hpp       the runtime operation set
+#   - TypeDescriptor.hpp  the type shape
+#   - Signature.hpp       the function signature
+#   - ResourcePlan.hpp    the copy/drop/move classification
+#   - Format.hpp          the .lucb magic and format version
+#
+# RULE: any change to a file in contract/include/contract/ is a change
+# to the compiler/interpreter interface and requires bumping
+# LUCB_FORMAT_VERSION in contract/Format.hpp.
+#
+# The contract library depends only on lucid_core.
+
+file(GLOB_RECURSE CONTRACT_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/contract/src/contract/*.cpp"
+)
+
+add_library(lucid_contract STATIC ${CONTRACT_SOURCES})
+
+target_include_directories(lucid_contract
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/contract/include"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/contract/src"
+)
+
+target_link_libraries(lucid_contract PUBLIC lucid_core)
+
+target_compile_options(lucid_contract PRIVATE ${LUCID_CXX_WARNINGS})
+if(MSVC)
+    target_compile_options(lucid_contract PRIVATE ${LUCID_MSVC_FLAGS})
 endif()
 
 # =============================================================================
@@ -105,6 +147,14 @@ endif()
 # =============================================================================
 # LIBRARY: bytecode
 # =============================================================================
+#
+# The artifact layer: Bytecode, FunctionProto, ConstantPool, StaticData,
+# HostSymbolTable, Manifest, Serialize. Plus the compiler internals in
+# bytecode/src/bytecode/compile/, emit/, and memory/.
+#
+# Depends on lucid_contract for the interface (Opcode, RuntimeOp,
+# TypeDescriptor, ResourcePlan, Signature, Format) and on the
+# front-end libraries (parser, sema) for the AST.
 
 file(GLOB_RECURSE BYTECODE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/bytecode/src/bytecode/*.cpp"
@@ -119,7 +169,12 @@ target_include_directories(lucid_bytecode
         "${CMAKE_CURRENT_SOURCE_DIR}/bytecode/src"
 )
 
-target_link_libraries(lucid_bytecode PUBLIC lucid_core lucid_parser lucid_sema)
+target_link_libraries(lucid_bytecode PUBLIC
+    lucid_core
+    lucid_contract
+    lucid_parser
+    lucid_sema
+)
 
 target_compile_options(lucid_bytecode PRIVATE ${LUCID_CXX_WARNINGS})
 if(MSVC)
@@ -134,11 +189,8 @@ endif()
 # and the interpreter need: string allocation and refcounting, array
 # buffer management, host-handle refcounting, and the Panic type.
 #
-# It depends on lucid_core only (for DiagCode.hpp and InternedString.hpp).
-# It does NOT depend on lucid_bytecode, lucid_parser, or lucid_sema.
-#
-# See DependencySummary.md: "That function lives in the runtime library
-# (runtime/), not in bytecode/memory/."
+# Depends on lucid_contract for TypeDescriptor (element types) and
+# ResourcePlan (recursive copy/drop dispatch).
 
 file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime/*.cpp"
@@ -153,7 +205,10 @@ target_include_directories(lucid_runtime
         "${CMAKE_CURRENT_SOURCE_DIR}/runtime/src"
 )
 
-target_link_libraries(lucid_runtime PUBLIC lucid_core)
+target_link_libraries(lucid_runtime PUBLIC
+    lucid_core
+    lucid_contract
+)
 
 target_compile_options(lucid_runtime PRIVATE ${LUCID_CXX_WARNINGS})
 if(MSVC)
@@ -165,18 +220,12 @@ endif()
 # =============================================================================
 #
 # The interpreter consumes a Bytecode artifact and executes its
-# instructions. It depends on:
-#   - lucid_runtime  (for the RuntimeOp implementations: Retain, Release,
-#                     CopyString, FreeString, CopyArray, FreeArray,
-#                     ConcatString, Panic)
-#   - lucid_bytecode (for Bytecode.hpp, FunctionProto.hpp, ConstantPool.hpp,
-#                     StaticData.hpp, HostSymbolTable.hpp, Manifest.hpp,
-#                     TypeDescriptor.hpp, Opcode.hpp, RuntimeOp.hpp,
-#                     Serialize.hpp)
+# instructions. Depends on:
+#   - lucid_contract  the interface (Opcode, RuntimeOp, ResourcePlan)
+#   - lucid_runtime   the RuntimeOp implementations
+#   - lucid_bytecode  the artifact (Bytecode, FunctionProto, ...)
 #
-# It does NOT depend on lucid_parser or lucid_sema. See DependencySummary.md:
-# "The interpreter depends on the artifact and the instruction set (10
-# headers); the VM adds the compiler's entry point (Compiler.hpp)."
+# Does NOT depend on lucid_parser or lucid_sema.
 
 file(GLOB_RECURSE INTERP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/interp/src/interp/*.cpp"
@@ -193,6 +242,7 @@ target_include_directories(lucid_interp
 
 target_link_libraries(lucid_interp PUBLIC
     lucid_core
+    lucid_contract
     lucid_runtime
     lucid_bytecode
 )
@@ -206,16 +256,9 @@ endif()
 # LIBRARY: vm
 # =============================================================================
 #
-# The VM is the embedding API: the host program uses it to compile
-# Lucid source at runtime, load a compiled .lucb, and run exported
-# functions. It depends on:
-#   - lucid_interp   (the execution engine)
-#   - lucid_runtime  (for the HostRegistry the host constructs)
-#   - lucid_bytecode (for Compiler.hpp — the compile entry point)
-#
-# The VM depends on exactly one compiler-internal file, Compiler.hpp,
-# and nothing else from compile/, emit/, or memory/. See
-# DependencySummary.md's "Summary table."
+# The embedding API. Depends on lucid_interp for execution, lucid_runtime
+# for the HostRegistry, lucid_bytecode for the Compiler.hpp entry point,
+# and lucid_contract for the interface.
 
 file(GLOB_RECURSE VM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/vm/src/vm/*.cpp"
@@ -232,6 +275,7 @@ target_include_directories(lucid_vm
 
 target_link_libraries(lucid_vm PUBLIC
     lucid_core
+    lucid_contract
     lucid_runtime
     lucid_bytecode
     lucid_interp
@@ -259,6 +303,7 @@ target_include_directories(lucid_cli
 
 target_link_libraries(lucid_cli PUBLIC
     lucid_core
+    lucid_contract
     lucid_parser
     lucid_sema
     lucid_bytecode
@@ -275,10 +320,6 @@ endif()
 # =============================================================================
 # EXECUTABLE: lucid-comp
 # =============================================================================
-#
-# The CLI binary drives the VM, not the raw compiler. This matches the
-# Scenario 2/3 shape from LinkSummary.md: one binary, one registry, the
-# compiler invoked in-process.
 
 add_executable(lucid-comp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
@@ -292,6 +333,7 @@ target_link_libraries(lucid-comp PRIVATE
     lucid_bytecode
     lucid_sema
     lucid_parser
+    lucid_contract
     lucid_core
 )
 
@@ -315,13 +357,14 @@ message(STATUS "Build type:        ${CMAKE_BUILD_TYPE}")
 message(STATUS "Generator:         ${CMAKE_GENERATOR}")
 message(STATUS "")
 message(STATUS "Libraries:")
-message(STATUS "  lucid_core      (core/)")
+message(STATUS "  lucid_core      (core/)       — PrimitiveKind, DiagCode, AST, ...")
+message(STATUS "  lucid_contract  (contract/)   — Opcode, RuntimeOp, TypeDescriptor, ResourcePlan, Signature, Format")
 message(STATUS "  lucid_parser    (parser/)")
 message(STATUS "  lucid_sema      (sema/)")
-message(STATUS "  lucid_bytecode  (bytecode/)")
-message(STATUS "  lucid_runtime   (runtime/)")
-message(STATUS "  lucid_interp    (interp/)")
-message(STATUS "  lucid_vm        (vm/)")
+message(STATUS "  lucid_bytecode  (bytecode/)   — artifact + compiler internals")
+message(STATUS "  lucid_runtime   (runtime/)    — String, Array, Handle, HostRegistry, Panic")
+message(STATUS "  lucid_interp    (interp/)     — Loader, Frame, Dispatch, Ops")
+message(STATUS "  lucid_vm        (vm/)         — embedding API")
 message(STATUS "  lucid_cli       (cli/)")
 message(STATUS "  lucid-comp      (src/main.cpp)")
 message(STATUS "========================================")
