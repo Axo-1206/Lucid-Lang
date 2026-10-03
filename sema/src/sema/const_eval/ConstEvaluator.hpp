@@ -8,7 +8,7 @@
  *
  * ─── What the evaluator does ──────────────────────────────────────────────
  * A `const_expr` is a syntactic class: literals, arithmetic on
- * literals, and the fixed-table sugar `T.Member`. The grammar puts a
+ * literals, and the compile-time row reference `T.Member`. The grammar puts a
  * `const_expr` in three positions:
  *
  *   - a cell of a `@fixed`/`@readonly` table's inline `= [ ... ]`
@@ -150,9 +150,9 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx);
 /// @brief Fold a field access.
 ///
 /// The only field access that is a compile-time constant is the
-/// fixed-table sugar `Direction.North`. The resolver in
-/// `resolveTableMemberAccess` sets `isFixedRowSugar` and
-/// `hasResolvedFixedRow` when it recognizes the shape and resolves it
+/// compile-time row reference `Direction.North`. The resolver in
+/// `resolveTableMemberAccess` sets `isCompileTimeRowRef` and
+/// `hasCompileTimeRow` when it recognizes the shape and resolves it
 /// to a specific row of a `@fixed` or `@readonly` table. The constant
 /// value is that row's index, as an `Int`.
 ///

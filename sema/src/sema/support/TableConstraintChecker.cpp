@@ -718,7 +718,7 @@ enum class CycleState { White, Grey, Black };
 
 /// Extract the fixed-table references from a single cell. A cell can
 /// reference another table via `T.Member` — the field-access sugar. The
-/// resolver has already classified those and set `isFixedRowSugar` and
+/// resolver has already classified those and set `isCompileTimeRowRef` and
 /// `resolvedDecl` on the access node.
 ///
 /// A cell can also reference a table via a `NamedTypeAST` inside a
@@ -732,7 +732,7 @@ void collectCellReferences(ExprAST* cell, std::vector<TableDeclAST*>& out) {
 
     if (cell->isa<FieldAccessExprAST>()) {
         FieldAccessExprAST* field = cell->as<FieldAccessExprAST>();
-        if (field->isFixedRowSugar && field->resolvedDecl) {
+        if (field->isCompileTimeRowRef && field->resolvedDecl) {
             if (field->resolvedDecl->isa<TableDeclAST>()) {
                 out.push_back(field->resolvedDecl->as<TableDeclAST>());
             }

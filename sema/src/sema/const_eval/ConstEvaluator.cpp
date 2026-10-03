@@ -183,11 +183,11 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
 //
 // A field access is a compile-time constant in two shapes:
 //
-//   ─── Fixed-row sugar: `T.Member` ───────────────────────────────────────
+//   ─── Compile-time row reference: `T.Member` ────────────────────────────
 //   On a `@fixed`/`@readonly` table, `T.Member` resolves at compile time
 //   to a specific row of `T`. The constant value is the row's index.
-//   The field-access resolver sets `isFixedRowSugar` and
-//   `hasResolvedFixedRow`; the evaluator reads them.
+//   The field-access resolver sets `isCompileTimeRowRef` and
+//   `hasCompileTimeRow`; the evaluator reads them.
 //
 //   ─── Cross-module member: `module.NAME` ────────────────────────────────
 //   A reference to a top-level `let`/`const` binding in an imported
@@ -218,10 +218,10 @@ ConstantValue evaluateIdentifier(IdentifierExprAST* expr, SemaContext& ctx) {
 ConstantValue evaluateFieldAccess(FieldAccessExprAST* expr, SemaContext& ctx) {
     if (!expr) return ConstantValue::unknown();
 
-    // ─── Fixed-row sugar: the value is the row's index ──────────────────
-    if (expr->isFixedRowSugar) {
-        if (!expr->hasResolvedFixedRow) return ConstantValue::unknown();
-        return ConstantValue(static_cast<int64_t>(expr->resolvedFixedRowIndex));
+    // ─── Compile-time row reference: the value is the row's index ──────────────────
+    if (expr->isCompileTimeRowRef) {
+        if (!expr->hasCompileTimeRow) return ConstantValue::unknown();
+        return ConstantValue(static_cast<int64_t>(expr->compileTimeRowIndex));
     }
 
     // ─── Cross-module member: `module.NAME` ─────────────────────────────

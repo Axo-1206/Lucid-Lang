@@ -607,7 +607,7 @@ void emitArrayLiteralExpr(ArrayLiteralExprAST* e, CompilerContext& ctx) {
 //   - module member access (isModuleAccess)
 //   - table method call (isTableMethod)  — handled in emitCallExpr
 //   - cell access (resolvedColumn set)
-//   - fixed-row sugar (isFixedRowSugar)  — a &T constant
+//   - compile-time row reference (isCompileTimeRowRef)  — a &T constant
 //
 // The dispatcher below handles each.
 
@@ -639,34 +639,34 @@ void emitFieldAccessExpr(FieldAccessExprAST* e, CompilerContext& ctx) {
         return;
     }
 
-    // ─── Fixed-row sugar (Direction.North) ─────────────────────────────
+    // ─── Compile-time row reference (Direction.North) ─────────────────────────────
     //
     // A fixed-table member reference is a compile-time &T constant: the
     // row's index in its table. Sema resolved the sugar's target table
-    // (resolvedDecl) and the row's index (resolvedFixedRowIndex) during
+    // (resolvedDecl) and the row's index (compileTimeRowIndex) during
     // resolution. The compiler translates those into a RowRef constant
     // and emits LoadConst with the constant's pool index.
     //
     // The compiler's table-index map (populated in pass A) gives the
     // table's artifact index. The pool dedups the constant, so two
     // references to the same member produce the same pool entry.
-    if (e->isFixedRowSugar) {
+    if (e->isCompileTimeRowRef) {
         AST_ASSERT_MSG(e->resolvedDecl != nullptr,
-            "emitFieldAccessExpr: a fixed-row sugar has no "
+            "emitFieldAccessExpr: a compile-time row reference has no "
             "resolvedDecl — Sema should have resolved it");
         AST_ASSERT_MSG(e->resolvedDecl->isa<TableDeclAST>(),
-            "emitFieldAccessExpr: a fixed-row sugar resolved to a "
+            "emitFieldAccessExpr: a compile-time row reference resolved to a "
             "non-table declaration — Sema should have rejected this");
         const auto* table = e->resolvedDecl->as<TableDeclAST>();
 
         const auto tableIdx =
             ctx.compiler().tableIndexOf(table->mangledName);
         AST_ASSERT_MSG(tableIdx.has_value(),
-            "emitFieldAccessExpr: the fixed-row sugar's table has no "
+            "emitFieldAccessExpr: the compile-time row reference's table has no "
             "artifact index — the compiler's pass A did not register "
             "it");
-        AST_ASSERT_MSG(e->hasResolvedFixedRow,
-            "emitFieldAccessExpr: a fixed-row sugar has no resolved "
+        AST_ASSERT_MSG(e->hasCompileTimeRow,
+            "emitFieldAccessExpr: a compile-time row reference has no resolved "
             "row index — Sema's resolveTableMemberAccess should have "
             "set it");
 
@@ -677,7 +677,7 @@ void emitFieldAccessExpr(FieldAccessExprAST* e, CompilerContext& ctx) {
         c.type = translateType(e->resolvedType, ctx.compiler().pool());
         c.value = RowRefConstant{
             *tableIdx,
-            e->resolvedFixedRowIndex
+            e->compileTimeRowIndex
         };
 
         const uint32_t index = ctx.pool().add(std::move(c));

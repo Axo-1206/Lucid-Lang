@@ -644,9 +644,9 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr,
 //       ordinary call machinery in `resolveCallExpr` checks the
 //       arguments against it.
 //
-//     - a fixed-table member (`Direction.North`) → a *fixed-row sugar*
+//     - a fixed-table member (`Direction.North`) → a *compile-time row reference*
 //       that resolves at compile time to a row reference. The result is
-//       `&T`. The flag `isFixedRowSugar` is set so later passes (the
+//       `&T`. The flag `isCompileTimeRowRef` is set so later passes (the
 //       switch coverage check, the constant evaluator) can recognize it.
 //
 //     - a `by<Column>` name → a *primary lookup* function value. The
@@ -968,16 +968,26 @@ TypeAST* resolveTableMemberAccess(FieldAccessExprAST* expr,
         }
     }
 
-    // ─── Fixed-row sugar? ───────────────────────────────────────────────
+    // ─── Compile-time row reference? ────────────────────────────────────
     //
-    // On a `@fixed`/`@readonly` table, `T.Member` resolves to the row
-    // whose first `string` column equals `"Member"`, at compile time.
+    // On a table whose row set is fixed at declaration (`@fixed`,
+    // `@readonly`, or `@packed`), `T.Member` resolves to the row whose
+    // first `string` cell equals `"Member"`, at compile time.
     //
-    // The lookup walks the table's inline `rows` and looks for one whose
-    // first cell is a string literal equal to the field's name. If one
-    // is found, the access is a `&T` referencing that row.
+    // The guard is `hasFixedRowSet()` — the derived property, not the
+    // `@fixed` attribute. A fixed-row-set table must have an initializer
+    // (§4.1.1b), so its rows are always the inline `= [ ... ]` rows
+    // written at the declaration site; a growing table may have an
+    // initializer too, but `hasFixedRowSet()` is false for it and this
+    // block is skipped, because a growing table's rows can be removed
+    // and a `T.Member` reference would not have the compile-time
+    // permanence the form promises.
     //
-    // The `isFixedRowSugar` flag is set so downstream passes (the
+    // The lookup walks those inline rows and looks for one whose first
+    // cell is a string literal equal to the field's name. If one is
+    // found, the access is a `&T` referencing that row.
+    //
+    // The `isCompileTimeRowRef` flag is set so downstream passes (the
     // switch coverage check, the constant evaluator) can recognize this
     // form.
     if (table->hasFixedRowSet()) {
@@ -993,9 +1003,11 @@ TypeAST* resolveTableMemberAccess(FieldAccessExprAST* expr,
             if (lit->value != member) continue;
 
             // Found the row.
-            expr->isFixedRowSugar = true;
+            expr->isCompileTimeRowRef = true;
             expr->isConst         = true;
             expr->isLValue        = false;
+            expr->hasCompileTimeRow   = true;
+            expr->compileTimeRowIndex = static_cast<uint32_t>(i);
 
             // The row reference's type is `&T`.
             NamedTypeAST* tableType = ctx.getNamedType(table->name);

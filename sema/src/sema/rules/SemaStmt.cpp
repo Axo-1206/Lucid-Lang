@@ -404,7 +404,7 @@ bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx) {
     //
     // The check is decided by the case values that resolved to fixed
     // rows — `FieldAccessExprAST` whose object is a table and whose
-    // field resolved to a fixed-row sugar. Each such case contributes
+    // field resolved to a compile-time row reference. Each such case contributes
     // its row to the covered set. After the loop, compare the covered
     // set to the table's rows.
     //
@@ -423,13 +423,13 @@ bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkFixedTableSwitchCoverage
+// checkCompileTimeRowSwitchCoverage
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Helper for `resolveSwitchStmt`. Runs only when the subject is a row
-// reference. Looks through the switch's case values for fixed-row-sugar
-// accesses (the `Direction.North` form), collects the set of rows they
-// cover, and warns if any row of the subject's table is missing.
+// reference. Looks through the switch's case values for compile-time
+// row references (the `Direction.North` form), collects the set of rows
+// they cover, and warns if any row of the subject's table is missing.
 //
 // The helper is a no-op when:
 //   - the subject is `&T` for a growing table (no fixed row set);
@@ -463,9 +463,9 @@ void checkFixedTableSwitchCoverage(SwitchStmtAST* stmt,
 
     // ─── Collect covered rows ───────────────────────────────────────────
     //
-    // Each case value that resolved to a fixed-row sugar contributes
+    // Each case value that resolved to a compile-time row reference contributes
     // its row's name (the field name of the `FieldAccessExprAST`) to
-    // the covered set. A case value that is not a fixed-row sugar
+    // the covered set. A case value that is not a compile-time row reference
     // (a literal in a primitive switch, or a range) contributes
     // nothing — the missing-member check is about named rows, and a
     // non-row case value cannot name a row.
@@ -483,7 +483,7 @@ void checkFixedTableSwitchCoverage(SwitchStmtAST* stmt,
             if (!value->isa<FieldAccessExprAST>()) continue;
 
             FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
-            if (!field->isFixedRowSugar) continue;
+            if (!field->isCompileTimeRowRef) continue;
 
             covered.insert(field->fieldName);
         }
@@ -501,9 +501,9 @@ void checkFixedTableSwitchCoverage(SwitchStmtAST* stmt,
         if (!row) continue;
 
         // The "name" of a row for the purposes of this check is the
-        // fixed-row sugar name — the identifier the user would write as
+        // compile-time row reference name — the identifier the user would write as
         // `T.Member`. That name is the row's *first string column's
-        // value* (§7.1's fixed-table sugar rule).
+        // value* (§7.1's compile-time row reference rule).
         //
         // The parser stores the row's cells; the first cell's value is
         // the row's name. If the first cell is a string literal and

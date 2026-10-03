@@ -304,11 +304,16 @@ struct FieldAccessExprAST : ExprAST {
     bool isTableMethod  = false;
     bool isColumnView   = false;
 
-    /// True if the access is a fixed-table member reference
-    /// (`Direction.North`). Set by `resolveTableMemberAccess` when the
-    /// field name matches a row's first string cell in a
-    /// `@fixed`/`@readonly` table.
-    bool isFixedRowSugar = false;
+    /// True if the access resolves to a specific row at compile time
+    /// (the `T.Member` form, grammar §7.1's compile-time row reference).
+    ///
+    /// Set by `resolveTableMemberAccess` when the field name matches a
+    /// row's first string cell in a table whose row set is decided at
+    /// declaration — either `@fixed` or `@readonly` (§4.1.1). What
+    /// matters is that the row set is fixed, not whether the cells are
+    /// writable; a growing table has no compile-time row, so the
+    /// reference does not apply there.
+    bool isCompileTimeRowRef = false;
 
     /// True if the access is a generated primary-key lookup
     /// (`Person.byId`). Set by `tryResolveByColumnLookup`.
@@ -318,15 +323,16 @@ struct FieldAccessExprAST : ExprAST {
     /// column view. Null otherwise.
     ColumnDeclAST* resolvedColumn = nullptr;
 
-    /// True if the resolver found a fixed-table row that the field name
-    /// refers to. Set by `resolveTableMemberAccess` when the table is
-    /// `@fixed` or `@readonly` and the field name matches a row's first
-    /// string cell.
-    bool hasResolvedFixedRow = false;
+    /// True if the resolver found the row the sugar names.
+    ///
+    /// Meaningful only when `isCompileTimeRowRef` is true. A resolver
+    /// that sets `isCompileTimeRowRef` but not this field is a
+    /// compiler bug; the two are set together.
+    bool hasCompileTimeRow = false;
 
-    /// The index of the resolved fixed-table row within the table's `rows`
-    /// span. Meaningful only when `hasResolvedFixedRow` is true.
-    uint32_t resolvedFixedRowIndex = 0;
+    /// The index of the found row within the table's `rows` span.
+    /// Meaningful only when `hasCompileTimeRow` is true.
+    uint32_t compileTimeRowIndex = 0;
 
     /// The resolved declaration, when the access is a module member
     /// access. Null otherwise.

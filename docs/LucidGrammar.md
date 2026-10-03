@@ -285,7 +285,7 @@ A table whose row set can never change cannot hold any data if it starts empty, 
 
 #### 4.1.1c Constant expressions in a `@fixed`/`@readonly` table's rows
 
-A `@fixed`/`@readonly` table's inline `row` cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time fixed-row sugar), and — for a function-typed column (§5.0) — a bare top-level `FN` name or a lambda (§6.9). **Function calls and references to a growing table's contents are not allowed inside a `@fixed`/`@readonly` table's inline rows:**
+A `@fixed`/`@readonly` table's inline `row` cells may only be built from `const_expr`: literals, arithmetic/unary operations on literals, `T.Member` references to *other fixed tables* (§7.1's compile-time compile-time row reference), and — for a function-typed column (§5.0) — a bare top-level `FN` name or a lambda (§6.9). **Function calls and references to a growing table's contents are not allowed inside a `@fixed`/`@readonly` table's inline rows:**
 
 ```
 @fixed
@@ -886,7 +886,7 @@ literal       ::= INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT | BOOL_LIT | NIL_L
 identifier_expr ::= IDENTIFIER
 
 table_access  ::= IDENTIFIER                    -- the sheet itself
-                | IDENTIFIER '.' IDENTIFIER      -- method call, column access, or fixed-row sugar
+                | IDENTIFIER '.' IDENTIFIER      -- method call, column access, or compile-time row reference
                 | IDENTIFIER '[' expr ']'        -- a row by index
 
 field_access  ::= expr '.' IDENTIFIER
@@ -1164,7 +1164,7 @@ if (flag ?? false) { ... }           -- a `bool?` must be defaulted or narrowed 
 | `T.FIND(pred)`        | `T`          | A live view of rows matching `pred: (&T) -> bool` — a lambda or a named `FN` (§6.9). No copy; invalidated by a subsequent `REMOVE` or `CLEAR` on the parent table.                                                                                                                                               |
 | `T.by<Column>(value)` | `&T`         | Generated when a column has `@primary` (e.g. `byId`); O(1) expected via the primary index; `nil` if no row matches. The index representation is a runtime choice (§4.1.5).                                                                                                                                       |
 | `T.column`            | (view, §5.6) | Iterable view over one column's values across all rows; `.TOARRAY()` copies it into an array (§7.4).                                                                                                                                                                                                             |
-| `T.Member`            | `&T`         | Fixed-table sugar: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                                                                                                                                                                           |
+| `T.Member`            | `&T`         | compile-time row reference: resolves to the row whose first `string` column equals `"Member"`, at compile time.                                                                                                                                                                                                  |
 
 **Iteration order is slot order.** Rows are visited in slot order; a slot reused by a later `ADD` appears at its slot's position, not at the end. Iteration over a table (`for r: &T in T`) or a `FIND` view visits only **live** rows; dead slots are skipped. Until a `REMOVE` frees a slot, slot order is insertion order, and `CLEAR` starts it over: refilling a cleared table gives slot order equal to the order of the `ADD`s (§4.1.1a). Once removals and reuse have happened, a program that needs insertion order must maintain it explicitly, and one that needs a sorted order builds it with an array of row references and `arr.SORT` (§8.3).
 
@@ -1726,7 +1726,7 @@ A `suspend_stmt` node parses wherever any statement is allowed — the parser do
 
 `default` is always required — regardless of the check below, there is always a defined behavior for a case that isn't listed.
 
-Each `case` expression is a constant expression (typically fixed-table sugar, `Direction.North`). **When the `switch` subject's type is `&T` for a specific fixed table `T`, Sema checks the `case` expressions against `T`'s full member list and emits a warning (not an error) if any member is missing:**
+Each `case` expression is a constant expression (typically compile-time row reference, `Direction.North`). **When the `switch` subject's type is `&T` for a specific fixed table `T`, Sema checks the `case` expressions against `T`'s full member list and emits a warning (not an error) if any member is missing:**
 
 ```
 switch d {
@@ -1739,7 +1739,7 @@ switch d {
 
 The check only applies when the subject's type is a specific fixed table — it doesn't run for a growing table (which has no fixed member list to check against) or for a `switch` over an ordinary primitive value.
 
-**The match is by reference identity.** When the subject is a `&T` for a fixed table `T`, each `case_value` is a `&T` reference, typically the fixed-table sugar `T.Member` (e.g. `Direction.North`). The match compares the subject to the case value using `==` on `&T`, which is reference identity (§6.8). The fixed table's number of columns is irrelevant — a case names a row, not a set of field values. Even a table with multiple columns is matched by reference; Sema's exhaustiveness check verifies that every row of the fixed table appears as a case value, not that any field-level equality holds.
+**The match is by reference identity.** When the subject is a `&T` for a fixed table `T`, each `case_value` is a `&T` reference, typically the compile-time row reference `T.Member` (e.g. `Direction.North`). The match compares the subject to the case value using `==` on `&T`, which is reference identity (§6.8). The fixed table's number of columns is irrelevant — a case names a row, not a set of field values. Even a table with multiple columns is matched by reference; Sema's exhaustiveness check verifies that every row of the fixed table appears as a case value, not that any field-level equality holds.
 
 A `case` may list several values separated by commas; the case matches if the subject equals any one of them:
 

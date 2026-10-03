@@ -723,12 +723,12 @@ void JSONDumper::serializeFieldAccessExpr(JSONWriter& json, FieldAccessExprAST* 
     json.kv("isModuleAccess",      expr->isModuleAccess);
     json.kv("isTableMethod",       expr->isTableMethod);
     json.kv("isColumnView",        expr->isColumnView);
-    json.kv("isFixedRowSugar",     expr->isFixedRowSugar);
+    json.kv("isCompileTimeRowRef",     expr->isCompileTimeRowRef);
     json.kv("isPrimaryLookup",     expr->isPrimaryLookup);
-    json.kv("hasResolvedFixedRow", expr->hasResolvedFixedRow);
-    if (expr->hasResolvedFixedRow) {
-        json.kv("resolvedFixedRowIndex",
-                static_cast<uint64_t>(expr->resolvedFixedRowIndex));
+    json.kv("hasCompileTimeRow", expr->hasCompileTimeRow);
+    if (expr->hasCompileTimeRow) {
+        json.kv("compileTimeRowIndex",
+                static_cast<uint64_t>(expr->compileTimeRowIndex));
     }
 
     json.key("resolvedColumn");
