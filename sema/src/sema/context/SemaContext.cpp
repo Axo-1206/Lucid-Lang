@@ -482,7 +482,7 @@ PrimitiveTypeAST* SemaContext::getUint64Type()  { return getPrimitiveType(Primit
 PrimitiveTypeAST* SemaContext::getFloatType()   { return getPrimitiveType(PrimitiveKind::Float32); }
 PrimitiveTypeAST* SemaContext::getCharType()    { return getPrimitiveType(PrimitiveKind::Char); }
 PrimitiveTypeAST* SemaContext::getStringType()  { return getPrimitiveType(PrimitiveKind::String); }
-PrimitiveTypeAST* SemaContext::getUnitType()    { return getPrimitiveType(PrimitiveKind::Unit); }
+PrimitiveTypeAST* SemaContext::getUnitType()    { return getPrimitiveType(PrimitiveKind::Void); }
 
 // ─── RAII guards ──────────────────────────────────────────────────────────
 

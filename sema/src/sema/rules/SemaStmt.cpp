@@ -970,7 +970,7 @@ bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
 
     if (stmt->value) {
         // ─── Non-void return ────────────────────────────────────────────
-        if (!expectedType || isUnitType(expectedType)) {
+        if (!expectedType || isVoidType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Type_MissingReturn, stmt,
                                   "return value provided in a function "
                                   "with no return type (expected 'unit')");
@@ -988,7 +988,7 @@ bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
         // value-returning function, it is a mistake: the function's
         // declared return type is not `unit`, so the return must supply
         // a value.
-        if (expectedType && !isUnitType(expectedType)) {
+        if (expectedType && !isVoidType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Type_MissingReturn, stmt,
                                   "return statement is missing a value; "
                                   "function returns '",

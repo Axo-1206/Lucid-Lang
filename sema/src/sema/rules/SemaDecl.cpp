@@ -442,7 +442,7 @@ void resolveFnBody(FnDeclAST* decl, SemaContext& ctx) {
     // A function whose return type is not `unit` must return a value on
     // every path that reaches the end of the body.
     bool returnsValue = decl->returnType
-                     && !isUnitType(decl->returnType);
+                     && !isVoidType(decl->returnType);
     if (returnsValue && !bodyTransfers) {
         ctx.diagnostics.error(DiagCode::Type_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),

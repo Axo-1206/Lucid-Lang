@@ -33,9 +33,9 @@ bool isStringType(TypeAST* type) {
     return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
 }
 
-bool isUnitType(TypeAST* type) {
+bool isVoidType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Unit;
+    return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Void;
 }
 
 bool isIntegerType(TypeAST* type) {
@@ -159,7 +159,7 @@ bool isPrimitiveTypeName(InternedString name, StringPool& pool) {
     // The primitive type keywords (§2.2). Sized aliases fold to the same
     // PrimitiveKind as their canonical spelling.
     static const std::unordered_set<std::string_view> kPrimitiveNames = {
-        "bool", "char", "string", "unit",
+        "bool", "char", "string", "void",
         "int8", "int16", "int32", "int64",
         "uint8", "uint16", "uint32", "uint64",
         "float32", "float64",
@@ -176,7 +176,7 @@ PrimitiveKind primitiveKindFromName(InternedString name, StringPool& pool) {
     if (view == "bool")    return PrimitiveKind::Bool;
     if (view == "char")    return PrimitiveKind::Char;
     if (view == "string")  return PrimitiveKind::String;
-    if (view == "unit")    return PrimitiveKind::Unit;
+    if (view == "void")    return PrimitiveKind::Void;
 
     if (view == "int8")    return PrimitiveKind::Int8;
     if (view == "int16")   return PrimitiveKind::Int16;

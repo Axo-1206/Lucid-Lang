@@ -65,7 +65,7 @@ bool checkSequenceSignature(FnDeclAST* fn, SemaContext& ctx) {
     // function returns `unit`; a non-null one is the type the arrow
     // named. Both an explicit `-> unit` and no arrow at all are legal;
     // any other type is not.
-    if (fn->returnType && !isUnitType(fn->returnType)) {
+    if (fn->returnType && !isVoidType(fn->returnType)) {
         ctx.diagnostics.error(DiagCode::Seq_SequenceReturnsValue, fn,
                               "@sequence function '",
                               ctx.pool.lookup(fn->name),

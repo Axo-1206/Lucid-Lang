@@ -285,7 +285,7 @@ static TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx) {
     }
 
     // ─── Error on unit ─────────────────────────────────────────────────
-    if (isUnitType(inner)) {
+    if (isVoidType(inner)) {
         ctx.diagnostics.error(DiagCode::Type_Mismatch, type,
                               "'unit?' is redundant — 'unit' already means "
                               "'no value'");

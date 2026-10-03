@@ -90,7 +90,7 @@ TypeAST* resolveType(TypeAST* type, SemaContext& ctx);
 bool isBoolType     (TypeAST* type);
 bool isCharType     (TypeAST* type);
 bool isStringType   (TypeAST* type);
-bool isUnitType     (TypeAST* type);
+bool isVoidType     (TypeAST* type);
 
 bool isIntegerType  (TypeAST* type);   // any signed or unsigned width
 bool isFloatType    (TypeAST* type);   // float32 or float64

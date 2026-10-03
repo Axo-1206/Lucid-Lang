@@ -223,7 +223,7 @@ inline std::string primitiveKindToString(PrimitiveKind kind) {
         case PrimitiveKind::Bool:    return "bool";
         case PrimitiveKind::Char:    return "char";
         case PrimitiveKind::String:  return "string";
-        case PrimitiveKind::Unit:    return "unit";
+        case PrimitiveKind::Void:    return "void";
 
         case PrimitiveKind::Int8:    return "int8";
         case PrimitiveKind::Int16:   return "int16";

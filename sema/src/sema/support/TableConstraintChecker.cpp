@@ -463,7 +463,7 @@ static bool checkPrimaryKeyType(TableDeclAST* table, SemaContext& ctx) {
         }
 
         // ─── Rule 10: `unit` is forbidden ───────────────────────────────
-        if (isUnitType(keyType)) {
+        if (isVoidType(keyType)) {
             ctx.diagnostics.error(DiagCode::Table_PrimaryNotHashable, column,
                                   "'@primary' column '",
                                   ctx.pool.lookup(column->name),
