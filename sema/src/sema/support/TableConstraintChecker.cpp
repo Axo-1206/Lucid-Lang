@@ -207,6 +207,39 @@ static bool checkRequestOnHostTable(TableDeclAST* table, SemaContext& ctx) {
     return true;
 }
 
+// ─── Rule: a function-typed column is never nilable ─────────────────────
+//
+// §5.0 and §5.3: a function value is always a valid code address, so a
+// function type is never nilable. A column whose type is `(T) -> R`
+// may not be written `((T) -> R)?`.
+//
+// This check exists at the column position because the type resolver's
+// own check (`resolveNullableType`) already rejects the shape
+// generically; the column-specific version produces a message that
+// names the column and suggests the alternative.
+static bool checkFunctionColumnNotNilable(TableDeclAST* table, SemaContext& ctx) {
+    bool ok = true;
+    for (ColumnDeclAST* column : table->columns) {
+        if (!column || !column->type) continue;
+        if (!isNullableType(column->type)) continue;
+
+        TypeAST* inner = unwrapNullable(column->type);
+        if (!inner || !isFunctionType(inner)) continue;
+
+        ctx.diagnostics.error(DiagCode::Type_Mismatch, column,
+                              "column '", ctx.pool.lookup(column->name),
+                              "' has a nilable function type — a function "
+                              "value is always a valid code address, so a "
+                              "function-typed column is never nilable");
+        ctx.diagnostics.note(column,
+                             "model an optional handler with a separate "
+                             "'bool' flag column, or move the handler into "
+                             "its own table and hold a nilable '&T' to it");
+        ok = false;
+    }
+    return ok;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Shape-only checks (rules 6, 7, 8, 11, 12)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -824,6 +857,7 @@ bool checkTableConstraints(TableDeclAST* table, SemaContext& ctx) {
 
     // ─── Type-dependent checks ──────────────────────────────────────────
     if (!checkPrimaryKeyType(table, ctx))            ok = false;
+    if (!checkFunctionColumnNotNilable(table, ctx))  ok = false;
 
     // ─── Row-dependent checks ───────────────────────────────────────────
     //
