@@ -6,28 +6,28 @@
  *
  * ─── Design: the loader and the runner are separate objects ───────────────
  * Loader produces a LoadedProgram. Interpreter consumes a
- * LoadedProgram. This split matters because the loader needs the
- * host registry and the runtime; the interpreter's hot loop needs
- * neither. A host can load a program once and run it many times
- * without touching the registry again.
+ * LoadedProgram. This split matters because the loader needs the host
+ * registry and the runtime; the interpreter's hot loop needs neither.
  *
  * ─── Design: the interpreter is not thread-safe ───────────────────────────
  * One Interpreter runs one LoadedProgram on one thread. A host that
  * wants concurrency runs multiple Interpreters on multiple programs,
  * each on its own thread. This mirrors the grammar's "cooperative,
- * single-threaded" model (§9.2.6) — there are no threads inside Lucid.
+ * single-threaded" model (§9.2.6).
  *
  * ─── Design: call by name, not by index ───────────────────────────────────
  * The host calls an @export'ed function by its name (the mangled name
  * the compiler assigned). The interpreter looks it up in the
  * Bytecode's function index and dispatches. There is no
- * call-by-index API — the host is not expected to know the index.
+ * call-by-index API.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/ExecutionResult.hpp, interp/InterpreterConfig.hpp,
+ * interp/LoadedProgram.hpp, interp/Value.hpp.
  */
 
 #pragma once
 
-#include "ExecutionResult.hpp"
-#include "LoadedProgram.hpp"
 #include "interp/ExecutionResult.hpp"
 #include "interp/InterpreterConfig.hpp"
 #include "interp/LoadedProgram.hpp"
@@ -35,7 +35,6 @@
 
 #include <memory>
 #include <string_view>
-#include <vector>
 
 namespace lucid::interp {
 
@@ -62,11 +61,9 @@ public:
 
     /// Call an @export'ed function by name with the given arguments.
     ///
-    /// The name is the mangled name the compiler assigned to the
-    /// function. A name that does not resolve to an @export'ed
-    /// function returns an ExecutionResult::Panicked with a
-    /// Name_UndefinedValue code (the same code the compiler would
-    /// have used for an undefined name).
+    /// The name is the mangled name the compiler assigned. A name that
+    /// does not resolve to an @export'ed function returns an
+    /// ExecutionResult::Panicked with Name_UndefinedValue.
     ///
     /// On completion, the result is ExecutionResult::Completed and
     /// carries the function's return value (a Nil Value for a void

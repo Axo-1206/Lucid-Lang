@@ -8,10 +8,10 @@
  * ─── Design: tagged union, not NaN-boxing ─────────────────────────────────
  * A Value is 16 bytes: { ValueTag tag; uint64_t payload; }. The tag
  * names the type; the payload is reinterpreted according to the tag.
- * This is portable to any 64-bit target, debuggable in a watch window,
- * and lets the interpreter's dispatch read one word to decide what it
- * is. NaN-boxing would halve the size but only works for 64-bit and
- * makes aggregates out-of-line anyway; the size saving is not worth the
+ * Portable to any 64-bit target, debuggable in a watch window, and
+ * lets the interpreter's dispatch read one word to decide what it is.
+ * NaN-boxing would halve the size but only works for 64-bit and makes
+ * aggregates out-of-line anyway; the saving is not worth the
  * portability and debuggability cost for v1.
  *
  * ─── Design: aggregates are heap objects ──────────────────────────────────
@@ -21,8 +21,8 @@
  * is what makes the operand stack a simple contiguous array of Values.
  *
  * ─── Design: row references are not pointers ──────────────────────────────
- * A row reference is a {slot, generation} pair (grammar §4.1.1a), not a
- * memory address. A &T Value packs both into the payload: the low 32
+ * A row reference is a {slot, generation} pair (grammar §4.1.1a), not
+ * a memory address. A &T Value packs both into the payload: the low 32
  * bits are the slot, the high 32 bits are the generation. A fixed
  * table's &T is a plain index with generation 0. The interpreter
  * distinguishes by the table's kind, which it reads from the table
@@ -32,23 +32,30 @@
  * nil is a Value with tag Nil. It is a valid value of any &T type and
  * of any T? type (grammar §5.2, §5.3). It is never a valid value of a
  * primitive, a bare table type, a function type, or void.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * None. Every pointer type is forward-declared. Value is at the bottom
+ * of the interpreter's include graph; nothing here includes another
+ * interpreter header.
  */
 
 #pragma once
 
+#include "runtime/String.hpp"
+#include "runtime/Array.hpp"
+
 #include <cstdint>
-#include <cstddef>
 #include <cstring>
 
 // Forward declarations — Value holds pointers, not definitions.
 namespace lucid::runtime {
     struct StringObject;
     struct ArrayObject;
+    struct HostHandle;
 }
 namespace lucid::interp {
     struct TableObject;
     struct FunctionRef;
-    struct HostHandle;
 }
 
 namespace lucid::interp {
@@ -61,8 +68,9 @@ namespace lucid::interp {
 ///
 /// Values are grouped by kind. The numeric values are stable and are
 /// part of the .lucb compatibility contract where they appear in
-/// serialized constants (see ConstantPool.hpp) — they must not be
-/// reordered; new tags are added at the end.
+/// serialized constants (see contract's TypeDescriptor and the
+/// compiler's ConstantPool) — they must not be reordered; new tags are
+/// added at the end.
 enum class ValueTag : uint8_t {
     // Primitives (inline in the payload)
     Nil         = 0x00,  ///< no payload
@@ -85,7 +93,7 @@ enum class ValueTag : uint8_t {
     Table       = 0x12,  ///< payload = TableObject* (bare table — never nilable)
     RowRef      = 0x13,  ///< payload = packed {generation:32 | slot:32}
     Function    = 0x14,  ///< payload = FunctionRef* (code address + signature)
-    HostHandle  = 0x15,  ///< payload = HostHandle* (refcounted opaque handle)
+    HostHandle  = 0x15,  ///< payload = runtime::HostHandle* (refcounted)
     ColumnView  = 0x16,  ///< payload = ColumnView* (transient, §5.6)
 
     /// Internal: a slot that has been allocated but not yet written.
@@ -108,7 +116,7 @@ enum class ValueTag : uint8_t {
 ///
 /// A Value is trivially copyable: copying it does not retain anything.
 /// Retaining and releasing are explicit, done by the interpreter when
-/// the compiled code says to (EmitCopy/EmitDrop emitted the calls).
+/// the compiled code says to.
 struct Value {
     ValueTag tag;
     uint8_t  _pad[7];
@@ -128,16 +136,24 @@ struct Value {
         Value v; v.tag = ValueTag::Char; v.payload = cp; return v;
     }
     static Value makeI8(int8_t x) noexcept {
-        Value v; v.tag = ValueTag::I8; v.payload = static_cast<uint64_t>(static_cast<int64_t>(x)); return v;
+        Value v; v.tag = ValueTag::I8;
+        v.payload = static_cast<uint64_t>(static_cast<int64_t>(x));
+        return v;
     }
     static Value makeI16(int16_t x) noexcept {
-        Value v; v.tag = ValueTag::I16; v.payload = static_cast<uint64_t>(static_cast<int64_t>(x)); return v;
+        Value v; v.tag = ValueTag::I16;
+        v.payload = static_cast<uint64_t>(static_cast<int64_t>(x));
+        return v;
     }
     static Value makeI32(int32_t x) noexcept {
-        Value v; v.tag = ValueTag::I32; v.payload = static_cast<uint64_t>(static_cast<int64_t>(x)); return v;
+        Value v; v.tag = ValueTag::I32;
+        v.payload = static_cast<uint64_t>(static_cast<int64_t>(x));
+        return v;
     }
     static Value makeI64(int64_t x) noexcept {
-        Value v; v.tag = ValueTag::I64; v.payload = static_cast<uint64_t>(x); return v;
+        Value v; v.tag = ValueTag::I64;
+        v.payload = static_cast<uint64_t>(x);
+        return v;
     }
     static Value makeU8(uint8_t x) noexcept {
         Value v; v.tag = ValueTag::U8; v.payload = x; return v;
@@ -163,13 +179,19 @@ struct Value {
     }
 
     static Value makeString(runtime::StringObject* s) noexcept {
-        Value v; v.tag = ValueTag::String; v.payload = reinterpret_cast<uint64_t>(s); return v;
+        Value v; v.tag = ValueTag::String;
+        v.payload = reinterpret_cast<uint64_t>(s);
+        return v;
     }
     static Value makeArray(runtime::ArrayObject* a) noexcept {
-        Value v; v.tag = ValueTag::Array; v.payload = reinterpret_cast<uint64_t>(a); return v;
+        Value v; v.tag = ValueTag::Array;
+        v.payload = reinterpret_cast<uint64_t>(a);
+        return v;
     }
     static Value makeTable(TableObject* t) noexcept {
-        Value v; v.tag = ValueTag::Table; v.payload = reinterpret_cast<uint64_t>(t); return v;
+        Value v; v.tag = ValueTag::Table;
+        v.payload = reinterpret_cast<uint64_t>(t);
+        return v;
     }
     static Value makeRowRef(uint32_t slot, uint32_t generation) noexcept {
         Value v; v.tag = ValueTag::RowRef;
@@ -177,13 +199,19 @@ struct Value {
         return v;
     }
     static Value makeFunction(FunctionRef* f) noexcept {
-        Value v; v.tag = ValueTag::Function; v.payload = reinterpret_cast<uint64_t>(f); return v;
+        Value v; v.tag = ValueTag::Function;
+        v.payload = reinterpret_cast<uint64_t>(f);
+        return v;
     }
-    static Value makeHostHandle(HostHandle* h) noexcept {
-        Value v; v.tag = ValueTag::HostHandle; v.payload = reinterpret_cast<uint64_t>(h); return v;
+    static Value makeHostHandle(runtime::HostHandle* h) noexcept {
+        Value v; v.tag = ValueTag::HostHandle;
+        v.payload = reinterpret_cast<uint64_t>(h);
+        return v;
     }
     static Value makeColumnView(void* cv) noexcept {
-        Value v; v.tag = ValueTag::ColumnView; v.payload = reinterpret_cast<uint64_t>(cv); return v;
+        Value v; v.tag = ValueTag::ColumnView;
+        v.payload = reinterpret_cast<uint64_t>(cv);
+        return v;
     }
 
     // ─── Accessors (no validation — the caller checked the tag) ─────────
@@ -216,13 +244,17 @@ struct Value {
     TableObject* asTable() const noexcept {
         return reinterpret_cast<TableObject*>(payload);
     }
-    uint32_t rowSlot() const noexcept { return static_cast<uint32_t>(payload & 0xFFFFFFFFu); }
-    uint32_t rowGeneration() const noexcept { return static_cast<uint32_t>(payload >> 32); }
+    uint32_t rowSlot() const noexcept {
+        return static_cast<uint32_t>(payload & 0xFFFFFFFFu);
+    }
+    uint32_t rowGeneration() const noexcept {
+        return static_cast<uint32_t>(payload >> 32);
+    }
     FunctionRef* asFunction() const noexcept {
         return reinterpret_cast<FunctionRef*>(payload);
     }
-    HostHandle* asHostHandle() const noexcept {
-        return reinterpret_cast<HostHandle*>(payload);
+    runtime::HostHandle* asHostHandle() const noexcept {
+        return reinterpret_cast<runtime::HostHandle*>(payload);
     }
     void* asColumnView() const noexcept {
         return reinterpret_cast<void*>(payload);
@@ -230,31 +262,40 @@ struct Value {
 
     // ─── Predicates ─────────────────────────────────────────────────────
 
-    bool isNil()        const noexcept { return tag == ValueTag::Nil; }
-    bool isNumeric()    const noexcept {
+    bool isNil() const noexcept { return tag == ValueTag::Nil; }
+
+    bool isNumeric() const noexcept {
         switch (tag) {
-            case ValueTag::I8: case ValueTag::I16: case ValueTag::I32: case ValueTag::I64:
-            case ValueTag::U8: case ValueTag::U16: case ValueTag::U32: case ValueTag::U64:
+            case ValueTag::I8: case ValueTag::I16:
+            case ValueTag::I32: case ValueTag::I64:
+            case ValueTag::U8: case ValueTag::U16:
+            case ValueTag::U32: case ValueTag::U64:
             case ValueTag::F32: case ValueTag::F64:
                 return true;
             default: return false;
         }
     }
-    bool isInteger()    const noexcept {
+
+    bool isInteger() const noexcept {
         switch (tag) {
-            case ValueTag::I8: case ValueTag::I16: case ValueTag::I32: case ValueTag::I64:
-            case ValueTag::U8: case ValueTag::U16: case ValueTag::U32: case ValueTag::U64:
+            case ValueTag::I8: case ValueTag::I16:
+            case ValueTag::I32: case ValueTag::I64:
+            case ValueTag::U8: case ValueTag::U16:
+            case ValueTag::U32: case ValueTag::U64:
                 return true;
             default: return false;
         }
     }
-    bool isFloat()      const noexcept {
+
+    bool isFloat() const noexcept {
         return tag == ValueTag::F32 || tag == ValueTag::F64;
     }
-    bool isReference()  const noexcept {
+
+    bool isReference() const noexcept {
         switch (tag) {
-            case ValueTag::String: case ValueTag::Array: case ValueTag::Table:
-            case ValueTag::RowRef: case ValueTag::Function: case ValueTag::HostHandle:
+            case ValueTag::String: case ValueTag::Array:
+            case ValueTag::Table: case ValueTag::RowRef:
+            case ValueTag::Function: case ValueTag::HostHandle:
             case ValueTag::ColumnView:
                 return true;
             default: return false;

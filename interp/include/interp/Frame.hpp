@@ -7,19 +7,17 @@
  *
  * ─── Design: per-frame operand stack ──────────────────────────────────────
  * Each frame owns its operand stack, sized at frame construction from
- * the function's maxStackDepth. This is unlike a single shared stack.
- * The reason is sequences: a @sequence frame must be freezable (all
- * its live state saved and restored later), and a frame with its own
- * operand stack is a single contiguous blob that can be memcpy'd.
- * A shared stack would require copying the frame's slice of the shared
- * stack out on suspend. Per-frame stacks make the v2 work simpler at
- * no cost to v1.
+ * the function's maxStackDepth. The reason is sequences: a @sequence
+ * frame must be freezable (all its live state saved and restored
+ * later), and a frame with its own operand stack is a single
+ * contiguous blob that can be memcpy'd. Per-frame stacks make the v2
+ * work simpler at no cost to v1.
  *
  * ─── Design: locals are slots, indexed by u16 ─────────────────────────────
  * LoadLocal/StoreLocal take a u16 slot operand. The frame's locals
- * array is indexed by that slot. Parameters occupy slots [0, paramCount)
- * and are filled by the caller; locals occupy the rest. The compiler's
- * SlotAllocator (bytecode/compile/) assigned those slots; the frame
+ * array is indexed by that slot. Parameters occupy slots
+ * [0, paramCount) and are filled by the caller; locals occupy the
+ * rest. The compiler's SlotAllocator assigned those slots; the frame
  * just provides the storage.
  *
  * ─── Design: the frame does not own its FunctionProto ─────────────────────
@@ -27,6 +25,10 @@
  * frame. The frame holds a pointer. This keeps frame construction
  * cheap (no copying of code bytes) and lets multiple concurrent calls
  * to the same function share the proto.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/Value.hpp. The FunctionProto definition is needed only in
+ * the .cpp; the header forward-declares.
  */
 
 #pragma once
@@ -83,8 +85,7 @@ public:
     }
 
     /// The first `n` slots are parameters, filled by the caller before
-    /// the function body runs. This is a convenience for the call
-    /// setup code; the frame itself does not enforce it.
+    /// the function body runs.
     void setParameter(uint32_t index, Value v) noexcept {
         m_locals[index] = v;
     }
@@ -92,7 +93,7 @@ public:
     // ─── Operand stack ──────────────────────────────────────────────────
 
     /// Push a value onto the operand stack. Precondition: depth() <
-    /// maxStackDepth(). The interpreter's stack-depth tracking (in the
+    /// maxDepth(). The interpreter's stack-depth tracking (in the
     /// compiler) guarantees this; a debug build asserts it.
     void push(Value v) noexcept {
         m_stack[m_sp++] = v;
@@ -109,8 +110,12 @@ public:
     Value& top() noexcept { return m_stack[m_sp - 1]; }
 
     /// Peek at the value `n` slots below the top (0 == top).
-    const Value& peek(uint32_t n) const noexcept { return m_stack[m_sp - 1 - n]; }
-    Value& peek(uint32_t n) noexcept { return m_stack[m_sp - 1 - n]; }
+    const Value& peek(uint32_t n) const noexcept {
+        return m_stack[m_sp - 1 - n];
+    }
+    Value& peek(uint32_t n) noexcept {
+        return m_stack[m_sp - 1 - n];
+    }
 
     /// The current operand stack depth.
     uint32_t depth() const noexcept { return m_sp; }
@@ -121,9 +126,7 @@ public:
     }
 
     /// Direct access to the operand stack, for aggregate opcodes that
-    /// need to read several values at once (a call's arguments, a
-    /// table's row cells). `data()` points at the base; `depth()`
-    /// values are live at the top.
+    /// need to read several values at once.
     Value* stackData() noexcept { return m_stack.data(); }
     const Value* stackData() const noexcept { return m_stack.data(); }
 

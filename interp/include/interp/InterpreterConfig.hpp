@@ -6,10 +6,12 @@
  *                 debug-mode invariants.
  *
  * ─── Design: config is a value, not global state ──────────────────────────
- * Two interpreters in the same process can have different configs
- * (the LSP server runs an interpreter per analysis, the engine runs
- * one per world). The config is passed to the Interpreter's constructor
- * and stored by value.
+ * Two interpreters in the same process can have different configs.
+ * The config is passed to the Interpreter's constructor and stored by
+ * value.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * None.
  */
 
 #pragma once

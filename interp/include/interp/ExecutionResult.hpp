@@ -6,24 +6,25 @@
  *
  * ─── Design: three outcomes, not a severity scale ─────────────────────────
  * The compiler has a Severity scale (Hint..Fatal, DiagCode.hpp). The
- * interpreter has three outcomes: Completed, Panicked, Suspended. There
- * is no "recoverable error" — the grammar has no try/catch, so an error
- * is always a panic and always unwinds to the host boundary. There is
- * no "warning" — a warning is a compiler concept.
+ * interpreter has three outcomes: Completed, Panicked, Suspended.
+ * There is no "recoverable error" — the grammar has no try/catch, so
+ * an error is always a panic and always unwinds to the host boundary.
+ * There is no "warning" — a warning is a compiler concept.
  *
  * ─── Design: Suspended is reserved, not implemented ───────────────────────
- * v1 does not implement @sequence (Sema rejects it, see the grammar
- * §9.2 and the design discussion). The Suspended variant exists in the
- * type so the shape of the API does not change when sequences land, but
- * the interpreter never produces it in v1. A host that receives it in
- * v1 has found a bug.
+ * v1 does not implement @sequence (Sema rejects it, grammar §9.2).
+ * The Suspended variant exists in the type so the shape of the API
+ * does not change when sequences land, but the interpreter never
+ * produces it in v1.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/Value.hpp, runtime/Panic.hpp.
  */
 
 #pragma once
 
-#include "Value.hpp"
-#include "runtime/Panic.hpp"
 #include "interp/Value.hpp"
+#include "runtime/Panic.hpp"
 
 #include <cstdint>
 #include <variant>

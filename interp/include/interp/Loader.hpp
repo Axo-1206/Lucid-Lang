@@ -11,7 +11,8 @@
  * registry. If the name is missing, that's Host_SymbolNotRegistered
  * (5001). If the name is present but the registered signature differs
  * from the declared signature, that's Host_SymbolSignatureMismatch
- * (5002). Both are load-time errors: the LoadedProgram is not produced.
+ * (5002). Both are load-time errors: the LoadedProgram is not
+ * produced.
  *
  * There is no call-time signature check. The loader guarantees the
  * signature matches; the interpreter's Ext_CallHost casts the function
@@ -19,21 +20,26 @@
  *
  * ─── Design: the loader returns a Result, not an exception ────────────────
  * A load error is not a panic — nothing has run yet, and the host is
- * configuring its engine. The loader returns a Result<LoadedProgram,
- * LoadError>; the host decides whether to abort, log, or fall back.
- * The interpreter's PanicException is for run-time panics only.
+ * configuring its engine. The loader returns a Result, not a
+ * PanicException. The interpreter's PanicException is for run-time
+ * panics only.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/LoadedProgram.hpp. The Bytecode and HostRegistry definitions
+ * are needed only in the .cpp; the header forward-declares.
  */
 
 #pragma once
 
 #include "interp/LoadedProgram.hpp"
-#include "runtime/Panic.hpp"
+
+#include "core/diagnostics/DiagCode.hpp"
 
 #include <memory>
 #include <string>
 #include <variant>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
     class Bytecode;
 }
 
@@ -48,8 +54,8 @@ namespace lucid::interp {
 ///        the failure was not symbol-specific).
 struct LoadError {
     diag::DiagCode code;
-    std::string message;
-    std::string symbol;
+    std::string    message;
+    std::string    symbol;
 };
 
 /// @brief Load a Bytecode against a host registry.
@@ -65,7 +71,7 @@ struct LoadError {
 /// The loader does not run any Lucid code. It resolves symbols,
 /// allocates static storage, and builds the FunctionRef pool.
 std::variant<std::unique_ptr<LoadedProgram>, LoadError>
-load(std::unique_ptr<bytecode::Bytecode> bc,
+load(std::unique_ptr<contract::Bytecode> bc,
      runtime::HostRegistry* registry);
 
 } // namespace lucid::interp

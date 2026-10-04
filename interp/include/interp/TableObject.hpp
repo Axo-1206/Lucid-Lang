@@ -31,16 +31,20 @@
  * ─── Design: the primary index is a runtime choice ────────────────────────
  * A table with a @primary column has a `by<Column>` lookup (§4.1.5).
  * The index's representation is a runtime detail; the interpreter
- * promises only O(1) expected. This header exposes the index through
- * a single byPrimary call; the implementation may use a direct array,
- * a hash map, or anything else.
+ * promises only O(1) expected. This header exposes the index through a
+ * single byPrimary call; the implementation may use a direct array, a
+ * hash map, or anything else.
  *
  * ─── Design: array-typed cells share a buffer ─────────────────────────────
  * A column whose type is [T] stores one array per row (§7.8). The
  * runtime stores the arrays' data in a shared flat buffer with
- * per-row offsets (a compressed-sparse-array layout). This header
- * exposes the cell value as an ArrayObject* per row; the sharing is
- * an implementation detail of the cell storage.
+ * per-row offsets. This header exposes the cell value as a Value per
+ * row; the sharing is an implementation detail of the cell storage.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/Value.hpp. bytecode/TableSchema.hpp is forward-declared; the
+ * .cpp includes it. contract/TypeDescriptor.hpp and
+ * contract/ResourcePlan.hpp are needed only in the .cpp.
  */
 
 #pragma once
@@ -53,12 +57,8 @@
 #include <vector>
 
 namespace lucid::bytecode {
-    struct TypeDescriptor;
-    struct TableSchema;  // per-table: column names, types, attributes
-}
-
-namespace lucid::runtime {
-    struct StringObject;
+    struct TableSchema;
+    struct TableColumn;
 }
 
 namespace lucid::interp {
@@ -70,6 +70,9 @@ class TableObject;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Which of the three table shapes this is.
+///
+/// Derived from the schema's isFixed/isReadonly/isPacked at
+/// construction time and never changed. Grammar §4.1.1.
 enum class TableKind : uint8_t {
     /// Growing: rows can be added and removed. Slot array + free list.
     Growing,
@@ -89,10 +92,8 @@ enum class TableKind : uint8_t {
 
 /// @brief A live Lucid table.
 ///
-/// Owned by the LoadedProgram (for a top-level table) or by the
-/// interpreter (for a table created by a host call, if the host
-/// chooses to create one). A TableObject is not refcounted; its
-/// lifetime is the LoadedProgram's.
+/// Owned by the LoadedProgram (for a top-level table). A TableObject
+/// is not refcounted; its lifetime is the LoadedProgram's.
 class TableObject {
 public:
     /// Construct a growing table with the given schema. The schema is
@@ -101,12 +102,12 @@ public:
         const bytecode::TableSchema* schema);
 
     /// Construct a fixed or readonly table with the given schema and
-    /// initial rows. The schema is borrowed. The rows are copied in
+    /// initial rows. The schema is borrowed. The rows are moved in
     /// from the seed data (see StaticData).
     static std::unique_ptr<TableObject> makeFixed(
         const bytecode::TableSchema* schema,
         TableKind kind,
-        const std::vector<std::vector<Value>>& seedRows);
+        std::vector<std::vector<Value>>&& seedRows);
 
     ~TableObject();
 
@@ -125,7 +126,7 @@ public:
     std::string_view columnName(uint32_t index) const noexcept;
 
     /// Column type by index. Precondition: index < columnCount().
-    const bytecode::TypeDescriptor* columnType(uint32_t index) const noexcept;
+    const contract::TypeDescriptor* columnType(uint32_t index) const noexcept;
 
     /// True if the column at `index` has @unique or @primary.
     bool columnIsUnique(uint32_t index) const noexcept;
@@ -151,13 +152,13 @@ public:
 
     // ─── Growing-table operations ───────────────────────────────────────
 
-    /// Add a row. Precondition: kind == Growing, cells.size() ==
-    /// columnCount(). Runs @unique / @primary checks; a duplicate
-    /// raises Panic_DuplicateKey (7107). Returns the new row's slot
-    /// index and its generation, packed as a Value's RowRef payload.
+    /// Add a row. Precondition: kind == Growing,
+    /// cells.size() == columnCount(). Runs @unique / @primary checks;
+    /// a duplicate raises Panic_DuplicateKey (7107). Returns the new
+    /// row as a RowRef Value.
     ///
     /// The cells are moved in (the caller's array is not reused).
-    Value addRow(std::vector<Value> cells);
+    Value addRow(std::vector<Value>&& cells);
 
     /// Remove the row at slot `slot`. Precondition: kind == Growing,
     /// slot is live. Marks the slot dead, pushes it on the free list,
@@ -178,8 +179,7 @@ public:
 
     // ─── Row access ─────────────────────────────────────────────────────
 
-    /// Read the row at slot `slot`. Precondition: slot is live.
-    /// Returns a RowRef Value.
+    /// The RowRef Value for a live slot. Precondition: slot is live.
     Value rowRef(uint32_t slot) const noexcept;
 
     /// True if the given {slot, generation} is live and not below the
@@ -198,9 +198,8 @@ public:
 
     // ─── Indexing ───────────────────────────────────────────────────────
 
-    /// @brief Look up a row by its @primary column's value. Returns
-    ///        a RowRef Value, or Nil if no match. Precondition:
-    ///        hasPrimary().
+    /// Look up a row by its @primary column's value. Returns a RowRef
+    /// Value, or Nil if no match. Precondition: hasPrimary().
     ///
     /// O(1) expected. The index representation is a runtime choice;
     /// see §4.1.5.
@@ -208,10 +207,9 @@ public:
 
     // ─── Iteration ──────────────────────────────────────────────────────
 
-    /// @brief Visit every live row in slot order, calling `fn(slot)`
-    ///        for each. Used by for-loop iteration.
+    /// Visit every live row in slot order, calling `fn(slot)` for each.
+    /// Used by for-loop iteration.
     ///
-    /// `fn` is called once per live row; dead slots are skipped.
     /// Iteration order is slot order (grammar §7.1).
     template <typename Fn>
     void forEachRow(Fn&& fn) const {
@@ -223,11 +221,6 @@ public:
     }
 
 private:
-    // ─── Representation ─────────────────────────────────────────────────
-    //
-    // The fields are grouped so the implementation can specialize the
-    // growing case and the fixed case without splitting the class.
-
     TableObject(const bytecode::TableSchema* schema, TableKind kind);
 
     /// True if `slot` is within the capacity and live.
@@ -236,7 +229,7 @@ private:
     /// Internal: add a row without running uniqueness checks. Used by
     /// makeFixed for seed rows (Sema already checked them at compile
     /// time; see §4.1.5 "Duplicates in an initializer").
-    void addRowUnchecked(std::vector<Value> cells);
+    void addRowUnchecked(std::vector<Value>&& cells);
 
     const bytecode::TableSchema* m_schema = nullptr;
     TableKind m_kind = TableKind::Growing;
@@ -244,29 +237,30 @@ private:
     // Growing-only fields.
     uint32_t m_capacity = 0;
     uint32_t m_liveCount = 0;
-    uint32_t m_freeListHead = UINT32_MAX;   // head of the free list
-    uint64_t m_generationCounter = 1;       // next generation to issue
-    uint64_t m_resetFloor = 0;              // refs below this are stale
-
-    // Fixed-only: rows are 0..N-1, no free list, no generations.
-    // Growing uses the same buffer for live rows and dead slots.
+    uint32_t m_freeListHead = UINT32_MAX;
+    uint64_t m_generationCounter = 1;
+    uint64_t m_resetFloor = 0;
 
     /// Row storage. For a growing table, one entry per slot (live or
     /// dead); dead entries are reused via the free list. For a fixed
     /// table, one entry per row.
-    std::vector<RowStorage> m_rows;
+    std::vector<Value> m_cells;   // capacity * columnCount
 
     /// Per-slot metadata (generation, liveness). Empty for a fixed
     /// table; for a growing table, one entry per slot.
+    struct SlotMeta {
+        uint32_t generation;
+        bool     live;
+    };
     std::vector<SlotMeta> m_slots;
 
     /// The @primary index, if the table has a @primary column. The
-    /// concrete representation is hidden behind pImpl.
+    /// concrete representation is hidden behind a forward declaration.
     struct PrimaryIndex;
     std::unique_ptr<PrimaryIndex> m_primary;
 
-    // Column metadata is in the schema; no per-column storage here.
-    // Cell storage is in RowStorage; the layout is the schema's.
+    /// The structural version. Increments on ADD, REMOVE, CLEAR.
+    uint64_t m_version = 0;
 };
 
 } // namespace lucid::interp

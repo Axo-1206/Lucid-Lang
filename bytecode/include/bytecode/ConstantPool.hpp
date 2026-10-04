@@ -48,7 +48,7 @@
 
 #pragma once
 
-#include "TypeDescriptor.hpp"
+#include "contract/TypeDescriptor.hpp"
 
 #include <cstdint>
 #include <string>
@@ -84,7 +84,7 @@ struct Constant {
     };
 
     Kind           kind = Kind::Nil;
-    TypeDescriptor type;
+    contract::TypeDescriptor type;
 
     std::variant<
         std::monostate,          // Nil

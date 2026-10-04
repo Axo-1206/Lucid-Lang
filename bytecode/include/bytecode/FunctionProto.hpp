@@ -19,7 +19,8 @@
 
 #pragma once
 
-#include "TypeDescriptor.hpp"
+#include "contract/TypeDescriptor.hpp"
+#include "contract/Signature.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -49,7 +50,7 @@ public:
     FunctionProto() = default;
 
     FunctionProto(std::string                 mangledName,
-                  FunctionSignature           signature,
+                  contract::FunctionSignature signature,
                   std::vector<uint8_t>        code,
                   std::vector<LineEntry>      lineTable,
                   uint32_t                    localSlots,
@@ -64,14 +65,14 @@ public:
 
     // ─── Access ─────────────────────────────────────────────────────────
 
-    const std::string&         name()          const noexcept { return m_name; }
-    const FunctionSignature&   signature()     const noexcept { return m_signature; }
-    const std::vector<uint8_t>& code()         const noexcept { return m_code; }
-    const std::vector<LineEntry>& lineTable()  const noexcept { return m_lineTable; }
-    uint32_t                   localSlots()    const noexcept { return m_localSlots; }
-    uint32_t                   maxStackDepth() const noexcept { return m_maxStackDepth; }
-    bool                       isSequence()    const noexcept { return m_isSequence; }
-    const std::vector<ResumeEntry>& resumeTable() const noexcept { return m_resumeTable; }
+    const std::string&         name()              const noexcept { return m_name; }
+    const contract::FunctionSignature& signature() const noexcept { return m_signature; }
+    const std::vector<uint8_t>& code()             const noexcept { return m_code; }
+    const std::vector<LineEntry>& lineTable()      const noexcept { return m_lineTable; }
+    uint32_t                   localSlots()        const noexcept { return m_localSlots; }
+    uint32_t                   maxStackDepth()     const noexcept { return m_maxStackDepth; }
+    bool                       isSequence()        const noexcept { return m_isSequence; }
+    const std::vector<ResumeEntry>& resumeTable()  const noexcept { return m_resumeTable; }
 
     // ─── Queries ────────────────────────────────────────────────────────
 
@@ -101,14 +102,14 @@ public:
     void checkInvariants() const;
 
 private:
-    std::string              m_name;
-    FunctionSignature        m_signature;
-    std::vector<uint8_t>     m_code;
-    std::vector<LineEntry>   m_lineTable;
-    uint32_t                 m_localSlots    = 0;
-    uint32_t                 m_maxStackDepth = 1;
-    bool                     m_isSequence    = false;
-    std::vector<ResumeEntry> m_resumeTable;
+    std::string                 m_name;
+    contract::FunctionSignature m_signature;
+    std::vector<uint8_t>        m_code;
+    std::vector<LineEntry>      m_lineTable;
+    uint32_t                    m_localSlots    = 0;
+    uint32_t                    m_maxStackDepth = 1;
+    bool                        m_isSequence    = false;
+    std::vector<ResumeEntry>    m_resumeTable;
 };
 
 } // namespace lucid::bytecode

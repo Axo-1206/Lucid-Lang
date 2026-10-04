@@ -12,24 +12,25 @@
  * interpreter's main dispatch loop pays nothing on the happy path (no
  * status word to check); the panic path pays the cost of a C++
  * exception unwind, which is fine because it happens approximately
- * never. This is the same trade-off Lua makes with longjmp, but with
- * C++ exceptions so destructors of the interpreter's own C++ objects
- * (frames, temporary buffers) run.
+ * never.
  *
  * ─── Design: no drops on unwind ───────────────────────────────────────────
  * When a PanicException unwinds a Lucid frame, the frame's local
  * resources (strings, host handles held in local slots) are NOT
- * dropped. The compiled code's DropSchedule only runs on normal
- * control flow. This is a documented v1 limitation (see the grammar's
- * §10 discussion of panic): a panic leaks the panicking frame's local
+ * dropped. The compiled code's drop schedule only runs on normal
+ * control flow. This is a documented v1 limitation (grammar §10
+ * discussion of panic): a panic leaks the panicking frame's local
  * resources. The host is expected to recover the entity/context, not
  * the frame's memory.
  *
  * ─── Design: the stack trace is captured at throw time ────────────────────
  * The PanicException constructor is given the interpreter's frame
  * stack and captures the Lucid-level trace into Panic::stack. The
- * C++-level stack trace is not captured (C++ exceptions don't carry
- * one portably); the host's logger can decide whether to capture one.
+ * C++-level stack trace is not captured; the host's logger can decide
+ * whether to capture one.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * runtime/Panic.hpp.
  */
 
 #pragma once
@@ -57,7 +58,7 @@ public:
         : m_panic{code, std::move(message), {}} {}
 
     /// The structured panic value. The host-call boundary moves this
-    /// out into an ExecutionResult::Panic.
+    /// out into an ExecutionResult::Panicked.
     const runtime::Panic& panic() const noexcept { return m_panic; }
 
     runtime::Panic&& takePanic() noexcept { return std::move(m_panic); }

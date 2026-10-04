@@ -14,25 +14,27 @@
  * host call cheap at run time.
  *
  * ─── Design: static data is live, not a seed ──────────────────────────────
- * The Bytecode's StaticData is a *seed*: the initial values of top-level
- * bindings and every table's seed rows. The loader allocates live
+ * The Bytecode's StaticData is a *seed*. The loader allocates live
  * storage for each binding and each table, copies the seed in, and the
  * LoadedProgram owns the live storage. After load, StaticData is not
  * consulted again.
  *
  * ─── Design: the FunctionRef pool is stable ───────────────────────────────
- * Every function value that appears in a constant (a bare FN name, a
- * lambda's address, a function-typed table cell) is a FunctionRef. The
+ * Every function value that appears in a constant is a FunctionRef. The
  * loader builds one FunctionRef per function (Lucid and host) and
  * every constant that names that function points at the same
- * FunctionRef. This makes function-value equality a pointer compare
- * (the grammar's == for function types is identity, §6.8).
+ * FunctionRef. This makes function-value equality a pointer compare.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * interp/Value.hpp, interp/FunctionRef.hpp. The Bytecode and
+ * FunctionProto definitions are needed only in the .cpp; the header
+ * forward-declares. TableObject is forward-declared; the .cpp includes
+ * interp/TableObject.hpp. HostRegistry is forward-declared; the .cpp
+ * includes runtime/HostRegistry.hpp.
  */
 
 #pragma once
 
-#include "FunctionRef.hpp"
-#include "Value.hpp"
 #include "interp/Value.hpp"
 #include "interp/FunctionRef.hpp"
 
@@ -40,17 +42,19 @@
 #include <memory>
 #include <vector>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
     class Bytecode;
     struct FunctionProto;
-    struct Signature;
+    struct FunctionSignature;
 }
 
 namespace lucid::runtime {
-    class HostRegistry;  // forward; the actual type lives in runtime/
+    class HostRegistry;
 }
 
 namespace lucid::interp {
+
+struct TableObject;
 
 /// @brief A resolved host function: the function pointer the host
 ///        registered, plus its signature. Produced by the loader.
@@ -63,9 +67,8 @@ struct ResolvedHostFunction {
     /// Index into the signature table.
     uint32_t signatureIndex = 0;
 
-    /// The name, retained for diagnostics (a host call's stack trace
-    /// can name the host function). Owned by the LoadedProgram's
-    /// string pool; not freed here.
+    /// The name, retained for diagnostics. Owned by the
+    /// LoadedProgram's string storage; not freed here.
     const char* name = nullptr;
 };
 
@@ -86,11 +89,13 @@ public:
 
     // ─── Accessors ──────────────────────────────────────────────────────
 
-    const bytecode::Bytecode* bytecode() const noexcept { return m_bytecode.get(); }
+    const contract::Bytecode* bytecode() const noexcept {
+        return m_bytecode.get();
+    }
 
     /// The function proto at the given index. Precondition: index is
     /// valid.
-    const bytecode::FunctionProto* functionAt(uint32_t index) const noexcept;
+    const contract::FunctionProto* functionAt(uint32_t index) const noexcept;
 
     /// The FunctionRef for a function. Precondition: index is valid.
     FunctionRef* functionRefAt(uint32_t index) noexcept;
@@ -101,7 +106,7 @@ public:
     }
 
     /// The signature at the given index.
-    const bytecode::Signature& signatureAt(uint32_t index) const noexcept;
+    const contract::FunctionSignature& signatureAt(uint32_t index) const noexcept;
 
     // ─── Static data ────────────────────────────────────────────────────
 
@@ -122,7 +127,7 @@ public:
 private:
     friend class Loader;
 
-    std::unique_ptr<bytecode::Bytecode> m_bytecode;
+    std::unique_ptr<contract::Bytecode> m_bytecode;
 
     /// One resolved host function per HostSymbolTable entry, in the
     /// same order. Ext_CallHost <index> indexes this array.

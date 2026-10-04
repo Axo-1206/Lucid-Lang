@@ -22,6 +22,9 @@
  * value pushes the same FunctionRef* for the same function. This makes
  * function values cheap to compare (pointer equality) and cheap to
  * store (one pointer).
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * None.
  */
 
 #pragma once
@@ -33,13 +36,12 @@ namespace lucid::interp {
 /// @brief A reference to a specific function in the loaded program.
 struct FunctionRef {
     /// Index into the LoadedProgram's FunctionProto array. For a host
-    /// function, this is the host symbol index into the dispatch array
-    /// (negated, or offset — see LoadedProgram).
+    /// function, this is the host symbol index into the dispatch array.
     uint32_t functionIndex;
 
     /// Index into the LoadedProgram's signature table. The signature
-    /// is a FunctionTypeDescriptor: parameter types and return type.
-    /// Used at a runtime-dispatched call site to check arguments.
+    /// is a contract::FunctionSignature: parameter types and return
+    /// type. Used at a runtime-dispatched call site to check arguments.
     uint32_t signatureIndex;
 
     /// True if this is a host function (Ext_CallHost) rather than a
