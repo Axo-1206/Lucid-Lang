@@ -52,7 +52,7 @@ namespace lucid::bytecode::compile {
 /// StringPool.
 Constant bakeConstant(StringPool& pool,
                       const ConstantValue& value,
-                      const TypeDescriptor& type,
+                      const contract::TypeDescriptor& type,
                       uint32_t functionIndexForFunctionKind = UINT32_MAX);
 
 } // namespace lucid::bytecode::compile

@@ -1,5 +1,5 @@
 /**
- * @file contract/memory/ResourcePlan.hpp
+ * @file contract/ResourcePlan.hpp
  *
  * @responsibility Classify a TypeDescriptor by how values of that type
  *                 are copied, dropped, and moved. The plan is a pure
@@ -41,7 +41,7 @@
 
 #include <cstdint>
 
-namespace lucid::contract::memory {
+namespace lucid::contract {
 
 /// @brief How a value of a given type is copied.
 enum class CopyKind : uint8_t {
@@ -147,4 +147,4 @@ ResourcePlan planForType(const TypeDescriptor& type);
 /// @brief True if the plan requires a drop at scope exit.
 bool needsScopeExitDrop(const ResourcePlan& plan) noexcept;
 
-} // namespace lucid::contract::memory
+} // namespace lucid::contract

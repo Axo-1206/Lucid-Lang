@@ -10,6 +10,8 @@
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::compile {
 
 // ─────────────────────────────────────────────────────────────────────────────

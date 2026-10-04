@@ -4,9 +4,11 @@
 
 #include "SlotAllocator.hpp"
 
-#include "bytecode/memory/ResourcePlan.hpp"
+#include "contract/ResourcePlan.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
+
+using namespace lucid::contract;
 
 namespace lucid::bytecode::compile {
 
@@ -55,8 +57,8 @@ uint16_t SlotAllocator::allocateLocal(InternedString name,
     // If a scope is open and the type's plan requires a drop at scope
     // exit, record the slot in the scope.
     if (!m_scopes.empty()) {
-        const memory::ResourcePlan plan =
-            memory::planForType(m_slotTypes[slot]);
+        const ResourcePlan plan =
+            planForType(m_slotTypes[slot]);
         if (plan.needsDropForStorage()) {
             m_scopes.back().dropSlots.push_back(slot);
         }

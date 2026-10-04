@@ -23,7 +23,7 @@
 
 #pragma once
 
-#include "bytecode/TypeDescriptor.hpp"
+#include "contract/TypeDescriptor.hpp"
 
 class StringPool;
 struct TypeAST;
@@ -35,6 +35,6 @@ namespace lucid::bytecode::compile {
 /// The pool is required because a NamedTypeAST's mangled name is an
 /// InternedString; resolving it to an owned string requires the pool
 /// that interned it.
-TypeDescriptor translateType(const TypeAST* type, StringPool& pool);
+contract::TypeDescriptor translateType(const TypeAST* type, StringPool& pool);
 
 } // namespace lucid::bytecode::compile

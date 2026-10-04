@@ -42,7 +42,7 @@
 #include <utility>
 #include <vector>
 
-#include "bytecode/TypeDescriptor.hpp"
+#include "contract/TypeDescriptor.hpp"
 
 #include "core/memory/InternedString.hpp"
 
@@ -70,7 +70,7 @@ public:
     ///
     /// Parameters get the lowest slots, in declaration order. The
     /// parameter's type is recorded alongside the slot.
-    uint16_t allocateParam(InternedString name, const TypeDescriptor& type);
+    uint16_t allocateParam(InternedString name, const contract::TypeDescriptor& type);
 
     /// Allocate a slot for a local.
     ///
@@ -80,14 +80,14 @@ public:
     /// If a scope is currently open and the type requires a drop at
     /// scope exit, the slot is also recorded in the scope's dropSlots
     /// list.
-    uint16_t allocateLocal(InternedString name, const TypeDescriptor& type);
+    uint16_t allocateLocal(InternedString name, const contract::TypeDescriptor& type);
 
     /// The slot for a name, or nullopt if the name has no slot in
     /// this function.
     std::optional<uint16_t> slotFor(InternedString name) const;
 
     /// The type of a slot. Precondition: slot < localSlotCount().
-    const TypeDescriptor& typeOf(uint16_t slot) const;
+    const contract::TypeDescriptor& typeOf(uint16_t slot) const;
 
     /// The number of slots allocated (params + locals).
     uint32_t localSlotCount() const noexcept { return m_nextSlot; }
@@ -120,7 +120,7 @@ public:
 
 private:
     std::unordered_map<InternedString, uint16_t> m_slots;
-    std::vector<TypeDescriptor>                  m_slotTypes;   // by slot index
+    std::vector<contract::TypeDescriptor>                  m_slotTypes;   // by slot index
     uint32_t                                     m_nextSlot = 0;
 
     std::vector<ScopeRecord> m_scopes;

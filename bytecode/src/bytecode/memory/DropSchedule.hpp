@@ -35,7 +35,7 @@
 
 #pragma once
 
-#include "ResourcePlan.hpp"
+#include "contract/ResourcePlan.hpp"
 
 #include "bytecode/compile/CompilerContext.hpp"
 

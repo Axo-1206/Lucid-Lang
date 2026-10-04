@@ -10,6 +10,8 @@
 
 #include <algorithm>
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::compile {
 
 // ─────────────────────────────────────────────────────────────────────────────

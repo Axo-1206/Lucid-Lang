@@ -42,7 +42,7 @@
 
 #pragma once
 
-#include "ResourcePlan.hpp"
+#include "contract/ResourcePlan.hpp"
 #include "OwnedValue.hpp"
 
 #include "bytecode/compile/CompilerContext.hpp"
@@ -57,6 +57,6 @@ namespace lucid::bytecode::memory {
 ///
 /// After this call, the value stack has one more value (the copy),
 /// and the ownership stack has one more entry (`Owned`).
-void emitCopy(compile::CompilerContext& ctx, const ResourcePlan& plan);
+void emitCopy(compile::CompilerContext& ctx, const contract::ResourcePlan& plan);
 
 } // namespace lucid::bytecode::memory

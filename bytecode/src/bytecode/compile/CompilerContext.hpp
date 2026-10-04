@@ -45,10 +45,10 @@
 #include "bytecode/ConstantPool.hpp"
 #include "bytecode/FunctionProto.hpp"
 #include "bytecode/HostSymbolTable.hpp"
-#include "bytecode/Opcode.hpp"
 #include "bytecode/StaticData.hpp"
-
 #include "bytecode/memory/OwnedValue.hpp"
+
+#include "contract/Opcode.hpp"
 
 #include "core/ast/DeclAST.hpp"
 #include "core/SourceLocation.hpp"
@@ -159,7 +159,7 @@ public:
     // the depth; they are called by the emitter after emitOpcode.
 
     void emitByte(uint8_t b)      { m_code.push_back(b); }
-    void emitOpcode(Opcode op);
+    void emitOpcode(contract::Opcode op);
     void emitU8(uint8_t v);
     void emitU16(uint16_t v);
     void emitU32(uint32_t v);
