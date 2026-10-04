@@ -89,6 +89,299 @@ uint32_t internConstant(CompilerContext& ctx,
     return ctx.pool().add(std::move(c));
 }
 
+// ─── Table method dispatch ─────────────────────────────────────────────────
+
+/// Emit a call to a table method: T.ADD(...), T.FIND(...), T.COUNT(),
+/// T.VERSION(), T.AT(i), T.REMOVE(i), T.CLEAR(), T.SHRINK(),
+/// T.by<Column>(v).
+///
+/// The receiver is a table, not a value on the stack — the opcode
+/// carries the table's artifact index. The arguments are the method's
+/// actual arguments, emitted in source order.
+void emitTableMethodCall(CallExprAST* call,
+                         FieldAccessExprAST* fa,
+                         CompilerContext& ctx) {
+    AST_ASSERT_MSG(fa->object->isa<IdentifierExprAST>(),
+        "emitTableMethodCall: the table method's receiver is not an "
+        "identifier — Sema should have rejected this form");
+    const auto* id = fa->object->as<IdentifierExprAST>();
+    AST_ASSERT_MSG(id->resolvedDecl != nullptr
+                && id->resolvedDecl->isa<TableDeclAST>(),
+        "emitTableMethodCall: the receiver did not resolve to a "
+        "table — Sema should have resolved it");
+    const auto* table = id->resolvedDecl->as<TableDeclAST>();
+
+    const auto tableIdx = ctx.compiler().tableIndexOf(table->mangledName);
+    AST_ASSERT_MSG(tableIdx.has_value(),
+        "emitTableMethodCall: the table has no artifact index — "
+        "the compiler's pass A did not register it");
+    const uint32_t tableIndex = *tableIdx;
+
+    const std::string method = ctx.compiler().pool().lookup(fa->fieldName);
+
+    // The receiver's column, if this is a `by<Column>` access. Sema
+    // sets resolvedColumn when the method name matches a column's
+    // primary key (or the generated lookup for a `@primary` column).
+    // For every other method, resolvedColumn is null.
+
+    // ─── T.ADD(cells...) ──────────────────────────────────────────────
+    if (method == "ADD") {
+        for (auto* arg : call->args) {
+            emitExpr(arg, ctx);
+        }
+        ctx.emitOpcode(Opcode::Ext_TableAdd);
+        ctx.emitU32(tableIndex);
+        const int8_t pops = static_cast<int8_t>(call->args.size());
+        const int8_t pushes = 1;   // ADD returns a &T
+        ctx.noteStackEffect(pops, pushes);
+        return;
+    }
+
+    // ─── T.REMOVE(i) ──────────────────────────────────────────────────
+    if (method == "REMOVE") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitTableMethodCall: REMOVE takes one argument");
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_TableRemove);
+        ctx.emitU32(tableIndex);
+        ctx.noteStackEffect(1, 0);
+        return;
+    }
+
+    // ─── T.CLEAR() ────────────────────────────────────────────────────
+    if (method == "CLEAR") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitTableMethodCall: CLEAR takes no arguments");
+        ctx.emitOpcode(Opcode::Ext_TableClear);
+        ctx.emitU32(tableIndex);
+        return;
+    }
+
+    // ─── T.SHRINK() ───────────────────────────────────────────────────
+    if (method == "SHRINK") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitTableMethodCall: SHRINK takes no arguments");
+        ctx.emitOpcode(Opcode::Ext_TableShrink);
+        ctx.emitU32(tableIndex);
+        return;
+    }
+
+    // ─── T.COUNT() ────────────────────────────────────────────────────
+    if (method == "COUNT") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitTableMethodCall: COUNT takes no arguments");
+        ctx.emitOpcode(Opcode::Ext_TableCount);
+        ctx.emitU32(tableIndex);
+        return;
+    }
+
+    // ─── T.VERSION() ──────────────────────────────────────────────────
+    if (method == "VERSION") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitTableMethodCall: VERSION takes no arguments");
+        ctx.emitOpcode(Opcode::Ext_TableVersion);
+        ctx.emitU32(tableIndex);
+        return;
+    }
+
+    // ─── T.FIND(predicate) ────────────────────────────────────────────
+    if (method == "FIND") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitTableMethodCall: FIND takes one predicate argument");
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_TableFind);
+        ctx.emitU32(tableIndex);
+        ctx.noteStackEffect(1, 1);
+        return;
+    }
+
+    // ─── T.AT(i) ──────────────────────────────────────────────────────
+    if (method == "AT") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitTableMethodCall: AT takes one argument");
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_TableAt);
+        ctx.emitU32(tableIndex);
+        ctx.noteStackEffect(1, 1);
+        return;
+    }
+
+    // ─── T.by<Column>(value) ──────────────────────────────────────────
+    //
+    // Sema recognizes a `by<PrimaryColumn>` call and records the
+    // column on fa->resolvedColumn. The opcode carries both the
+    // table index and the column index.
+    if (fa->resolvedColumn != nullptr) {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitTableMethodCall: a by<Column> lookup takes one "
+            "argument");
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_TableByPrimary);
+        ctx.emitU32(tableIndex);
+        ctx.emitU16(static_cast<uint16_t>(
+            fa->resolvedColumn->columnIndex));
+        ctx.noteStackEffect(1, 1);
+        return;
+    }
+
+    AST_ASSERT_MSG(false,
+        "emitTableMethodCall: unhandled table method — the emitter "
+        "is out of sync with the language's table methods");
+}
+
+// ─── Column-view method dispatch ───────────────────────────────────────────
+
+/// Emit a call to a column-view method: Person.age.TOARRAY().
+///
+/// The column view is a compile-time identity: the receiver resolves
+/// to a table, and the field names a column. The opcode carries no
+/// operand — the column view is on the stack as a value (see the
+/// table-method-call receiver discussion; for a column view the
+/// receiver is pushed via the normal expression emitter).
+///
+/// Only TOARRAY is defined for a column view.
+void emitColumnViewMethodCall(CallExprAST* call,
+                              FieldAccessExprAST* fa,
+                              CompilerContext& ctx) {
+    AST_ASSERT_MSG(fa->resolvedColumn != nullptr,
+        "emitColumnViewMethodCall: the column view has no "
+        "resolvedColumn — Sema should have resolved it");
+    AST_ASSERT_MSG(call->args.size() == 0,
+        "emitColumnViewMethodCall: TOARRAY takes no arguments");
+
+    const std::string method = ctx.compiler().pool().lookup(fa->fieldName);
+    AST_ASSERT_MSG(method == "TOARRAY",
+        "emitColumnViewMethodCall: unhandled column-view method — "
+        "only TOARRAY is defined");
+
+    // The column view is a compile-time identity. Emit a Nop to
+    // leave the value stack as the caller expects, or a proper
+    // column-view value. For now, the simplest correct lowering:
+    // the column view is produced by the receiver expression, and
+    // TOARRAY consumes it and pushes an array.
+    //
+    // See the note in EmitExpr.hpp on column views: a column view
+    // has no runtime representation in the current opcode set; the
+    // receiver must be built. This is a known gap; the emitter
+    // emits a placeholder that will be completed once the
+    // column-view runtime representation is designed.
+    AST_ASSERT_MSG(false,
+        "emitColumnViewMethodCall: column-view runtime "
+        "representation is not yet designed — TOARRAY cannot be "
+        "emitted until the column view has a stack representation");
+}
+
+// ─── Array method dispatch ─────────────────────────────────────────────────
+
+/// Emit a call to an array method: arr.ADD(x), arr.REMOVE(i),
+/// arr.CLEAR(), arr.LENGTH(), arr.CONTAINS(x), arr.SORT(cmp).
+///
+/// The receiver is an array value on the stack. The emitter emits the
+/// receiver first, then the arguments, then the opcode.
+void emitArrayMethodCall(CallExprAST* call,
+                         FieldAccessExprAST* fa,
+                         CompilerContext& ctx) {
+    const std::string method = ctx.compiler().pool().lookup(fa->fieldName);
+
+    // ─── arr.ADD(x) ───────────────────────────────────────────────────
+    if (method == "ADD") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitArrayMethodCall: ADD takes one argument");
+        emitExpr(fa->object, ctx);      // receiver
+        emitExpr(call->args[0], ctx);   // element
+        ctx.emitOpcode(Opcode::Ext_ArrayAdd);
+        ctx.noteStackEffect(2, 0);
+        return;
+    }
+
+    // ─── arr.REMOVE(i) ────────────────────────────────────────────────
+    if (method == "REMOVE") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitArrayMethodCall: REMOVE takes one argument");
+        emitExpr(fa->object, ctx);
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_ArrayRemove);
+        ctx.noteStackEffect(2, 0);
+        return;
+    }
+
+    // ─── arr.CLEAR() ──────────────────────────────────────────────────
+    if (method == "CLEAR") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitArrayMethodCall: CLEAR takes no arguments");
+        emitExpr(fa->object, ctx);
+        ctx.emitOpcode(Opcode::Ext_ArrayClear);
+        ctx.noteStackEffect(1, 0);
+        return;
+    }
+
+    // ─── arr.LENGTH() ─────────────────────────────────────────────────
+    if (method == "LENGTH") {
+        AST_ASSERT_MSG(call->args.size() == 0,
+            "emitArrayMethodCall: LENGTH takes no arguments");
+
+        const TypeDescriptor receiverType =
+            translateType(fa->object->resolvedType,
+                          ctx.compiler().pool());
+        AST_ASSERT_MSG(receiverType.isArray(),
+            "emitArrayMethodCall: LENGTH's receiver is not an array — "
+            "the caller's dispatch is out of sync");
+
+        if (receiverType.arrayKind == ArrayKind::Fixed) {
+            // A fixed array's length is a compile-time constant. Do
+            // not evaluate the receiver; just push the count.
+            Constant c;
+            c.kind = Constant::Kind::Int;
+            c.type = translateType(call->resolvedType,
+                                   ctx.compiler().pool());
+            c.value = static_cast<int64_t>(receiverType.fixedSize);
+            const uint32_t idx = ctx.pool().add(std::move(c));
+            ctx.emitOpcode(Opcode::LoadConst);
+            ctx.emitU32(idx);
+            return;
+        }
+
+        // A dynamic array's length is a runtime value.
+        emitExpr(fa->object, ctx);
+        ctx.emitOpcode(Opcode::Ext_ArrayLength);
+        // The opcode's table entry: pops=1, pushes=1. Fixed-effect;
+        // no noteStackEffect needed.
+        return;
+    }
+
+    // ─── arr.CONTAINS(x) ──────────────────────────────────────────────
+    if (method == "CONTAINS") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitArrayMethodCall: CONTAINS takes one argument");
+        emitExpr(fa->object, ctx);
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_ArrayContains);
+        ctx.noteStackEffect(2, 1);
+        return;
+    }
+
+    // ─── arr.SORT(cmp) ────────────────────────────────────────────────
+    //
+    // The grammar requires a comparator argument. There is no
+    // zero-argument SORT; the core library provides convenience
+    // comparators for common element types.
+    if (method == "SORT") {
+        AST_ASSERT_MSG(call->args.size() == 1,
+            "emitArrayMethodCall: SORT takes one comparator argument "
+            "— the grammar has no zero-argument SORT");
+        emitExpr(fa->object, ctx);
+        emitExpr(call->args[0], ctx);
+        ctx.emitOpcode(Opcode::Ext_ArraySort);
+        ctx.emitU8(1);   // flag = 1: comparator form
+        ctx.noteStackEffect(2, 0);
+        return;
+    }
+
+    AST_ASSERT_MSG(false,
+        "emitArrayMethodCall: unhandled array method — the emitter "
+        "is out of sync with the language's array methods");
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,52 +947,44 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
             return;
         }
 
-        // A table method: T.ADD(...), T.FIND(...), T.COUNT(), etc.
-        //
-        // The opcodes for the table methods (Ext_TableAdd,
-        // Ext_TableFind, Ext_TableCount, ...) and the table-index
-        // lookup (Compiler::tableIndexOf) both exist. The emitter
-        // for this branch is not yet written.
+        // ─── Table method: T.ADD(...), T.FIND(...), T.COUNT(), ... ────
         if (fa->isTableMethod) {
-            AST_ASSERT_MSG(false,
-                "emitCallExpr: table methods are not yet supported — "
-                "the emitter for this branch has not been written");
+            emitTableMethodCall(e, fa, ctx);
             return;
         }
 
-        // A column-view method: Person.age.TOARRAY().
-        //
-        // The opcode Ext_ColumnToArray exists. The emitter for this
-        // branch is not yet written.
+        // ─── Column-view method: Person.age.TOARRAY() ─────────────────
         if (fa->isColumnView) {
-            AST_ASSERT_MSG(false,
-                "emitCallExpr: column-view methods are not yet "
-                "supported — the emitter for this branch has not "
-                "been written");
+            emitColumnViewMethodCall(e, fa, ctx);
             return;
         }
 
-        // The callee is a field access that is not a module access,
-        // a table method, or a column view. Two possibilities remain:
+        // ─── Array method: arr.ADD(x), arr.LENGTH(), ... ──────────────
         //
-        //   1. An array method (arr.ADD(x), arr.SORT(), ...). The
-        //      opcodes for these exist (Ext_ArrayAdd, Ext_ArraySort,
-        //      ...). The emitter for this branch has not been
-        //      written.
-        //
-        //   2. An indirect call through a function-typed cell
-        //      (§4.1.1c, §5.0). The opcode set has no indirect
-        //      call; this is a genuine opcode-set gap.
-        //
-        // The emitter does not yet distinguish the two. Both
-        // currently fall through to this assert.
+        // An array method is not classified by Sema. The callee is a
+        // field access whose object's type is an array. The emitter
+        // detects it here and dispatches to the array-method lowering.
+        {
+            const TypeDescriptor objectType =
+                translateType(fa->object->resolvedType,
+                              ctx.compiler().pool());
+            if (objectType.isArray()) {
+                emitArrayMethodCall(e, fa, ctx);
+                return;
+            }
+        }
+
+        // The callee is not a table method, not a column view, and
+        // its object is not an array. The only remaining possibility
+        // is an indirect call through a function-typed value (a
+        // function-typed cell, §4.1.1c and §5.0). The opcode set has
+        // no indirect call; this is a genuine opcode-set gap.
         AST_ASSERT_MSG(false,
             "emitCallExpr: a field-access callee is neither a module "
-            "access, a table method, nor a column view — the callee "
-            "is either an array method (emitter not yet written) or "
-            "an indirect call through a function-typed cell (no "
-            "opcode exists). The emitter does not yet distinguish "
-            "the two cases.");
+            "access, a table method, a column view, nor an array "
+            "method — the only remaining form is an indirect call "
+            "through a function-typed value, and the opcode set has "
+            "no indirect-call opcode");
         return;
     }
 

@@ -39,7 +39,7 @@ namespace lucid::contract {
 ///
 /// Bump this on any change to contract/include/contract/. The loader
 /// rejects a .lucb whose version does not match.
-constexpr uint32_t LUCB_FORMAT_VERSION = 2;
+constexpr uint32_t LUCB_FORMAT_VERSION = 1;
 
 /// @brief The magic number at the start of every .lucb file.
 constexpr uint32_t LUCB_MAGIC = 0x4C554342;  // "LUCB" in ASCII

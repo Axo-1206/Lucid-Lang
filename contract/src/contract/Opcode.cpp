@@ -332,6 +332,9 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
     // ─── Column view ───────────────────────────────────────────────────
     t[0x40] = {Opcode::Ext_ColumnToArray, OperandShape::None, "ColumnToArray", 1, 1};
 
+    // ─── Array length ──────────────────────────────────────────────────
+    t[0x43] = {Opcode::Ext_ArrayLength, OperandShape::None, "ArrayLength", 1, 1};
+
     // ─── Fixed array element access ────────────────────────────────────
     t[0x41] = {Opcode::Ext_FixedArrayGet, OperandShape::U32, "FixedArrayGet", 1, 1};
     t[0x42] = {Opcode::Ext_FixedArraySet, OperandShape::U32, "FixedArraySet", 2, 0};

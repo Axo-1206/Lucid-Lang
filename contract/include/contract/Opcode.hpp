@@ -223,6 +223,18 @@ enum class Opcode : uint16_t {
     // ─── Aggregate — column views ───────────────────────────────────────
     Ext_ColumnToArray  = 0x0140,  ///< column view on stack
 
+    // ─── Aggregate — array length ───────────────────────────────────────
+    //
+    // Ext_ArrayLength returns the number of elements in a dynamic
+    // array. A fixed array's length is a compile-time constant and
+    // never needs a runtime opcode.
+    //
+    // The name is Length, not Count: the grammar's array method is
+    // LENGTH(), and the opcode matches the method it implements. The
+    // table's row-count method keeps the name COUNT(), and its
+    // opcode (Ext_TableCount) is unchanged.
+    Ext_ArrayLength = 0x0143,   ///< array on stack; pushes its length
+
     // ─── Aggregate — fixed arrays ───────────────────────────────────────
     //
     // A fixed array is a value: its elements are inline, at fixed
