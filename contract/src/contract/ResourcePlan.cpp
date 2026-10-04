@@ -1,11 +1,11 @@
-/// @file bytecode/memory/ResourcePlan.cpp
+/// @file contract/memory/ResourcePlan.cpp
 /// @brief Classify a type by its copy/drop/move behavior.
 
-#include "ResourcePlan.hpp"
+#include "contract/ResourcePlan.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 
-namespace lucid::bytecode::memory {
+namespace lucid::contract::memory {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Classification
@@ -144,4 +144,4 @@ bool needsScopeExitDrop(const ResourcePlan& plan) noexcept {
     return plan.needsDropForStorage();
 }
 
-} // namespace lucid::bytecode::memory
+} // namespace lucid::contract::memory

@@ -1,11 +1,11 @@
-/// @file bytecode/TypeDescriptor.cpp
+/// @file contract/TypeDescriptor.cpp
 /// @brief Factory methods for the serializable type descriptor.
 
-#include "bytecode/TypeDescriptor.hpp"
+#include "contract/TypeDescriptor.hpp"
 
 #include <utility>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Factories
@@ -73,4 +73,4 @@ TypeDescriptor TypeDescriptor::makeNullable(TypeDescriptor inner) {
     return d;
 }
 
-} // namespace lucid::bytecode
+} // namespace lucid::contract

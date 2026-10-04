@@ -1,13 +1,13 @@
-/// @file bytecode/RuntimeOp.cpp
+/// @file contract/RuntimeOp.cpp
 /// @brief The runtime operation info table.
 
-#include "bytecode/RuntimeOp.hpp"
+#include "contract/RuntimeOp.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 
 #include <array>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 namespace {
 
@@ -42,4 +42,4 @@ const RuntimeOpInfo& runtimeOpInfo(RuntimeOp op) noexcept {
     return RUNTIME_OP_TABLE[b];
 }
 
-} // namespace lucid::bytecode
+} // namespace lucid::contract

@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 struct TypeDescriptor;
 
@@ -84,10 +84,4 @@ struct TypeDescriptor {
     bool isNullable()  const noexcept { return kind == Kind::Nullable; }
 };
 
-/// @brief A serializable function signature. Matches FunctionTypeAST.
-struct FunctionSignature {
-    std::vector<TypeDescriptor> params;
-    TypeDescriptor              returnType;
-};
-
-} // namespace lucid::bytecode
+} // namespace lucid::contract

@@ -49,7 +49,7 @@
 
 #include <cstdint>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Opcode
@@ -347,4 +347,4 @@ bool isExtendedOpcode(uint8_t byte) noexcept;
 /// setup) to catch enum/table drift early.
 void checkOpcodeTable();
 
-} // namespace lucid::bytecode
+} // namespace lucid::contract

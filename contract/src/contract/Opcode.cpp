@@ -1,13 +1,13 @@
-/// @file bytecode/Opcode.cpp
+/// @file contract/Opcode.cpp
 /// @brief The opcode info table and the byte-classification helpers.
 
-#include "bytecode/Opcode.hpp"
+#include "contract/Opcode.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 
 #include <array>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The opcode tables
@@ -418,4 +418,4 @@ void checkOpcodeTable() {
     }
 }
 
-} // namespace lucid::bytecode
+} // namespace lucid::contract

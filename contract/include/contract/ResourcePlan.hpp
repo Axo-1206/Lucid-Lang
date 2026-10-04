@@ -1,5 +1,5 @@
 /**
- * @file bytecode/memory/ResourcePlan.hpp
+ * @file contract/memory/ResourcePlan.hpp
  *
  * @responsibility Classify a TypeDescriptor by how values of that type
  *                 are copied, dropped, and moved. The plan is a pure
@@ -37,11 +37,11 @@
 
 #pragma once
 
-#include "bytecode/TypeDescriptor.hpp"
+#include "TypeDescriptor.hpp"
 
 #include <cstdint>
 
-namespace lucid::bytecode::memory {
+namespace lucid::contract::memory {
 
 /// @brief How a value of a given type is copied.
 enum class CopyKind : uint8_t {
@@ -147,4 +147,4 @@ ResourcePlan planForType(const TypeDescriptor& type);
 /// @brief True if the plan requires a drop at scope exit.
 bool needsScopeExitDrop(const ResourcePlan& plan) noexcept;
 
-} // namespace lucid::bytecode::memory
+} // namespace lucid::contract::memory

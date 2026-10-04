@@ -1,5 +1,5 @@
 /**
- * @file bytecode/RuntimeOp.hpp
+ * @file contract/RuntimeOp.hpp
  *
  * @responsibility The closed set of runtime operations the interpreter
  *                 implements on behalf of the emitted code. Each
@@ -28,7 +28,7 @@
 
 #include <cstdint>
 
-namespace lucid::bytecode {
+namespace lucid::contract {
 
 /// @brief One runtime operation the interpreter implements.
 enum class RuntimeOp : uint8_t {
@@ -79,4 +79,4 @@ const RuntimeOpInfo& runtimeOpInfo(RuntimeOp op) noexcept;
 /// @brief True if the byte is a valid RuntimeOp value.
 bool isRuntimeOp(uint8_t byte) noexcept;
 
-} // namespace lucid::bytecode
+} // namespace lucid::contract
