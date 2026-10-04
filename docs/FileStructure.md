@@ -147,12 +147,13 @@ lucid/
 ├── bytecode/
 │   ├── include/bytecode/
 │   │   ├── Bytecode.hpp
-│   │   ├── FunctionProto.hpp
 │   │   ├── ConstantPool.hpp
-│   │   ├── StaticData.hpp
+│   │   ├── FunctionProto.hpp
 │   │   ├── HostSymbolTable.hpp
 │   │   ├── Manifest.hpp
 │   │   ├── Serialize.hpp
+│   │   ├── StaticData.hpp
+│   │   ├── TableSchema.hpp
 │   │   └── compile/
 │   │       └── Compiler.hpp
 │   └── src/bytecode/
