@@ -87,50 +87,61 @@ void Bytecode::checkInvariants() const {
     // fixed at declaration (@fixed or @readonly). For such a table,
     // the rows are baked into StaticData::tables[i].rows, and the
     // row index is stable. The check below validates the index
-    // against that baked row set.
-    //
-    // KNOWN BUG: this loop is structured so that the RowRef check is
-    // unreachable. The first `continue` skips every non-Function
-    // constant, so `c.kind` can never be RowRef at the second check.
-    // RowRef constants are currently never validated. The fix is to
-    // dispatch on `c.kind` with if/else-if instead of a pair of
-    // `continue` guards. (Left as-is here so the comment fix and the
-    // code fix are separate changes.)
+    // against that baked row set, and asserts that the table the
+    // constant names has a fixed row set at all — a RowRef against a
+    // growing table is a compiler bug (the compiler should never
+    // have produced the constant), not a runtime state the
+    // interpreter should have to handle.
     const uint32_t tableCount = static_cast<uint32_t>(m_staticData.tables().size());
 
     for (size_t ci = 0; ci < m_constants.size(); ++ci) {
         const Constant& c = m_constants.at(static_cast<uint32_t>(ci));
-        if (c.kind != Constant::Kind::Function) continue;
 
-        const uint32_t fnIndex = std::get<uint32_t>(c.value);
-        AST_ASSERT_MSG(fnIndex < functionCount,
-            "Bytecode: a Function-kind constant names a function index "
-            "that is outside the artifact's function list — "
-            "the compiler interned a constant against a function that "
-            "was never added");
+        if (c.kind == Constant::Kind::Function) {
+            const uint32_t fnIndex = std::get<uint32_t>(c.value);
+            AST_ASSERT_MSG(fnIndex < functionCount,
+                "Bytecode: a Function-kind constant names a function "
+                "index that is outside the artifact's function list — "
+                "the compiler interned a constant against a function "
+                "that was never added");
+            continue;
+        }
 
+        if (c.kind == Constant::Kind::RowRef) {
+            const auto& rr = std::get<RowRefConstant>(c.value);
+            AST_ASSERT_MSG(rr.tableIndex < tableCount,
+                "Bytecode: a RowRef constant names a table index that "
+                "is outside the artifact's static-data table list");
 
-        if (c.kind != Constant::Kind::RowRef) continue;
-        
-        const auto& rr = std::get<RowRefConstant>(c.value);
-        AST_ASSERT_MSG(rr.tableIndex < tableCount,
-            "Bytecode: a RowRef constant names a table index that is "
-            "outside the artifact's static-data table list");
+            const BakedTable& table =
+                m_staticData.tables()[rr.tableIndex];
 
-        const BakedTable& table = m_staticData.tables()[rr.tableIndex];
-        AST_ASSERT_MSG(rr.rowIndex < table.rows.size(),
-            "Bytecode: a RowRef constant names a row index that is "
-            "outside the referenced table's row list");
+            // A RowRef is only meaningful for a table whose row set
+            // is fixed at declaration. Sema folds `T.Member` sugar
+            // into a RowRef constant only when `T` has a fixed row
+            // set; a RowRef against a growing table means the
+            // compiler (or Sema) produced a constant for a table
+            // whose rows can still move.
+            AST_ASSERT_MSG(table.schema.hasFixedRowSet(),
+                "Bytecode: a RowRef constant names a growing table — "
+                "Sema should only fold T.Member sugar for a table "
+                "whose row set is fixed at declaration");
+
+            AST_ASSERT_MSG(rr.rowIndex < table.rows.size(),
+                "Bytecode: a RowRef constant names a row index that is "
+                "outside the referenced table's row list");
+            continue;
+        }
     }
 
     // Every host symbol referenced by a StaticData BakedTable's
     // hostTypeSymbolIndex is in range.
     for (const auto& table : m_staticData.tables()) {
-        if (!table.isHostBacked) continue;
-        AST_ASSERT_MSG(table.hostTypeSymbolIndex >= 0,
+        if (!table.schema.isHostBacked) continue;
+        AST_ASSERT_MSG(table.schema.hostTypeSymbolIndex >= 0,
             "Bytecode: a host-backed table has no host type symbol index");
         const uint32_t symIndex =
-            static_cast<uint32_t>(table.hostTypeSymbolIndex);
+            static_cast<uint32_t>(table.schema.hostTypeSymbolIndex);
         AST_ASSERT_MSG(symIndex < m_hostSymbols.size(),
             "Bytecode: a host-backed table's type symbol index is "
             "outside the host symbol table");

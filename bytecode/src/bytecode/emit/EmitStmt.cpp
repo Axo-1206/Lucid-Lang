@@ -10,7 +10,8 @@
 #include "bytecode/compile/TypeTranslation.hpp"
 #include "bytecode/memory/DropSchedule.hpp"
 #include "bytecode/memory/EmitDrop.hpp"
-#include "bytecode/memory/ResourcePlan.hpp"
+
+#include "contract/ResourcePlan.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/StmtAST.hpp"
@@ -18,10 +19,11 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::compile {
 
 using memory::DropSchedule;
-using memory::planForType;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local helpers

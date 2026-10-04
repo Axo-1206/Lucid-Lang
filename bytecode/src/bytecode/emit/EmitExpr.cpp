@@ -47,6 +47,8 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::compile {
 
 // ─────────────────────────────────────────────────────────────────────────────

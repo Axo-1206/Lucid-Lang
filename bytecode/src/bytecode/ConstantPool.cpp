@@ -8,6 +8,8 @@
 #include <cstring>
 #include <sstream>
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode {
 
 // ─────────────────────────────────────────────────────────────────────────────

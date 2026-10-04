@@ -110,6 +110,7 @@
 #include <vector>
 
 using namespace lucid::diag;
+using namespace lucid::contract;
 
 namespace lucid::bytecode {
 
@@ -520,28 +521,30 @@ std::optional<SerializeError> serialize(const Bytecode& bc, std::ostream& os) {
 
     writeU32(os, static_cast<uint32_t>(sd.tables().size()));
     for (const auto& table : sd.tables()) {
+        const TableSchema& schema = table.schema;
+
         writeString(os, table.mangledName);
 
         uint8_t flags = 0;
-        if (table.isFixed)      flags |= 0x01;
-        if (table.isReadonly)   flags |= 0x02;
-        if (table.isPacked)     flags |= 0x04;
-        if (table.isColumnar)   flags |= 0x08;
-        if (table.isRequest)    flags |= 0x10;
-        if (table.isHostBacked) flags |= 0x20;
+        if (schema.isFixed)      flags |= 0x01;
+        if (schema.isReadonly)   flags |= 0x02;
+        if (schema.isPacked)     flags |= 0x04;
+        if (schema.isColumnar)   flags |= 0x08;
+        if (schema.isRequest)    flags |= 0x10;
+        if (schema.isHostBacked) flags |= 0x20;
         writeU8(os, flags);
 
-        writeI32(os, table.hostTypeSymbolIndex);
+        writeI32(os, schema.hostTypeSymbolIndex);
 
-        if (table.reservedCount.has_value()) {
+        if (schema.reservedCount.has_value()) {
             writeU8(os, 1);
-            writeU64(os, *table.reservedCount);
+            writeU64(os, *schema.reservedCount);
         } else {
             writeU8(os, 0);
         }
 
-        writeU32(os, static_cast<uint32_t>(table.columns.size()));
-        for (const auto& col : table.columns) {
+        writeU32(os, static_cast<uint32_t>(schema.columns.size()));
+        for (const auto& col : schema.columns) {
             writeString(os, col.mangledName);
             writeType(os, col.type);
 
@@ -806,6 +809,8 @@ DeserializeResult deserialize(std::istream& is) {
     }
     for (uint32_t ti = 0; ti < tableCount; ++ti) {
         BakedTable table;
+        TableSchema& schema = table.schema;
+
         if (!r.readString(table.mangledName)) {
             return {std::nullopt,
                     SerializeError{DiagCode::Bc_Truncated, "table mangled name"}};
@@ -816,14 +821,14 @@ DeserializeResult deserialize(std::istream& is) {
             return {std::nullopt,
                     SerializeError{DiagCode::Bc_Truncated, "table flags"}};
         }
-        table.isFixed      = (flags & 0x01) != 0;
-        table.isReadonly   = (flags & 0x02) != 0;
-        table.isPacked     = (flags & 0x04) != 0;
-        table.isColumnar   = (flags & 0x08) != 0;
-        table.isRequest    = (flags & 0x10) != 0;
-        table.isHostBacked = (flags & 0x20) != 0;
+        schema.isFixed      = (flags & 0x01) != 0;
+        schema.isReadonly   = (flags & 0x02) != 0;
+        schema.isPacked     = (flags & 0x04) != 0;
+        schema.isColumnar   = (flags & 0x08) != 0;
+        schema.isRequest    = (flags & 0x10) != 0;
+        schema.isHostBacked = (flags & 0x20) != 0;
 
-        if (!r.readI32(table.hostTypeSymbolIndex)) {
+        if (!r.readI32(schema.hostTypeSymbolIndex)) {
             return {std::nullopt,
                     SerializeError{DiagCode::Bc_Truncated, "host type symbol index"}};
         }
@@ -839,7 +844,7 @@ DeserializeResult deserialize(std::istream& is) {
                 return {std::nullopt,
                         SerializeError{DiagCode::Bc_Truncated, "reserve count"}};
             }
-            table.reservedCount = reserved;
+            schema.reservedCount = reserved;
         }
 
         uint32_t columnCount;
@@ -852,9 +857,9 @@ DeserializeResult deserialize(std::istream& is) {
                     SerializeError{DiagCode::Bc_DeserializationFailed,
                                    "implausible column count"}};
         }
-        table.columns.reserve(columnCount);
+        schema.columns.reserve(columnCount);
         for (uint32_t ci = 0; ci < columnCount; ++ci) {
-            BakedTable::Column col;
+            TableColumn col;
             if (!r.readString(col.mangledName)) {
                 return {std::nullopt,
                         SerializeError{DiagCode::Bc_Truncated, "column name"}};
@@ -871,7 +876,7 @@ DeserializeResult deserialize(std::istream& is) {
             col.isUnique   = (colFlags & 0x01) != 0;
             col.isPrimary  = (colFlags & 0x02) != 0;
             col.isReadonly = (colFlags & 0x04) != 0;
-            table.columns.push_back(std::move(col));
+            schema.columns.push_back(std::move(col));
         }
 
         uint32_t rowCount;

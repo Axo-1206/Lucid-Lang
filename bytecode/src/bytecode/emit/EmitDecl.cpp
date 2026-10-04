@@ -11,6 +11,8 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/StmtAST.hpp"
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::compile {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,15 +31,21 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
     BakedTable baked;
     baked.mangledName = state.pool.lookup(table->mangledName);
 
-    baked.isFixed      = table->isFixed;
-    baked.isReadonly   = table->isReadonly;
-    baked.isPacked     = table->isPacked;
-    baked.isColumnar   = table->isColumnar;
-    baked.isRequest    = table->isRequest;
-    baked.isHostBacked = table->isHostBacked;
+    // The table's shape lives on TableSchema; the rows live on
+    // BakedTable. The split separates "the description" from "the
+    // data" so a consumer that only needs the shape (the
+    // interpreter's TableObject) does not carry the seed rows.
+    TableSchema& schema = baked.schema;
+
+    schema.isFixed      = table->isFixed;
+    schema.isReadonly   = table->isReadonly;
+    schema.isPacked     = table->isPacked;
+    schema.isColumnar   = table->isColumnar;
+    schema.isRequest    = table->isRequest;
+    schema.isHostBacked = table->isHostBacked;
 
     if (table->isReserved) {
-        baked.reservedCount = table->reservedCount;
+        schema.reservedCount = table->reservedCount;
     }
 
     if (table->isHostBacked) {
@@ -47,15 +55,19 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
         sym.kind = HostSymbol::Kind::Type;
         sym.name = state.pool.lookup(table->hostName);
         const uint32_t symIndex = state.hostSymbols.add(std::move(sym));
-        baked.hostTypeSymbolIndex = static_cast<int32_t>(symIndex);
+        schema.hostTypeSymbolIndex = static_cast<int32_t>(symIndex);
     } else {
         // ─── Columns ───────────────────────────────────────────────────
         //
         // Translate each column's declared type. Assert that the
         // column's resource kind matches the type's classification;
         // a mismatch means Sema's cached value is stale.
+        //
+        // A column's shape is a TableColumn (TableSchema.hpp), not
+        // a BakedTable::Column — BakedTable no longer defines its
+        // own column type after the schema extraction.
         for (const auto* col : table->columns) {
-            BakedTable::Column c;
+            TableColumn c;
             c.mangledName = state.pool.lookup(col->mangledName);
             c.isUnique    = col->isUnique;
             c.isPrimary   = col->isPrimary;
@@ -66,7 +78,7 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
                 "resolved it");
             c.type = translateType(col->type, state.pool);
 
-            baked.columns.push_back(std::move(c));
+            schema.columns.push_back(std::move(c));
         }
 
         // ─── Rows ──────────────────────────────────────────────────────
@@ -86,8 +98,8 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
                     "evaluated — Sema should have folded it");
 
                 const TypeDescriptor cellType =
-                    (ci < baked.columns.size())
-                        ? baked.columns[ci].type
+                    (ci < schema.columns.size())
+                        ? schema.columns[ci].type
                         : TypeDescriptor{};
                 bakedRow.push_back(bakeConstant(state.pool, cell->constValue,
                                                 cellType, UINT32_MAX));

@@ -147,10 +147,21 @@ struct TableSchema {
     }
 
     /// True if the table's row set is fixed: no ADD, REMOVE, CLEAR, or
-    /// SHRINK. True when isFixed, isReadonly, or isPacked is set — any
-    /// one of the three makes the row set fixed (grammar §4.1.1).
+    /// SHRINK. True when @fixed or @readonly is set (grammar §4.1.1).
+    ///
+    /// @packed is NOT a disjunct here even though it also forbids row
+    /// mutation: the grammar requires @packed to appear together with
+    /// @fixed or @readonly. The compiler's post-bake invariant checks
+    /// (StaticData::checkInvariants) assert that requirement, so
+    /// reaching hasFixedRowSet with isPacked set but neither isFixed
+    /// nor isReadonly is a compiler bug, and the assert fires before
+    /// this query is consulted. Including `|| isPacked` would silently
+    /// mask that bug.
+    ///
+    /// This matches TableDeclAST::hasFixedRowSet() on the AST side,
+    /// which uses the same two-disjunct form.
     bool hasFixedRowSet() const noexcept {
-        return isFixed || isReadonly || isPacked;
+        return isFixed || isReadonly;
     }
 
     /// True if cells may be written. False for @readonly tables.

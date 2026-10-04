@@ -9,8 +9,13 @@ namespace lucid::bytecode {
 
 void StaticData::checkInvariants() const {
     // ─── Tables ────────────────────────────────────────────────────────
+    //
+    // A BakedTable is (mangledName, TableSchema schema, rows). Every
+    // table-shape invariant is a property of the schema; the rows are
+    // checked against the schema's column count.
     for (size_t ti = 0; ti < m_tables.size(); ++ti) {
         const BakedTable& table = m_tables[ti];
+        const TableSchema& schema = table.schema;
 
         AST_ASSERT_MSG(!table.mangledName.empty(),
             "StaticData: a BakedTable has an empty mangled name");
@@ -18,21 +23,21 @@ void StaticData::checkInvariants() const {
         // A non-host-backed table must have at least one column. A
         // host-backed table has no columns by construction (its shape
         // is the host type).
-        if (!table.isHostBacked) {
-            AST_ASSERT_MSG(!table.columns.empty(),
+        if (!schema.isHostBacked) {
+            AST_ASSERT_MSG(!schema.columns.empty(),
                 "StaticData: a columned table has no columns");
         } else {
-            AST_ASSERT_MSG(table.columns.empty(),
+            AST_ASSERT_MSG(schema.columns.empty(),
                 "StaticData: a host-backed table has columns — "
                 "the compiler should not have emitted any");
-            AST_ASSERT_MSG(table.hostTypeSymbolIndex >= 0,
+            AST_ASSERT_MSG(schema.hostTypeSymbolIndex >= 0,
                 "StaticData: a host-backed table has no host type "
                 "symbol index");
         }
 
         // Every row has one cell per column. A mismatch is a compiler
         // bug: the row was baked with the wrong cell count.
-        const size_t columnCount = table.columns.size();
+        const size_t columnCount = schema.columns.size();
         for (size_t ri = 0; ri < table.rows.size(); ++ri) {
             const auto& row = table.rows[ri];
             AST_ASSERT_MSG(row.size() == columnCount,
@@ -44,30 +49,34 @@ void StaticData::checkInvariants() const {
         // (§4.1.1b). Sema rejects the empty case, but the assert
         // re-checks because a malformed Sema output must not silently
         // produce an empty fixed table.
-        if (table.isFixed || table.isReadonly) {
+        if (schema.isFixed || schema.isReadonly) {
             AST_ASSERT_MSG(!table.rows.empty(),
                 "StaticData: a @fixed/@readonly table has no rows — "
                 "Sema should have rejected this declaration");
         }
 
         // @packed requires @fixed or @readonly. Sema checks this; the
-        // assert re-checks the compiler's output.
-        if (table.isPacked) {
-            AST_ASSERT_MSG(table.isFixed || table.isReadonly,
+        // assert re-checks the compiler's output. This is also the
+        // reason TableSchema::hasFixedRowSet() does not include
+        // `|| isPacked`: a @packed table without @fixed/@readonly is
+        // a compiler bug, and this assert catches it before any query
+        // consults hasFixedRowSet.
+        if (schema.isPacked) {
+            AST_ASSERT_MSG(schema.isFixed || schema.isReadonly,
                 "StaticData: a @packed table is neither @fixed nor "
                 "@readonly — Sema should have rejected this declaration");
         }
 
         // @request is only valid on a host-backed table.
-        if (table.isRequest) {
-            AST_ASSERT_MSG(table.isHostBacked,
+        if (schema.isRequest) {
+            AST_ASSERT_MSG(schema.isHostBacked,
                 "StaticData: a @request table is not host-backed — "
                 "Sema should have rejected this declaration");
         }
 
         // @primary: at most one column per table.
         int primaryCount = 0;
-        for (const auto& col : table.columns) {
+        for (const auto& col : schema.columns) {
             if (col.isPrimary) ++primaryCount;
         }
         AST_ASSERT_MSG(primaryCount <= 1,

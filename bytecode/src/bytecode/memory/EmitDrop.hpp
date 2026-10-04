@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include "ResourcePlan.hpp"
+#include "contract/ResourcePlan.hpp"
 #include "OwnedValue.hpp"
 
 #include "bytecode/compile/CompilerContext.hpp"
@@ -43,12 +43,12 @@ namespace lucid::bytecode::memory {
 ///
 /// All DropKinds except `ElementWise` are implemented. The
 /// `ElementWise` case asserts.
-void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan);
+void emitDrop(compile::CompilerContext& ctx, const contract::ResourcePlan& plan);
 
 /// @brief Emit a drop only if the value actually owns resources
 ///        (its ownership flag is Owned). Used at scope exit, where a
 ///        slot may have been moved out earlier.
 void emitDropIfOwned(compile::CompilerContext& ctx,
-                     const ResourcePlan& plan);
+                     const contract::ResourcePlan& plan);
 
 } // namespace lucid::bytecode::memory
