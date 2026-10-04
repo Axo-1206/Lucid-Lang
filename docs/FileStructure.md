@@ -113,6 +113,37 @@ lucid/
 │           ├── TableConstraintChecker.hpp / .cpp
 │           └── TypeNarrowHelpers.hpp / .cpp
 │
+├── contract/
+│   ├── include/contract/
+│   │   ├── Format.hpp
+│   │   ├── Opcode.hpp
+│   │   ├── ResourcePlan.hpp
+│   │   ├── RuntimeOp.hpp
+│   │   ├── FuncSignature.hpp
+│   │   └── TypeDescriptor.hpp
+│   └── src/contract/
+│       ├── Opcode.cpp
+│       ├── ResourcePlan.cpp
+│       ├── RuntimeOp.cpp
+│       └── TypeDescriptor.cpp
+│
+├── runtime/
+│   ├── include/runtime/
+│   │   ├── Array.hpp
+│   │   ├── Handle.hpp
+│   │   ├── HostRegistry.hpp
+│   │   ├── Panic.hpp
+│   │   ├── String.hpp
+│   │   ├── Value.hpp
+│   │   └── ValueOps.hpp
+│   └── src/runtime/
+│       ├── Array.cpp
+│       ├── Handle.cpp
+│       ├── HostRegistry.cpp
+│       ├── Panic.cpp
+│       ├── String.cpp
+│       └── ValueOps.cpp
+│
 ├── bytecode/
 │   ├── include/bytecode/
 │   │   ├── Bytecode.hpp
@@ -121,9 +152,6 @@ lucid/
 │   │   ├── StaticData.hpp
 │   │   ├── HostSymbolTable.hpp
 │   │   ├── Manifest.hpp
-│   │   ├── TypeDescriptor.hpp
-│   │   ├── Opcode.hpp
-│   │   ├── RuntimeOp.hpp
 │   │   ├── Serialize.hpp
 │   │   └── compile/
 │   │       └── Compiler.hpp
@@ -133,10 +161,8 @@ lucid/
 │       ├── FunctionProto.cpp
 │       ├── HostSymbolTable.cpp
 │       ├── Manifest.cpp
-│       ├── Opcode.cpp
 │       ├── Serialize.cpp
 │       ├── StaticData.cpp
-│       ├── TypeDescriptor.cpp
 │       ├── compile/
 │       │   ├── ArtifactBuildState.hpp
 │       │   ├── BakeConstant.hpp
@@ -165,14 +191,19 @@ lucid/
 │           ├── EmitDrop.hpp
 │           ├── EmitDrop.cpp
 │           ├── OwnedValue.hpp
-│           ├── OwnedValue.cpp
-│           ├── ResourcePlan.hpp
-│           └── ResourcePlan.cpp
+│           └── OwnedValue.cpp
 │
-├── interp/ (not implemented)
+├── interp/ (in working)
 │   ├── include/interp/
-│   │   └── Interpreter.hpp
-│   └── src/interp/
+│   │   ├── ExecutionResult.hpp
+│   │   ├── Frame.hpp
+│   │   ├── FunctionRef.hpp
+│   │   ├── Interpreter.hpp
+│   │   ├── InterpreterConfig.hpp
+│   │   ├── LoadedProgram.hpp
+│   │   ├── Loader.hpp
+│   │   └── TableObject.hpp
+│   └── src/interp/ (not implemented,  this is a draft)
 │       ├── Interpreter.cpp
 │       ├── Frame.hpp / .cpp
 │       ├── Value.hpp / .cpp
@@ -206,7 +237,7 @@ lucid/
 │       ├── Signature.cpp
 │       └── ...
 │
-├── cli/
+├── cli/ (deprecated - in refactoring)
 │   └── src/cli/
 │       ├── CLIContext.hpp
 │       ├── CLIOptions.hpp
