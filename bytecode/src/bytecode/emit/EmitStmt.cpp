@@ -65,161 +65,6 @@ LoopContext* findLoop(CompilerContext& ctx, InternedString label) {
     return nullptr;
 }
 
-// ─── Array and table for-loops ─────────────────────────────────────────────
-//
-// Four iterable shapes:
-//   1. Dynamic array, one binding:     for x in arr
-//   2. Dynamic array, two bindings:    for i, x in arr
-//   3. Table / FIND view, one binding: for r in T
-//   4. Column view, one binding:       for v in T.col
-//
-// Shape 4 requires a column-view runtime representation, which is
-// not yet designed. It asserts.
-//
-// All shapes need a counter slot. The lowering for shapes 1–3:
-//
-//   counter = 0
-//   count   = <the iterable's length>
-//   loop:
-//       if counter >= count: break
-//       <bind the element/row> = <the container's element at counter>
-//       <body>
-//   step:
-//       counter += 1
-//       jump loop
-//
-// The counter is a local in the loop's scope; the body is a nested
-// block. break/continue use the standard loop context.
-
-/// Emit the count of an iterable and leave it on the stack.
-/// For an array, this is Ext_ArrayLength (dynamic) or a constant
-/// (fixed). For a table or FIND view, this is Ext_TableCount with
-/// the table's index.
-void emitIterableCount(ExprAST* iterable, CompilerContext& ctx) {
-    const TypeDescriptor type =
-        translateType(iterable->resolvedType, ctx.compiler().pool());
-
-    if (type.isArray()) {
-        if (type.arrayKind == ArrayKind::Fixed) {
-            // Compile-time constant.
-            Constant c;
-            c.kind = Constant::Kind::Int;
-            c.type = type;
-            c.value = static_cast<int64_t>(type.fixedSize);
-            const uint32_t idx = ctx.pool().add(std::move(c));
-            ctx.emitOpcode(Opcode::LoadConst);
-            ctx.emitU32(idx);
-            return;
-        }
-        // Dynamic array: runtime length.
-        emitExpr(iterable, ctx);
-        ctx.emitOpcode(Opcode::Ext_ArrayLength);
-        return;
-    }
-
-    if (type.isNamed() && !type.isHostType) {
-        // A table reference. The iterable is `T` (an identifier);
-        // the table's index is a compile-time operand of
-        // Ext_TableCount.
-        AST_ASSERT_MSG(iterable->isa<IdentifierExprAST>(),
-            "emitIterableCount: a table iterable is not an "
-            "identifier — Sema should have rejected this form");
-        const auto* id = iterable->as<IdentifierExprAST>();
-        AST_ASSERT_MSG(id->resolvedDecl != nullptr
-                    && id->resolvedDecl->isa<TableDeclAST>(),
-            "emitIterableCount: the table iterable did not resolve "
-            "to a table — Sema should have resolved it");
-        const auto* table = id->resolvedDecl->as<TableDeclAST>();
-        const auto tableIdx =
-            ctx.compiler().tableIndexOf(table->mangledName);
-        AST_ASSERT_MSG(tableIdx.has_value(),
-            "emitIterableCount: the table has no artifact index");
-        ctx.emitOpcode(Opcode::Ext_TableCount);
-        ctx.emitU32(*tableIdx);
-        return;
-    }
-
-    AST_ASSERT_MSG(false,
-        "emitIterableCount: the iterable is neither an array nor a "
-        "table — the emitter does not yet handle this shape");
-}
-
-/// Emit the k-th element or row of an iterable, given the counter
-/// value on the stack. Consumes the counter, pushes the element.
-///
-///   - Array: LoadIndex (consumes array and index, pushes element).
-///     The array is re-emitted each iteration; for a value-typed
-///     array that's a copy — acceptable for now.
-///   - Table: LoadRow (consumes the index, pushes the row ref).
-void emitIterableElement(ExprAST* iterable, CompilerContext& ctx) {
-    const TypeDescriptor type =
-        translateType(iterable->resolvedType, ctx.compiler().pool());
-
-    if (type.isArray()) {
-        // Re-emit the array. A better lowering would keep the array
-        // in a slot, but the compiler currently has no way to
-        // "spill" a value to a slot without a store; re-emitting is
-        // the simplest correct form.
-        emitExpr(iterable, ctx);
-        // The counter is on the stack; emit the array above it. The
-        // order matters: LoadIndex consumes (array, index) with the
-        // index below the array. Wait — check the interpreter's
-        // order.
-        //
-        // From EmitPlace.cpp's index path:
-        //     emitExpr(ix->target, ctx);   // array
-        //     emitExpr(ix->index, ctx);    // index
-        //     LoadIndex
-        // So the order is array then index, with the index on top.
-        //
-        // Our current stack: [counter]. We need [array, counter].
-        // That means the array must be *below* the counter, which
-        // we cannot achieve without a rotation. Instead, emit the
-        // array first, then the counter:
-        //
-        // This helper is called with the counter already on the
-        // stack (pushed by the caller). The correct sequence is:
-        //   the caller pushes nothing; this helper pushes both the
-        //   array and the index.
-        //
-        // Change: the caller passes the counter in a slot, and this
-        // helper reads the slot. Or the caller emits the array and
-        // the counter in the right order.
-        //
-        // See the corrected design in emitForArrayShape below.
-        AST_ASSERT_MSG(false,
-            "emitIterableElement: this helper is replaced by the "
-            "inline lowering in emitForArrayShape — see EmitStmt.cpp");
-        return;
-    }
-
-    if (type.isNamed() && !type.isHostType) {
-        // Table: LoadRow consumes the index, pushes the row ref.
-        AST_ASSERT_MSG(iterable->isa<IdentifierExprAST>(),
-            "emitIterableElement: a table iterable is not an "
-            "identifier");
-        const auto* id = iterable->as<IdentifierExprAST>();
-        AST_ASSERT_MSG(id->resolvedDecl != nullptr
-                    && id->resolvedDecl->isa<TableDeclAST>(),
-            "emitIterableElement: the table iterable did not resolve "
-            "to a table");
-        const auto* table = id->resolvedDecl->as<TableDeclAST>();
-        const auto tableIdx =
-            ctx.compiler().tableIndexOf(table->mangledName);
-        AST_ASSERT_MSG(tableIdx.has_value(),
-            "emitIterableElement: the table has no artifact index");
-        // Stack: [counter]
-        ctx.emitOpcode(Opcode::LoadRow);
-        ctx.emitU32(*tableIdx);
-        // Stack: [row_ref]
-        return;
-    }
-
-    AST_ASSERT_MSG(false,
-        "emitIterableElement: the iterable is neither an array nor a "
-        "table");
-}
-
 /// True if the assignment operator is a compound operator (any op
 /// other than plain `=`). The caller dispatches on this to choose
 /// between the plain and compound lowerings.
@@ -962,24 +807,27 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
 
     // ─── Non-range iterables ───────────────────────────────────────────
     //
-    // The four shapes:
+    // The shapes handled here:
     //
-    //   1. Dynamic array, one binding:     for x in arr
-    //   2. Dynamic array, two bindings:    for i, x in arr
-    //   3. Fixed array, one binding:       for x in arr
-    //   4. Fixed array, two bindings:      for i, x in arr
-    //   5. Table, one binding:             for r in T
-    //   6. FIND view, one binding:         for r in T.FIND(pred)
-    //   7. Column view, one binding:       for v in T.col
+    //   Array, one binding:     for x: T in arr
+    //   Array, two bindings:    for i: uint, x: T in arr
+    //   Table, one binding:     for r: &T in T
     //
-    // Shapes 1–6 are handled here. Shape 7 (column view) needs a
-    // column-view runtime representation that doesn't exist yet; it
-    // asserts at the bottom.
+    // Not yet handled:
     //
-    // All shapes share a structure:
+    //   Column view:            for v: T in T.col
+    //
+    // A column view needs a runtime stack representation that the
+    // current opcode set does not provide. The block below asserts
+    // when it detects a column-view iterable, before any code is
+    // emitted, so the failure is clean.
+    //
+    // ─── Common lowering ───────────────────────────────────────────────
+    //
+    // Every shape shares a structure:
     //
     //   counter = 0                       ; slot in the loop's scope
-    //   count   = <iterable's count>      ; value on the stack
+    //   count   = <iterable's count>      ; slot in the loop's scope
     //   loop:
     //       if counter >= count: jump end
     //       <bind> = <container element at counter>
@@ -989,16 +837,28 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
     //       jump loop
     //   end:
     //
-    // The counter is a slot allocated inside a scope that wraps the
-    // loop. `break`/`continue` use the standard loop context, and
-    // `continue` targets `step`.
+    // The counter and count slots live in a scope that wraps the
+    // loop. The body's bindings live in a nested scope pushed just
+    // before the binding stores. `break` and `continue` use the
+    // standard loop context; `continue` targets the `step` offset.
     //
-    // The count is emitted once, before the loop; it stays in a slot
-    // for the duration.
+    // The count is emitted once, before the loop, and read from its
+    // slot on each iteration. The iterable itself is re-emitted per
+    // iteration for the element load — acceptable for the grammar's
+    // identifier-form iterables, which the emitter can cheaply
+    // reload. A future optimization could spill the array into a
+    // hidden slot to avoid the per-iteration copy for value-typed
+    // arrays.
     //
-    // The iterable's element extraction depends on the shape.
-    // Arrays use LoadIndex (consuming array + index); tables use
-    // LoadRow (consuming the index).
+    // ─── Element extraction ────────────────────────────────────────────
+    //
+    // Arrays: LoadIndex, consuming (array, index) with the index on
+    //   top. The array is reloaded before each load; the counter slot
+    //   provides the index.
+    //
+    // Tables: LoadRow, consuming (index). The table's artifact index
+    //   is a compile-time operand of the opcode. The result is a row
+    //   reference (a &T).
 
     const TypeDescriptor iterableType =
         translateType(stmt->iterable->resolvedType,
@@ -1008,24 +868,44 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
     const bool isTable = iterableType.isNamed()
                          && !iterableType.isHostType;
 
-    AST_ASSERT_MSG(isArray || isTable,
-        "emitForStmt: the iterable is neither an array nor a table — "
-        "the emitter does not yet handle column views or any other "
-        "shape");
+    // A column view is a FieldAccessExprAST with isColumnView set.
+    // Its resolved type is the column's element type — the type of
+    // each cell, not a distinct "column view" type. The shape is
+    // detected from the AST flag, not from the type.
+    const bool isColumnView =
+        stmt->iterable->isa<FieldAccessExprAST>() &&
+        stmt->iterable->as<FieldAccessExprAST>()->isColumnView;
+
+    AST_ASSERT_MSG(isArray || isTable || isColumnView,
+        "emitForStmt: the iterable is neither an array, a table, nor "
+        "a column view — the emitter does not handle this shape");
+
+    // A column view is always iterated with a single binding (the
+    // cell value). It has no index-and-element form: the row index
+    // is available via `for r: &T in T` with a cell access if
+    // needed.
+    if (isColumnView) {
+        AST_ASSERT_MSG(stmt->firstVar != nullptr,
+            "emitForStmt: a column-view loop has no binding");
+        AST_ASSERT_MSG(stmt->secondVar == nullptr,
+            "emitForStmt: a column-view loop has two bindings — the "
+            "grammar allows only one for a column view");
+    }
 
     // ─── Binding shape check ───────────────────────────────────────────
     //
-    // Arrays accept one or two bindings. Tables accept exactly one
-    // (the row reference).
+    // Arrays accept one or two bindings. Tables and column views
+    // accept exactly one.
     if (isArray) {
         AST_ASSERT_MSG(stmt->firstVar != nullptr,
             "emitForStmt: an array loop has no binding");
     } else {
+        // Table or column view: exactly one binding.
         AST_ASSERT_MSG(stmt->firstVar != nullptr,
-            "emitForStmt: a table loop has no binding");
+            "emitForStmt: a table or column-view loop has no binding");
         AST_ASSERT_MSG(stmt->secondVar == nullptr,
-            "emitForStmt: a table loop has two bindings — the "
-            "grammar allows only one for a table");
+            "emitForStmt: a table or column-view loop has two "
+            "bindings — the grammar allows only one");
     }
 
     // ─── Loop scope ────────────────────────────────────────────────────
@@ -1090,7 +970,7 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
             emitExpr(stmt->iterable, ctx);
             ctx.emitOpcode(Opcode::Ext_ArrayLength);
         }
-    } else {
+    } else if (isTable) {
         // Table: the count is a compile-time operand of
         // Ext_TableCount.
         AST_ASSERT_MSG(stmt->iterable->isa<IdentifierExprAST>(),
@@ -1107,6 +987,20 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
         AST_ASSERT_MSG(tableIdx.has_value(),
             "emitForStmt: the table has no artifact index — the "
             "compiler's pass A did not register it");
+        ctx.emitOpcode(Opcode::Ext_TableCount);
+        ctx.emitU32(*tableIdx);
+    } else {
+        // Column view: the count is the same as the table's row
+        // count, since a column view iterates every row's cell.
+        // columnViewTable resolves the receiver in either the bare
+        // (`T.col`) or the module-qualified (`mod.T.col`) form.
+        const auto* colView = stmt->iterable->as<FieldAccessExprAST>();
+        const auto* table = columnViewTable(colView);
+        const auto tableIdx =
+            ctx.compiler().tableIndexOf(table->mangledName);
+        AST_ASSERT_MSG(tableIdx.has_value(),
+            "emitForStmt: the column view's table has no artifact "
+            "index — the compiler's pass A did not register it");
         ctx.emitOpcode(Opcode::Ext_TableCount);
         ctx.emitU32(*tableIdx);
     }
@@ -1147,84 +1041,182 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
     // ─── Bind the loop variable(s) ─────────────────────────────────────
     //
     // The binding order depends on the shape:
-    //   - Array, one binding:    x = arr[counter]
-    //   - Array, two bindings:   i = counter; x = arr[counter]
-    //   - Table, one binding:    r = T[counter]
     //
-    // The iteration value (element or row) is loaded via LoadIndex or
-    // LoadRow. The counter is read from the counter slot.
+    //   Array, one binding (`for x: T in arr`):
+    //       firstVar = the element, secondVar = null.
+    //       Load the element via LoadIndex, store into firstVar's slot.
+    //
+    //   Array, two bindings (`for i: uint, x: T in arr`):
+    //       firstVar = the index, secondVar = the element.
+    //       Store the counter into firstVar's slot, then load the
+    //       element via LoadIndex and store into secondVar's slot.
+    //
+    //   Table, one binding (`for r: &T in T`):
+    //       firstVar = the row reference, secondVar = null.
+    //       Load the row via LoadRow, store into firstVar's slot.
+    //
+    // The slot's type descriptor comes from the binding's declared
+    // type (Sema resolved it). For the table case, the declared type
+    // is `&T` — translateType produces a RowRef descriptor directly,
+    // with no wrapper needed.
 
     if (isArray) {
-        // Emit the array; the counter; LoadIndex.
-        //
-        // The array is re-emitted each iteration. For a value-typed
-        // array this is a copy each iteration. That's acceptable for
-        // a first implementation; a future optimization could keep
-        // the array in a slot.
-        //
-        // Wait — for the LoadIndex order, the emitter convention is
-        // (array, index) with the index on top. So:
-        emitExpr(stmt->iterable, ctx);       // array
-        ctx.emitOpcode(Opcode::LoadLocal);   // index
-        ctx.emitU16(counterSlot);
-        ctx.emitOpcode(Opcode::LoadIndex);   // element
+        if (stmt->secondVar == nullptr) {
+            // ─── One binding: element only ─────────────────────────────
+            //
+            // The element is `arr[counter]`. Load the array, then the
+            // counter, then LoadIndex.
+            //
+            // The array is re-emitted each iteration. For an identifier
+            // iterable (the grammar's only array-iterable form), that's
+            // a `LoadLocal` — cheap. For a value-typed array, the load
+            // produces a copy; the copy is consumed by LoadIndex in the
+            // same iteration. A future optimization could spill the
+            // array into a hidden slot; correctness doesn't require it.
+            emitExpr(stmt->iterable, ctx);
+            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitU16(counterSlot);
+            ctx.emitOpcode(Opcode::LoadIndex);
 
-        // Allocate the element binding.
-        const TypeDescriptor elemType = *iterableType.component;
-        const uint16_t elemSlot =
-            ctx.slots().allocateLocal(stmt->firstVar->name, elemType);
-        ctx.emitOpcode(Opcode::StoreLocal);
-        ctx.emitU16(elemSlot);
+            AST_ASSERT_MSG(iterableType.component != nullptr,
+                "emitForStmt: an array type has no element type — "
+                "Sema should have resolved it");
+            const TypeDescriptor elemType = *iterableType.component;
+            const uint16_t elemSlot =
+                ctx.slots().allocateLocal(stmt->firstVar->name, elemType);
+            ctx.emitOpcode(Opcode::StoreLocal);
+            ctx.emitU16(elemSlot);
+        } else {
+            // ─── Two bindings: index and element ──────────────────────
+            //
+            // Per the grammar, `for i: uint, x: T in arr` has
+            // firstVar = i (index), secondVar = x (element).
+            //
+            // First, bind the index: store the counter into firstVar's
+            // slot. The counter is a uint32; the binding's declared
+            // type should be a uint type. If Sema allowed a different
+            // integer type for the index, the slot's descriptor would
+            // still be the declared type — the stored value is the
+            // counter's uint32, reinterpreted per the slot's type.
+            //
+            // (Sema's grammar restricts the index binding to `uint`;
+            // translateType on the declared type produces that.)
+            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitU16(counterSlot);
+            AST_ASSERT_MSG(stmt->firstVar->type != nullptr,
+                "emitForStmt: the index binding has no declared type "
+                "— Sema should have resolved it");
+            const TypeDescriptor indexType =
+                translateType(stmt->firstVar->type, ctx.compiler().pool());
+            const uint16_t indexSlot =
+                ctx.slots().allocateLocal(stmt->firstVar->name, indexType);
+            ctx.emitOpcode(Opcode::StoreLocal);
+            ctx.emitU16(indexSlot);
 
-        // If there's a second binding, it's the index. The index is
-        // the counter — already in a slot. Bind a new slot for it
-        // and copy the counter's value.
-        if (stmt->secondVar != nullptr) {
-            // Per the grammar, `for i, x in arr` has i = index, x =
-            // element. So firstVar = i, secondVar = x. Our current
-            // allocation used firstVar for the element; we should
-            // have used it for the index. Reorder below.
-            //
-            // Actually: the grammar's two-binding form is
-            // `for i: uint, x: T in arr` with i = index, x = element.
-            // So firstVar is the index, secondVar is the element.
-            //
-            // Fix the binding order: emit the index (counter) into
-            // firstVar's slot first, then the element into
-            // secondVar's slot.
-            //
-            // The code above allocated firstVar for the element.
-            // Rework: allocate firstVar's slot for the index, second
-            // for the element.
-            //
-            // See the corrected structure below.
-            AST_ASSERT_MSG(false,
-                "emitForStmt: two-binding array iteration is not yet "
-                "complete — the binding order fix is pending");
+            // Second, bind the element: `arr[counter]`, into secondVar.
+            emitExpr(stmt->iterable, ctx);
+            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitU16(counterSlot);
+            ctx.emitOpcode(Opcode::LoadIndex);
+
+            AST_ASSERT_MSG(iterableType.component != nullptr,
+                "emitForStmt: an array type has no element type — "
+                "Sema should have resolved it");
+            const TypeDescriptor elemType = *iterableType.component;
+            const uint16_t elemSlot =
+                ctx.slots().allocateLocal(stmt->secondVar->name, elemType);
+            ctx.emitOpcode(Opcode::StoreLocal);
+            ctx.emitU16(elemSlot);
         }
-    } else {
-        // Table: LoadRow consumes the index, pushes the row ref.
+    } else if (isTable) {
+        // ─── Table: one binding, the row reference ───────────────────
+        //
+        // The row is `T[counter]`. Load the counter, then LoadRow.
+        // LoadRow's operand is the table's artifact index — a
+        // compile-time constant on the opcode, not a stack value.
         ctx.emitOpcode(Opcode::LoadLocal);
         ctx.emitU16(counterSlot);
-        // The table's index is a compile-time operand of LoadRow;
-        // get it again from the AST.
+
         AST_ASSERT_MSG(stmt->iterable->isa<IdentifierExprAST>(),
-            "emitForStmt: a table iterable is not an identifier");
+            "emitForStmt: a table iterable is not an identifier — "
+            "Sema should have rejected this form");
         const auto* id = stmt->iterable->as<IdentifierExprAST>();
+        AST_ASSERT_MSG(id->resolvedDecl != nullptr
+                    && id->resolvedDecl->isa<TableDeclAST>(),
+            "emitForStmt: the table iterable did not resolve to a "
+            "table — Sema should have resolved it");
         const auto* table = id->resolvedDecl->as<TableDeclAST>();
         const auto tableIdx =
             ctx.compiler().tableIndexOf(table->mangledName);
+        AST_ASSERT_MSG(tableIdx.has_value(),
+            "emitForStmt: the table has no artifact index — the "
+            "compiler's pass A did not register it");
         ctx.emitOpcode(Opcode::LoadRow);
         ctx.emitU32(*tableIdx);
 
+        // The binding's declared type is `&T`. translateType produces
+        // the RowRef descriptor directly — no makeRowRef wrapper.
+        AST_ASSERT_MSG(stmt->firstVar->type != nullptr,
+            "emitForStmt: the row binding has no declared type — "
+            "Sema should have resolved it");
         const TypeDescriptor rowType =
-            TypeDescriptor::makeRowRef(
-                translateType(stmt->firstVar->type,
-                              ctx.compiler().pool()));
+            translateType(stmt->firstVar->type, ctx.compiler().pool());
+        AST_ASSERT_MSG(rowType.isRowRef(),
+            "emitForStmt: a table loop's binding type is not a row "
+            "reference — Sema should have rejected this form");
         const uint16_t rowSlot =
             ctx.slots().allocateLocal(stmt->firstVar->name, rowType);
         ctx.emitOpcode(Opcode::StoreLocal);
         ctx.emitU16(rowSlot);
+    } else {
+        // ─── Column view: one binding, the cell value ────────────────
+        //
+        // The cell is `T[counter].col`. The lowering reads the row
+        // reference for `counter`, then reads the cell through
+        // LoadField. Both opcodes use compile-time operands (the
+        // table's artifact index and the column's index), so no
+        // column-view value ever appears on the stack.
+        //
+        // The design decision for this batch: a column view is a
+        // compile-time identity. It has no runtime representation.
+        // The two uses the grammar allows — `for` iteration and
+        // `.TOARRAY()` — both consume the compile-time table and
+        // column indices directly.
+        const auto* colView = stmt->iterable->as<FieldAccessExprAST>();
+        const auto* table = columnViewTable(colView);
+        const auto tableIdx =
+            ctx.compiler().tableIndexOf(table->mangledName);
+        AST_ASSERT_MSG(tableIdx.has_value(),
+            "emitForStmt: the column view's table has no artifact "
+            "index — the compiler's pass A did not register it");
+
+        AST_ASSERT_MSG(colView->resolvedColumn != nullptr,
+            "emitForStmt: the column view has no resolvedColumn — "
+            "Sema should have resolved it");
+
+        // row = LoadRow <tableIndex>(counter)
+        ctx.emitOpcode(Opcode::LoadLocal);
+        ctx.emitU16(counterSlot);
+        ctx.emitOpcode(Opcode::LoadRow);
+        ctx.emitU32(*tableIdx);
+
+        // v = LoadField <colIndex>(row)
+        ctx.emitOpcode(Opcode::LoadField);
+        ctx.emitU16(static_cast<uint16_t>(
+            colView->resolvedColumn->columnIndex));
+
+        // Allocate the binding slot. The cell's type comes from the
+        // column's declared type.
+        AST_ASSERT_MSG(colView->resolvedColumn->type != nullptr,
+            "emitForStmt: the column view's column has no resolved "
+            "type — Sema should have resolved it");
+        const TypeDescriptor cellType =
+            translateType(colView->resolvedColumn->type,
+                          ctx.compiler().pool());
+        const uint16_t cellSlot =
+            ctx.slots().allocateLocal(stmt->firstVar->name, cellType);
+        ctx.emitOpcode(Opcode::StoreLocal);
+        ctx.emitU16(cellSlot);
     }
 
     // ─── Body ──────────────────────────────────────────────────────────

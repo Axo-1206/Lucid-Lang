@@ -221,7 +221,17 @@ enum class Opcode : uint16_t {
     Ext_TableByPrimary = 0x013F,  ///< u32 table index, u16 column index
 
     // ─── Aggregate — column views ───────────────────────────────────────
-    Ext_ColumnToArray  = 0x0140,  ///< column view on stack
+    //
+    // Ext_ColumnToArray builds a fresh dynamic array from a column's
+    // values. Operands: the table's artifact index (u32) and the
+    // column's index (u16). No stack inputs; produces one array.
+    //
+    // A column view itself is a compile-time identity — the emitter
+    // never produces a column-view value on the stack. The two uses
+    // the grammar allows (`for` iteration and `.TOARRAY()`) consume
+    // the table and column indices directly. See EmitStmt.cpp's
+    // column-view loop and EmitExpr.cpp's TOARRAY lowering.
+    Ext_ColumnToArray  = 0x0140,  ///< u32 table index, u16 column index → array
 
     // ─── Aggregate — array length ───────────────────────────────────────
     //

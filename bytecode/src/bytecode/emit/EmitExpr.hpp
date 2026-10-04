@@ -37,6 +37,14 @@
  * pre-pass; emitLambdaExpr emits LoadFunction for that lowered
  * function.
  *
+ * ─── Design: column views are compile-time identities ─────────────────────
+ * A column view (`T.col`) has no runtime representation. Its two uses
+ * — as a `for` iterable and as a `TOARRAY()` receiver — both consume
+ * the table's artifact index and the column's index directly. The
+ * `for` loop emits a LoadRow + LoadField per iteration; `TOARRAY`
+ * emits a single Ext_ColumnToArray with both operands. No column-view
+ * value ever appears on the stack.
+ *
  * ─── Design: ownership of produced values ─────────────────────────────────
  * Every expression emitter leaves one value on the value stack.
  * CompilerContext::emitOpcode auto-pushes one BitCopy ownership entry
@@ -71,6 +79,24 @@ namespace lucid::bytecode::compile {
 /// Preconditions (asserted): expr is non-null and has a resolved type
 /// (Sema ran to completion on its module).
 void emitExpr(ExprAST* expr, CompilerContext& ctx);
+
+// ─── Column-view receiver resolution ────────────────────────────────────────
+
+/// @brief The TableDeclAST a column view is over.
+///
+/// A column view (`T.col` or `mod.T.col`) has a receiver that
+/// resolves to a table declaration. The receiver is either an
+/// IdentifierExprAST (bare) or a FieldAccessExprAST with
+/// isModuleAccess set (qualified). This helper extracts the table
+/// declaration from either shape.
+///
+/// Precondition (asserted): `colView` is a column view
+/// (isColumnView is true).
+///
+/// A null return would mean Sema produced a column view whose
+/// receiver does not resolve to a table; the assert fires before
+/// the return.
+const TableDeclAST* columnViewTable(const FieldAccessExprAST* colView);
 
 // ─── Per-form emitters ──────────────────────────────────────────────────────
 //

@@ -330,7 +330,17 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
     t[0x3F] = {Opcode::Ext_TableByPrimary, OperandShape::U32_U16, "TableByPrimary",  1, 1};
 
     // ─── Column view ───────────────────────────────────────────────────
-    t[0x40] = {Opcode::Ext_ColumnToArray, OperandShape::None, "ColumnToArray", 1, 1};
+    //
+    // Ext_ColumnToArray takes a table's artifact index (u32) and a
+    // column index (u16) as operands, and produces a fresh dynamic
+    // array of the column's values. No stack inputs — the operands
+    // identify the column at compile time.
+    //
+    // The interpreter iterates the table's rows, reads each row's
+    // cell through the column, and appends it to a new array. The
+    // array's element type is the column's type, which the
+    // interpreter knows from the table's schema.
+    t[0x40] = {Opcode::Ext_ColumnToArray, OperandShape::U32_U16, "ColumnToArray", 0, 1};
 
     // ─── Array length ──────────────────────────────────────────────────
     t[0x43] = {Opcode::Ext_ArrayLength, OperandShape::None, "ArrayLength", 1, 1};

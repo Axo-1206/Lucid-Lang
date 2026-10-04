@@ -233,11 +233,11 @@ void emitTableMethodCall(CallExprAST* call,
 
 /// Emit a call to a column-view method: Person.age.TOARRAY().
 ///
-/// The column view is a compile-time identity: the receiver resolves
-/// to a table, and the field names a column. The opcode carries no
-/// operand — the column view is on the stack as a value (see the
-/// table-method-call receiver discussion; for a column view the
-/// receiver is pushed via the normal expression emitter).
+/// A column view is a compile-time identity. It has no runtime
+/// representation; the emitter reads the table's artifact index and
+/// the column's index directly and emits Ext_ColumnToArray with both
+/// operands. The opcode builds a fresh dynamic array of the column's
+/// values.
 ///
 /// Only TOARRAY is defined for a column view.
 void emitColumnViewMethodCall(CallExprAST* call,
@@ -254,21 +254,27 @@ void emitColumnViewMethodCall(CallExprAST* call,
         "emitColumnViewMethodCall: unhandled column-view method — "
         "only TOARRAY is defined");
 
-    // The column view is a compile-time identity. Emit a Nop to
-    // leave the value stack as the caller expects, or a proper
-    // column-view value. For now, the simplest correct lowering:
-    // the column view is produced by the receiver expression, and
-    // TOARRAY consumes it and pushes an array.
-    //
-    // See the note in EmitExpr.hpp on column views: a column view
-    // has no runtime representation in the current opcode set; the
-    // receiver must be built. This is a known gap; the emitter
-    // emits a placeholder that will be completed once the
-    // column-view runtime representation is designed.
-    AST_ASSERT_MSG(false,
-        "emitColumnViewMethodCall: column-view runtime "
-        "representation is not yet designed — TOARRAY cannot be "
-        "emitted until the column view has a stack representation");
+    // The column view's receiver is the table. It is either a bare
+    // identifier (`Person.age`) or a module-qualified access
+    // (`entities.Person.age`); columnViewTable resolves either.
+    const auto* table = columnViewTable(fa);
+
+    const auto tableIdx =
+        ctx.compiler().tableIndexOf(table->mangledName);
+    AST_ASSERT_MSG(tableIdx.has_value(),
+        "emitColumnViewMethodCall: the column view's table has no "
+        "artifact index — the compiler's pass A did not register it");
+
+    // Ext_ColumnToArray <tableIndex> <colIndex> produces a fresh
+    // dynamic array of the column's values. No stack inputs; the
+    // auto-bookkeeping pushes one BitCopy entry for the array.
+    ctx.emitOpcode(Opcode::Ext_ColumnToArray);
+    ctx.emitU32(*tableIdx);
+    ctx.emitU16(static_cast<uint16_t>(
+        fa->resolvedColumn->columnIndex));
+
+    // The resulting array owns its heap buffer. Upgrade the entry.
+    ctx.owned().markTopAsOwned();
 }
 
 // ─── Array method dispatch ─────────────────────────────────────────────────
@@ -383,6 +389,52 @@ void emitArrayMethodCall(CallExprAST* call,
 }
 
 } // namespace
+
+// ─── Column-view receiver resolution ───────────────────────────────────────
+
+const TableDeclAST* columnViewTable(const FieldAccessExprAST* colView) {
+    AST_ASSERT_MSG(colView != nullptr,
+        "columnViewTable: null column view");
+    AST_ASSERT_MSG(colView->isColumnView,
+        "columnViewTable: the expression is not a column view — "
+        "the caller's dispatch is out of sync");
+
+    const ExprAST* obj = colView->object;
+    AST_ASSERT_MSG(obj != nullptr,
+        "columnViewTable: the column view has no object — the "
+        "parser should have produced one");
+
+    // Bare form: `Person.age`.
+    if (obj->isa<IdentifierExprAST>()) {
+        const auto* id = obj->as<IdentifierExprAST>();
+        AST_ASSERT_MSG(id->resolvedDecl != nullptr
+                    && id->resolvedDecl->isa<TableDeclAST>(),
+            "columnViewTable: a bare column view's receiver did "
+            "not resolve to a table — Sema should have resolved it");
+        return id->resolvedDecl->as<TableDeclAST>();
+    }
+
+    // Qualified form: `mod.Person.age`.
+    if (obj->isa<FieldAccessExprAST>()) {
+        const auto* fa = obj->as<FieldAccessExprAST>();
+        AST_ASSERT_MSG(fa->isModuleAccess,
+            "columnViewTable: a qualified column view's receiver "
+            "is a field access but isModuleAccess is not set — "
+            "Sema should have classified it as a module access");
+        AST_ASSERT_MSG(fa->resolvedDecl != nullptr
+                    && fa->resolvedDecl->isa<TableDeclAST>(),
+            "columnViewTable: a qualified column view's receiver "
+            "did not resolve to a table — Sema should have resolved "
+            "it");
+        return fa->resolvedDecl->as<TableDeclAST>();
+    }
+
+    AST_ASSERT_MSG(false,
+        "columnViewTable: a column view's receiver is neither an "
+        "identifier nor a module access — the emitter is out of "
+        "sync with the parser's receiver forms");
+    return nullptr;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // emitExpr — the dispatcher
@@ -639,6 +691,14 @@ void emitArrayLiteralExpr(ArrayLiteralExprAST* e, CompilerContext& ctx) {
 // The dispatcher below handles each.
 
 void emitFieldAccessExpr(FieldAccessExprAST* e, CompilerContext& ctx) {
+    if (e->isColumnView) {
+        AST_ASSERT_MSG(false,
+            "emitFieldAccessExpr: a column view reached the emitter in "
+            "expression position — a column view is only valid as a "
+            "for-loop iterable or as a TOARRAY receiver. Sema should "
+            "have rejected every other use.");
+    }
+
     // ─── Module member access ──────────────────────────────────────────
     if (e->isModuleAccess) {
         AST_ASSERT_MSG(e->resolvedDecl != nullptr,
