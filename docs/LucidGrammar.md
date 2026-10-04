@@ -10,7 +10,7 @@ Lucid is a data-oriented scripting language for embedding in a game engine. It h
 
 1. **Tables** — named, global, ordered collections of rows. A table has a fixed shape (columns) and either a fixed or growing set of rows. Tables are the only aggregate type; there is no separate struct or enum.
 2. **Functions** — named procedures. A function takes one parameter group and produces zero or one result. No currying, no nesting, no closures.
-3. **Variables** — named bindings (`let`/`const`) holding a primitive value or a table/row reference.
+3. **Variables** — named bindings (`let`/`const`) holding a primitive value, a table/row reference, or a function value.
 
 Everything else — operators, host calls, event callbacks, the IDE sheet view — is either a built-in operation on tables, or a compiler directive expressed as an attribute on one of the three declaration forms.
 
@@ -530,7 +530,7 @@ FN incrementAge(const p: &Person) -> void {
 
 - `'->' type` is mandatory on every function declaration, matching `function_type` (§4.2.5), which already required it. There is no implicit return type and no way to omit the arrow.
 - A function with no meaningful result writes `-> void` explicitly. This is the only function-declaration form the grammar has; nothing is inferred.
-0- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `void`. A function never returns a bare table. A function never returns a function type: a function value is a compile-time-known code address (§5.0), not something a function can construct and hand back, and there are no closures (§4.2.5).
+- A function's declared return type is a primitive (possibly nilable), a row reference, an array, a host type, or `void`. A function never returns a bare table. A function never returns a function type: a function value is a compile-time-known code address (§5.0), not something a function can construct and hand back, and there are no closures (§4.2.5).
 - `void` is valid **only** in this position. It is a semantic error to declare a `let`/`const`, a parameter, a column, or an array element of type `void` — a `void` value carries no information and supports no operations, so there is never a reason to bind one. A function returning `void` is called as a bare statement (§12.6), never assigned.
 
 #### 4.2.2 Parameters and `const`
@@ -830,7 +830,7 @@ There is no `if cond ?? a else b` ternary form — that reused `??` for an unrel
 ### 5.5 Arrays
 
 - `[T]` — dynamic; grows and shrinks via `.ADD`/`.REMOVE`, and is emptied by `.CLEAR()` (§8).
-- `[N, T]` — fixed-size, `N` a compile-time constant; supports indexing, `.COUNT()`, `.CONTAINS()`, `.SORT()`, and iteration, but not `.ADD`/`.REMOVE`/`.CLEAR`.
+- `[N, T]` — fixed-size, `N` a compile-time constant; supports indexing, `.LENGTH()`, `.CONTAINS()`, `.SORT(less)`, and iteration, but not `.ADD`/`.REMOVE`/`.CLEAR`.
 
 Array literals are first-class expressions: `[1, 2, 3]`. An empty `[]` requires a type context to infer the element type.
 
@@ -1172,7 +1172,7 @@ if (flag ?? false) { ... }           -- a `bool?` must be defaulted or narrowed 
 
 **Availability.** `ADD`, `REMOVE`, `CLEAR`, and `SHRINK` change a table's row set or storage, so they exist only on a growing table — one carrying none of `@fixed`, `@readonly`, `@packed` (§4.1.4). `VERSION`, `COUNT`, `AT`, `FIND`, and `by<Column>` are available on every table.
 
-**Method naming.** Built-in methods on a table, array, or column view are always spelled in ALLCAPS (`ADD`, `REMOVE`, `CLEAR`, `SHRINK`, `AT`, `COUNT`, `VERSION`, `FIND`, `SORT`, `CONTAINS`, `TOARRAY`), with no exceptions. This keeps them from colliding with the other names reachable after a table's dot: columns are lowercase or camelCase (`Person.count`) and fixed-table members are PascalCase (`Direction.North`), and identifiers are case-sensitive (§2.3). A column or fixed-table member whose name equals a built-in method name (for example a column named `COUNT`) is a semantic error. The one generated method name, `by<Column>` (§4.1.5), is built from the column's own name and follows its casing. Ordinary functions (`println`, `waitFrames`) stay lowercase camelCase.
+**Method naming.** Built-in methods on a table, array, or column view are always spelled in ALLCAPS (`ADD`, `REMOVE`, `CLEAR`, `SHRINK`, `AT`, `COUNT`, `LENGTH`, `VERSION`, `FIND`, `SORT`, `CONTAINS`, `TOARRAY`), with no exceptions. This keeps them from colliding with the other names reachable after a table's dot: columns are lowercase or camelCase (`Person.count`) and fixed-table members are PascalCase (`Direction.North`), and identifiers are case-sensitive (§2.3). A column or fixed-table member whose name equals a built-in method name (for example a column named `COUNT`) is a semantic error. The one generated method name, `by<Column>` (§4.1.5), is built from the column's own name and follows its casing. Ordinary functions (`println`, `waitFrames`) stay lowercase camelCase.
 
 **There is deliberately no table sort and no compaction.** Both would move rows between slots, and `&T` references name slots, so any reference held in a local variable, another table's cell, or an array element would silently point at a different row. Sorted order comes from an array of references (§8.3); memory comes back through reuse, `CLEAR`, and `SHRINK` (§4.1.1d). Views have no `SORT` either: `SORT` exists only on arrays (§8.3). To sort the rows a `FIND` view selects, copy its row references into an array and sort that.
 
@@ -1247,7 +1247,7 @@ for a: int in Person.age { total += a }
 
 or copy the column with `TOARRAY` and pass the array to a library function that takes an array.
 
-**A column view cannot be sorted.** `SORT` exists only on arrays (§8.3). Sorting a column in place would reorder that column's cells alone, tearing every row apart from its other columns, and a column view is not a value that could hold a sorted result (§5.6). To sort the column's values, copy them first (`let ages: [int] = Person.age.TOARRAY()`, then `ages.SORT()`), but the result is a sorted copy of the values only: the table is untouched, and each value no longer knows which row it came from. To order *rows* by a column, sort an array of row references with a comparator (§8.3).
+**A column view cannot be sorted.** `SORT` exists only on arrays (§8.3). Sorting a column in place would reorder that column's cells alone, tearing every row apart from its other columns, and a column view is not a value that could hold a sorted result (§5.6). To sort the column's values, copy them first (`let ages: [int] = Person.age.TOARRAY()`, then `ages.SORT((a, b) -> a < b)`), but the result is a sorted copy of the values only: the table is untouched, and each value no longer knows which row it came from. To order *rows* by a column, sort an array of row references with a comparator (§8.3).
 
 ### 7.5 `FIND` and views
 
@@ -1295,18 +1295,17 @@ A column whose type is `[T]` holds one array per row. The runtime stores the arr
 
 ## 8. Array operations
 
-| Operation         | Result | Available on                                             |
-| ----------------- | ------ | -------------------------------------------------------- |
-| `arr[i]`          | `T`    | `[T]`, `[N, T]`                                          |
-| `arr.ADD(x)`      | `void` | `[T]` only                                               |
-| `arr.REMOVE(i)`   | `void` | `[T]` only                                               |
-| `arr.COUNT()`     | `uint` | `[T]`, `[N, T]`                                          |
-| `arr.CLEAR()`     | `void` | `[T]` only                                               |
-| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan)                            |
-| `arr.SORT()`      | `void` | `[T]`, `[N, T]` (element type must have a natural order) |
-| `arr.SORT(less)`  | `void` | `[T]`, `[N, T]`                                          |
+| Operation         | Result | Available on                  |
+| ----------------- | ------ | ----------------------------- |
+| `arr[i]`          | `T`    | `[T]`, `[N, T]`               |
+| `arr.ADD(x)`      | `void` | `[T]` only                    |
+| `arr.REMOVE(i)`   | `void` | `[T]` only                    |
+| `arr.LENGTH()`    | `uint` | `[T]`, `[N, T]`               |
+| `arr.CLEAR()`     | `void` | `[T]` only                    |
+| `arr.CONTAINS(x)` | `bool` | `[T]`, `[N, T]` (linear scan) |
+| `arr.SORT(less)`  | `void` | `[T]`, `[N, T]`               |
 
-These reuse the table's own vocabulary (`ADD`/`REMOVE`/`COUNT`/`CLEAR`) rather than a second naming convention, so every collection in the language looks the same from the outside.
+These reuse the table's own vocabulary (`ADD`/`REMOVE`/`CLEAR`) rather than a second naming convention, so every collection in the language looks the same from the outside. The one deliberate difference is the size method: an array has a `LENGTH` (its element count), while a table has a `COUNT` (its live rows, which is not the same as its slot count, §7.1).
 
 ### 8.1 Worked example: reading, writing, adding, and mutating in a loop
 
@@ -1374,9 +1373,9 @@ So a bare `T` binding is correct for an array (matching its element type) but al
 
 **`arr.CLEAR()`** removes every element of a dynamic array `[T]` and returns `void`. The array keeps its allocated capacity, as `T.CLEAR()` does for a table; to release the memory, assign a fresh `[]`. It is not available on a fixed-size `[N, T]`, whose length cannot change.
 
-**`arr.SORT()`** and **`arr.SORT(less)`** reorder the elements in place and return `void`. Both are available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not on tables or views, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
+**`arr.SORT(less)`** reorders the elements in place and returns `void`. It is available on `[T]` and `[N, T]`, since sorting never changes the length. Sorting lives on arrays, not on tables or views, for the reason given in §8.1: an array's elements are copies, so nothing refers to a slot inside it and elements can move freely, whereas a table's rows are referenced by `&T` values and must not move (§7.1).
 
-`arr.SORT()` sorts ascending in the element type's natural order. It is available only when the element type is an integer type, a `float` type, `bool`, `char`, or `string`; any other element type is a semantic error that asks for a comparator. Numbers sort numerically (a `float` NaN sorts last), `false` sorts before `true`, `char` sorts by code point, and `string` sorts by its UTF-8 bytes, independent of locale.
+**There is no argument-less `SORT()`.** The comparator is always required. A natural order exists only for some element types (numbers, `char`, `string`) and not for others (`&T`, `bool`, arrays, function values, host handles), so a no-argument form would be legal on some arrays and a semantic error on others, and a program's meaning would depend on a rule the reader has to remember. With one form, every `SORT` call reads the same, states its ordering at the call site, and is valid for every element type. To sort numbers ascending, write the comparison out: `nums.SORT((a, b) -> a < b)`. Calling `SORT` with no argument is a semantic error that asks for a comparator.
 
 `arr.SORT(less)` takes a function `less: (T, T) -> bool` over the element type `T`, where `less(a, b)` is true when `a` must come before `b`. Any function value is accepted, a lambda or a named `FN` (§6.9):
 
