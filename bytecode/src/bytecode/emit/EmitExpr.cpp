@@ -771,12 +771,11 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
 
     // ─── Direct call to a top-level FN ─────────────────────────────────
     //
-    // KNOWN GAP: a host-bound function (FN x = host("...")) has no
-    // FunctionProto, so functionIndexOf returns nullopt for it and
-    // the assert below fires. The compiler registered the function's
-    // host symbol in pass A but discarded the returned index, so the
-    // call site cannot emit Ext_CallHost <symbol index>. Host-bound
-    // call sites are unimplemented; see the note in emitDeclArtifacts.
+    // The callee is either a Lucid-bodied function (registered in
+    // m_functionIndex) or a host-bound one (registered in
+    // m_hostSymbolIndex). The two cases emit different opcodes:
+    // Ext_Call for a Lucid-bodied function, Ext_CallHost for a
+    // host-bound one.
     if (e->callee->isa<IdentifierExprAST>()) {
         auto* id = e->callee->as<IdentifierExprAST>();
         AST_ASSERT_MSG(id->resolvedDecl != nullptr
@@ -793,13 +792,6 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
             emitExpr(arg, ctx);
         }
 
-        auto idx = ctx.compiler().functionIndexOf(fn);
-        AST_ASSERT_MSG(idx.has_value(),
-            "emitCallExpr: the called function was not registered — "
-            "the driver's two passes are out of sync");
-        ctx.emitOpcode(Opcode::Ext_Call);
-        ctx.emitU32(*idx);
-
         // The opcode's stack effect depends on the argument count and
         // the callee's return type. Sema resolved the CallExpr's type
         // to the callee's return type; a void return pushes nothing.
@@ -812,6 +804,23 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
         AST_ASSERT_MSG(pops >= 0,
             "emitCallExpr: negative pops — an int8_t overflow in the "
             "argument count");
+
+        if (fn->isHostBound) {
+            auto idx = ctx.compiler().hostSymbolIndexOf(fn);
+            AST_ASSERT_MSG(idx.has_value(),
+                "emitCallExpr: a host-bound function was not "
+                "registered — the driver's two passes are out of sync");
+            ctx.emitOpcode(Opcode::Ext_CallHost);
+            ctx.emitU32(*idx);
+        } else {
+            auto idx = ctx.compiler().functionIndexOf(fn);
+            AST_ASSERT_MSG(idx.has_value(),
+                "emitCallExpr: the called function was not "
+                "registered — the driver's two passes are out of sync");
+            ctx.emitOpcode(Opcode::Ext_Call);
+            ctx.emitU32(*idx);
+        }
+
         ctx.noteStackEffect(pops, pushes);
         return;
     }
@@ -820,7 +829,10 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
     if (e->callee->isa<FieldAccessExprAST>()) {
         auto* fa = e->callee->as<FieldAccessExprAST>();
 
-        // A module function: mod.fn(args).
+        // A module function: mod.fn(args). The target is either a
+        // Lucid-bodied function in the imported module, or a
+        // host-bound function that module declares. Same dispatch as
+        // the direct-identifier case above.
         if (fa->isModuleAccess) {
             AST_ASSERT_MSG(fa->resolvedDecl != nullptr
                         && fa->resolvedDecl->isa<FnDeclAST>(),
@@ -832,12 +844,38 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
                 emitExpr(arg, ctx);
             }
 
-            auto idx = ctx.compiler().functionIndexOf(fn);
-            AST_ASSERT_MSG(idx.has_value(),
-                "emitCallExpr: the called module function was not "
-                "registered — the driver's two passes are out of sync");
-            ctx.emitOpcode(Opcode::Ext_Call);
-            ctx.emitU32(*idx);
+            if (fn->isHostBound) {
+                auto idx = ctx.compiler().hostSymbolIndexOf(fn);
+                AST_ASSERT_MSG(idx.has_value(),
+                    "emitCallExpr: a host-bound module function was "
+                    "not registered — the driver's two passes are "
+                    "out of sync");
+                ctx.emitOpcode(Opcode::Ext_CallHost);
+                ctx.emitU32(*idx);
+            } else {
+                auto idx = ctx.compiler().functionIndexOf(fn);
+                AST_ASSERT_MSG(idx.has_value(),
+                    "emitCallExpr: the called module function was not "
+                    "registered — the driver's two passes are out of "
+                    "sync");
+                ctx.emitOpcode(Opcode::Ext_Call);
+                ctx.emitU32(*idx);
+            }
+
+            // The stack effect depends on the argument count and the
+            // return type. The module-qualified path was missing the
+            // noteStackEffect call entirely; add it here for both
+            // opcode variants.
+            const TypeDescriptor retType =
+                translateType(e->resolvedType, ctx.compiler().pool());
+            const bool returnsValue = !(retType.isPrimitive()
+                                        && retType.primitive == PrimitiveKind::Void);
+            const int8_t pushes = returnsValue ? 1 : 0;
+            const int8_t pops = static_cast<int8_t>(e->args.size());
+            AST_ASSERT_MSG(pops >= 0,
+                "emitCallExpr: negative pops — an int8_t overflow in "
+                "the argument count");
+            ctx.noteStackEffect(pops, pushes);
             return;
         }
 

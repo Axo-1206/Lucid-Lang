@@ -189,17 +189,29 @@ void emitDeclArtifacts(DeclAST* decl, ArtifactBuildState& state) {
             // single CallHost emitted by the call site, not a proto
             // of its own).
             //
-            // KNOWN GAP: the returned symbol index is discarded. A
-            // call site that names this function has no way to
-            // recover it, so emitCallExpr cannot emit
-            // Ext_CallHost <symbol index>. Host-bound call sites are
-            // therefore unimplemented. The fix is to record
-            // (fn -> symbol index) in a compiler-owned map, the way
-            // Lucid-bodied functions record (fn -> function index).
+            // The returned symbol index is recorded in the compiler's
+            // hostSymbolIndex map, keyed by the FnDeclAST*. A call
+            // site that names this function reaches the index through
+            // Compiler::hostSymbolIndexOf and emits
+            // Ext_CallHost <index>. See EmitExpr.cpp's emitCallExpr.
+            //
+            // HostSymbolTable::add deduplicates by (kind, name): two
+            // host-bound functions that reference the same host name
+            // share one entry, and both FnDeclAST* keys map to the
+            // same index. That is correct — a call site emits the
+            // same Ext_CallHost operand either way.
             HostSymbol sym;
             sym.kind = HostSymbol::Kind::Function;
             sym.name = state.pool.lookup(fn->hostName);
-            state.hostSymbols.add(std::move(sym));
+            const uint32_t symIndex =
+                state.hostSymbols.add(std::move(sym));
+
+            auto [it, inserted] = state.hostSymbolIndex.emplace(
+                fn, symIndex);
+            AST_ASSERT_MSG(inserted,
+                "emitDeclArtifacts: a host-bound function was "
+                "registered twice — the driver's pass A walked the "
+                "same declaration twice");
             return;
         }
 

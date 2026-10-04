@@ -61,6 +61,11 @@ struct ArtifactBuildState {
 
     /// (mangled name → index in StaticData::tables).
     std::unordered_map<InternedString, uint32_t>&   tableIndices;
+
+    /// (host-bound FnDeclAST → index in the HostSymbolTable).
+    /// Populated by pass A when a host-bound function is registered.
+    /// Read by pass B's emitCallExpr to emit Ext_CallHost.
+    std::unordered_map<const FnDeclAST*, uint32_t>& hostSymbolIndex;
 };
 
 } // namespace lucid::bytecode::compile

@@ -83,12 +83,26 @@ public:
     std::optional<uint32_t> tableIndexOf(
         InternedString mangledName) const;
 
+    /// The HostSymbolTable index of a host-bound function. Returns
+    /// nullopt if the function is not host-bound or was not
+    /// registered. A Lucid-bodied function has a FunctionProto index
+    /// (see functionIndexOf), not a host symbol index; the two maps
+    /// are disjoint by construction.
+    std::optional<uint32_t> hostSymbolIndexOf(
+        const FnDeclAST* fn) const;
+
 private:
     lucid::diag::DiagnosticEngine& m_diag;
     StringPool& m_pool;
 
     // Populated during compile()'s pass A; read during pass B.
+    //
+    // m_functionIndex and m_hostSymbolIndex are disjoint: a function
+    // is either Lucid-bodied (in m_functionIndex) or host-bound (in
+    // m_hostSymbolIndex), never both. A function that appears in
+    // neither map was not processed by pass A.
     std::unordered_map<const FnDeclAST*, uint32_t> m_functionIndex;
+    std::unordered_map<const FnDeclAST*, uint32_t> m_hostSymbolIndex;
     std::unordered_map<InternedString, uint32_t>   m_staticDataOffsets;
     std::unordered_map<InternedString, uint32_t>   m_tableIndices;
 };

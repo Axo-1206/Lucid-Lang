@@ -78,6 +78,7 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
         m_functionIndex,
         m_staticDataOffsets,
         m_tableIndices,
+        m_hostSymbolIndex,
     };
 
     // ─── Pass A — collect and bake ─────────────────────────────────────
@@ -217,6 +218,13 @@ std::optional<uint32_t> Compiler::tableIndexOf(
     InternedString mangledName) const {
     auto it = m_tableIndices.find(mangledName);
     if (it == m_tableIndices.end()) return std::nullopt;
+    return it->second;
+}
+
+std::optional<uint32_t> Compiler::hostSymbolIndexOf(
+    const FnDeclAST* fn) const {
+    auto it = m_hostSymbolIndex.find(fn);
+    if (it == m_hostSymbolIndex.end()) return std::nullopt;
     return it->second;
 }
 

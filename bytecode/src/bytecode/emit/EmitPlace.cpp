@@ -70,15 +70,16 @@
 #include "bytecode/compile/CompilerContext.hpp"
 #include "bytecode/compile/TypeTranslation.hpp"
 #include "bytecode/memory/EmitDrop.hpp"
-#include "bytecode/memory/ResourcePlan.hpp"
+
+#include "contract/ResourcePlan.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 
-namespace lucid::bytecode::compile {
+using namespace lucid::contract;
 
-using memory::ResourcePlan;
+namespace lucid::bytecode::compile {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // emitPlace — the operands a store needs
@@ -179,7 +180,7 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
         auto slot = ctx.slots().slotFor(decl->name);
         if (slot.has_value()) {
             const TypeDescriptor& type = ctx.slots().typeOf(*slot);
-            const memory::ResourcePlan plan = memory::planForType(type);
+            const ResourcePlan plan = planForType(type);
 
             if (plan.needsDropForStorage()) {
                 ctx.emitOpcode(Opcode::LoadLocal);
