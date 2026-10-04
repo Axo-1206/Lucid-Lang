@@ -7,6 +7,7 @@
 
 #include "bytecode/compile/Compiler.hpp"
 #include "bytecode/compile/CompilerContext.hpp"
+#include "bytecode/compile/EmitBinaryOps.hpp"
 #include "bytecode/compile/TypeTranslation.hpp"
 #include "bytecode/memory/DropSchedule.hpp"
 #include "bytecode/memory/EmitDrop.hpp"
@@ -62,6 +63,36 @@ LoopContext* findLoop(CompilerContext& ctx, InternedString label) {
         if (it->label == label) return &*it;
     }
     return nullptr;
+}
+
+/// True if the assignment operator is a compound operator (any op
+/// other than plain `=`). The caller dispatches on this to choose
+/// between the plain and compound lowerings.
+bool isCompoundAssign(AssignOp op) {
+    return op != AssignOp::Assign;
+}
+
+/// The primitive kind of the lvalue's type. The lvalue's resolved
+/// type is what Sema resolved for the assignment's target; for a
+/// compound assignment the target's type is the type the operator
+/// operates on.
+///
+/// Asserts if the lvalue's type is not a primitive. Sema should have
+/// rejected a compound assignment on a non-primitive target before
+/// the compiler ran (a string supports only `+=`, via Concat_Str; a
+/// fixed array or host handle supports none).
+PrimitiveKind compoundOperandKind(const ExprAST* lhs,
+                                  CompilerContext& ctx) {
+    AST_ASSERT_MSG(lhs->resolvedType != nullptr,
+        "compoundOperandKind: the lvalue has no resolved type — "
+        "Sema should have resolved it");
+    const TypeDescriptor type =
+        translateType(lhs->resolvedType, ctx.compiler().pool());
+    auto pk = primitiveOf(type);
+    AST_ASSERT_MSG(pk.has_value(),
+        "compoundOperandKind: the lvalue's type is not a primitive — "
+        "Sema should have rejected this compound assignment");
+    return *pk;
 }
 
 } // namespace
@@ -181,20 +212,148 @@ bool emitAssignStmt(AssignStmtAST* stmt, CompilerContext& ctx) {
     AST_ASSERT_MSG(stmt->lhs != nullptr && stmt->rhs != nullptr,
         "emitAssignStmt: an assignment is missing an operand");
 
-    if (stmt->op == AssignOp::Assign) {
+    if (!isCompoundAssign(stmt->op)) {
+        // Plain assignment: `lhs = rhs`. The place's operands, the
+        // RHS value, then the store.
         emitPlace(stmt->lhs, ctx);
         emitExpr(stmt->rhs, ctx);
         emitStoreIntoPlace(stmt->lhs, ctx);
         return false;
     }
 
-    // Compound assignment (`x op= y`) is not yet supported. The
-    // lowering needs the load-then-store sequence, which is a
-    // separate addition.
-    AST_ASSERT_MSG(false,
-        "emitAssignStmt: compound assignment is not yet supported — "
-        "the load-then-store lowering is a Phase 4 addition");
-    return false;
+    // ─── Compound assignment: `lhs op= rhs` ────────────────────────────
+    //
+    // Lowering: `lhs = lhs op rhs`, with the place's operands
+    // evaluated once. The shape depends on the lvalue kind.
+    //
+    // The ownership stack is kept in sync automatically by
+    // CompilerContext::emitOpcode. This function does not push or pop
+    // ownership entries; it just writes instructions, and the
+    // bookkeeping follows.
+
+    const PrimitiveKind operandKind = compoundOperandKind(stmt->lhs, ctx);
+    const Opcode op = compoundAssignOpcode(stmt->op, operandKind);
+
+    switch (stmt->lhs->kind) {
+
+    // ─── Local slot: `x op= y` ─────────────────────────────────────────
+    //
+    //   LoadLocal <x>          ; old value
+    //   <rhs>                  ; RHS
+    //   <op>                   ; new value
+    //   emitStoreIntoPlace(x)  ; drop old (for resource types), store new
+    //
+    // No place operands. emitStoreIntoPlace's local path handles the
+    // drop of the old value and the store.
+    case ASTKind::IdentifierExpr: {
+        auto* id = stmt->lhs->as<IdentifierExprAST>();
+        AST_ASSERT_MSG(id->resolvedDecl != nullptr,
+            "emitAssignStmt: an lvalue identifier has no resolvedDecl");
+
+        DeclAST* decl = id->resolvedDecl;
+
+        // The local path needs a slot. A top-level binding has no
+        // slot; its store goes through StoreStaticData and does not
+        // emit a drop-old-value (the interpreter handles it).
+        auto slot = ctx.slots().slotFor(decl->name);
+        if (slot.has_value()) {
+            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitU16(*slot);
+            // LoadLocal auto-pushed a BitCopy entry. The loaded old
+            // value is about to be consumed by the operator, so its
+            // ownership doesn't matter for this path; the operator's
+            // auto-pop discards it.
+            emitExpr(stmt->rhs, ctx);
+            ctx.emitOpcode(op);
+            emitStoreIntoPlace(stmt->lhs, ctx);
+            return false;
+        }
+
+        // Top-level binding: no drop-old-value emitted by the
+        // compiler; StoreStaticData replaces the old value and the
+        // interpreter drops it.
+        if (decl->isa<VarDeclAST>()) {
+            const auto offset =
+                ctx.compiler().staticDataOffsetOf(decl->mangledName);
+            AST_ASSERT_MSG(offset.has_value(),
+                "emitAssignStmt: a top-level binding has no "
+                "static-data offset — pass A did not register it");
+            ctx.emitOpcode(Opcode::LoadStaticData);
+            ctx.emitU32(*offset);
+            emitExpr(stmt->rhs, ctx);
+            ctx.emitOpcode(op);
+            emitStoreIntoPlace(stmt->lhs, ctx);
+            return false;
+        }
+
+        AST_ASSERT_MSG(false,
+            "emitAssignStmt: an lvalue identifier resolved to "
+            "something the emitter cannot store — Sema should have "
+            "rejected this assignment");
+        return false;
+    }
+
+    // ─── Field cell: `row.field op= y` ─────────────────────────────────
+    //
+    //   <row>                  ; place operand
+    //   Ext_Dup                ; duplicate the row ref
+    //   LoadField <col>        ; old cell value (consumes the dup)
+    //   <rhs>                  ; RHS
+    //   <op>                   ; new value
+    //   emitStoreIntoPlace     ; StoreField (consumes row ref + new value)
+    //
+    // The Ext_Dup keeps a second row ref for StoreField. LoadField
+    // consumes the first; StoreField consumes the second.
+    case ASTKind::FieldAccessExpr: {
+        auto* fa = stmt->lhs->as<FieldAccessExprAST>();
+        AST_ASSERT_MSG(fa->resolvedColumn != nullptr,
+            "emitAssignStmt: a field-access lvalue has no "
+            "resolvedColumn — Sema should have resolved it");
+
+        emitExpr(fa->object, ctx);         // push the row ref
+        ctx.emitOpcode(Opcode::Ext_Dup);   // duplicate it
+        ctx.emitOpcode(Opcode::LoadField); // consume the dup, push the cell
+        ctx.emitU16(static_cast<uint16_t>(fa->resolvedColumn->columnIndex));
+        emitExpr(stmt->rhs, ctx);          // push the RHS
+        ctx.emitOpcode(op);                // pop 2, push new value
+        emitStoreIntoPlace(stmt->lhs, ctx); // StoreField, auto-pops 2
+        return false;
+    }
+
+    // ─── Index: `arr[i] op= y` ─────────────────────────────────────────
+    //
+    //   <arr>                  ; place operand 1
+    //   Ext_Dup                ; duplicate the array
+    //   <idx>                  ; place operand 2
+    //   Ext_Dup                ; duplicate the index
+    //   LoadIndex              ; old element (consumes dup arr + dup idx)
+    //   <rhs>                  ; RHS
+    //   <op>                   ; new value
+    //   emitStoreIntoPlace     ; StoreIndex (consumes arr + idx + new value)
+    //
+    // The two Ext_Dups keep the originals for StoreIndex. LoadIndex
+    // consumes the duplicates.
+    case ASTKind::IndexExpr: {
+        auto* ix = stmt->lhs->as<IndexExprAST>();
+
+        emitExpr(ix->target, ctx);         // push the array
+        ctx.emitOpcode(Opcode::Ext_Dup);   // duplicate it
+        emitExpr(ix->index, ctx);          // push the index
+        ctx.emitOpcode(Opcode::Ext_Dup);   // duplicate it
+        ctx.emitOpcode(Opcode::LoadIndex); // consume dups, push element
+        emitExpr(stmt->rhs, ctx);          // push the RHS
+        ctx.emitOpcode(op);                // pop 2, push new value
+        emitStoreIntoPlace(stmt->lhs, ctx); // StoreIndex, auto-pops 3
+        return false;
+    }
+
+    default:
+        AST_ASSERT_MSG(false,
+            "emitAssignStmt: the lvalue is not an identifier, field "
+            "access, or index — Sema should have rejected the "
+            "assignment");
+        return false;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

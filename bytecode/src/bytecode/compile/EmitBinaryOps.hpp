@@ -90,6 +90,17 @@ std::optional<PrimitiveKind> primitiveOf(const contract::TypeDescriptor& t);
 /// expression before the compiler ran.
 contract::Opcode arithmeticOpcode(BinaryOp op, PrimitiveKind k);
 
+/// @brief Select the opcode for a compound assignment's operator.
+///
+/// `x op= y` lowers to `x = x op y`. The compound operator maps to
+/// one binary operator, and the binary operator plus the operand
+/// type selects an opcode. This function does both mappings.
+///
+/// Every AssignOp except plain `Assign` has a BinaryOp counterpart.
+/// `Assign` itself is not a compound operator; the caller handles it
+/// separately.
+contract::Opcode compoundAssignOpcode(AssignOp op, PrimitiveKind k);
+
 /// @brief Select the comparison contract::Opcode for (op, operand type).
 ///
 /// Handles Eq, Ne, Lt, Le, Gt, Ge. RowRef and Function comparisons are

@@ -32,6 +32,34 @@
  * control out, that path is dead code and the implicit return would
  * double-drop the function's parameters.
  *
+ * ─── Design: assignments are statements, not expressions ──────────────────
+ * The grammar's `assign_stmt` is a statement form; there is no
+ * `assign_expr`. An assignment is never nested inside another
+ * expression. The AST reflects this: `AssignStmtAST` is a statement,
+ * and there is no `AssignExprAST`.
+ *
+ * ─── Design: compound assignment ──────────────────────────────────────────
+ * `x op= y` lowers to `x = x op y` with the place's operands evaluated
+ * once. The lowering for each lvalue kind:
+ *
+ *   - Local slot:     LoadLocal <x>, <rhs>, <op>, then the store.
+ *   - Field cell:     <row>, Ext_Dup, LoadField <col>, <rhs>, <op>,
+ *                     then the store.
+ *   - Index:          <arr>, Ext_Dup, <idx>, Ext_Dup, LoadIndex,
+ *                     <rhs>, <op>, then the store.
+ *
+ * The Ext_Dups keep the place's operands alive for the store opcode,
+ * which consumes them after LoadField/LoadIndex has consumed their
+ * duplicates. The drop of the old value is handled by
+ * emitStoreIntoPlace, exactly as for a plain assignment: the local
+ * path drops the old slot's value; the field and index paths rely on
+ * the interpreter's StoreField/StoreIndex.
+ *
+ * The ownership stack is kept in sync automatically; the compound
+ * lowering does not push or pop ownership entries. See
+ * EmitPlace.hpp's "Ownership bookkeeping" section for the store-side
+ * mechanism.
+ *
  * ─── Design: scopes and drops ─────────────────────────────────────────────
  * emitBlock pushes a scope on the slot allocator when it enters, and
  * pops it on exit. The scope records the resource-typed slots the

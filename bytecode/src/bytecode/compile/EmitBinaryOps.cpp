@@ -103,6 +103,37 @@ Opcode arithmeticOpcode(BinaryOp op, PrimitiveKind k) {
     return Opcode::Nop;
 }
 
+Opcode compoundAssignOpcode(AssignOp op, PrimitiveKind k) {
+    switch (op) {
+        case AssignOp::AddAssign:
+            return arithmeticOpcode(BinaryOp::Add, k);
+        case AssignOp::SubAssign:
+            return arithmeticOpcode(BinaryOp::Sub, k);
+        case AssignOp::MulAssign:
+            return arithmeticOpcode(BinaryOp::Mul, k);
+        case AssignOp::DivAssign:
+            return arithmeticOpcode(BinaryOp::Div, k);
+        case AssignOp::ModAssign:
+            return arithmeticOpcode(BinaryOp::Mod, k);
+        case AssignOp::BitAndAssign:
+            return bitwiseOpcode(BinaryOp::BitAnd, k);
+        case AssignOp::BitOrAssign:
+            return bitwiseOpcode(BinaryOp::BitOr, k);
+        case AssignOp::BitXorAssign:
+            return bitwiseOpcode(BinaryOp::BitXor, k);
+        case AssignOp::ShlAssign:
+            return bitwiseOpcode(BinaryOp::Shl, k);
+        case AssignOp::ShrAssign:
+            return bitwiseOpcode(BinaryOp::Shr, k);
+        case AssignOp::Assign:
+            break;   // not a compound operator
+    }
+    AST_ASSERT_MSG(false,
+        "compoundAssignOpcode: Assign is not a compound operator — "
+        "the caller must handle plain assignment separately");
+    return Opcode::Nop;
+}
+
 Opcode comparisonOpcode(BinaryOp op, PrimitiveKind k) {
     const int w = widthIndex(k);
     // RowRef and Function comparisons are identity, not value.
