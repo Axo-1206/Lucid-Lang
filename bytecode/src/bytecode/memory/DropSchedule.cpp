@@ -4,12 +4,14 @@
 #include "DropSchedule.hpp"
 #include "EmitDrop.hpp"
 
-#include "bytecode/Opcode.hpp"
+#include "contract/Opcode.hpp"
 #include "bytecode/compile/CompilerContext.hpp"
 #include "bytecode/compile/Compiler.hpp"
 #include "bytecode/compile/SlotAllocator.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
+
+using namespace lucid::contract;
 
 namespace lucid::bytecode::memory {
 
@@ -45,11 +47,41 @@ void DropSchedule::emitScopeDrops(
 }
 
 void DropSchedule::emitReturnDrops(compile::CompilerContext& ctx) {
+    // Drop every open scope's resource-typed locals first, innermost
+    // scope first, reverse declaration order within each scope.
+    //
+    // A return may occur inside a nested block. Every block between
+    // the return and the function body must have its resource-typed
+    // locals dropped before the function leaves. Walking the open
+    // scopes' dropSlots covers exactly those blocks.
+    //
+    // A scope's dropSlots holds only the slots whose types require a
+    // drop — allocateLocal filters at allocation time — so every
+    // entry in the list produces an emitted drop. dropSlot still
+    // re-checks the plan; the redundancy is cheap and keeps dropSlot
+    // safe for any caller.
     const auto scopes = ctx.slots().openScopeDropSlots();
     for (const auto* slots : scopes) {
         for (auto it = slots->rbegin(); it != slots->rend(); ++it) {
             dropSlot(ctx, *it);
         }
+    }
+
+    // Drop the parameters after the scopes, reverse declaration
+    // order.
+    //
+    // Parameters are the outermost frame storage. A scope's locals
+    // may reference them (a local `let s: string = p` copies from
+    // the parameter `p`), so the locals must be dropped before the
+    // parameters they might share a resource with.
+    //
+    // Unlike a scope's dropSlots, paramSlots() holds every parameter
+    // slot regardless of type. dropSlot consults the plan and skips
+    // a parameter whose type owns nothing, so the loop is
+    // unconditional here.
+    const auto& params = ctx.slots().paramSlots();
+    for (auto it = params.rbegin(); it != params.rend(); ++it) {
+        dropSlot(ctx, *it);
     }
 }
 

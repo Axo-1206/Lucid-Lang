@@ -30,17 +30,22 @@ uint16_t SlotAllocator::allocateParam(InternedString name,
     m_slots.emplace(name, slot);
     m_slotTypes.push_back(type);
 
-    // Parameters are not recorded in any scope's dropSlots. Their
+    // Parameters are not recorded in any scope's dropSlots: their
     // lifetime is the function's, not any block's, so the scope-exit
-    // drop mechanism does not apply to them.
+    // drop mechanism does not apply to them. They are recorded in
+    // m_paramSlots instead. Both the explicit return path
+    // (emitReturnStmt) and the implicit fall-through path
+    // (Compiler::compile) go through DropSchedule::emitReturnDrops,
+    // which walks this list in addition to the open scopes' dropSlots.
     //
-    // KNOWN BUG: nothing drops parameters on return. The drop
-    // scheduler (DropSchedule::emitReturnDrops) iterates the open
-    // scopes' dropSlots, and a parameter is in none of them. A
-    // parameter whose type owns a resource (a string, a host handle)
-    // leaks its resource when the function returns. The fix is to
-    // record parameter slots on the allocator and have
-    // emitReturnDrops walk them in addition to the open scopes.
+    // The list is type-agnostic: every parameter slot is appended
+    // regardless of the parameter's type. The drop scheduler skips
+    // the ones whose type's plan requires no drop. Keeping the
+    // producer side type-agnostic avoids a redundant planForType call
+    // here; the consumer side already consults the plan for every
+    // slot it drops.
+    m_paramSlots.push_back(slot);
+
     return slot;
 }
 

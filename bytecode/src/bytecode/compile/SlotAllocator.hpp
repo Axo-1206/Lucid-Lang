@@ -69,8 +69,27 @@ public:
     /// Allocate a slot for a parameter.
     ///
     /// Parameters get the lowest slots, in declaration order. The
-    /// parameter's type is recorded alongside the slot.
+    /// parameter's type is recorded alongside the slot, and the slot
+    /// is appended to paramSlots().
     uint16_t allocateParam(InternedString name, const contract::TypeDescriptor& type);
+
+    /// The slots allocated to parameters, in declaration order.
+    ///
+    /// A return path drops them in reverse order, after every open
+    /// scope's drops. Parameters live for the whole function; they
+    /// are not in any scope's dropSlots, because a scope is a block
+    /// and a parameter outlives every block. The drop scheduler
+    /// reaches them through this accessor.
+    ///
+    /// Every parameter slot is in the list, regardless of the
+    /// parameter's type. The drop scheduler skips the ones whose
+    /// type's plan requires no drop; keeping the list
+    /// type-agnostic means the producer side (allocateParam) does
+    /// not need to consult the resource plan, and the consumer side
+    /// (DropSchedule) already consults it for every slot it drops.
+    const std::vector<uint16_t>& paramSlots() const noexcept {
+        return m_paramSlots;
+    }
 
     /// Allocate a slot for a local.
     ///
@@ -120,8 +139,15 @@ public:
 
 private:
     std::unordered_map<InternedString, uint16_t> m_slots;
-    std::vector<contract::TypeDescriptor>                  m_slotTypes;   // by slot index
+    std::vector<contract::TypeDescriptor>        m_slotTypes;   // by slot index
     uint32_t                                     m_nextSlot = 0;
+
+    /// The slots allocated to parameters, in declaration order.
+    /// Parameters are not recorded in any scope's dropSlots — their
+    /// lifetime is the function's, not any block's — so the drop
+    /// scheduler reaches them through paramSlots(). See the
+    /// accessor's doc for the drop order.
+    std::vector<uint16_t> m_paramSlots;
 
     std::vector<ScopeRecord> m_scopes;
 
