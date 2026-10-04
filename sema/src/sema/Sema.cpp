@@ -48,6 +48,44 @@
 
 namespace lucid::sema {
 
+namespace {
+
+/// @brief Materialize each module's collected lambdas into the
+///        module's `lambdas` span.
+///
+/// The collection is a `std::vector` on `SemaContext` keyed by
+/// module; the span is on `ModuleAST` and lives in the arena. The
+/// finalize copies the vector into the arena once per module, after
+/// the module's Sema run has finished.
+///
+/// Idempotent: a module whose span is already populated is skipped,
+/// so the driver can call this after pass 2 as well as after pass 3
+/// without duplicating the span.
+///
+/// Called by both `analyze` (after the pass-3 loop) and
+/// `resolveModule` (after `resolveModuleBodies`). A module whose
+/// pass 3 was skipped for `hasSyntaxError` still gets its lambdas
+/// finalized if pass 2 collected any — a top-level `let`'s
+/// initializer is a pass-2 position and can contain a lambda.
+void finalizeModuleLambdas(const std::vector<ModuleAST*>& modules,
+                           SemaContext& ctx) {
+    for (ModuleAST* module : modules) {
+        if (!module) continue;
+        if (!module->lambdas.empty()) continue;   // already finalized
+
+        auto it = ctx.pendingLambdas.find(module);
+        if (it == ctx.pendingLambdas.end() || it->second.empty()) continue;
+
+        auto builder = ctx.arena.makeBuilder<LambdaExprAST*>(it->second.size());
+        for (LambdaExprAST* lambda : it->second) {
+            builder.push_back(lambda);
+        }
+        module->lambdas = builder.build();
+    }
+}
+
+} // namespace
+
 // ─────────────────────────────────────────────────────────────────────────────
 // analyze — run all three passes over a module set
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +140,19 @@ void analyze(const std::vector<ModuleAST*>& modules, SemaContext& ctx) {
         module->hasErrors = ctx.diagnostics.hasErrors();
         if (!ctx.diagnostics.canContinue()) return;
     }
+
+    // ─── Finalize the per-module lambda lists ───────────────────────────
+    //
+    // Every lambda in every module was appended to
+    // `ctx.pendingLambdas[module]` during pass 2 or pass 3. Copy each
+    // module's vector into its `lambdas` span so the bytecode
+    // compiler's LambdaLift can read it without walking the AST.
+    //
+    // Runs even when `canContinue()` returned false above — a
+    // partially-analyzed module still has the lambdas that were
+    // collected before the error cap was hit, and the bytecode
+    // compiler's error path expects them to be present.
+    finalizeModuleLambdas(modules, ctx);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +172,8 @@ void resolveModule(ModuleAST* module, SemaContext& ctx) {
 
     resolveModuleBodies(module, ctx);
     module->hasErrors = ctx.diagnostics.hasErrors();
+
+    finalizeModuleLambdas({module}, ctx);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

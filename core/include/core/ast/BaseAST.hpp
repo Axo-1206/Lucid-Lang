@@ -612,6 +612,15 @@ struct ModuleAST : BaseAST {
     InternedString filePath;
     ArenaSpan<DeclAST*> decls;
 
+    /// Every LambdaExprAST in this module, in the order Sema's walk
+    /// encountered them. Collected by `resolveLambdaExpr` during Sema's
+    /// expression walk; materialized by the module driver after pass 3.
+    ///
+    /// Empty until Sema runs. The bytecode compiler's LambdaLift reads
+    /// this span to synthesize a top-level function per lambda without
+    /// re-walking the AST.
+    ArenaSpan<LambdaExprAST*> lambdas;
+
     /// Resolved imports, keyed by alias. Populated by the CLI's
     /// import-linking step after all modules are parsed.
     std::unordered_map<InternedString, ModuleAST*> resolvedImports;

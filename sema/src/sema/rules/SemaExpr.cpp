@@ -1749,6 +1749,21 @@ TypeAST* resolveLambdaExpr(LambdaExprAST* expr, TypeAST* target,
                                   SemaContext& ctx) {
     if (!expr) return ctx.getUnknownType();
 
+    // ─── Collect the lambda ─────────────────────────────────────────────
+    //
+    // The lambda is recorded before any resolution, so the bytecode
+    // compiler's LambdaLift sees every lambda that appears in the
+    // source — including one whose body has a resolution error. A
+    // lambda that fails to resolve still needs a synthesized function
+    // slot; emitting a call to a non-existent function index is a
+    // much worse failure than a diagnostic on the lambda's body.
+    //
+    // Appending here (rather than in `resolveExprWithTarget`'s dispatch
+    // or in `Sema.cpp`) is what makes the collection complete: this is
+    // the one function every lambda passes through, in every pass that
+    // resolves an expression.
+    ctx.pendingLambdas[ctx.currentModule].push_back(expr);
+
     // ─── Determine the parameter types ──────────────────────────────────
     //
     // If a target function type is given, its parameters are the

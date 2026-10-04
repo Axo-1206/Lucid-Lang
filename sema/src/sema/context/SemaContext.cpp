@@ -47,6 +47,7 @@ void SemaContext::addModule(ModuleAST* module) {
 void SemaContext::enterModule(ModuleAST* module) {
     currentModule      = module;
     currentModuleTable = &getOrCreateModuleTable(module);
+    pendingLambdas.clear();
 }
 
 ModuleTable& SemaContext::getOrCreateModuleTable(ModuleAST* module) {

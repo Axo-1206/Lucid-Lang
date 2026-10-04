@@ -389,6 +389,18 @@ struct SemaContext {
     /// here for convenience; accessed by call sites as `ctx.stack`.
     ContextStack stack;
 
+    /// Lambdas collected during the module walk, keyed by the module
+    /// they belong to. Appended to by `resolveLambdaExpr`; materialized
+    /// into `ModuleAST::lambdas` by the module driver after pass 3.
+    ///
+    /// Keyed by module rather than a single vector because the three
+    /// Sema passes are batched across modules: pass 2 of every module
+    /// runs before pass 3 of any module. A lambda in a top-level
+    /// `let`'s initializer is collected during pass 2; a lambda in a
+    /// function body is collected during pass 3. Both land in the
+    /// same per-module vector.
+    std::unordered_map<ModuleAST*, std::vector<LambdaExprAST*>> pendingLambdas;
+
     // ─── Construction ───────────────────────────────────────────────────
     SemaContext(StringPool& p, ASTArena& a, diag::DiagnosticEngine& d);
 
