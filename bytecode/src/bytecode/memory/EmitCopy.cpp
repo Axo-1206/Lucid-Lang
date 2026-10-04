@@ -2,28 +2,16 @@
 /// @brief Emit a deep copy of a value.
 
 #include "EmitCopy.hpp"
+#include "EmitRtCall.hpp"
 
-#include "bytecode/Opcode.hpp"
-#include "bytecode/RuntimeOp.hpp"
+#include "contract/Opcode.hpp"
+#include "contract/RuntimeOp.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 
+using namespace lucid::contract;
+
 namespace lucid::bytecode::memory {
-
-namespace {
-
-/// Emit `Ext_RtCall <op>` and update the stack depth tracker.
-/// The runtime op's table entry carries its stack effect; we read
-/// it here so the caller doesn't have to.
-void emitRtCall(compile::CompilerContext& ctx, RuntimeOp op) {
-    ctx.emitOpcode(Opcode::Ext_RtCall);
-    ctx.emitU8(static_cast<uint8_t>(op));
-
-    const RuntimeOpInfo& info = runtimeOpInfo(op);
-    ctx.noteStackEffect(info.pops, info.pushes);
-}
-
-} // namespace
 
 void emitCopy(compile::CompilerContext& ctx, const ResourcePlan& plan) {
     switch (plan.copy) {

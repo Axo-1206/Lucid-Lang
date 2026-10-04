@@ -2,6 +2,7 @@
 /// @brief Emit a drop of a value's resources.
 
 #include "EmitDrop.hpp"
+#include "EmitRtCall.hpp"
 
 #include "contract/Opcode.hpp"
 #include "contract/RuntimeOp.hpp"
@@ -11,17 +12,6 @@
 using namespace lucid::contract;
 
 namespace lucid::bytecode::memory {
-
-namespace {
-
-void emitRtCall(compile::CompilerContext& ctx, RuntimeOp op) {
-    ctx.emitOpcode(Opcode::Ext_RtCall);
-    ctx.emitU8(static_cast<uint8_t>(op));
-    const RuntimeOpInfo& info = runtimeOpInfo(op);
-    ctx.noteStackEffect(info.pops, info.pushes);
-}
-
-} // namespace
 
 void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan) {
     switch (plan.drop) {
