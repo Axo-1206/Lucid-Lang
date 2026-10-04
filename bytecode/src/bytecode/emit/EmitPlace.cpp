@@ -206,7 +206,7 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
                 // Owned, it calls emitDrop, which consumes the value
                 // and auto-pops the entry via Ext_RtCall's
                 // noteStackEffect.
-                memory::emitDropIfOwned(ctx, plan);
+                memory::emitDropIfOwned(ctx, type);
             }
 
             // Store the new value. StoreLocal auto-pops the entry

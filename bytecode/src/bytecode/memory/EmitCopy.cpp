@@ -29,7 +29,84 @@ using namespace lucid::contract;
 
 namespace lucid::bytecode::memory {
 
-void emitCopy(compile::CompilerContext& ctx, const ResourcePlan& plan) {
+namespace {
+
+/// Emit the copy of a fixed array of resources. The array value is
+/// on top of the stack. The lowering produces a second array value
+/// above it, with each element copied per its plan.
+///
+/// The unrolled form: N iterations, each with a constant element
+/// index. No loop, no counter.
+///
+/// The stack discipline:
+///   - Entry: [..., original]
+///   - Exit:  [..., original, copy]
+///
+/// The walk reads each element from the original (via Ext_Dup +
+/// Ext_FixedArrayGet), recursively copies it, and finally constructs
+/// a fresh fixed array from the N copied elements via
+/// Ext_NewFixedArray.
+void emitElementWiseCopy(compile::CompilerContext& ctx,
+                         const contract::TypeDescriptor& type) {
+
+    AST_ASSERT_MSG(type.isArray(),
+        "emitElementWiseCopy: the type is not an array — the "
+        "ElementWise plan only applies to fixed arrays");
+    AST_ASSERT_MSG(type.arrayKind == ArrayKind::Fixed,
+        "emitElementWiseCopy: the array is dynamic — a dynamic "
+        "array's copy is DeepCopyArray, not ElementWise");
+    AST_ASSERT_MSG(type.component != nullptr,
+        "emitElementWiseCopy: a fixed array has no element type — "
+        "the type descriptor was not built correctly");
+
+    const uint64_t N = type.fixedSize;
+    AST_ASSERT_MSG(N <= 4096,
+        "emitElementWiseCopy: a fixed array of more than 4096 "
+        "elements would produce an unreasonably large unrolled "
+        "sequence — the design decision was to unroll; if a larger "
+        "array is needed, revisit that decision");
+    AST_ASSERT_MSG(N <= 127,
+        "emitElementWiseCopy: N exceeds noteStackEffect's int8_t "
+        "range — widen noteStackEffect's signature or split the "
+        "construction");
+
+    const TypeDescriptor& elemType = *type.component;
+
+    // Read each element from the original and copy it. The original
+    // stays on the stack; each iteration duplicates it, reads one
+    // element, and copies the element.
+    for (uint64_t i = 0; i < N; ++i) {
+        ctx.emitOpcode(Opcode::Ext_Dup);           // duplicate the original
+        ctx.emitOpcode(Opcode::Ext_FixedArrayGet); // consume the dup, push element
+        ctx.emitU32(static_cast<uint32_t>(i));
+        emitCopy(ctx, elemType);                    // recursive: push the element's copy
+    }
+
+    // Now the stack is [..., original, copy_elem_0, ..., copy_elem_{N-1}].
+    // Construct a fresh fixed array from the N copies.
+    ctx.emitOpcode(Opcode::Ext_NewFixedArray);
+    ctx.emitU32(static_cast<uint32_t>(N));
+
+    // The constructor's stack effect is variable: it pops N elements
+    // and pushes one array. OpcodeInfo carries -1 for both, so the
+    // emitter supplies the actual effect.
+    ctx.noteStackEffect(static_cast<int8_t>(N), 1);
+    // Stack: [..., original, copy]
+
+    // The original's ownership entry: it was on the stack before
+    // emitCopy was called, and it's still there. Its state is
+    // unchanged.
+    //
+    // The copy's ownership entry: Ext_NewFixedArray auto-pushed a
+    // BitCopy entry (via noteStackEffect). Since a fixed array of
+    // resources owns resources, upgrade it to Owned.
+    ctx.owned().markTopAsOwned();
+}
+
+} // namespace
+
+void emitCopy(compile::CompilerContext& ctx, const contract::TypeDescriptor& type) {
+    const ResourcePlan plan = planForType(type);
     switch (plan.copy) {
         case CopyKind::BitCopy:
         case CopyKind::Reference: {
@@ -87,13 +164,21 @@ void emitCopy(compile::CompilerContext& ctx, const ResourcePlan& plan) {
 
         case CopyKind::ElementWise:
             // A fixed-size aggregate with resource-typed elements.
-            // The lowering walks the elements and copies each. Not
-            // yet implemented. (All other CopyKinds are implemented;
-            // this is the only gap in EmitCopy.)
-            AST_ASSERT_MSG(false,
-                "emitCopy: ElementWise copy (a fixed-size aggregate "
-                "with resource-typed elements) requires a lowering "
-                "that walks the elements. Not yet implemented.");
+            // The copy walks the elements: for each element index,
+            // load the element, copy it, and store it back into a
+            // fresh aggregate. The aggregate being copied is on top
+            // of the stack; the walk produces a copy below it,
+            // element by element.
+            //
+            // This is the unrolled form: N is known at compile time
+            // (the type descriptor's fixedSize), so each iteration
+            // emits straight-line code for a constant element index.
+            // No loop counter, no branch.
+            //
+            // Precondition: the value stack top is a fixed array of
+            // the given type. The type descriptor carries the element
+            // type and the count.
+            emitElementWiseCopy(ctx, type);
             return;
     }
 

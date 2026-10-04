@@ -223,6 +223,21 @@ enum class Opcode : uint16_t {
     // ─── Aggregate — column views ───────────────────────────────────────
     Ext_ColumnToArray  = 0x0140,  ///< column view on stack
 
+    // ─── Aggregate — fixed arrays ───────────────────────────────────────
+    //
+    // A fixed array is a value: its elements are inline, at fixed
+    // offsets. These opcodes read and write one element by its
+    // compile-time index. The index is an operand, not a stack
+    // value; the array itself is on the stack (for a read) or is
+    // followed by the element to store (for a write).
+    //
+    // Emitted only by the ElementWise copy/drop lowering for a
+    // [N, T] where T owns a resource. A fixed array whose elements
+    // own nothing is bit-copied as a whole; it never reaches these
+    // opcodes.
+    Ext_FixedArrayGet = 0x0141,   ///< u32 element index; array on stack
+    Ext_FixedArraySet = 0x0142,   ///< u32 element index; array + value on stack
+
     // ─── Control ────────────────────────────────────────────────────────
     Ext_Jump         = 0x0150,  ///< i32 relative offset
     Ext_JumpIfFalse  = 0x0151,  ///< i32 relative offset

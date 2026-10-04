@@ -39,13 +39,22 @@
  *     value. The fresh value owns a resource, so the emitter marks
  *     it Owned.
  *
- * ─── Design: only ElementWise is unimplemented ────────────────────────────
- * Every CopyKind except `ElementWise` is implemented. The
- * `DeepCopyString`, `DeepCopyArray`, and `Retain` cases emit
- * `Ext_RtCall <RuntimeOp::CopyString | CopyArray | Retain>`, which
- * exist in RuntimeOp.hpp. The `ElementWise` case — a fixed-size
- * aggregate with resource-typed elements — asserts; its lowering
- * needs an element walk that is not yet written.
+ * ─── Design: ElementWise is unrolled ──────────────────────────────────────
+ * A fixed array of resources ([N, T] where T owns a resource) has
+ * its elements inline. Its copy walks the elements: for each index,
+ * read the element, recursively copy it, and construct a fresh array
+ * from the copies. N is known at compile time (the type descriptor's
+ * fixedSize), so the walk is unrolled — N straight-line sequences,
+ * each with a constant element index. No loop counter, no branch.
+ *
+ * The opcodes: Ext_FixedArrayGet <k> reads element k (leaves the
+ * array on the stack implicitly via a preceding Ext_Dup);
+ * Ext_NewFixedArray N constructs the fresh array from the N copied
+ * elements. See EmitCopy.cpp for the exact sequence.
+ *
+ * A larger array (N > 4096) would produce an unreasonably large
+ * unrolled sequence; the emitter asserts. If such an array is needed,
+ * revisit the unroll-vs-loop decision.
  */
 
 #pragma once
@@ -59,12 +68,18 @@ namespace lucid::bytecode::memory {
 
 /// @brief Emit a copy of the value on top of the value stack.
 ///
+/// The value's type is required: the copy plan is derived from it
+/// via planForType, and the ElementWise case needs the type to know
+/// the element count and the element's plan.
+///
 /// Preconditions (asserted):
 ///   - The value stack is non-empty (there is a value to copy).
 ///   - The ownership stack's top corresponds to that value.
 ///
 /// After this call, the value stack has one more value (the copy),
-/// and the ownership stack has one more entry (`Owned`).
-void emitCopy(compile::CompilerContext& ctx, const contract::ResourcePlan& plan);
+/// and the ownership stack has one more entry (`Owned` if the copy
+/// owns a resource, `BitCopy` otherwise).
+void emitCopy(compile::CompilerContext& ctx,
+              const contract::TypeDescriptor& type);
 
 } // namespace lucid::bytecode::memory

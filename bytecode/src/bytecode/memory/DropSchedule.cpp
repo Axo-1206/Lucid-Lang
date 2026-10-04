@@ -39,7 +39,7 @@ void dropSlot(compile::CompilerContext& ctx, uint16_t slot) {
     ctx.emitOpcode(Opcode::LoadLocal);   // auto-push BitCopy
     ctx.emitU16(slot);
     ctx.owned().markTopAsOwned();        // upgrade to Owned
-    emitDropIfOwned(ctx, plan);          // peeks, drops, auto-pops
+    emitDropIfOwned(ctx, type);          // peeks, drops, auto-pops
 }
 
 } // namespace

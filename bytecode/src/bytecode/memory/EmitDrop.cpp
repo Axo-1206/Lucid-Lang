@@ -29,7 +29,76 @@ using namespace lucid::contract;
 
 namespace lucid::bytecode::memory {
 
-void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan) {
+namespace {
+
+/// Emit the drop of a fixed array of resources. The array value is
+/// on top of the stack. Each element is dropped via the recursive
+/// emitDrop; the array itself is then discarded (no `FreeArray` —
+/// a fixed array has no heap buffer; only its elements own
+/// resources).
+///
+/// The unrolled form: N iterations, each with a constant element
+/// index.
+///
+/// The stack discipline:
+///   - Entry: [..., array]
+///   - Exit:  [...]
+void emitElementWiseDrop(compile::CompilerContext& ctx,
+                         const contract::TypeDescriptor& type) {
+    AST_ASSERT_MSG(type.isArray(),
+        "emitElementWiseDrop: the type is not an array — the "
+        "ElementWise plan only applies to fixed arrays");
+    AST_ASSERT_MSG(type.arrayKind == ArrayKind::Fixed,
+        "emitElementWiseDrop: the array is dynamic — a dynamic "
+        "array's drop is FreeArray, not ElementWise");
+    AST_ASSERT_MSG(type.component != nullptr,
+        "emitElementWiseDrop: a fixed array has no element type — "
+        "the type descriptor was not built correctly");
+
+    const uint64_t N = type.fixedSize;
+    AST_ASSERT_MSG(N <= 4096,
+        "emitElementWiseDrop: a fixed array of more than 4096 "
+        "elements would produce an unreasonably large unrolled "
+        "sequence — the design decision was to unroll; if a larger "
+        "array is needed, revisit that decision");
+
+    const TypeDescriptor& elemType = *type.component;
+
+    // For each element, duplicate the array, read the element, and
+    // drop it.
+    //
+    // We drop in reverse declaration order (element N-1 first, then
+    // N-2, ..., then 0) to match the "reverse order" convention for
+    // scope drops. For a fixed array of resources, the order matters
+    // only if two elements share a resource; reverse order is the
+    // conservative choice.
+    for (uint64_t i = N; i-- > 0; ) {
+        ctx.emitOpcode(Opcode::Ext_Dup);           // duplicate the array
+        ctx.emitOpcode(Opcode::Ext_FixedArrayGet); // consume dup, push element
+        ctx.emitU32(static_cast<uint32_t>(i));
+        // Stack: [..., array, element_i]
+        //
+        // The element's ownership entry was auto-pushed by
+        // Ext_FixedArrayGet (BitCopy). If the element owns a
+        // resource, upgrade it so emitDrop fires.
+        if (planForType(elemType).ownsResources()) {
+            ctx.owned().markTopAsOwned();
+        }
+        emitDrop(ctx, elemType);
+        // Stack: [..., array]
+    }
+
+    // The array itself: discard it. It owns no heap buffer; the
+    // elements are what owned the resources, and they've all been
+    // dropped.
+    ctx.emitOpcode(Opcode::Ext_Pop);
+    // Stack: [...]
+}
+
+} // namespace
+
+void emitDrop(compile::CompilerContext& ctx, const TypeDescriptor& type) {
+    const ResourcePlan plan = planForType(type);
     switch (plan.drop) {
         case DropKind::None:
         case DropKind::Discard: {
@@ -64,13 +133,10 @@ void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan) {
 
         case DropKind::ElementWise:
             // A fixed-size aggregate with resource-typed elements.
-            // The lowering walks the elements and drops each. Not
-            // yet implemented. (All other DropKinds are implemented;
-            // this is the only gap in EmitDrop.)
-            AST_ASSERT_MSG(false,
-                "emitDrop: ElementWise drop (a fixed-size aggregate "
-                "with resource-typed elements) requires a lowering "
-                "that walks the elements. Not yet implemented.");
+            // The drop walks the elements: for each element index,
+            // load the element, drop it. The aggregate being dropped
+            // is on top of the stack; it is consumed at the end.
+            emitElementWiseDrop(ctx, type);
             return;
     }
 
@@ -80,7 +146,7 @@ void emitDrop(compile::CompilerContext& ctx, const ResourcePlan& plan) {
 }
 
 void emitDropIfOwned(compile::CompilerContext& ctx,
-                     const ResourcePlan& plan) {
+                     const TypeDescriptor& type) {
     if (ctx.owned().peek() != Ownership::Owned) {
         // The top entry is Moved or BitCopy — the value does not
         // own a live resource (it was transferred, or it never
@@ -89,7 +155,7 @@ void emitDropIfOwned(compile::CompilerContext& ctx,
         ctx.emitOpcode(Opcode::Ext_Pop);
         return;
     }
-    emitDrop(ctx, plan);
+    emitDrop(ctx, type);
 }
 
 } // namespace lucid::bytecode::memory

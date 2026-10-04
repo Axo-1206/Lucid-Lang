@@ -381,7 +381,7 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
         if (plan.needsDropForStorage()) {
             // The value is on top of the stack and owns a resource.
             // Emit the drop, which consumes it.
-            memory::emitDrop(ctx, plan);
+            memory::emitDrop(ctx, type);
         } else {
             // The value owns nothing. Pop it off the stack. Ext_Pop
             // (fixed-effect, pops=1) auto-pops the ownership entry.

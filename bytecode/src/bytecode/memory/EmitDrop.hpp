@@ -15,8 +15,10 @@
  *     FreeArray> frees the heap buffer.
  *   - Release: Ext_RtCall <RuntimeOp::Release> decrements the host
  *     handle's refcount.
- *   - ElementWise: walk an aggregate's elements and drop each.
- *     Not yet implemented; the emitter asserts.
+ *   - ElementWise: walk a fixed array's elements and drop each.
+ *     The walk is unrolled (N is known at compile time). The array
+ *     itself owns no heap buffer; it is discarded after its
+ *     elements are dropped.
  *
  * ─── Stack effect ─────────────────────────────────────────────────────────
  * emitDrop consumes the value on top of the stack. After the call,
@@ -39,21 +41,23 @@ namespace lucid::bytecode::memory {
 
 /// @brief Emit a drop of the value on top of the value stack.
 ///
+/// The value's type is required: the drop plan is derived from it
+/// via planForType, and the ElementWise case needs the type to know
+/// the element count and the element's plan.
+///
 /// Preconditions (asserted):
 ///   - The value stack is non-empty.
 ///   - The ownership stack's top corresponds to that value.
 ///
 /// Postconditions: the value is consumed; the value stack and
 /// ownership stack each have one fewer entry.
-///
-/// All DropKinds except `ElementWise` are implemented. The
-/// `ElementWise` case asserts.
-void emitDrop(compile::CompilerContext& ctx, const contract::ResourcePlan& plan);
+void emitDrop(compile::CompilerContext& ctx,
+              const contract::TypeDescriptor& type);
 
 /// @brief Emit a drop only if the value actually owns resources
 ///        (its ownership flag is Owned). Used at scope exit, where a
 ///        slot may have been moved out earlier.
 void emitDropIfOwned(compile::CompilerContext& ctx,
-                     const contract::ResourcePlan& plan);
+                     const contract::TypeDescriptor& type);
 
 } // namespace lucid::bytecode::memory
