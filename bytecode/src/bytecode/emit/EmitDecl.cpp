@@ -372,12 +372,15 @@ void emitDeclPrologue(FnDeclAST* fn, CompilerContext& ctx) {
     AST_ASSERT_MSG(!fn->isHostBound,
         "emitDeclPrologue: a host-bound function reached the emitter — "
         "a host-bound function has no body to emit");
-    AST_ASSERT_MSG(fn->body != nullptr,
-        "emitDeclPrologue: a Lucid-bodied function has no body block — "
-        "the parser should have produced one");
     AST_ASSERT_MSG(fn->returnType != nullptr,
         "emitDeclPrologue: a function has no resolved return type — "
         "Sema should have resolved it");
+
+    // Note: fn->body may be null. A synthesized lambda function has
+    // no block body; its body is the lambda's expression, held by the
+    // compiler's LambdaLift and emitted directly by the driver. The
+    // prologue itself does not need a body — it allocates parameter
+    // slots and records the opening line only.
 
     // ─── Function's opening line entry ─────────────────────────────────
     //

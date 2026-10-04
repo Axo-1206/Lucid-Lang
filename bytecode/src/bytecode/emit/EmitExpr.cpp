@@ -1058,20 +1058,30 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
 // Lambda
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A lambda is lowered to a top-level function by a compiler pre-pass
-// (per §6.9). By the time emitExpr runs, the lambda has an assigned
-// FunctionProto index. The pre-pass records it on the node (via a
-// side table in the Compiler, keyed by the LambdaExprAST*).
+// Sema collects every LambdaExprAST into its module's `lambdas` span.
+// The compiler's LambdaLift synthesizes a top-level FnDeclAST for each
+// one and registers it. By the time emitLambdaExpr runs, the lambda
+// has a FunctionProto index reachable through the lift's mapping.
 //
-// In Phase 3 the pre-pass does not exist yet, so this case is a
-// placeholder.
+// A lambda value is a compile-time code address: LoadFunction with the
+// synthesized function's index. A function value owns no resource, so
+// the auto-pushed BitCopy ownership entry is correct and no mark is
+// needed.
 
 void emitLambdaExpr(LambdaExprAST* e, CompilerContext& ctx) {
-    (void)e;
-    (void)ctx;
-    AST_ASSERT_MSG(false,
-        "emitLambdaExpr: lambdas are not yet supported — the "
-        "lambda-lowering pre-pass is a Phase 4 addition");
+    AST_ASSERT_MSG(e != nullptr,
+        "emitLambdaExpr: null lambda expression");
+
+    auto idx = ctx.compiler().lambdaFunctionIndexFor(e);
+    AST_ASSERT_MSG(idx.has_value(),
+        "emitLambdaExpr: the lambda was not lifted — the compiler's "
+        "LambdaLift did not see it, or Sema did not collect it into "
+        "the module's lambdas span");
+
+    ctx.emitOpcode(Opcode::LoadFunction);   // auto-push BitCopy
+    ctx.emitU32(*idx);
+    // A function value is a compile-time code address. It owns no
+    // resource; BitCopy is correct.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
