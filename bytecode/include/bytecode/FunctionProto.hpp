@@ -20,7 +20,7 @@
 #pragma once
 
 #include "contract/TypeDescriptor.hpp"
-#include "contract/Signature.hpp"
+#include "contract/FuncSignature.hpp"
 
 #include <cstdint>
 #include <optional>

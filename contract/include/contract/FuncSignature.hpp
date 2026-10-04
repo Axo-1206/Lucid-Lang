@@ -1,5 +1,5 @@
 /**
- * @file contract/Signature.hpp
+ * @file contract/FuncSignature.hpp
  *
  * @responsibility The serializable form of a function signature.
  *                 Extracted from TypeDescriptor.hpp so the concept has

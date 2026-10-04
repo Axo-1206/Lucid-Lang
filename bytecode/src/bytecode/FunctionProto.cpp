@@ -14,7 +14,7 @@ namespace lucid::bytecode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 FunctionProto::FunctionProto(std::string                 mangledName,
-                             FunctionSignature           signature,
+                             contract::FunctionSignature signature,
                              std::vector<uint8_t>        code,
                              std::vector<LineEntry>      lineTable,
                              uint32_t                    localSlots,

@@ -45,7 +45,7 @@
 
 #pragma once
 
-#include "contract/Signature.hpp" // FunctionSignature
+#include "contract/FuncSignature.hpp" // FunctionSignature
 
 #include <cstdint>
 #include <memory>
