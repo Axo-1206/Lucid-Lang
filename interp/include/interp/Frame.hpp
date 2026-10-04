@@ -27,13 +27,13 @@
  * to the same function share the proto.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
- * interp/Value.hpp. The FunctionProto definition is needed only in
+ * runtime/Value.hpp. The FunctionProto definition is needed only in
  * the .cpp; the header forward-declares.
  */
 
 #pragma once
 
-#include "interp/Value.hpp"
+#include "runtime/Value.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -77,8 +77,8 @@ public:
     // ─── Local slots ────────────────────────────────────────────────────
 
     /// Read a local slot. Precondition: slot < localCount().
-    const Value& local(uint32_t slot) const noexcept { return m_locals[slot]; }
-    Value& local(uint32_t slot) noexcept { return m_locals[slot]; }
+    const runtime::Value& local(uint32_t slot) const noexcept { return m_locals[slot]; }
+    runtime::Value& local(uint32_t slot) noexcept { return m_locals[slot]; }
 
     uint32_t localCount() const noexcept {
         return static_cast<uint32_t>(m_locals.size());
@@ -86,7 +86,7 @@ public:
 
     /// The first `n` slots are parameters, filled by the caller before
     /// the function body runs.
-    void setParameter(uint32_t index, Value v) noexcept {
+    void setParameter(uint32_t index, runtime::Value v) noexcept {
         m_locals[index] = v;
     }
 
@@ -95,25 +95,25 @@ public:
     /// Push a value onto the operand stack. Precondition: depth() <
     /// maxDepth(). The interpreter's stack-depth tracking (in the
     /// compiler) guarantees this; a debug build asserts it.
-    void push(Value v) noexcept {
+    void push(runtime::Value v) noexcept {
         m_stack[m_sp++] = v;
     }
 
     /// Pop the top of the operand stack. Precondition: depth() > 0.
-    Value pop() noexcept {
+    runtime::Value pop() noexcept {
         return m_stack[--m_sp];
     }
 
     /// Peek at the top of the operand stack without popping.
     /// Precondition: depth() > 0.
-    const Value& top() const noexcept { return m_stack[m_sp - 1]; }
-    Value& top() noexcept { return m_stack[m_sp - 1]; }
+    const runtime::Value& top() const noexcept { return m_stack[m_sp - 1]; }
+    runtime::Value& top() noexcept { return m_stack[m_sp - 1]; }
 
-    /// Peek at the value `n` slots below the top (0 == top).
-    const Value& peek(uint32_t n) const noexcept {
+    /// Peek at the runtime::Value `n` slots below the top (0 == top).
+    const runtime::Value& peek(uint32_t n) const noexcept {
         return m_stack[m_sp - 1 - n];
     }
-    Value& peek(uint32_t n) noexcept {
+    runtime::Value& peek(uint32_t n) noexcept {
         return m_stack[m_sp - 1 - n];
     }
 
@@ -127,8 +127,8 @@ public:
 
     /// Direct access to the operand stack, for aggregate opcodes that
     /// need to read several values at once.
-    Value* stackData() noexcept { return m_stack.data(); }
-    const Value* stackData() const noexcept { return m_stack.data(); }
+    runtime::Value* stackData() noexcept { return m_stack.data(); }
+    const runtime::Value* stackData() const noexcept { return m_stack.data(); }
 
 private:
     const bytecode::FunctionProto* m_proto = nullptr;
@@ -136,8 +136,8 @@ private:
     uint32_t m_ip = 0;
     uint32_t m_sp = 0;
 
-    std::vector<Value> m_locals;
-    std::vector<Value> m_stack;
+    std::vector<runtime::Value> m_locals;
+    std::vector<runtime::Value> m_stack;
 };
 
 } // namespace lucid::interp

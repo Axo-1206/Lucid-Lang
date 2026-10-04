@@ -1,9 +1,9 @@
 /**
- * @file interp/Value.hpp
+ * @file runtime/Value.hpp
  *
- * @responsibility The interpreter's runtime value representation. A
- *                 Value is a 16-byte tagged union: an 8-byte
- *                 discriminant and an 8-byte payload.
+ * @responsibility The runtime value representation. A Value is a
+ *                 16-byte tagged union: an 8-byte discriminant and an
+ *                 8-byte payload.
  *
  * ─── Design: tagged union, not NaN-boxing ─────────────────────────────────
  * A Value is 16 bytes: { ValueTag tag; uint64_t payload; }. The tag
@@ -11,54 +11,58 @@
  * Portable to any 64-bit target, debuggable in a watch window, and
  * lets the interpreter's dispatch read one word to decide what it is.
  * NaN-boxing would halve the size but only works for 64-bit and makes
- * aggregates out-of-line anyway; the saving is not worth the
- * portability and debuggability cost for v1.
+ * aggregates out-of-line anyway.
  *
  * ─── Design: aggregates are heap objects ──────────────────────────────────
  * Strings, arrays, tables, and host handles live on the heap. A Value
  * holds a pointer to the heap object, not the object inline. This
- * keeps Value fixed-size (16 bytes) regardless of what it holds, which
- * is what makes the operand stack a simple contiguous array of Values.
+ * keeps Value fixed-size regardless of what it holds, which is what
+ * makes the operand stack a simple contiguous array of Values.
  *
  * ─── Design: row references are not pointers ──────────────────────────────
  * A row reference is a {slot, generation} pair (grammar §4.1.1a), not
  * a memory address. A &T Value packs both into the payload: the low 32
- * bits are the slot, the high 32 bits are the generation. A fixed
- * table's &T is a plain index with generation 0. The interpreter
- * distinguishes by the table's kind, which it reads from the table
- * object's header.
+ * bits are the slot, the high 32 bits are the generation.
  *
  * ─── Design: nil ──────────────────────────────────────────────────────────
  * nil is a Value with tag Nil. It is a valid value of any &T type and
- * of any T? type (grammar §5.2, §5.3). It is never a valid value of a
- * primitive, a bare table type, a function type, or void.
+ * of any T? type (grammar §5.2, §5.3).
+ *
+ * ─── Why this lives in runtime/ ───────────────────────────────────────────
+ * A Value is a runtime representation. The interpreter's operand stack
+ * and locals hold Values; the runtime's ArrayObject buffer holds
+ * Values; the runtime's dropValue / copyValue operate on Values. Both
+ * libraries need the type, and the runtime is the lower of the two.
+ *
+ * ─── Design: interpreter-owned concepts are forward-declared ─────────────
+ * TableObject and FunctionRef are interpreter types. Value holds
+ * pointers to them, but the runtime never dereferences those pointers
+ * — the runtime's dropValue and copyValue never touch a table or a
+ * function. Forward declarations are enough; the interpreter's own
+ * .cpp files include the full definitions where they are needed.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
- * None. Every pointer type is forward-declared. Value is at the bottom
- * of the interpreter's include graph; nothing here includes another
- * interpreter header.
+ * None. Every pointer type is forward-declared. Value is the bottom
+ * of the runtime's include graph.
  */
 
 #pragma once
-
-#include "runtime/String.hpp"
-#include "runtime/Array.hpp"
 
 #include <cstdint>
 #include <cstring>
 
 // Forward declarations — Value holds pointers, not definitions.
-namespace lucid::runtime {
-    struct StringObject;
-    struct ArrayObject;
-    struct HostHandle;
-}
 namespace lucid::interp {
     struct TableObject;
     struct FunctionRef;
 }
 
-namespace lucid::interp {
+namespace lucid::runtime {
+
+// Forward declarations — same namespace, definitions come later.
+struct StringObject;
+struct ArrayObject;
+struct HostHandle;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ValueTag
@@ -68,8 +72,7 @@ namespace lucid::interp {
 ///
 /// Values are grouped by kind. The numeric values are stable and are
 /// part of the .lucb compatibility contract where they appear in
-/// serialized constants (see contract's TypeDescriptor and the
-/// compiler's ConstantPool) — they must not be reordered; new tags are
+/// serialized constants — they must not be reordered; new tags are
 /// added at the end.
 enum class ValueTag : uint8_t {
     // Primitives (inline in the payload)
@@ -88,12 +91,12 @@ enum class ValueTag : uint8_t {
     F64         = 0x0C,  ///< payload = double bits
 
     // References (pointers to heap objects)
-    String      = 0x10,  ///< payload = runtime::StringObject*
-    Array       = 0x11,  ///< payload = runtime::ArrayObject*
-    Table       = 0x12,  ///< payload = TableObject* (bare table — never nilable)
+    String      = 0x10,  ///< payload = StringObject*
+    Array       = 0x11,  ///< payload = ArrayObject*
+    Table       = 0x12,  ///< payload = interp::TableObject*
     RowRef      = 0x13,  ///< payload = packed {generation:32 | slot:32}
-    Function    = 0x14,  ///< payload = FunctionRef* (code address + signature)
-    HostHandle  = 0x15,  ///< payload = runtime::HostHandle* (refcounted)
+    Function    = 0x14,  ///< payload = interp::FunctionRef*
+    HostHandle  = 0x15,  ///< payload = HostHandle*
     ColumnView  = 0x16,  ///< payload = ColumnView* (transient, §5.6)
 
     /// Internal: a slot that has been allocated but not yet written.
@@ -178,17 +181,17 @@ struct Value {
         v.payload = bits; return v;
     }
 
-    static Value makeString(runtime::StringObject* s) noexcept {
+    static Value makeString(StringObject* s) noexcept {
         Value v; v.tag = ValueTag::String;
         v.payload = reinterpret_cast<uint64_t>(s);
         return v;
     }
-    static Value makeArray(runtime::ArrayObject* a) noexcept {
+    static Value makeArray(ArrayObject* a) noexcept {
         Value v; v.tag = ValueTag::Array;
         v.payload = reinterpret_cast<uint64_t>(a);
         return v;
     }
-    static Value makeTable(TableObject* t) noexcept {
+    static Value makeTable(interp::TableObject* t) noexcept {
         Value v; v.tag = ValueTag::Table;
         v.payload = reinterpret_cast<uint64_t>(t);
         return v;
@@ -198,12 +201,12 @@ struct Value {
         v.payload = (static_cast<uint64_t>(generation) << 32) | slot;
         return v;
     }
-    static Value makeFunction(FunctionRef* f) noexcept {
+    static Value makeFunction(interp::FunctionRef* f) noexcept {
         Value v; v.tag = ValueTag::Function;
         v.payload = reinterpret_cast<uint64_t>(f);
         return v;
     }
-    static Value makeHostHandle(runtime::HostHandle* h) noexcept {
+    static Value makeHostHandle(HostHandle* h) noexcept {
         Value v; v.tag = ValueTag::HostHandle;
         v.payload = reinterpret_cast<uint64_t>(h);
         return v;
@@ -235,14 +238,14 @@ struct Value {
         double x; std::memcpy(&x, &bits, sizeof x); return x;
     }
 
-    runtime::StringObject* asString() const noexcept {
-        return reinterpret_cast<runtime::StringObject*>(payload);
+    StringObject* asString() const noexcept {
+        return reinterpret_cast<StringObject*>(payload);
     }
-    runtime::ArrayObject* asArray() const noexcept {
-        return reinterpret_cast<runtime::ArrayObject*>(payload);
+    ArrayObject* asArray() const noexcept {
+        return reinterpret_cast<ArrayObject*>(payload);
     }
-    TableObject* asTable() const noexcept {
-        return reinterpret_cast<TableObject*>(payload);
+    interp::TableObject* asTable() const noexcept {
+        return reinterpret_cast<interp::TableObject*>(payload);
     }
     uint32_t rowSlot() const noexcept {
         return static_cast<uint32_t>(payload & 0xFFFFFFFFu);
@@ -250,11 +253,11 @@ struct Value {
     uint32_t rowGeneration() const noexcept {
         return static_cast<uint32_t>(payload >> 32);
     }
-    FunctionRef* asFunction() const noexcept {
-        return reinterpret_cast<FunctionRef*>(payload);
+    interp::FunctionRef* asFunction() const noexcept {
+        return reinterpret_cast<interp::FunctionRef*>(payload);
     }
-    runtime::HostHandle* asHostHandle() const noexcept {
-        return reinterpret_cast<runtime::HostHandle*>(payload);
+    HostHandle* asHostHandle() const noexcept {
+        return reinterpret_cast<HostHandle*>(payload);
     }
     void* asColumnView() const noexcept {
         return reinterpret_cast<void*>(payload);
@@ -306,4 +309,4 @@ struct Value {
 static_assert(sizeof(Value) == 16, "Value must be 16 bytes");
 static_assert(alignof(Value) == 8, "Value must be 8-byte aligned");
 
-} // namespace lucid::interp
+} // namespace lucid::runtime

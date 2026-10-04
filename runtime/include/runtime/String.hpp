@@ -7,26 +7,24 @@
  * ─── Design: refcounted, not interned ─────────────────────────────────────
  * Every string value is a StringObject with a refcount. Copying a
  * string (EmitCopy's job) retains; dropping it (EmitDrop's job)
- * releases. When the refcount hits zero the buffer is freed. This is
- * the same model as the host handles, and it is what the RuntimeOp
- * set assumes: Retain / Release operate on a handle-or-string
- * uniformly, CopyString produces a fresh buffer, FreeString releases
- * one.
+ * releases. When the refcount hits zero the buffer is freed.
  *
  * ─── Design: immutable, UTF-8, length-prefixed ────────────────────────────
- * A StringObject is immutable once constructed. Concatenation allocates
- * a new StringObject; it never mutates. The buffer is UTF-8 bytes, not
- * null-terminated (though a null byte is written past the end for
- * convenience when the host wants a C string). The length is in bytes,
- * not code points; Lucid's string type has no character-indexing
- * operation (§8), so a code-point index is never needed.
+ * A StringObject is immutable once constructed. Concatenation
+ * allocates a new StringObject; it never mutates. The buffer is UTF-8
+ * bytes, not null-terminated (though a null byte is written past the
+ * end for convenience when the host wants a C string). The length is
+ * in bytes, not code points.
  *
  * ─── Design: the runtime owns allocation, not the interpreter ─────────────
  * The interpreter calls allocString / retainString / releaseString /
  * copyString / concatString. It does not touch the refcount field
- * directly. This keeps the allocation policy (arena, malloc, pool)
- * a runtime decision, and keeps the interpreter's code free of
+ * directly. This keeps the allocation policy (arena, malloc, pool) a
+ * runtime decision, and keeps the interpreter's code free of
  * allocation details.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * None.
  */
 
 #pragma once
@@ -41,7 +39,7 @@ namespace lucid::runtime {
 ///
 /// The layout is deliberately simple: a refcount, a byte length, and a
 /// pointer to the byte buffer. The buffer is separately allocated so
-/// that a StringObject can be small (24 bytes on a 64-bit target) and
+/// that a StringObject can be small (16 bytes on a 64-bit target) and
 /// a string's payload can be any size.
 struct StringObject {
     /// The reference count. Managed by retainString / releaseString.
@@ -109,10 +107,7 @@ inline std::string_view stringView(const StringObject* s) noexcept {
 bool stringEquals(const StringObject* a, const StringObject* b) noexcept;
 
 /// @brief Lexicographic ordering (UTF-8 bytes, locale-independent).
-///        This is the runtime implementation of Lt_Str / Le_Str /
-///        Gt_Str / Ge_Str.
-///
-/// Returns negative if a < b, zero if equal, positive if a > b.
+///        Returns negative if a < b, zero if equal, positive if a > b.
 int stringCompare(const StringObject* a, const StringObject* b) noexcept;
 
 } // namespace lucid::runtime

@@ -23,7 +23,7 @@
 
 #pragma once
 
-#include "interp/Value.hpp"
+#include "runtime/Value.hpp"
 #include "runtime/Panic.hpp"
 
 #include <cstdint>
@@ -42,7 +42,7 @@ struct ExecutionResult {
     /// The function returned normally.
     struct Completed {
         /// The returned value, or a Nil Value for a void function.
-        Value result;
+        runtime::Value result;
     };
 
     /// The function panicked. The panic carries a DiagCode, a message,
@@ -71,7 +71,7 @@ struct ExecutionResult {
     }
 
     /// Precondition: isCompleted().
-    Value result() const { return std::get<Completed>(outcome).result; }
+    runtime::Value result() const { return std::get<Completed>(outcome).result; }
 
     /// Precondition: isPanicked().
     const runtime::Panic& panic() const {
@@ -80,7 +80,7 @@ struct ExecutionResult {
 
     // ─── Factories ──────────────────────────────────────────────────────
 
-    static ExecutionResult completed(Value v) {
+    static ExecutionResult completed(runtime::Value v) {
         return ExecutionResult{ Completed{ v } };
     }
     static ExecutionResult panicked(runtime::Panic p) {

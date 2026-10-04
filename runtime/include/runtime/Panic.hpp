@@ -1,22 +1,33 @@
 /**
  * @file runtime/Panic.hpp
  *
- * @responsibility The panic value — the runtime-side counterpart of a
- *                 diagnostic. A panic carries a DiagCode (the same
- *                 code space the compiler uses), a pre-formatted
- *                 message, and an optional Lucid stack trace.
+ * @responsibility The panic value — the runtime-side failure type.
+ *                 A panic carries a DiagCode (the same code space the
+ *                 compiler uses for diagnostics), a pre-formatted
+ *                 message, and a Lucid stack trace.
  *
- * ─── Design: one type, two producers ──────────────────────────────────────
- * A panic is produced by the constant evaluator at compile time and by
- * the interpreter at run time. Both use the same DiagCode values
- * (DiagCode.hpp's "codes describe what, not when"). The Severity scale
- * is a compiler-side concern; a panic has no severity — it is either
- * raised or not.
+ * ─── Design: a runtime concept, not a compiler one ────────────────────────
+ * A panic is raised only at runtime: by the interpreter (a nil
+ * dereference, an out-of-bounds index, a stale reference, a duplicate
+ * @primary key, a divide-by-zero in a non-constant expression) or by
+ * the runtime library (an allocation failure, generation exhaustion, a
+ * host call that returned an error). It unwinds to the host call
+ * boundary (grammar §10).
+ *
+ * The compiler does NOT raise panics. Sema reports diagnostics through
+ * DiagnosticEngine, which has its own Severity scale (Hint..Fatal),
+ * its own SourceLocation, and its own recovery semantics. The two
+ * channels share a DiagCode vocabulary (DiagCode.hpp's "codes describe
+ * what, not when") but not a type. A Panic never appears at compile
+ * time.
  *
  * ─── Design: no C++ exceptions in this header ─────────────────────────────
  * Panic is a value. The C++ exception type that carries it
- * (interp::PanicException) lives in interp/InterpreterError.hpp. The
- * runtime library does not throw.
+ * (interp::PanicException) lives in interp/InterpreterError.hpp.
+ * Panic.hpp does not define or throw anything.
+ *
+ * ─── Dependencies ─────────────────────────────────────────────────────────
+ * core/diagnostics/DiagCode.hpp.
  */
 
 #pragma once
@@ -42,7 +53,8 @@ struct StackFrame {
     /// The module the function belongs to. Empty if unknown.
     std::string module;
 
-    /// The source line, or 0 if the line table had no entry for this ip.
+    /// The source line, or 0 if the line table had no entry for this
+    /// ip.
     uint32_t line = 0;
 
     /// The source column, or 0 if unavailable.
@@ -51,9 +63,9 @@ struct StackFrame {
 
 /// @brief A panic raised by the runtime or the interpreter.
 ///
-/// A panic is not recoverable inside Lucid (there is no try/catch in the
-/// grammar, §10). It unwinds to the host call boundary. The host decides
-/// what to do with it.
+/// A panic is not recoverable inside Lucid (there is no try/catch in
+/// the grammar, §10). It unwinds to the host call boundary. The host
+/// decides what to do with it.
 struct Panic {
     /// The diagnostic code describing what went wrong. Always a code
     /// from the Panic_*, Value_*, Table_*, or Mem_* bands.

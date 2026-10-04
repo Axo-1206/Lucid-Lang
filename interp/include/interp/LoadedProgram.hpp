@@ -26,7 +26,7 @@
  * FunctionRef. This makes function-value equality a pointer compare.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
- * interp/Value.hpp, interp/FunctionRef.hpp. The Bytecode and
+ * runtime/Value.hpp, interp/FunctionRef.hpp. The Bytecode and
  * FunctionProto definitions are needed only in the .cpp; the header
  * forward-declares. TableObject is forward-declared; the .cpp includes
  * interp/TableObject.hpp. HostRegistry is forward-declared; the .cpp
@@ -35,7 +35,7 @@
 
 #pragma once
 
-#include "interp/Value.hpp"
+#include "runtime/Value.hpp"
 #include "interp/FunctionRef.hpp"
 
 #include <cstdint>
@@ -111,7 +111,7 @@ public:
     // ─── Static data ────────────────────────────────────────────────────
 
     /// The live value of a top-level binding, by index.
-    Value& topLevelBinding(uint32_t index) noexcept {
+    runtime::Value& topLevelBinding(uint32_t index) noexcept {
         return m_topLevelBindings[index];
     }
 
@@ -138,7 +138,7 @@ private:
     std::vector<std::unique_ptr<FunctionRef>> m_functionRefs;
 
     /// Live top-level binding storage, one entry per StaticData::bindings.
-    std::vector<Value> m_topLevelBindings;
+    std::vector<runtime::Value> m_topLevelBindings;
 
     /// Live tables, one per StaticData::tables.
     std::vector<std::unique_ptr<TableObject>> m_tables;
