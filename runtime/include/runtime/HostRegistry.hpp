@@ -45,15 +45,13 @@
 
 #pragma once
 
+#include "contract/Signature.hpp" // FunctionSignature
+
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
-
-namespace lucid::bytecode {
-    struct Signature;
-}
 
 namespace lucid::runtime {
 
@@ -133,7 +131,7 @@ public:
     /// do.
     bool registerFunction(std::string name,
                           HostFunctionPtr fn,
-                          bytecode::Signature signature);
+                          contract::FunctionSignature signature);
 
     /// @brief Register a host type under `name`, with the given
     ///        payload callbacks. A host type is the payload of a
@@ -165,7 +163,7 @@ public:
     struct FunctionEntry {
         std::string_view name;
         HostFunctionPtr fn;
-        const bytecode::Signature* signature;
+        const contract::FunctionSignature* signature;
     };
 
     const FunctionEntry* findFunction(std::string_view name) const noexcept;

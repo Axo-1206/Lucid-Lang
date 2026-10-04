@@ -33,13 +33,10 @@
 #pragma once
 
 #include "Value.hpp"
+#include "contract/TypeDescriptor.hpp"
 
 #include <cstddef>
 #include <cstdint>
-
-namespace lucid::contract {
-    struct TypeDescriptor;
-}
 
 namespace lucid::runtime {
 

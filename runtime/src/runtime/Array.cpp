@@ -6,21 +6,31 @@
  * ─── Design: the buffer is a Value array, capacity >= length ──────────────
  * An ArrayObject owns a `Value* data` buffer of `capacity` entries.
  * `length` entries are live; the rest are unused. Growth doubles the
- * capacity when the buffer is full. This is the standard dynamic
- * array layout.
+ * capacity when the buffer is full.
  *
  * ─── Design: element drops go through dropValue ───────────────────────────
  * When an element is removed, overwritten, or the array is released,
  * the element's ResourcePlan tells us whether to do anything. The
- * plan comes from `elementType`, which the array carries. This is the
- * runtime's half of the compile/runtime agreement (see ValueOps.hpp).
+ * plan comes from `elementType`, which the array carries.
  *
  * ─── Design: fixed arrays share the representation ────────────────────────
  * A fixed array ([N, T]) is the same struct with `fixed = true` and
  * `capacity == length`. Mutation functions assert against `fixed`.
+ *
+ * ─── Design: arrayContains dispatches on the element type ─────────────────
+ * Containment is a linear scan with a per-element equality check. The
+ * equality rule depends on the element type: bit equality for
+ * primitives (with NaN and -0.0 handled specially for floats),
+ * content equality for strings, wrapper equality (or a host-registered
+ * callback) for host handles, payload equality for row references and
+ * function values. The host-handle case is resolved by calling
+ * handleEquals, which looks up the type's callback via the handle's
+ * own registry pointer — no registry parameter is needed.
  */
 
 #include "runtime/Array.hpp"
+#include "runtime/Handle.hpp"
+#include "runtime/String.hpp"
 #include "runtime/ValueOps.hpp"
 
 #include "contract/TypeDescriptor.hpp"
@@ -39,8 +49,8 @@ constexpr uint32_t kInitialCapacity = 4;
 // A shared empty buffer for zero-length arrays. Never freed.
 Value g_emptyBuffer[1];
 
-/// Allocate a buffer of `capacity` Values, all Uninitialized. Returns
-/// nullptr on failure; the caller checks.
+/// Allocate a buffer of `capacity` Values. Returns the shared empty
+/// buffer for capacity 0. Returns nullptr on allocation failure.
 Value* allocateBuffer(uint32_t capacity) {
     if (capacity == 0) return g_emptyBuffer;
     Value* buf = static_cast<Value*>(std::malloc(sizeof(Value) * capacity));
@@ -48,8 +58,8 @@ Value* allocateBuffer(uint32_t capacity) {
 }
 
 /// Grow the array's buffer to hold at least `minCapacity` entries.
-/// Doubles until it does. Aborts on allocation failure (the runtime
-/// has no recovery for OOM; the host should have set a limit).
+/// Doubles until it does. Aborts on allocation failure; the runtime
+/// has no recovery for OOM.
 void ensureCapacity(ArrayObject* a, uint32_t minCapacity) {
     if (a->capacity >= minCapacity) return;
 
@@ -77,6 +87,103 @@ void freeBuffer(ArrayObject* a) noexcept {
     }
     a->data = g_emptyBuffer;
     a->capacity = 0;
+}
+
+/// Bitwise equality on (tag, payload). Used as the fallback for
+/// element types whose equality is identity.
+inline bool valueBitEquals(const Value& a, const Value& b) noexcept {
+    return a.tag == b.tag && a.payload == b.payload;
+}
+
+/// True if two numeric Values (same type) are numerically equal.
+/// Handles the F32/F64 NaN and signed-zero cases. Assumes both values
+/// have already been determined to be the same numeric type.
+inline bool numericEquals(const Value& a, const Value& b) noexcept {
+    if (a.isFloat()) {
+        const double da = (a.tag == ValueTag::F32) ? a.asF32() : a.asF64();
+        const double db = (b.tag == ValueTag::F32) ? b.asF32() : b.asF64();
+        return da == db;
+    }
+    return a.payload == b.payload;
+}
+
+/// Equality for two Values of the same declared element type.
+/// `elemType` is the array's element TypeDescriptor.
+bool valueEqualsForType(const Value& a, const Value& b,
+                        const contract::TypeDescriptor& elemType) noexcept {
+    using contract::TypeDescriptor;
+
+    switch (elemType.kind) {
+        case TypeDescriptor::Kind::Primitive: {
+            switch (elemType.primitive) {
+                case PrimitiveKind::String:
+                    if (a.tag != ValueTag::String ||
+                        b.tag != ValueTag::String) return false;
+                    return stringEquals(a.asString(), b.asString());
+
+                case PrimitiveKind::Float32:
+                case PrimitiveKind::Float64:
+                    if (!a.isFloat() || !b.isFloat()) return false;
+                    return numericEquals(a, b);
+
+                default:
+                    // Bool, Char, all integer widths: (tag, payload)
+                    // equality is exactly value equality.
+                    return valueBitEquals(a, b);
+            }
+        }
+
+        case TypeDescriptor::Kind::Named: {
+            // A Named element type is either a host type (opaque
+            // handle) or... actually, a Named type is always a host
+            // type at the runtime layer, because a non-host table is
+            // a bare table type, which is never an element type (the
+            // grammar rejects a bare table as a column or array
+            // element). So Named here means "host-backed type", and
+            // the Value is a HostHandle.
+            if (a.tag != ValueTag::HostHandle ||
+                b.tag != ValueTag::HostHandle) return false;
+            return handleEquals(a.asHostHandle(), b.asHostHandle());
+        }
+
+        case TypeDescriptor::Kind::RowRef:
+            // Two row references are equal if they name the same row
+            // (same slot, same generation). The payload encodes both.
+            if (a.tag != ValueTag::RowRef ||
+                b.tag != ValueTag::RowRef) return false;
+            return a.payload == b.payload;
+
+        case TypeDescriptor::Kind::Function:
+            // Function values are compile-time-known code addresses.
+            // Two function values are equal if they are the same
+            // FunctionRef.
+            if (a.tag != ValueTag::Function ||
+                b.tag != ValueTag::Function) return false;
+            return a.payload == b.payload;
+
+        case TypeDescriptor::Kind::Array:
+            // Arrays are compared structurally by the language, but
+            // at the runtime layer, "containment" of an array in
+            // another array is by reference (the same ArrayObject).
+            // Structural equality is expressed in the language as a
+            // loop, not as CONTAINS.
+            if (a.tag != ValueTag::Array ||
+                b.tag != ValueTag::Array) return false;
+            return a.payload == b.payload;
+
+        case TypeDescriptor::Kind::Nullable:
+            // A nullable element type: nil compares equal to nil;
+            // non-nil compares per the inner type.
+            if (a.isNil() || b.isNil()) {
+                return a.isNil() && b.isNil();
+            }
+            if (!elemType.component) return false;
+            return valueEqualsForType(a, b, *elemType.component);
+
+        case TypeDescriptor::Kind::Unknown:
+            return valueBitEquals(a, b);
+    }
+    return valueBitEquals(a, b);
 }
 
 } // namespace
@@ -111,14 +218,14 @@ ArrayObject* allocFixedArray(const contract::TypeDescriptor* elementType,
     a->fixed       = true;
     a->elementType = elementType;
     a->data        = allocateBuffer(length);
-    if (!a->data) {
+    if (!a->data && length > 0) {
         std::free(a);
         return nullptr;
     }
 
-    // Elements are Uninitialized; the caller must fill them before the
-    // array is observable. A debug build might memset here to catch
-    // misuse; we rely on the Uninitialized tag instead.
+    // Elements start Uninitialized; the caller must fill them before
+    // the array is observable. A debug build could assert on read;
+    // we rely on the Uninitialized tag being handled by the caller.
     for (uint32_t i = 0; i < length; ++i) {
         a->data[i] = Value{};  // Uninitialized tag
     }
@@ -166,7 +273,7 @@ ArrayObject* copyArray(const ArrayObject* a) {
         result->length = a->length;
     }
 
-    if (a->length > 0) {
+    if (a->length > 0 && a->elementType) {
         const contract::ResourcePlan elemPlan =
             contract::planForType(*a->elementType);
 
@@ -188,8 +295,7 @@ ArrayObject* copyArray(const ArrayObject* a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 void arrayAdd(ArrayObject* a, Value v) {
-    // Fixed arrays cannot grow. A caller that hits this has a bug;
-    // abort in debug, no-op in release.
+    // Fixed arrays cannot grow. A caller that hits this has a bug.
     if (a->fixed) return;
 
     ensureCapacity(a, a->length + 1);
@@ -210,10 +316,9 @@ void arrayRemove(ArrayObject* a, uint32_t index) {
     }
 
     // Shift later elements down by one. This is an element-wise move,
-    // not a copy: the shifted-from slot is left as a bit pattern that
-    // is no longer live, and the shifted-to slot now owns the value.
-    // No retain/release happens — the elements move, they do not
-    // duplicate.
+    // not a copy: the shifted-from slot's value is no longer live,
+    // and the shifted-to slot now owns the value. No retain/release
+    // happens — the elements move, they do not duplicate.
     const uint32_t tailCount = a->length - index - 1;
     if (tailCount > 0) {
         std::memmove(&a->data[index], &a->data[index + 1],
@@ -257,73 +362,21 @@ void arraySet(ArrayObject* a, uint32_t index, Value v) {
 }
 
 bool arrayContains(const ArrayObject* a, const Value& v) noexcept {
+    if (a->length == 0) return false;
+
+    // No element type (shouldn't happen for a well-formed array, but
+    // a defensive fallback): bitwise equality on every element.
     if (!a->elementType) {
-        // No element type; fall back to bitwise equality.
         for (uint32_t i = 0; i < a->length; ++i) {
-            const Value& e = a->data[i];
-            if (e.tag != v.tag) continue;
-            if (e.payload == v.payload) return true;
+            if (valueBitEquals(a->data[i], v)) return true;
         }
         return false;
     }
 
-    // Dispatch on the element type's shape. Only the cases that need
-    // non-bitwise equality are special-cased; everything else falls
-    // through to bitwise equality on (tag, payload).
-    //
-    // Strings compare by content. RowRefs compare by slot + generation,
-    // which is exactly the payload. Host handles compare via the
-    // registry's equality callback. Numbers compare by value; since
-    // the tag encodes the width, comparing (tag, payload) is correct
-    // for the primitive types except for F32/F64 (NaN != NaN; -0.0
-    // vs +0.0). For F32/F64 we compare the decoded double.
-    using contract::TypeDescriptor;
-    switch (a->elementType->kind) {
-        case TypeDescriptor::Kind::Primitive: {
-            switch (a->elementType->primitive) {
-                case PrimitiveKind::String: {
-                    for (uint32_t i = 0; i < a->length; ++i) {
-                        if (a->data[i].tag == ValueTag::String
-                            && stringEquals(a->data[i].asString(),
-                                            v.asString()))
-                            return true;
-                    }
-                    return false;
-                }
-                case PrimitiveKind::Float32:
-                case PrimitiveKind::Float64: {
-                    const double target = v.isFloat()
-                        ? (v.tag == ValueTag::F32 ? v.asF32() : v.asF64())
-                        : 0.0;
-                    for (uint32_t i = 0; i < a->length; ++i) {
-                        const Value& e = a->data[i];
-                        if (!e.isFloat()) continue;
-                        const double d = e.tag == ValueTag::F32
-                            ? e.asF32() : e.asF64();
-                        if (d == target) return true;
-                    }
-                    return false;
-                }
-                default:
-                    break;  // fall through to bitwise
-            }
-            break;
-        }
-        case TypeDescriptor::Kind::Named:
-            // Host handle: equality is the registry's job.
-            // TODO(host): delegate to HostRegistry::TypeEntry::equals.
-            // For v1 we bit-compare the wrapper pointers, which is
-            // correct for the default (identity) equality.
-            break;
-        default:
-            break;
-    }
-
-    // Bitwise fallback.
     for (uint32_t i = 0; i < a->length; ++i) {
-        const Value& e = a->data[i];
-        if (e.tag != v.tag) continue;
-        if (e.payload == v.payload) return true;
+        if (valueEqualsForType(a->data[i], v, *a->elementType)) {
+            return true;
+        }
     }
     return false;
 }
