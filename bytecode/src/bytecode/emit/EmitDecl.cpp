@@ -25,6 +25,73 @@ namespace lucid::bytecode::compile {
 
 namespace {
 
+// ─── Row-reference cells ───────────────────────────────────────────────────
+//
+// A table cell written as a compile-time row reference (`T.Member`)
+// is not a folded value. Sema resolves the sugar and records the
+// target table and row index on the FieldAccessExprAST, but it has no
+// ConstantValue::Kind::RowRef to fold the cell into. The baker
+// synthesizes a Constant::Kind::RowRef directly from the AST.
+
+/// True if the cell is a `T.Member` row-reference sugar that Sema
+/// resolved to a compile-time row. Every other cell is a folded
+/// constant.
+bool isCompileTimeRowRefCell(const ExprAST* cell) {
+    if (cell == nullptr) return false;
+    if (!cell->isa<FieldAccessExprAST>()) return false;
+    const auto* fa = cell->as<FieldAccessExprAST>();
+    return fa->isCompileTimeRowRef && fa->hasCompileTimeRow;
+}
+
+/// Synthesize a Constant::Kind::RowRef for a `T.Member` cell.
+///
+/// Reads the target table's artifact index from the compiler's
+/// table-index map (populated by pass A before this cell is baked —
+/// the table the cell references must itself be declared, and its
+/// declaration was processed earlier in the module's pass A walk, or
+/// is being processed in an earlier module).
+///
+/// The cell's type is passed in by the caller (it comes from the
+/// table's schema, since the cell's own `resolvedType` may be the
+/// `&T` type which the schema column also describes).
+Constant bakeRowRefCell(const ExprAST* cell,
+                        const TypeDescriptor& cellType,
+                        ArtifactBuildState& state) {
+    AST_ASSERT_MSG(cell->isa<FieldAccessExprAST>(),
+        "bakeRowRefCell: called on a non-FieldAccessExprAST — "
+        "the caller's predicate is out of sync with this function");
+    const auto* fa = cell->as<FieldAccessExprAST>();
+
+    AST_ASSERT_MSG(fa->resolvedDecl != nullptr,
+        "bakeRowRefCell: the cell's resolvedDecl is null — "
+        "Sema should have resolved the table the sugar names");
+    AST_ASSERT_MSG(fa->resolvedDecl->isa<TableDeclAST>(),
+        "bakeRowRefCell: the cell's resolvedDecl is not a table — "
+        "Sema should have resolved the sugar's target to a table");
+    const auto* targetTable = fa->resolvedDecl->as<TableDeclAST>();
+
+    const auto tableIdx =
+        state.tableIndices.find(targetTable->mangledName);
+    AST_ASSERT_MSG(tableIdx != state.tableIndices.end(),
+        "bakeRowRefCell: the target table has no artifact index — "
+        "the compiler's pass A did not register the table the cell "
+        "references (declaration order?)");
+
+    AST_ASSERT_MSG(fa->hasCompileTimeRow,
+        "bakeRowRefCell: the cell is a compile-time row reference "
+        "but has no compile-time row index — Sema's "
+        "resolveTableMemberAccess should have set both");
+
+    Constant c;
+    c.kind = Constant::Kind::RowRef;
+    c.type = cellType;
+    c.value = RowRefConstant{
+        tableIdx->second,
+        fa->compileTimeRowIndex
+    };
+    return c;
+}
+
 // ─── Baking a table ────────────────────────────────────────────────────────
 
 void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
@@ -83,13 +150,33 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
 
         // ─── Rows ──────────────────────────────────────────────────────
         //
-        // Each row's cells are folded constant values. Translate each
-        // into a serializable Constant.
+        // Each row's cells are folded constant values, with one
+        // exception: a cell written as a `T.Member` row reference is
+        // a compile-time row identity, not a folded value. Sema
+        // resolves the sugar and records the row index on the
+        // FieldAccessExprAST; it has no ConstantValue::Kind::RowRef
+        // to fold the cell into. The baker synthesizes the
+        // Constant::Kind::RowRef directly from the AST.
+        //
+        // Every other cell is a folded constant, translated via
+        // bakeConstant.
         for (const auto* row : table->rows) {
             std::vector<Constant> bakedRow;
             bakedRow.reserve(row->cells.size());
             for (size_t ci = 0; ci < row->cells.size(); ++ci) {
                 const auto* cell = row->cells[ci];
+
+                const TypeDescriptor cellType =
+                    (ci < schema.columns.size())
+                        ? schema.columns[ci].type
+                        : TypeDescriptor{};
+
+                if (isCompileTimeRowRefCell(cell)) {
+                    bakedRow.push_back(bakeRowRefCell(cell, cellType,
+                                                      state));
+                    continue;
+                }
+
                 AST_ASSERT_MSG(cell->isConst,
                     "bakeTable: a table cell is not a constant "
                     "expression — Sema should have folded it");
@@ -97,10 +184,6 @@ void bakeTable(const TableDeclAST* table, ArtifactBuildState& state) {
                     "bakeTable: a table cell's constValue is not "
                     "evaluated — Sema should have folded it");
 
-                const TypeDescriptor cellType =
-                    (ci < schema.columns.size())
-                        ? schema.columns[ci].type
-                        : TypeDescriptor{};
                 bakedRow.push_back(bakeConstant(state.pool, cell->constValue,
                                                 cellType, UINT32_MAX));
             }
@@ -122,18 +205,26 @@ void bakeTopLevelBinding(const VarDeclAST* var, ArtifactBuildState& state) {
         "bakeTopLevelBinding: a top-level binding has no type — "
         "Sema should have resolved it");
 
-    AST_ASSERT_MSG(var->init->isConst,
-        "bakeTopLevelBinding: a top-level initializer is not a "
-        "constant expression — Sema should have folded it");
-    AST_ASSERT_MSG(var->init->constValue.isEvaluated(),
-        "bakeTopLevelBinding: a top-level initializer's constValue is "
-        "not evaluated — Sema should have folded it");
-
     BakedBinding baked;
     baked.mangledName = state.pool.lookup(var->mangledName);
     baked.type        = translateType(var->type, state.pool);
-    baked.initialValue = bakeConstant(state.pool, var->init->constValue,
-                                      baked.type, UINT32_MAX);
+
+    // A binding initialized with `T.Member` sugar is a row-reference
+    // constant, not a folded value. Same case as a table cell; the
+    // baker synthesizes the Constant::Kind::RowRef directly. Every
+    // other initializer is a folded constant.
+    if (isCompileTimeRowRefCell(var->init)) {
+        baked.initialValue = bakeRowRefCell(var->init, baked.type, state);
+    } else {
+        AST_ASSERT_MSG(var->init->isConst,
+            "bakeTopLevelBinding: a top-level initializer is not a "
+            "constant expression — Sema should have folded it");
+        AST_ASSERT_MSG(var->init->constValue.isEvaluated(),
+            "bakeTopLevelBinding: a top-level initializer's constValue "
+            "is not evaluated — Sema should have folded it");
+        baked.initialValue = bakeConstant(state.pool, var->init->constValue,
+                                          baked.type, UINT32_MAX);
+    }
 
     state.staticData.bindings().push_back(std::move(baked));
 }

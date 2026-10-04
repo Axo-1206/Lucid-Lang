@@ -27,6 +27,13 @@
  *   - decide where the result goes (pool vs StaticData — the caller
  *     decides, because the caller knows whether this value is a code
  *     reference or a declaration's initial value)
+ *
+ * ─── What this is not the only path for ───────────────────────────────────
+ * A `Constant::Kind::RowRef` is not produced by bakeConstant. It has
+ * no ConstantValue counterpart (Sema's evaluator does not fold a
+ * `T.Member` sugar into a RowRef constant), so the baker synthesizes
+ * the RowRef constant directly from the cell's ExprAST. See
+ * EmitDecl.cpp's bakeRowRefCell.
  */
 
 #pragma once
