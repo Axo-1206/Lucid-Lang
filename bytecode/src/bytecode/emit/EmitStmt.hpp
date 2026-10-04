@@ -45,6 +45,23 @@
  * body. The interpreter never executes the unreachable drops.
  *
  * See memory/DropSchedule.hpp for the drop-emission logic.
+ *
+ * ─── Design: ownership bookkeeping ────────────────────────────────────────
+ * The ownership stack is kept in sync with the value stack by
+ * CompilerContext::emitOpcode and noteStackEffect. Emitters do not
+ * push or pop entries for the count. This file does not do so either,
+ * with one exception:
+ *
+ *   - emitReturnStmt marks the return value's top entry as Moved
+ *     (markTopAsMoved). This does not change the stack size; it
+ *     overrides the entry's state so no drop below it touches the
+ *     transferred value.
+ *
+ * Every other statement emitter relies on auto-bookkeeping. A store
+ * (StoreLocal, StoreStaticData, StoreField, StoreIndex) auto-pops the
+ * entries for the values it consumes. A control-flow opcode
+ * (JumpIfFalse, JumpIfTrue, Jump, Pop) auto-pops the entries for any
+ * values it discards.
  */
 
 #pragma once

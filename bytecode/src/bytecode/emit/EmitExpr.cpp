@@ -25,15 +25,6 @@
 /// `and`, `or`, and `??` do not have opcodes of their own. They lower
 /// to a branch sequence that evaluates the RHS only when needed. The
 /// lowering is in emitBinaryExpr's And/Or/NullCoalesce cases.
-///
-/// ─── Design: function values are constants ────────────────────────────────
-/// A bare function name (`isMinor`, `onIdleEnter`) is a compile-time
-/// code address. It is not a load from a variable. emitIdentifierExpr
-/// recognizes the resolvedDecl == FnDeclAST case and emits LoadFunction
-/// with the function's index in the artifact. A lambda is the same: the
-/// compiler already lowered it to a top-level function during a
-/// pre-pass; emitLambdaExpr emits LoadFunction for that lowered
-/// function.
 
 #include "../compile/BakeConstant.hpp"
 #include "../compile/CompilerContext.hpp"
@@ -43,6 +34,7 @@
 #include "EmitExpr.hpp"
 #include "EmitPlace.hpp"
 
+#include "contract/ResourcePlan.hpp"
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -58,30 +50,17 @@ namespace lucid::bytecode::compile {
 
 namespace {
 
-/// Emit an opcode and record the stack depth after it. The emitter
-/// calls this whenever the instruction's effect on the value stack
-/// could push the depth past the previous high-water mark.
+/// True if a value of this type owns a resource the compiler must
+/// track. A string, a dynamic array, a host handle, and a fixed array
+/// of resources own a resource; primitives, row references, and
+/// function values do not.
 ///
-/// The function takes the delta: how many values this instruction
-/// pushes (+n) or pops (-n) beyond the values it consumes for its
-/// result. Most instructions produce one value from N operands; the
-/// delta is (1 - N).
-///
-/// We track depth conservatively: after every instruction, the depth
-/// is updated by the delta. The high-water mark is recorded on the
-/// context.
-inline void emitTracked(CompilerContext& ctx, Opcode op, int32_t delta) {
-    ctx.emitOpcode(op);
-    // ctx tracks the current depth elsewhere; this helper only notes
-    // the delta. The actual depth bookkeeping lives in the frame
-    // bookkeeping the emitter does at block boundaries. For the
-    // purposes of maxStackDepth, the conservative delta is the count
-    // of values this instruction can leave on the stack beyond what
-    // the following instruction consumes — which is always +1 for a
-    // value-producing instruction. We note +1 on every value-producing
-    // instruction; the exact accounting is done by the assembler
-    // after the fact if needed.
-    (void)delta;
+/// The classification is a pure function of the type. This is a
+/// convenience wrapper around planForType's ownsResources() so the
+/// emitters can write "if (ownsResource(t))" instead of threading a
+/// ResourcePlan through.
+bool ownsResource(const TypeDescriptor& t) {
+    return planForType(t).ownsResources();
 }
 
 /// Emit a raw constant-pool index for a Constant. The bake happens
@@ -158,8 +137,6 @@ void emitExpr(ExprAST* expr, CompilerContext& ctx) {
 // Literal
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace {
-
 void emitLiteralExpr(LiteralExprAST* e, CompilerContext& ctx) {
     // Every literal is a compile-time constant. Sema folded it; the
     // constant value is on the node.
@@ -174,8 +151,14 @@ void emitLiteralExpr(LiteralExprAST* e, CompilerContext& ctx) {
         translateType(e->resolvedType, ctx.compiler().pool());
     const uint32_t index = internConstant(ctx, e->constValue, type);
 
-    ctx.emitOpcode(Opcode::LoadConst);
+    ctx.emitOpcode(Opcode::LoadConst);   // auto-pushes one BitCopy entry
     ctx.emitU32(index);
+
+    // A string literal is a fresh heap buffer that the value owns.
+    // Every other literal (int, float, bool, char, nil) owns nothing.
+    if (ownsResource(type)) {
+        ctx.owned().markTopAsOwned();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,8 +181,14 @@ void emitIdentifierExpr(IdentifierExprAST* e, CompilerContext& ctx) {
     if (decl->isa<ParamAST>() || decl->isa<VarDeclAST>()) {
         auto slot = ctx.slots().slotFor(decl->name);
         if (slot.has_value()) {
-            ctx.emitOpcode(Opcode::LoadLocal);
+            ctx.emitOpcode(Opcode::LoadLocal);   // auto-push BitCopy
             ctx.emitU16(*slot);
+            // The loaded value owns a resource if the slot's type
+            // owns one. A string slot produces an Owned value; an
+            // int slot produces a BitCopy.
+            if (ownsResource(ctx.slots().typeOf(*slot))) {
+                ctx.owned().markTopAsOwned();
+            }
             return;
         }
         if (decl->isa<VarDeclAST>()) {
@@ -210,8 +199,19 @@ void emitIdentifierExpr(IdentifierExprAST* e, CompilerContext& ctx) {
                 "emitIdentifierExpr: a top-level binding has no "
                 "static-data offset — the compiler's pass A did not "
                 "register it");
-            ctx.emitOpcode(Opcode::LoadStaticData);
+            ctx.emitOpcode(Opcode::LoadStaticData);   // auto-push BitCopy
             ctx.emitU32(*offset);
+            // The binding's declared type decides the loaded value's
+            // ownership. A string binding produces an Owned value; an
+            // int binding produces a BitCopy.
+            AST_ASSERT_MSG(decl->as<VarDeclAST>()->type != nullptr,
+                "emitIdentifierExpr: a top-level binding has no "
+                "resolved type — Sema should have resolved it");
+            const TypeDescriptor bindingType =
+                translateType(decl->as<VarDeclAST>()->type, ctx.compiler().pool());
+            if (ownsResource(bindingType)) {
+                ctx.owned().markTopAsOwned();
+            }
             return;
         }
         AST_ASSERT_MSG(false,
@@ -223,14 +223,16 @@ void emitIdentifierExpr(IdentifierExprAST* e, CompilerContext& ctx) {
     // ─── A function ────────────────────────────────────────────────────
     if (decl->isa<FnDeclAST>()) {
         // A bare function name in expression position is a
-        // function value: a compile-time code address.
+        // function value: a compile-time code address. A function
+        // value owns no resource; the auto-pushed BitCopy entry is
+        // correct and no mark is needed.
         const auto* fn = decl->as<FnDeclAST>();
         auto idx = ctx.compiler().functionIndexOf(fn);
         AST_ASSERT_MSG(idx.has_value(),
             "emitIdentifierExpr: an identifier resolved to a function "
             "that was not registered — the driver's two passes are "
             "out of sync");
-        ctx.emitOpcode(Opcode::LoadFunction);
+        ctx.emitOpcode(Opcode::LoadFunction);   // auto-push BitCopy
         ctx.emitU32(*idx);
         return;
     }
@@ -312,6 +314,21 @@ void emitArrayLiteralExpr(ArrayLiteralExprAST* e, CompilerContext& ctx) {
     // `count` element values and pushes one array. OpcodeInfo carries
     // -1 for both, so the emitter supplies the actual effect.
     ctx.noteStackEffect(static_cast<int8_t>(count), 1);
+
+    // A dynamic array owns its heap buffer regardless of element
+    // type. A fixed array owns resources only if its element type
+    // owns resources — a fixed array of ints is BitCopy, but a fixed
+    // array of strings owns its elements.
+    //
+    // The plan captures both cases: planForType([int]) returns
+    // DeepCopyArray / FreeArray (the buffer is heap-allocated);
+    // planForType([4, int]) returns BitCopy / None;
+    // planForType([4, string]) returns ElementWise / ElementWise.
+    // ownsResource(t) reads the drop kind, so the same predicate
+    // covers all cases.
+    if (ownsResource(type)) {
+        ctx.owned().markTopAsOwned();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,8 +430,20 @@ void emitFieldAccessExpr(FieldAccessExprAST* e, CompilerContext& ctx) {
     // The object (the row reference) is on the stack. The cell
     // access pops it and pushes the cell's value.
     emitExpr(e->object, ctx);
-    ctx.emitOpcode(Opcode::LoadField);
+    ctx.emitOpcode(Opcode::LoadField);   // auto-pop row ref, auto-push cell
     ctx.emitU16(static_cast<uint16_t>(col->columnIndex));
+
+    // A cell whose column type owns a resource (a string column, a
+    // host-handle column) produces an Owned value; every other
+    // column produces a BitCopy.
+    AST_ASSERT_MSG(col->type != nullptr,
+        "emitFieldAccessExpr: a column has no resolved type — "
+        "Sema should have resolved it");
+    const TypeDescriptor cellType =
+        translateType(col->type, ctx.compiler().pool());
+    if (ownsResource(cellType)) {
+        ctx.owned().markTopAsOwned();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,7 +463,17 @@ void emitIndexExpr(IndexExprAST* e, CompilerContext& ctx) {
         // the interpreter pops.
         emitExpr(e->target, ctx);
         emitExpr(e->index, ctx);
-        ctx.emitOpcode(Opcode::LoadIndex);
+        ctx.emitOpcode(Opcode::LoadIndex);   // auto-pop array+index, auto-push element
+
+        // The element owns a resource if the array's element type
+        // owns one. A [string] produces an Owned element; an [int]
+        // produces a BitCopy.
+        AST_ASSERT_MSG(targetType.component != nullptr,
+            "emitIndexExpr: an array type has no element type — "
+            "Sema should have resolved it");
+        if (ownsResource(*targetType.component)) {
+            ctx.owned().markTopAsOwned();
+        }
         return;
     }
 
@@ -545,7 +584,17 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
             ctx.emitU32(*idx);
         }
 
+        // noteStackEffect pops the argument entries and pushes one
+        // entry for the return value (or zero for a void return).
         ctx.noteStackEffect(pops, pushes);
+
+        // The return value owns a resource if its type owns one.
+        // A `-> string` call produces an Owned value; a `-> int`
+        // call produces a BitCopy; a `-> void` call produces no
+        // value, and the mark would fire on the wrong entry.
+        if (returnsValue && ownsResource(retType)) {
+            ctx.owned().markTopAsOwned();
+        }
         return;
     }
 
@@ -587,9 +636,7 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
             }
 
             // The stack effect depends on the argument count and the
-            // return type. The module-qualified path was missing the
-            // noteStackEffect call entirely; add it here for both
-            // opcode variants.
+            // return type.
             const TypeDescriptor retType =
                 translateType(e->resolvedType, ctx.compiler().pool());
             const bool returnsValue = !(retType.isPrimitive()
@@ -600,6 +647,10 @@ void emitCallExpr(CallExprAST* e, CompilerContext& ctx) {
                 "emitCallExpr: negative pops — an int8_t overflow in "
                 "the argument count");
             ctx.noteStackEffect(pops, pushes);
+
+            if (returnsValue && ownsResource(retType)) {
+                ctx.owned().markTopAsOwned();
+            }
             return;
         }
 
@@ -716,8 +767,14 @@ void emitStartExpr(StartExprAST* e, CompilerContext& ctx) {
     AST_ASSERT_MSG(idx.has_value(),
         "emitStartExpr: the started function was not registered — "
         "the driver's two passes are out of sync");
-    ctx.emitOpcode(Opcode::Ext_StartSequence);
+    ctx.emitOpcode(Opcode::Ext_StartSequence);   // auto-push BitCopy
     ctx.emitU32(*idx);
+
+    // A start expression produces a &Coroutine handle, which is a
+    // host-backed type: it owns a resource and the caller must drop
+    // it. Ext_StartSequence's table entry records pushes=1, so the
+    // auto-bookkeeping pushed one BitCopy entry; upgrade it to Owned.
+    ctx.owned().markTopAsOwned();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -908,9 +965,17 @@ void emitBinaryExpr(BinaryExprAST* e, CompilerContext& ctx) {
         case BinaryOp::Mul:
         case BinaryOp::Div:
         case BinaryOp::Mod:
-        case BinaryOp::Pow:
-            ctx.emitOpcode(arithmeticOpcode(e->op, *pk));
+        case BinaryOp::Pow: {
+            const Opcode op = arithmeticOpcode(e->op, *pk);
+            ctx.emitOpcode(op);   // auto-pop 2, auto-push 1 (BitCopy)
+            // Concat_Str produces a fresh heap-allocated string,
+            // which owns a resource. Every other arithmetic opcode
+            // produces a primitive (BitCopy).
+            if (op == Opcode::Concat_Str) {
+                ctx.owned().markTopAsOwned();
+            }
             return;
+        }
 
         case BinaryOp::Lt:
         case BinaryOp::Le:
@@ -974,7 +1039,5 @@ void emitRangeExpr(RangeExprAST* e, CompilerContext& ctx) {
         "Sema rejects ranges everywhere except for-loop iterables and "
         "switch-case values; a range here is a Sema bug");
 }
-
-} // namespace
 
 } // namespace lucid::bytecode::compile

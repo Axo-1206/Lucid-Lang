@@ -48,6 +48,18 @@
 /// cases are handled by the interpreter, which knows the destination's
 /// storage layout and schema.
 ///
+/// ─── Ownership bookkeeping ────────────────────────────────────────────────
+/// The ownership stack is kept in sync with the value stack by
+/// CompilerContext::emitOpcode. This file does not push or pop
+/// ownership entries for the count; the opcodes' auto-bookkeeping
+/// handles that.
+///
+/// The one explicit mark is in the local drop-old-value path: after
+/// LoadLocal auto-pushes a BitCopy entry for the old value, the
+/// emitter calls markTopAsOwned so emitDropIfOwned sees an Owned
+/// entry and emits the drop. Every other path relies purely on
+/// auto-bookkeeping.
+///
 /// ─── Compound assignment ──────────────────────────────────────────────────
 /// Compound assignment (`x op= y`) is not yet implemented in
 /// emitAssignStmt; it asserts. The intended lowering is:
@@ -183,15 +195,24 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
             const ResourcePlan plan = planForType(type);
 
             if (plan.needsDropForStorage()) {
+                // Load the old value so the drop can release it.
+                // LoadLocal auto-pushes a BitCopy ownership entry;
+                // upgrade it to Owned because the loaded value is
+                // the resource the drop is about to release.
                 ctx.emitOpcode(Opcode::LoadLocal);
                 ctx.emitU16(*slot);
-                ctx.owned().pushOwned();
+                ctx.owned().markTopAsOwned();
+                // emitDropIfOwned peeks the entry; since it is
+                // Owned, it calls emitDrop, which consumes the value
+                // and auto-pops the entry via Ext_RtCall's
+                // noteStackEffect.
                 memory::emitDropIfOwned(ctx, plan);
             }
 
+            // Store the new value. StoreLocal auto-pops the entry
+            // for the value produced by the preceding emitExpr(rhs).
             ctx.emitOpcode(Opcode::StoreLocal);
             ctx.emitU16(*slot);
-            ctx.owned().pop();
             return;
         }
 
@@ -201,9 +222,12 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
                 ctx.compiler().staticDataOffsetOf(decl->mangledName);
             AST_ASSERT_MSG(offset.has_value(),
                 "emitStoreIntoPlace: a top-level binding has no static-data offset");
+            // StoreStaticData auto-pops the entry for the RHS value.
+            // The interpreter's StoreStaticData handles the old
+            // value's drop — no compiler-emitted drop, and no
+            // ownership mark, on this path.
             ctx.emitOpcode(Opcode::StoreStaticData);
             ctx.emitU32(*offset);
-            ctx.owned().pop();
             return;
         }
 
@@ -222,18 +246,11 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
             "emitStoreIntoPlace: a field-access store has no resolvedColumn");
         const ColumnDeclAST* col = fa->resolvedColumn;
 
+        // StoreField auto-pops both entries: the value (from
+        // emitExpr) and the row reference (from emitPlace's
+        // emitExpr(fa->object)).
         ctx.emitOpcode(Opcode::StoreField);
         ctx.emitU16(static_cast<uint16_t>(col->columnIndex));
-
-        // StoreField consumed the row reference (from emitPlace) and
-        // the new value (from emitExpr). Pop both ownership entries.
-        //
-        // Order: emitPlace pushed the row ref's ownership first, then
-        // emitExpr pushed the value's. StoreField pops them in reverse
-        // (value, then row ref). Pop the value's entry, then the row
-        // ref's entry.
-        ctx.owned().pop();   // the value
-        ctx.owned().pop();   // the row reference
         return;
     }
 
@@ -243,13 +260,9 @@ void emitStoreIntoPlace(ExprAST* lhs, CompilerContext& ctx) {
     // StoreIndex operation, using the array's element type. No
     // compiler-emitted drop here.
     case ASTKind::IndexExpr: {
+        // StoreIndex auto-pops all three entries: the array and the
+        // index (from emitPlace) and the value (from emitExpr).
         ctx.emitOpcode(Opcode::StoreIndex);
-
-        // StoreIndex consumed the array, the index, and the value.
-        // Pop their ownership entries in reverse push order.
-        ctx.owned().pop();   // the value
-        ctx.owned().pop();   // the index
-        ctx.owned().pop();   // the array
         return;
     }
 

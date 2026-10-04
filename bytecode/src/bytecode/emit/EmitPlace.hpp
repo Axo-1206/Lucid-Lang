@@ -26,6 +26,17 @@
  * operands, so a compound assignment `x += f()` can evaluate the
  * place's operands once, evaluate `f()` once, add, and store. The
  * two-function form is what makes that possible.
+ *
+ * ─── Ownership bookkeeping ────────────────────────────────────────────────
+ * emitStoreIntoPlace does not push or pop ownership entries. The store
+ * opcodes (StoreLocal, StoreStaticData, StoreField, StoreIndex) each
+ * have a fixed OpcodeInfo pops count, and CompilerContext::emitOpcode
+ * auto-pops the corresponding entries.
+ *
+ * The single exception is the local drop-old-value path: LoadLocal
+ * auto-pushes a BitCopy entry for the loaded old value, and the
+ * emitter calls markTopAsOwned before emitDropIfOwned so the drop
+ * fires. See the .cpp for the exact sequence.
  */
 
 #pragma once

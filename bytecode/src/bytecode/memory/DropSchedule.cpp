@@ -28,11 +28,18 @@ void dropSlot(compile::CompilerContext& ctx, uint16_t slot) {
     }
 
     // Load the slot's value, then drop it.
-    ctx.emitOpcode(Opcode::LoadLocal);
+    //
+    // LoadLocal auto-pushes one BitCopy ownership entry for the
+    // loaded value. The loaded value is the slot's current value,
+    // which owns a resource (the check above confirmed the plan
+    // needs a drop), so we upgrade the entry to Owned. Then
+    // emitDropIfOwned peeks the entry, sees Owned, and emits the
+    // drop — whose Ext_RtCall auto-pops the entry via
+    // noteStackEffect.
+    ctx.emitOpcode(Opcode::LoadLocal);   // auto-push BitCopy
     ctx.emitU16(slot);
-    ctx.owned().pushOwned();
-
-    emitDropIfOwned(ctx, plan);
+    ctx.owned().markTopAsOwned();        // upgrade to Owned
+    emitDropIfOwned(ctx, plan);          // peeks, drops, auto-pops
 }
 
 } // namespace

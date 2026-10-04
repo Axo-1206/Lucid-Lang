@@ -31,6 +31,18 @@
  *
  * The drop schedule walks the slot allocator's open scopes (which
  * track the nesting) to produce the right set.
+ *
+ * ─── Ownership bookkeeping ────────────────────────────────────────────────
+ * Each drop is self-balanced. dropSlot emits LoadLocal (auto-push one
+ * BitCopy ownership entry), upgrades the entry to Owned via
+ * markTopAsOwned, then calls emitDropIfOwned. The drop opcode's
+ * Ext_RtCall auto-pops the entry via noteStackEffect. Net effect on
+ * the ownership stack per drop: zero.
+ *
+ * The three entry points (emitScopeDrops, emitReturnDrops,
+ * emitLoopExitDrops) call dropSlot in a loop; they add no ownership
+ * entries of their own and pop none. The ownership stack size is the
+ * same before and after each.
  */
 
 #pragma once

@@ -20,7 +20,12 @@
  *
  * ─── Stack effect ─────────────────────────────────────────────────────────
  * emitDrop consumes the value on top of the stack. After the call,
- * the value stack has one fewer entry.
+ * the value stack has one fewer entry, and the ownership stack has
+ * one fewer entry (via the opcode's auto-bookkeeping).
+ *
+ * emitDropIfOwned reads the top ownership entry first. If it is
+ * Owned, it emits the drop. Otherwise the value is discarded with
+ * Ext_Pop. In both cases, exactly one ownership entry is consumed.
  */
 
 #pragma once

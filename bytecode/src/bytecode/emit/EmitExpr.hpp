@@ -27,6 +27,33 @@
  * expr->resolvedType and translates it. It does not infer types and
  * does not re-check type compatibility. A node with a null
  * resolvedType is a Sema bug and the emitter asserts.
+ *
+ * ─── Design: function values are constants ────────────────────────────────
+ * A bare function name (`isMinor`, `onIdleEnter`) is a compile-time
+ * code address. It is not a load from a variable. emitIdentifierExpr
+ * recognizes the resolvedDecl == FnDeclAST case and emits LoadFunction
+ * with the function's index in the artifact. A lambda is the same: the
+ * compiler already lowered it to a top-level function during a
+ * pre-pass; emitLambdaExpr emits LoadFunction for that lowered
+ * function.
+ *
+ * ─── Design: ownership of produced values ─────────────────────────────────
+ * Every expression emitter leaves one value on the value stack.
+ * CompilerContext::emitOpcode auto-pushes one BitCopy ownership entry
+ * for that value. When the produced value owns a resource (a string,
+ * a dynamic array, a host handle, a fixed array of resources), the
+ * emitter calls ctx.owned().markTopAsOwned() to upgrade the entry.
+ *
+ * The two outcomes:
+ *   - Produces a primitive, a row reference, or a function value:
+ *     no mark. The auto-pushed BitCopy is correct.
+ *   - Produces a resource-owning value: mark Owned.
+ *
+ * The rule applies at every leaf of the expression tree. A composite
+ * expression's ownership is determined by its own type, not by its
+ * sub-expressions' ownership — the sub-expression entries are consumed
+ * by the outer opcode and replaced with a fresh entry for the
+ * composite result.
  */
 
 #pragma once

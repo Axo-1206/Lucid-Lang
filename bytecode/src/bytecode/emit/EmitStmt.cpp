@@ -154,7 +154,9 @@ bool emitVarDeclStmt(VarDeclStmtAST* stmt, CompilerContext& ctx) {
         "emitVarDeclStmt: a local declaration has no resolved type — "
         "Sema should have resolved it");
 
-    // Evaluate the initializer. The value ends up on top of the stack.
+    // Evaluate the initializer. The value ends up on top of the stack,
+    // with its ownership entry pushed by emitExpr's auto-bookkeeping
+    // (BitCopy, upgraded to Owned if the value owns a resource).
     emitExpr(decl->init, ctx);
 
     // Translate the declared type and record it on the slot.
@@ -163,14 +165,10 @@ bool emitVarDeclStmt(VarDeclStmtAST* stmt, CompilerContext& ctx) {
 
     const uint16_t slot = ctx.slots().allocateLocal(decl->name, type);
 
-    // Store the value into the slot. The value's ownership flag on
-    // the ownership stack is Owned; StoreLocal consumes the value,
-    // and the slot now owns it.
+    // Store the value into the slot. StoreLocal auto-pops the entry
+    // for the value being stored; the slot now owns it.
     ctx.emitOpcode(Opcode::StoreLocal);
     ctx.emitU16(slot);
-
-    // Consume the ownership entry for the value that was just stored.
-    ctx.owned().pop();
 
     return false;
 }
@@ -211,12 +209,11 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
 
     // If the expression's result is a resource-owning value, drop it —
     // it's a discarded temporary. The drop consumes the value from the
-    // stack.
+    // stack and auto-pops its ownership entry.
     //
     // If the result is not a resource, we still need to pop it off the
-    // value stack (the stack discipline expects balanced push/pop).
-    // Pop is a no-op on the value stack's depth tracker for a bit-copy
-    // type, but the ownership stack needs the entry removed.
+    // value stack. Ext_Pop's auto-bookkeeping removes the ownership
+    // entry.
     if (stmt->expr->resolvedType != nullptr) {
         const TypeDescriptor type =
             translateType(stmt->expr->resolvedType,
@@ -227,9 +224,9 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
             // Emit the drop, which consumes it.
             memory::emitDrop(ctx, plan);
         } else {
-            // The value owns nothing. Pop it off the stack.
+            // The value owns nothing. Pop it off the stack. Ext_Pop
+            // (fixed-effect, pops=1) auto-pops the ownership entry.
             ctx.emitOpcode(Opcode::Ext_Pop);
-            ctx.owned().pop();
         }
     }
 
@@ -242,24 +239,29 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
 
 bool emitReturnStmt(ReturnStmtAST* stmt, CompilerContext& ctx) {
     if (stmt->value != nullptr) {
-        // Evaluate the return value. It ends up on top of the stack.
+        // Evaluate the return value. It ends up on top of the stack
+        // with its auto-pushed ownership entry.
         emitExpr(stmt->value, ctx);
 
         // The return value's ownership transfers to the caller. Mark
-        // the ownership entry as Moved so the drop schedule does not
-        // touch it.
+        // its entry Moved so no drop below this stack position touches
+        // it. The entry was pushed by emitExpr's auto-bookkeeping;
+        // markTopAsMoved overrides its state in place.
         ctx.owned().markTopAsMoved();
 
-        // Drop every resource-typed slot in every open scope. The
-        // return value's stack position is above all the slot drops,
-        // so the drops operate on slots without disturbing it.
+        // Drop every resource-typed slot in every open scope. Each
+        // drop is self-balanced: dropSlot's LoadLocal auto-pushes and
+        // emitDropIfOwned auto-pops.
         DropSchedule::emitReturnDrops(ctx);
 
+        // Ext_Return (fixed-effect, pops=1) auto-pops the return
+        // value's ownership entry.
         ctx.emitOpcode(Opcode::Ext_Return);
     } else {
         // No return value. Drop every resource-typed slot in every
         // open scope.
         DropSchedule::emitReturnDrops(ctx);
+        // Ext_ReturnVoid has no effect on either stack.
         ctx.emitOpcode(Opcode::Ext_ReturnVoid);
     }
 
@@ -526,9 +528,10 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
 
         const uint16_t counterSlot =
             ctx.slots().allocateLocal(stmt->firstVar->name, counterType);
+        // StoreLocal auto-pops the entry for the counter's initial
+        // value, produced by the emitExpr(range->lo) above.
         ctx.emitOpcode(Opcode::StoreLocal);
         ctx.emitU16(counterSlot);
-        ctx.owned().pop();
 
         // Push the loop context before emitting the loop proper.
         LoopContext loop;

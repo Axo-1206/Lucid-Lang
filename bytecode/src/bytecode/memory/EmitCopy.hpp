@@ -24,12 +24,20 @@
  * call, the stack has two values: the original and the copy. The
  * caller decides which is which.
  *
- * For `BitCopy`, the copy is `Ext_Dup`.
- * For `Retain`, the copy is `Ext_Retain` — the value stays on the
- *   stack and its refcount is incremented, then `Ext_Dup` duplicates
- *   the handle value (two handles pointing at the same object, both
- *   with a refcount).
- * For heap-copy kinds, a runtime-call opcode is emitted.
+ * The ownership stack grows by one entry — the copy's. The original's
+ * entry is untouched. When the copy owns a resource (a heap buffer, a
+ * retained handle), the emitter marks it Owned; otherwise it stays
+ * the default BitCopy.
+ *
+ *   - BitCopy / Reference: the copy is Ext_Dup. The auto-pushed
+ *     BitCopy entry is correct; no mark.
+ *   - Retain: Ext_RtCall <Retain> increments the refcount, then
+ *     Ext_Dup duplicates the handle. The copy owns a refcount, so
+ *     the emitter marks it Owned.
+ *   - DeepCopyString / DeepCopyArray: Ext_Dup then
+ *     Ext_RtCall <CopyString | CopyArray> produces a fresh heap
+ *     value. The fresh value owns a resource, so the emitter marks
+ *     it Owned.
  *
  * ─── Design: only ElementWise is unimplemented ────────────────────────────
  * Every CopyKind except `ElementWise` is implemented. The
