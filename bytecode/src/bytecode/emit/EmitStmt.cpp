@@ -525,6 +525,92 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
 
     emitExpr(stmt->subject, ctx);
 
+    // ─── Subject type classification ───────────────────────────────────
+    //
+    // The subject's type determines the comparison opcode used for
+    // each case value, and the range-case opcodes (if any). The three
+    // forms:
+    //
+    //   - &T (a row reference): identity comparison via Eq_RowRef.
+    //     Case values are compile-time row references.
+    //   - A function value: identity comparison via Eq_Function.
+    //   - A primitive: value comparison via the typed Eq_* opcode.
+    //
+    // A range case is legal only for a primitive subject — a &T or a
+    // function value has no ordering. Sema should have rejected a
+    // range case on a non-primitive subject; the emitter asserts.
+    const TypeDescriptor subjectType =
+        translateType(stmt->subject->resolvedType, ctx.compiler().pool());
+
+    Opcode eqOp = Opcode::Nop;
+    std::optional<PrimitiveKind> subjectPrimitive;
+
+    if (subjectType.isRowRef()) {
+        eqOp = Opcode::Eq_RowRef;
+    } else if (subjectType.isFunction()) {
+        eqOp = Opcode::Eq_Function;
+    } else {
+        auto pk = primitiveOf(subjectType);
+        AST_ASSERT_MSG(pk.has_value(),
+            "emitSwitchStmt: the subject's type is neither a row "
+            "reference, a function, nor a primitive — Sema should "
+            "have rejected this switch");
+        subjectPrimitive = pk;
+        eqOp = comparisonOpcode(BinaryOp::Eq, *pk);
+    }
+
+    // Helper to pick the comparison opcode for a range bound. A range
+    // is legal only for a primitive subject.
+    auto rangeOpcode = [&](BinaryOp op) -> Opcode {
+        AST_ASSERT_MSG(subjectPrimitive.has_value(),
+            "emitSwitchStmt: a range case appears with a non-primitive "
+            "subject — Sema should have rejected this switch");
+        return comparisonOpcode(op, *subjectPrimitive);
+    };
+
+    // Helper to discard the subject on a path where it is not needed.
+    // If the subject owns a resource, the discard is a drop; otherwise
+    // it is an Ext_Pop.
+    //
+    // Called at three points: the fall-through path (no case matched),
+    // and the start of each case body.
+    auto discardSubject = [&]() {
+        const ResourcePlan plan = planForType(subjectType);
+        if (plan.needsDropForStorage()) {
+            memory::emitDrop(ctx, subjectType);
+        } else {
+            ctx.emitOpcode(Opcode::Ext_Pop);
+        }
+    };
+
+    // ─── Case-value checks ─────────────────────────────────────────────
+    //
+    // For each case clause, emit a check for each of its values. Each
+    // check leaves the subject on the stack and, if the check
+    // succeeds, jumps to the case's body. If the check fails, control
+    // falls through to the next check.
+    //
+    // Value check (`case v`):
+    //   Ext_Dup                  ; [subject, subject]
+    //   <v>                      ; [subject, subject, v]
+    //   Eq_<type>                ; [subject, bool]
+    //   Ext_JumpIfTrue  body_i   ; [subject]
+    //
+    // Range check (`case lo..hi`):
+    //   Ext_Dup                  ; [subject, subject]
+    //   <lo>                     ; [subject, subject, lo]
+    //   Ge_<type>                ; [subject, (subject >= lo)]
+    //   Ext_JumpIfFalse  next    ; [subject]  (if lo check fails)
+    //   Ext_Dup                  ; [subject, subject]
+    //   <hi>                     ; [subject, subject, hi]
+    //   Le_<type>                ; [subject, (subject <= hi)]
+    //   Ext_JumpIfTrue  body_i   ; [subject]  (if hi check passes)
+    //   next:                    ; [subject]
+    //
+    // The `next` label patches to the instruction after the
+    // Ext_JumpIfTrue — the start of the following value's check, or
+    // the fall-through sequence if this was the last value.
+
     std::vector<std::vector<uint32_t>> caseJumpOperands;
     caseJumpOperands.reserve(stmt->cases.size());
 
@@ -536,36 +622,76 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
             AST_ASSERT_MSG(value != nullptr,
                 "emitSwitchStmt: a case value is null");
 
-            ctx.emitOpcode(Opcode::Ext_Dup);
-            emitExpr(value, ctx);
-            ctx.emitOpcode(Opcode::Eq_RowRef);
+            if (value->isa<RangeExprAST>()) {
+                // ─── Range case ────────────────────────────────────────
+                auto* range = value->as<RangeExprAST>();
+                AST_ASSERT_MSG(range->lo != nullptr && range->hi != nullptr,
+                    "emitSwitchStmt: a range case is missing a bound");
+                AST_ASSERT_MSG(range->step == nullptr,
+                    "emitSwitchStmt: a range case has a step — the "
+                    "grammar does not allow a step in a switch case");
+                AST_ASSERT_MSG(range->lo->isConst && range->hi->isConst,
+                    "emitSwitchStmt: a range case's bound is not a "
+                    "constant — the grammar requires constants");
 
-            ctx.emitOpcode(Opcode::Ext_JumpIfTrue);
-            const uint32_t operandOffset = ctx.here();
-            ctx.emitI32(0);
-            jumpsForThisCase.push_back(operandOffset);
+                // Lower-bound check: subject >= lo.
+                ctx.emitOpcode(Opcode::Ext_Dup);
+                emitExpr(range->lo, ctx);
+                ctx.emitOpcode(rangeOpcode(BinaryOp::Ge));
+                const uint32_t lowerFalseOffset =
+                    emitJumpPlaceholder(ctx, Opcode::Ext_JumpIfFalse);
+
+                // Upper-bound check: subject <= hi.
+                ctx.emitOpcode(Opcode::Ext_Dup);
+                emitExpr(range->hi, ctx);
+                ctx.emitOpcode(rangeOpcode(BinaryOp::Le));
+
+                ctx.emitOpcode(Opcode::Ext_JumpIfTrue);
+                const uint32_t toBodyOffset = ctx.here();
+                ctx.emitI32(0);
+                jumpsForThisCase.push_back(toBodyOffset);
+
+                // The lower-check-false jump lands here: the start of
+                // the next value's check, or the fall-through.
+                patchJumpToHere(ctx, lowerFalseOffset);
+            } else {
+                // ─── Value case ────────────────────────────────────────
+                ctx.emitOpcode(Opcode::Ext_Dup);
+                emitExpr(value, ctx);
+                ctx.emitOpcode(eqOp);
+
+                ctx.emitOpcode(Opcode::Ext_JumpIfTrue);
+                const uint32_t operandOffset = ctx.here();
+                ctx.emitI32(0);
+                jumpsForThisCase.push_back(operandOffset);
+            }
         }
         caseJumpOperands.push_back(std::move(jumpsForThisCase));
     }
 
-    ctx.emitOpcode(Opcode::Ext_Pop);
+    // ─── Fall-through to default ───────────────────────────────────────
+    //
+    // No case value matched. Discard the subject (a drop if it owns a
+    // resource) and jump to the default body.
+    discardSubject();
     ctx.emitOpcode(Opcode::Ext_Jump);
     const uint32_t toDefaultOffset = ctx.here();
     ctx.emitI32(0);
 
+    // ─── Case bodies ───────────────────────────────────────────────────
     std::vector<uint32_t> bodyEndJumps;
     std::vector<bool> caseTransfers;
     caseTransfers.reserve(stmt->cases.size());
     for (size_t i = 0; i < stmt->cases.size(); ++i) {
         auto* c = stmt->cases[i];
         for (uint32_t operandOffset : caseJumpOperands[i]) {
-            const int32_t target = static_cast<int32_t>(ctx.here());
-            const int32_t base = static_cast<int32_t>(operandOffset + 4);
-            ctx.patchU32(operandOffset,
-                         static_cast<uint32_t>(target - base));
+            patchJumpToHere(ctx, operandOffset);
         }
 
-        ctx.emitOpcode(Opcode::Ext_Pop);
+        // The subject is on the stack when the body starts (the
+        // matching value check left it there). Discard it.
+        discardSubject();
+
         const bool bodyTransfers = emitStmt(c->body, ctx);
         caseTransfers.push_back(bodyTransfers);
 
@@ -584,10 +710,7 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
     const bool defaultTransfers = emitStmt(stmt->defaultBody, ctx);
 
     for (uint32_t operandOffset : bodyEndJumps) {
-        const int32_t target = static_cast<int32_t>(ctx.here());
-        const int32_t base = static_cast<int32_t>(operandOffset + 4);
-        ctx.patchU32(operandOffset,
-                     static_cast<uint32_t>(target - base));
+        patchJumpToHere(ctx, operandOffset);
     }
 
     bool allTransfer = defaultTransfers;
