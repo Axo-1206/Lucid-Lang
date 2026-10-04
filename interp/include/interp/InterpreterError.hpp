@@ -4,7 +4,7 @@
  * @responsibility The C++ exception type the interpreter throws when a
  *                 panic is raised. Carries a runtime::Panic value. The
  *                 host-call boundary catches it and converts it into
- *                 an ExecutionResult::Panic.
+ *                 an ExecutionResult::Panicked.
  *
  * ─── Design: exceptions for the panic path, not the happy path ────────────
  * A panic is a bug in the Lucid program — a nil dereference, an
@@ -19,15 +19,8 @@
  * resources (strings, host handles held in local slots) are NOT
  * dropped. The compiled code's drop schedule only runs on normal
  * control flow. This is a documented v1 limitation (grammar §10
- * discussion of panic): a panic leaks the panicking frame's local
- * resources. The host is expected to recover the entity/context, not
- * the frame's memory.
- *
- * ─── Design: the stack trace is captured at throw time ────────────────────
- * The PanicException constructor is given the interpreter's frame
- * stack and captures the Lucid-level trace into Panic::stack. The
- * C++-level stack trace is not captured; the host's logger can decide
- * whether to capture one.
+ * discussion of panic). The host is expected to recover the
+ * entity/context, not the frame's memory.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
  * runtime/Panic.hpp.
@@ -44,11 +37,6 @@
 namespace lucid::interp {
 
 /// @brief The exception the interpreter throws on a panic.
-///
-/// Not derived from std::runtime_error because a Panic is structured
-/// data (code + message + Lucid stack), not just a string. The
-/// `what()` override returns the message for compatibility with
-/// generic C++ error handling.
 class PanicException : public std::exception {
 public:
     explicit PanicException(runtime::Panic p)

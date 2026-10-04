@@ -10,14 +10,12 @@
  * The interpreter's hot loop never looks up a host name by string. The
  * loader resolves every HostSymbolTable entry against the host registry
  * once, producing a dispatch array of {function pointer, signature}
- * pairs. Ext_CallHost <index> indexes that array. This is what makes a
- * host call cheap at run time.
+ * pairs. Ext_CallHost <index> indexes that array.
  *
  * ─── Design: static data is live, not a seed ──────────────────────────────
  * The Bytecode's StaticData is a *seed*. The loader allocates live
  * storage for each binding and each table, copies the seed in, and the
- * LoadedProgram owns the live storage. After load, StaticData is not
- * consulted again.
+ * LoadedProgram owns the live storage.
  *
  * ─── Design: the FunctionRef pool is stable ───────────────────────────────
  * Every function value that appears in a constant is a FunctionRef. The
@@ -28,40 +26,41 @@
  * ─── Dependencies ─────────────────────────────────────────────────────────
  * runtime/Value.hpp, interp/FunctionRef.hpp. The Bytecode and
  * FunctionProto definitions are needed only in the .cpp; the header
- * forward-declares. TableObject is forward-declared; the .cpp includes
- * interp/TableObject.hpp. HostRegistry is forward-declared; the .cpp
- * includes runtime/HostRegistry.hpp.
+ * forward-declares. TableObject and HostRegistry are forward-declared.
  */
 
 #pragma once
 
-#include "runtime/Value.hpp"
 #include "interp/FunctionRef.hpp"
+#include "runtime/Value.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace lucid::contract {
-    class Bytecode;
-    struct FunctionProto;
     struct FunctionSignature;
 }
-
+namespace lucid::bytecode {
+    class Bytecode;
+    struct FunctionProto;
+}
 namespace lucid::runtime {
     class HostRegistry;
 }
 
 namespace lucid::interp {
 
-struct TableObject;
+using lucid::runtime::Value;
+
+class TableObject;
 
 /// @brief A resolved host function: the function pointer the host
 ///        registered, plus its signature. Produced by the loader.
 struct ResolvedHostFunction {
     /// The function pointer. The interpreter casts it to the signature
     /// at the call site. A null pointer means the symbol was not
-    /// resolved (only possible if the loader was told to defer).
+    /// resolved.
     void* fn = nullptr;
 
     /// Index into the signature table.
@@ -73,10 +72,6 @@ struct ResolvedHostFunction {
 };
 
 /// @brief The interpreter's loaded view of a Bytecode.
-///
-/// Owns the Bytecode; owns the resolved dispatch array; owns the live
-/// static data. Does not own the host registry (the host owns it and
-/// outlives every LoadedProgram).
 class LoadedProgram {
 public:
     LoadedProgram();
@@ -89,13 +84,13 @@ public:
 
     // ─── Accessors ──────────────────────────────────────────────────────
 
-    const contract::Bytecode* bytecode() const noexcept {
+    const bytecode::Bytecode* bytecode() const noexcept {
         return m_bytecode.get();
     }
 
     /// The function proto at the given index. Precondition: index is
     /// valid.
-    const contract::FunctionProto* functionAt(uint32_t index) const noexcept;
+    const bytecode::FunctionProto* functionAt(uint32_t index) const noexcept;
 
     /// The FunctionRef for a function. Precondition: index is valid.
     FunctionRef* functionRefAt(uint32_t index) noexcept;
@@ -111,7 +106,7 @@ public:
     // ─── Static data ────────────────────────────────────────────────────
 
     /// The live value of a top-level binding, by index.
-    runtime::Value& topLevelBinding(uint32_t index) noexcept {
+    Value& topLevelBinding(uint32_t index) noexcept {
         return m_topLevelBindings[index];
     }
 
@@ -127,7 +122,7 @@ public:
 private:
     friend class Loader;
 
-    std::unique_ptr<contract::Bytecode> m_bytecode;
+    std::unique_ptr<bytecode::Bytecode> m_bytecode;
 
     /// One resolved host function per HostSymbolTable entry, in the
     /// same order. Ext_CallHost <index> indexes this array.
@@ -138,7 +133,7 @@ private:
     std::vector<std::unique_ptr<FunctionRef>> m_functionRefs;
 
     /// Live top-level binding storage, one entry per StaticData::bindings.
-    std::vector<runtime::Value> m_topLevelBindings;
+    std::vector<Value> m_topLevelBindings;
 
     /// Live tables, one per StaticData::tables.
     std::vector<std::unique_ptr<TableObject>> m_tables;

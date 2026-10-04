@@ -18,18 +18,20 @@
  * produces it in v1.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
- * interp/Value.hpp, runtime/Panic.hpp.
+ * runtime/Value.hpp, runtime/Panic.hpp.
  */
 
 #pragma once
 
-#include "runtime/Value.hpp"
 #include "runtime/Panic.hpp"
+#include "runtime/Value.hpp"
 
 #include <cstdint>
 #include <variant>
 
 namespace lucid::interp {
+
+using lucid::runtime::Value;
 
 /// @brief A handle to a running sequence. Reserved for v2.
 struct SequenceHandle {
@@ -42,11 +44,10 @@ struct ExecutionResult {
     /// The function returned normally.
     struct Completed {
         /// The returned value, or a Nil Value for a void function.
-        runtime::Value result;
+        Value result;
     };
 
-    /// The function panicked. The panic carries a DiagCode, a message,
-    /// and the Lucid stack at the panic point.
+    /// The function panicked.
     struct Panicked {
         runtime::Panic panic;
     };
@@ -71,7 +72,7 @@ struct ExecutionResult {
     }
 
     /// Precondition: isCompleted().
-    runtime::Value result() const { return std::get<Completed>(outcome).result; }
+    Value result() const { return std::get<Completed>(outcome).result; }
 
     /// Precondition: isPanicked().
     const runtime::Panic& panic() const {
@@ -80,7 +81,7 @@ struct ExecutionResult {
 
     // ─── Factories ──────────────────────────────────────────────────────
 
-    static ExecutionResult completed(runtime::Value v) {
+    static ExecutionResult completed(Value v) {
         return ExecutionResult{ Completed{ v } };
     }
     static ExecutionResult panicked(runtime::Panic p) {

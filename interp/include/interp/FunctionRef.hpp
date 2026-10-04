@@ -10,9 +10,8 @@
  * (§4.2.5). A function value is a bare code pointer. The interpreter
  * represents it as a FunctionRef*: a small heap object holding the
  * function index (into the LoadedProgram's FunctionProto array) and
- * the signature descriptor (so a call through a table cell can check
- * the argument types at the call site, even though Sema already
- * checked them where it could).
+ * the signature descriptor, so a call through a table cell can check
+ * the argument types at the call site.
  *
  * ─── Design: why heap, not inline ─────────────────────────────────────────
  * A FunctionRef is small (a u32 index + a u32 signature-pool index),
@@ -20,8 +19,7 @@
  * Pointing at a FunctionRef lets the LoadedProgram own a stable array
  * of them, indexed by function index — every LoadConst for a function
  * value pushes the same FunctionRef* for the same function. This makes
- * function values cheap to compare (pointer equality) and cheap to
- * store (one pointer).
+ * function values cheap to compare (pointer equality).
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
  * None.

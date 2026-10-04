@@ -21,37 +21,32 @@
  * ─── Design: the loader returns a Result, not an exception ────────────────
  * A load error is not a panic — nothing has run yet, and the host is
  * configuring its engine. The loader returns a Result, not a
- * PanicException. The interpreter's PanicException is for run-time
- * panics only.
+ * PanicException.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
- * interp/LoadedProgram.hpp. The Bytecode and HostRegistry definitions
- * are needed only in the .cpp; the header forward-declares.
+ * interp/LoadedProgram.hpp, core/diagnostics/DiagCode.hpp. The Bytecode
+ * and HostRegistry definitions are needed only in the .cpp.
  */
 
 #pragma once
 
-#include "interp/LoadedProgram.hpp"
-
 #include "core/diagnostics/DiagCode.hpp"
+#include "interp/LoadedProgram.hpp"
 
 #include <memory>
 #include <string>
 #include <variant>
 
-namespace lucid::contract {
+namespace lucid::bytecode {
     class Bytecode;
 }
-
 namespace lucid::runtime {
     class HostRegistry;
 }
 
 namespace lucid::interp {
 
-/// @brief A load failure. Carries a DiagCode from the Bc_* or Host_*
-///        bands, a message, and the symbol name that failed (empty if
-///        the failure was not symbol-specific).
+/// @brief A load failure.
 struct LoadError {
     diag::DiagCode code;
     std::string    message;
@@ -65,13 +60,12 @@ struct LoadError {
 /// went wrong.
 ///
 /// The registry may be null, in which case any HostSymbolTable entry
-/// is a Host_SymbolNotRegistered error. This is useful for tests that
-/// load a program with no host references.
+/// is a Host_SymbolNotRegistered error.
 ///
 /// The loader does not run any Lucid code. It resolves symbols,
 /// allocates static storage, and builds the FunctionRef pool.
 std::variant<std::unique_ptr<LoadedProgram>, LoadError>
-load(std::unique_ptr<contract::Bytecode> bc,
+load(std::unique_ptr<bytecode::Bytecode> bc,
      runtime::HostRegistry* registry);
 
 } // namespace lucid::interp

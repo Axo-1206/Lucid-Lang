@@ -10,15 +10,12 @@
  * A TableObject handles both growing and fixed tables. The `kind`
  * field distinguishes them; operations that are not valid for a kind
  * (ADD on a fixed table, for instance) are asserted in debug builds
- * and are prevented by the compiler in release builds. Keeping one
- * type makes the interpreter's aggregate opcodes (Ext_TableAdd,
- * Ext_TableAt, ...) uniform across table kinds.
+ * and are prevented by the compiler in release builds.
  *
  * ─── Design: rows are slot-indexed, never moved ───────────────────────────
  * A row never moves between slots once added (§4.1.1a). REMOVE leaves
  * a dead slot; a later ADD reuses it with a new generation. A &T is a
- * {slot, generation} pair; reading a stale reference yields nil. This
- * is the whole reason there is no compaction and no in-place sort.
+ * {slot, generation} pair; reading a stale reference yields nil.
  *
  * ─── Design: the generation counter and reset floor ───────────────────────
  * Every growing table has a monotonically increasing generation
@@ -31,20 +28,12 @@
  * ─── Design: the primary index is a runtime choice ────────────────────────
  * A table with a @primary column has a `by<Column>` lookup (§4.1.5).
  * The index's representation is a runtime detail; the interpreter
- * promises only O(1) expected. This header exposes the index through a
- * single byPrimary call; the implementation may use a direct array, a
- * hash map, or anything else.
- *
- * ─── Design: array-typed cells share a buffer ─────────────────────────────
- * A column whose type is [T] stores one array per row (§7.8). The
- * runtime stores the arrays' data in a shared flat buffer with
- * per-row offsets. This header exposes the cell value as a Value per
- * row; the sharing is an implementation detail of the cell storage.
+ * promises only O(1) expected.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
  * runtime/Value.hpp. bytecode/TableSchema.hpp is forward-declared; the
- * .cpp includes it. contract/TypeDescriptor.hpp and
- * contract/ResourcePlan.hpp are needed only in the .cpp.
+ * .cpp includes it. contract/TypeDescriptor.hpp is forward-declared;
+ * the .cpp includes it for the ResourcePlan dispatch in cell drops.
  */
 
 #pragma once
@@ -56,14 +45,16 @@
 #include <string_view>
 #include <vector>
 
+namespace lucid::contract {
+    struct TypeDescriptor;
+}
 namespace lucid::bytecode {
     struct TableSchema;
-    struct TableColumn;
 }
 
 namespace lucid::interp {
 
-class TableObject;
+using lucid::runtime::Value;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TableKind
@@ -107,7 +98,7 @@ public:
     static std::unique_ptr<TableObject> makeFixed(
         const bytecode::TableSchema* schema,
         TableKind kind,
-        std::vector<std::vector<runtime::Value>>&& seedRows);
+        std::vector<std::vector<Value>>&& seedRows);
 
     ~TableObject();
 
@@ -158,7 +149,7 @@ public:
     /// row as a RowRef Value.
     ///
     /// The cells are moved in (the caller's array is not reused).
-    runtime::Value addRow(std::vector<runtime::Value>&& cells);
+    Value addRow(std::vector<Value>&& cells);
 
     /// Remove the row at slot `slot`. Precondition: kind == Growing,
     /// slot is live. Marks the slot dead, pushes it on the free list,
@@ -180,7 +171,7 @@ public:
     // ─── Row access ─────────────────────────────────────────────────────
 
     /// The RowRef Value for a live slot. Precondition: slot is live.
-    runtime::Value rowRef(uint32_t slot) const noexcept;
+    Value rowRef(uint32_t slot) const noexcept;
 
     /// True if the given {slot, generation} is live and not below the
     /// reset floor. A false result means the reference is stale.
@@ -188,13 +179,13 @@ public:
 
     /// Read the value of column `col` in the row at `slot`.
     /// Precondition: slot is live, col < columnCount().
-    const runtime::Value& cell(uint32_t slot, uint32_t col) const noexcept;
+    const Value& cell(uint32_t slot, uint32_t col) const noexcept;
 
     /// Write the value of column `col` in the row at `slot`. Runs the
     /// @unique / @primary check if the column is unique; a duplicate
     /// raises Panic_DuplicateKey. Precondition: kind != Readonly,
     /// column is not @readonly, slot is live.
-    void setCell(uint32_t slot, uint32_t col, runtime::Value v);
+    void setCell(uint32_t slot, uint32_t col, Value v);
 
     // ─── Indexing ───────────────────────────────────────────────────────
 
@@ -203,7 +194,7 @@ public:
     ///
     /// O(1) expected. The index representation is a runtime choice;
     /// see §4.1.5.
-    runtime::Value byPrimary(const runtime::Value& key) const noexcept;
+    Value byPrimary(const Value& key) const noexcept;
 
     // ─── Iteration ──────────────────────────────────────────────────────
 
@@ -229,7 +220,7 @@ private:
     /// Internal: add a row without running uniqueness checks. Used by
     /// makeFixed for seed rows (Sema already checked them at compile
     /// time; see §4.1.5 "Duplicates in an initializer").
-    void addRowUnchecked(std::vector<runtime::Value>&& cells);
+    void addRowUnchecked(std::vector<Value>&& cells);
 
     const bytecode::TableSchema* m_schema = nullptr;
     TableKind m_kind = TableKind::Growing;
@@ -243,8 +234,8 @@ private:
 
     /// Row storage. For a growing table, one entry per slot (live or
     /// dead); dead entries are reused via the free list. For a fixed
-    /// table, one entry per row.
-    std::vector<runtime::Value> m_cells;   // capacity * columnCount
+    /// table, one entry per row. Flattened: m_cells[slot * columnCount + col].
+    std::vector<Value> m_cells;
 
     /// Per-slot metadata (generation, liveness). Empty for a fixed
     /// table; for a growing table, one entry per slot.

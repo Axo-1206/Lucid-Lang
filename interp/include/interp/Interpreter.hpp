@@ -10,20 +10,14 @@
  * registry and the runtime; the interpreter's hot loop needs neither.
  *
  * ─── Design: the interpreter is not thread-safe ───────────────────────────
- * One Interpreter runs one LoadedProgram on one thread. A host that
- * wants concurrency runs multiple Interpreters on multiple programs,
- * each on its own thread. This mirrors the grammar's "cooperative,
- * single-threaded" model (§9.2.6).
+ * One Interpreter runs one LoadedProgram on one thread.
  *
  * ─── Design: call by name, not by index ───────────────────────────────────
- * The host calls an @export'ed function by its name (the mangled name
- * the compiler assigned). The interpreter looks it up in the
- * Bytecode's function index and dispatches. There is no
- * call-by-index API.
+ * The host calls an @export'ed function by its mangled name.
  *
  * ─── Dependencies ─────────────────────────────────────────────────────────
  * interp/ExecutionResult.hpp, interp/InterpreterConfig.hpp,
- * interp/LoadedProgram.hpp, interp/Value.hpp.
+ * interp/LoadedProgram.hpp, runtime/Value.hpp.
  */
 
 #pragma once
@@ -31,23 +25,20 @@
 #include "interp/ExecutionResult.hpp"
 #include "interp/InterpreterConfig.hpp"
 #include "interp/LoadedProgram.hpp"
-#include "interp/Value.hpp"
+#include "runtime/Value.hpp"
 
 #include <memory>
 #include <string_view>
 
 namespace lucid::interp {
 
+using lucid::runtime::Value;
+
 /// @brief The interpreter.
-///
-/// Constructed once per program; runs one or more top-level calls.
-/// Not thread-safe: a host that wants concurrent Lucid execution runs
-/// one Interpreter per thread, each on its own LoadedProgram.
 class Interpreter {
 public:
     /// Construct an interpreter over a loaded program. The
-    /// LoadedProgram must outlive the Interpreter (the interpreter
-    /// holds a reference, not a copy).
+    /// LoadedProgram must outlive the Interpreter.
     Interpreter(LoadedProgram& program, InterpreterConfig config = {});
 
     ~Interpreter();
@@ -61,21 +52,9 @@ public:
 
     /// Call an @export'ed function by name with the given arguments.
     ///
-    /// The name is the mangled name the compiler assigned. A name that
-    /// does not resolve to an @export'ed function returns an
-    /// ExecutionResult::Panicked with Name_UndefinedValue.
-    ///
-    /// On completion, the result is ExecutionResult::Completed and
-    /// carries the function's return value (a Nil Value for a void
-    /// function).
-    ///
-    /// On panic, the result is ExecutionResult::Panicked and carries
-    /// the Panic (code, message, stack trace). The interpreter's
-    /// frames have been unwound to the host boundary; the interpreter
-    /// is ready for the next call.
-    ///
-    /// v1 never returns ExecutionResult::Suspended (sequences are
-    /// rejected by Sema).
+    /// On completion, the result is ExecutionResult::Completed.
+    /// On panic, the result is ExecutionResult::Panicked. v1 never
+    /// returns ExecutionResult::Suspended.
     ExecutionResult call(std::string_view name,
                          const Value* args, uint32_t argCount);
 
@@ -100,8 +79,6 @@ private:
     LoadedProgram& m_program;
     InterpreterConfig m_config;
 
-    /// The frame stack. The interpreter maintains it; the host never
-    /// sees it. Its lifetime is the Interpreter's.
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
