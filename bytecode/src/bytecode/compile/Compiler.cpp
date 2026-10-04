@@ -6,6 +6,7 @@
 #include "CompilerContext.hpp"
 #include "bytecode/emit/EmitDecl.hpp"
 #include "bytecode/emit/EmitStmt.hpp"
+#include "bytecode/memory/DropSchedule.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
 #include "core/ast/DeclAST.hpp"
@@ -149,13 +150,35 @@ Bytecode Compiler::compile(const std::vector<ModuleAST*>& modules) {
             // function's opening line entry.
             emitDeclPrologue(fn, ctx);
 
-            // Body.
-            emitStmt(fn->body, ctx);
+            // Body. The flag tells us whether the body transfers
+            // control out (a return somewhere in its statement
+            // sequence). A body whose last reachable statement is a
+            // return has already emitted Ext_Return or Ext_ReturnVoid
+            // along with its own DropSchedule::emitReturnDrops call.
+            const bool bodyTransfers = emitStmt(fn->body, ctx);
 
-            // Implicit ReturnVoid. A function whose body already ended
-            // in a Return emitted one; the extra is dead code the
-            // interpreter never reaches.
-            ctx.emitOpcode(Opcode::Ext_ReturnVoid);
+            // Implicit fall-through return. Emit it only when the
+            // body did not already transfer control out.
+            //
+            // Why the guard matters: emitReturnStmt already drops the
+            // function's parameters (via DropSchedule::emitReturnDrops).
+            // It does not clear the slots it drops. If we emitted
+            // another emitReturnDrops call here for a function whose
+            // body ended in an explicit return, the params would be
+            // loaded and dropped a second time, double-freeing their
+            // resources.
+            //
+            // For a body that falls through, the body's own block
+            // (fn->body) has already popped its scope and emitted its
+            // scope-exit drops — emitBlock handles that on every exit
+            // path. What remains to be dropped is the parameters.
+            // emitReturnDrops walks both the open scopes' dropSlots
+            // (empty at this point) and paramSlots, so it drops
+            // exactly the parameters.
+            if (!bodyTransfers) {
+                memory::DropSchedule::emitReturnDrops(ctx);
+                ctx.emitOpcode(Opcode::Ext_ReturnVoid);
+            }
 
             // Finalize: assemble the FunctionProto from the accumulated
             // code, line table, slot counts, resume table, and stack

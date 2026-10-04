@@ -8,26 +8,41 @@
  * emitters (emitBlock, emitIfStmt, ...) are declared here and defined
  * in EmitStmt.cpp.
  *
- * ─── The boolean return (currently unused) ────────────────────────────────
- * Every per-form emitter returns bool. The intended meaning is: true
- * if the statement transfers control out of the enclosing block (a
- * return, break, or continue), false otherwise. emitStmt's return
- * value would be the same flag.
+ * ─── Design: the boolean return ───────────────────────────────────────────
+ * Every per-form emitter returns bool: true if the statement
+ * transfers control out of the enclosing block (a return, break, or
+ * continue), false otherwise. The consumers:
  *
- * The flag is not yet implemented consistently. Every emitter
- * currently returns false, including emitBlock, which ignores its
- * last statement's flag. The protocol is documented here as the
- * intended interface; no caller reads it today. Before any consumer
- * relies on the flag, every emitter must be updated to return the
- * correct value.
+ *   - emitBlock: tracks whether any statement in the block
+ *     transferred; returns true if so.
+ *   - emitIfStmt: returns true only if both branches transfer (an
+ *     if with no else always returns false — the false path falls
+ *     through).
+ *   - emitSwitchStmt: returns true only if every case body and the
+ *     default body transfer.
+ *   - emitWhileStmt, emitForStmt: return false. A loop may run zero
+ *     iterations, so a loop never unconditionally transfers control
+ *     out of its enclosing block.
+ *   - emitReturnStmt, emitBreakStmt, emitContinueStmt: return true.
+ *   - All other emitters: return false.
+ *
+ * The one consumer today is Compiler::compile, which uses the flag
+ * from emitStmt(fn->body, ctx) to decide whether to emit an implicit
+ * Ext_ReturnVoid on the fall-through path. If the body transfers
+ * control out, that path is dead code and the implicit return would
+ * double-drop the function's parameters.
  *
  * ─── Design: scopes and drops ─────────────────────────────────────────────
  * emitBlock pushes a scope on the slot allocator when it enters, and
  * pops it on exit. The scope records the resource-typed slots the
  * block declared. On the block's fall-through exit, DropSchedule emits
- * a drop for each. Early exits (return, break, continue) emit their
- * own drops for the scopes they exit — the block's fall-through drops
- * are dead code on those paths.
+ * a drop for each.
+ *
+ * Early exits (return, break, continue) emit their own drops for the
+ * scopes they exit. The block's fall-through drops are then
+ * unreachable code — the bytecode emits them anyway, because Sema
+ * owns dead-code elimination and the bytecode emitter lowers the full
+ * body. The interpreter never executes the unreachable drops.
  *
  * See memory/DropSchedule.hpp for the drop-emission logic.
  */
@@ -44,12 +59,10 @@ namespace lucid::bytecode::compile {
 
 /// Lower a statement.
 ///
-/// @return The intended meaning is: true if the statement transfers
-///         control out of the enclosing block (a return, break, or
-///         continue); false otherwise. This flag is not yet
-///         implemented consistently — every emitter currently
-///         returns false. Do not rely on it until the emitters are
-///         updated. See the file-level note above.
+/// @return true if the statement transfers control out of the
+///         enclosing block (a return, break, or continue); false
+///         otherwise. See the file-level note above for the per-form
+///         rules. The one consumer today is Compiler::compile.
 bool emitStmt(StmtAST* stmt, CompilerContext& ctx);
 
 // ─── Per-form emitters ──────────────────────────────────────────────────────

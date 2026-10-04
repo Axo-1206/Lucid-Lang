@@ -110,19 +110,32 @@ bool emitBlock(BlockStmtAST* stmt, CompilerContext& ctx) {
     // Push a scope on entry; on the fall-through exit, drop them.
     ctx.slots().pushScope();
 
+    // Emit every statement. Once any statement transfers control
+    // out (a return, break, or continue), the block as a whole
+    // transfers: every later statement is dead code and does not
+    // change that answer. We keep emitting the dead code because
+    // Phase 3 does not do dead-code elimination, and the emitted
+    // opcodes still contribute to the line table and the value-stack
+    // accounting.
+    bool transfers = false;
     for (StmtAST* s : stmt->stmts) {
-        emitStmt(s, ctx);
+        const bool stmtTransfers = emitStmt(s, ctx);
+        if (stmtTransfers) transfers = true;
     }
 
-    // Pop the scope and emit drops for its resource-typed locals. This
-    // is the fall-through path. If any statement inside the block
-    // transferred control out (return/break/continue), that statement's
-    // own drop emission already handled this scope's slots, and these
-    // drops are dead code.
+    // Pop the scope and emit drops for its resource-typed locals.
+    //
+    // If a statement transferred control out, that statement's own
+    // drop emission already handled this scope's slots, and these
+    // drops are unreachable. The bytecode emits them anyway: Sema
+    // is responsible for dead-code elimination, and the bytecode
+    // emitter lowers the full body regardless of reachability. The
+    // interpreter never executes these drops, so they have no
+    // runtime effect.
     const ScopeRecord scope = ctx.slots().popScope();
     DropSchedule::emitScopeDrops(ctx, scope);
 
-    return false;
+    return transfers;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,7 +221,7 @@ bool emitExprStmt(ExprStmtAST* stmt, CompilerContext& ctx) {
         const TypeDescriptor type =
             translateType(stmt->expr->resolvedType,
                           ctx.compiler().pool());
-        const memory::ResourcePlan plan = planForType(type);
+        const ResourcePlan plan = planForType(type);
         if (plan.needsDropForStorage()) {
             // The value is on top of the stack and owns a resource.
             // Emit the drop, which consumes it.
@@ -312,9 +325,14 @@ bool emitIfStmt(IfStmtAST* stmt, CompilerContext& ctx) {
     const uint32_t toElse =
         emitJumpPlaceholder(ctx, Opcode::Ext_JumpIfFalse);
 
-    emitStmt(stmt->thenBranch, ctx);
+    const bool thenTransfers = emitStmt(stmt->thenBranch, ctx);
 
     if (stmt->elseBranch == nullptr) {
+        // No else branch: the false path falls through, so the if
+        // never transfers control unconditionally. The then-branch's
+        // flag is irrelevant — the branch is not taken when the
+        // condition is false, and the if falls through to the
+        // statement after it.
         patchJumpToHere(ctx, toElse);
         return false;
     }
@@ -324,11 +342,13 @@ bool emitIfStmt(IfStmtAST* stmt, CompilerContext& ctx) {
 
     patchJumpToHere(ctx, toElse);
 
-    emitStmt(stmt->elseBranch, ctx);
+    const bool elseTransfers = emitStmt(stmt->elseBranch, ctx);
 
     patchJumpToHere(ctx, pastElse);
 
-    return false;
+    // The if transfers control out only if both branches do. If
+    // either branch falls through, the if falls through.
+    return thenTransfers && elseTransfers;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +393,8 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
     ctx.emitI32(0);
 
     std::vector<uint32_t> bodyEndJumps;
+    std::vector<bool> caseTransfers;
+    caseTransfers.reserve(stmt->cases.size());
     for (size_t i = 0; i < stmt->cases.size(); ++i) {
         auto* c = stmt->cases[i];
         for (uint32_t operandOffset : caseJumpOperands[i]) {
@@ -383,7 +405,8 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
         }
 
         ctx.emitOpcode(Opcode::Ext_Pop);
-        emitStmt(c->body, ctx);
+        const bool bodyTransfers = emitStmt(c->body, ctx);
+        caseTransfers.push_back(bodyTransfers);
 
         ctx.emitOpcode(Opcode::Ext_Jump);
         bodyEndJumps.push_back(ctx.here());
@@ -397,7 +420,7 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
                      static_cast<uint32_t>(target - base));
     }
 
-    emitStmt(stmt->defaultBody, ctx);
+    const bool defaultTransfers = emitStmt(stmt->defaultBody, ctx);
 
     for (uint32_t operandOffset : bodyEndJumps) {
         const int32_t target = static_cast<int32_t>(ctx.here());
@@ -406,7 +429,9 @@ bool emitSwitchStmt(SwitchStmtAST* stmt, CompilerContext& ctx) {
                      static_cast<uint32_t>(target - base));
     }
 
-    return false;
+    bool allTransfer = defaultTransfers;
+    for (bool flag : caseTransfers) allTransfer = allTransfer && flag;
+    return allTransfer;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -644,8 +669,8 @@ bool emitForStmt(ForStmtAST* stmt, CompilerContext& ctx) {
 bool emitWaitStmt(WaitStmtAST* stmt, CompilerContext& ctx) {
     (void)stmt; (void)ctx;
     AST_ASSERT_MSG(false,
-        "emitWaitStmt: `wait` is not yet supported — it needs the "
-        "sequence state-machine lowering (Phase 4)");
+        "emitWaitStmt: `wait` is not yet supported — the sequence "
+        "state-machine lowering is not yet designed");
     return false;
 }
 
@@ -653,7 +678,7 @@ bool emitWaitFramesStmt(WaitFramesStmtAST* stmt, CompilerContext& ctx) {
     (void)stmt; (void)ctx;
     AST_ASSERT_MSG(false,
         "emitWaitFramesStmt: `waitFrames` is not yet supported — "
-        "it needs the sequence state-machine lowering (Phase 4)");
+        "state-machine lowering is not yet designed");
     return false;
 }
 
@@ -661,7 +686,7 @@ bool emitWaitUntilStmt(WaitUntilStmtAST* stmt, CompilerContext& ctx) {
     (void)stmt; (void)ctx;
     AST_ASSERT_MSG(false,
         "emitWaitUntilStmt: `waitUntil` is not yet supported — "
-        "it needs the sequence state-machine lowering (Phase 4)");
+        "state-machine lowering is not yet designed");
     return false;
 }
 
@@ -669,7 +694,7 @@ bool emitWaitForEventStmt(WaitForEventStmtAST* stmt, CompilerContext& ctx) {
     (void)stmt; (void)ctx;
     AST_ASSERT_MSG(false,
         "emitWaitForEventStmt: `waitForEvent` is not yet supported — "
-        "it needs the sequence state-machine lowering (Phase 4)");
+        "state-machine lowering is not yet designed");
     return false;
 }
 

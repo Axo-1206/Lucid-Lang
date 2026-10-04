@@ -3,10 +3,12 @@
 
 #include "EmitDrop.hpp"
 
-#include "bytecode/Opcode.hpp"
-#include "bytecode/RuntimeOp.hpp"
+#include "contract/Opcode.hpp"
+#include "contract/RuntimeOp.hpp"
 
 #include "core/ast/BaseAST.hpp"   // for AST_ASSERT_MSG
+
+using namespace lucid::contract;
 
 namespace lucid::bytecode::memory {
 
