@@ -17,17 +17,19 @@
  * moved out already).
  *
  * ─── The protocol ─────────────────────────────────────────────────────────
- * The emitter follows this protocol:
+ * The ownership stack is kept in sync with the value stack
+ * automatically. CompilerContext::emitOpcode and noteStackEffect push
+ * one BitCopy entry for every value an opcode produces, and pop one
+ * entry for every value it consumes. The emitter never pushes or pops
+ * for the count.
  *
- *   1. After emitting an expression, call pushOwned() or
- *      pushBitCopy() to record the value's ownership.
+ * The emitter intervenes only to say "this produced value owns a
+ * resource." After emitting an opcode that produces a resource-owning
+ * value, the emitter calls markTopAsOwned(). Every other produced
+ * value keeps its default BitCopy state.
  *
- *   2. Before consuming a value (a store, a call argument, a drop),
- *      call pop() to read its ownership flag. The emitter uses the
- *      flag to decide whether to emit a drop or a retain.
- *
- *   3. When a value is moved out (the callee takes ownership), call
- *      markTopAsMoved() before the consuming operation.
+ * A value whose resource is transferred to a consumer (a return value,
+ * a call argument) is marked Moved via markTopAsMoved().
  *
  * ─── Design: the stack is not the value stack ─────────────────────────────
  * OwnedValueStack is a *bookkeeping* stack, parallel to the interpreter's
@@ -36,11 +38,12 @@
  * answer "does the value on top own a resource?" at each point.
  *
  * ─── Design: matching the value stack's shape ─────────────────────────────
- * The invariant is: at every code point, OwnedValueStack::size() ==
- * CompilerContext::currentDepth(). Every emitOpcode that changes the
- * value-stack depth must be followed by a corresponding push or pop
- * on OwnedValueStack. In practice, the emitter pushes/pops as it
- * consumes and produces values; the two stacks stay in sync.
+ * The invariant "OwnedValueStack::size() == CompilerContext::currentDepth()"
+ * is enforced by construction: CompilerContext::emitOpcode and
+ * noteStackEffect are the only code paths that change the size, and they
+ * change it by exactly the amount the value stack changed. Emitters add
+ * entries only via markTopAsOwned and markTopAsMoved, both of which
+ * replace the state of an existing entry rather than changing the size.
  */
 
 #pragma once
@@ -88,8 +91,16 @@ public:
     /// then markTopAsMoved.
     void pushMoved() { m_stack.push_back(Ownership::Moved); }
 
-    /// Push `n` entries at once. Used after opcodes that push multiple
-    /// values (Ext_Dup, Ext_Copy).
+    /// Push `n` entries at once. Used by the auto-bookkeeping when an
+    /// opcode's OpcodeInfo reports `pushes > 1` (the special-cased
+    /// `Ext_Dup`, or an opcode whose operand resolves to a multi-push
+    /// effect via noteStackEffect).
+    ///
+    /// Emitters do not call this directly; the mechanism that does is
+    /// CompilerContext::emitOpcode. If a new emitter ever needs to
+    /// push more than one entry for a single value-producing call, it
+    /// should extend the auto-bookkeeping rather than reach for this
+    /// method.
     void pushN(uint32_t n, Ownership state) {
         m_stack.insert(m_stack.end(), n, state);
     }
@@ -109,6 +120,21 @@ public:
     Ownership peekAt(size_t n) const;
 
     // ─── Mutating the top ──────────────────────────────────────────────
+
+    /// Set the top entry to Owned. Called by the emitter after
+    /// producing a value whose type owns a resource.
+    ///
+    /// The auto-bookkeeping in CompilerContext::emitOpcode and
+    /// noteStackEffect pushes one BitCopy entry for every value an
+    /// opcode produces. This method overrides the top entry when the
+    /// produced value is resource-owning. It does not push; it
+    /// replaces.
+    ///
+    /// Precondition: the stack is non-empty. The auto-bookkeeping
+    /// guarantees an entry exists for every value on the value stack,
+    /// so a caller that has just emitted a value-producing opcode can
+    /// rely on the top entry being present.
+    void markTopAsOwned();
 
     /// Mark the top value as moved. The value stays on the stack but
     /// will not be dropped; its resource belongs to a consumer now.

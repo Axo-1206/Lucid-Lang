@@ -28,6 +28,13 @@ Ownership OwnedValueStack::peekAt(size_t n) const {
     return m_stack[m_stack.size() - 1 - n];
 }
 
+void OwnedValueStack::markTopAsOwned() {
+    AST_ASSERT_MSG(!m_stack.empty(),
+        "OwnedValueStack::markTopAsOwned: the stack is empty — "
+        "the emitter marked a value as Owned before producing it");
+    m_stack.back() = Ownership::Owned;
+}
+
 void OwnedValueStack::markTopAsMoved() {
     AST_ASSERT_MSG(!m_stack.empty(),
         "OwnedValueStack::markTopAsMoved: the stack is empty");
