@@ -42,7 +42,8 @@ void CompilerContext::emitOpcode(Opcode op) {
         emitByte(opcodeStreamByte(op));
     }
 
-    // Update the value-stack depth from the opcode's table entry.
+    // Update the value-stack depth and the ownership stack from the
+    // opcode's table entry.
     const OpcodeInfo& info = opcodeInfo(op);
     if (info.pops >= 0 && info.pushes >= 0) {
         m_currentDepth -= info.pops;
@@ -51,6 +52,30 @@ void CompilerContext::emitOpcode(Opcode op) {
             "CompilerContext::emitOpcode: the value stack went "
             "negative — an earlier opcode's pop count was over-counted "
             "or its push count was under-counted");
+
+        // Mirror the depth change on the ownership stack. Consumed
+        // values lose their entry; produced values gain a default
+        // BitCopy entry. The emitter overrides a produced entry to
+        // Owned or Moved when it needs to (see markTopAsOwned and
+        // markTopAsMoved).
+        //
+        // Ext_Dup is special-cased: it duplicates the top value but
+        // does not consume it. Its table entry records pops=1,
+        // pushes=2 for a naive depth update (net +1), but for
+        // ownership the original entry must survive. So we push one
+        // BitCopy entry for the copy and leave the original entry
+        // untouched.
+        if (op == Opcode::Ext_Dup) {
+            m_owned.pushBitCopy();
+        } else {
+            for (int8_t i = 0; i < info.pops; ++i) {
+                m_owned.pop();
+            }
+            for (int8_t i = 0; i < info.pushes; ++i) {
+                m_owned.pushBitCopy();
+            }
+        }
+
         if (m_currentDepth > m_maxDepth) {
             m_maxDepth = m_currentDepth;
         }
@@ -127,6 +152,18 @@ void CompilerContext::noteStackEffect(int8_t pops, int8_t pushes) {
         "CompilerContext::noteStackEffect: the value stack went "
         "negative — the emitter under-counted an opcode's pops or "
         "over-counted an earlier opcode's pushes");
+
+    // Mirror the depth change on the ownership stack. A
+    // variable-effect opcode is called via noteStackEffect rather
+    // than emitOpcode; the bookkeeping is the same as emitOpcode's
+    // general path. No special-case for Ext_Dup here: Ext_Dup is a
+    // fixed-effect opcode and never reaches this method.
+    for (int8_t i = 0; i < pops; ++i) {
+        m_owned.pop();
+    }
+    for (int8_t i = 0; i < pushes; ++i) {
+        m_owned.pushBitCopy();
+    }
 
     if (m_currentDepth > m_maxDepth) {
         m_maxDepth = m_currentDepth;

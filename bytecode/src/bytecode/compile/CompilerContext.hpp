@@ -145,18 +145,28 @@ public:
 
     // ─── The ownership tracker ─────────────────────────────────────────
 
-    /// The parallel ownership stack. The emitters push and pop entries
-    /// as they produce and consume values. See OwnedValueStack's doc
-    /// for the protocol.
+    /// The parallel ownership stack. Its size is kept in sync with
+    /// the value-stack depth by emitOpcode and noteStackEffect; the
+    /// emitters only override the state of a produced entry (Owned,
+    /// Moved). See OwnedValueStack's doc for the mechanism.
     memory::OwnedValueStack& owned() noexcept { return m_owned; }
     const memory::OwnedValueStack& owned() const noexcept { return m_owned; }
 
     // ─── Emission primitives ───────────────────────────────────────────
     //
-    // emitOpcode updates the value-stack depth automatically, using the
-    // opcode's OpcodeInfo entry. The operand-emitting calls (emitU8,
-    // emitU16, ...) write bytes to the code buffer without touching
-    // the depth; they are called by the emitter after emitOpcode.
+    // emitOpcode updates the value-stack depth and the ownership stack
+    // automatically, using the opcode's OpcodeInfo entry. The
+    // operand-emitting calls (emitU8, emitU16, ...) write bytes to the
+    // code buffer without touching either stack; they are called by the
+    // emitter after emitOpcode.
+    //
+    // The ownership bookkeeping works as follows: for each value the
+    // opcode consumes, one ownership entry is popped; for each value it
+    // produces, one BitCopy entry is pushed. The emitter overrides a
+    // produced entry to Owned via ctx.owned().markTopAsOwned() when the
+    // produced value owns a resource, and to Moved via
+    // ctx.owned().markTopAsMoved() when the value's resource transfers
+    // to a consumer.
 
     void emitByte(uint8_t b)      { m_code.push_back(b); }
     void emitOpcode(contract::Opcode op);
@@ -184,6 +194,11 @@ public:
     ///
     /// For a fixed-effect opcode, emitOpcode handles the depth; the
     /// emitter does NOT call this method.
+    ///
+    /// Like emitOpcode, this method also updates the ownership stack:
+    /// it pops `pops` entries and pushes `pushes` BitCopy entries. The
+    /// emitter marks any resource-owning produced value with
+    /// ctx.owned().markTopAsOwned() afterward.
     void noteStackEffect(int8_t pops, int8_t pushes);
 
     /// The current value-stack depth.
