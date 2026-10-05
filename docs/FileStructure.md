@@ -171,6 +171,8 @@ lucid/
 │       │   ├── Compiler.cpp
 │       │   ├── CompilerContext.hpp
 │       │   ├── CompilerContext.cpp
+│       │   ├── LambdaLift.hpp
+│       │   ├── LambdaLift.cpp
 │       │   ├── SlotAllocator.hpp
 │       │   ├── SlotAllocator.cpp
 │       │   ├── TypeTranslation.hpp
@@ -178,6 +180,8 @@ lucid/
 │       ├── emit/
 │       │   ├── EmitDecl.hpp
 │       │   ├── EmitDecl.cpp
+│       │   ├── EmitBinaryOps.hpp
+│       │   ├── EmitBinaryOps.cpp
 │       │   ├── EmitExpr.hpp
 │       │   ├── EmitExpr.cpp
 │       │   ├── EmitPlace.hpp
@@ -187,6 +191,7 @@ lucid/
 │       └── memory/
 │           ├── DropSchedule.hpp
 │           ├── DropSchedule.cpp
+│           ├── EmitRtCall.hpp
 │           ├── EmitCopy.hpp
 │           ├── EmitCopy.cpp
 │           ├── EmitDrop.hpp
