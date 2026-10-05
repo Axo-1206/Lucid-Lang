@@ -55,7 +55,6 @@ constexpr std::array<OpcodeInfo, 256> SINGLE_BYTE_INFO = [] {
     t[0x08] = {Opcode::LoadField,       OperandShape::U16, "LoadField",  1, 1};
     t[0x09] = {Opcode::StoreField,      OperandShape::U16, "StoreField", 2, 0};
     t[0x0A] = {Opcode::LoadRow,         OperandShape::U32, "LoadRow",  1, 1};
-    t[0x0B] = {Opcode::StoreRow,        OperandShape::U32, "StoreRow", 2, 0};
     t[0x0C] = {Opcode::LoadIndex,       OperandShape::None, "LoadIndex",  2, 1};
     t[0x0D] = {Opcode::StoreIndex,      OperandShape::None, "StoreIndex", 3, 0};
 
@@ -300,14 +299,10 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
 
     // ─── Null handling ─────────────────────────────────────────────────
     t[0x12] = {Opcode::Ext_IsNil,    OperandShape::None, "IsNil",    1, 1};
-    t[0x13] = {Opcode::Ext_Coalesce, OperandShape::None, "Coalesce", 2, 1};
-    t[0x14] = {Opcode::Ext_CheckNil, OperandShape::None, "CheckNil", 1, 1};
 
     // ─── Calls (variable stack effect) ─────────────────────────────────
     t[0x20] = {Opcode::Ext_Call,          OperandShape::U32, "Call",          -1, -1};
     t[0x21] = {Opcode::Ext_CallHost,      OperandShape::U32, "CallHost",      -1, -1};
-    t[0x22] = {Opcode::Ext_CallTableMeth, OperandShape::U8,  "CallTableMeth", -1, -1};
-    t[0x23] = {Opcode::Ext_CallArrayMeth, OperandShape::U8,  "CallArrayMeth", -1, -1};
 
     // ─── Array aggregate ───────────────────────────────────────────────
     t[0x30] = {Opcode::Ext_NewArray,      OperandShape::U32, "NewArray",      -1, 1};
@@ -353,7 +348,6 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
     t[0x50] = {Opcode::Ext_Jump,         OperandShape::I32,         "Jump",         0, 0};
     t[0x51] = {Opcode::Ext_JumpIfFalse,  OperandShape::I32,         "JumpIfFalse",  1, 0};
     t[0x52] = {Opcode::Ext_JumpIfTrue,   OperandShape::I32,         "JumpIfTrue",   1, 0};
-    t[0x53] = {Opcode::Ext_SwitchMember, OperandShape::SwitchTable, "SwitchMember", -1, 0};
 
     // ─── Sequences ─────────────────────────────────────────────────────
     t[0x60] = {Opcode::Ext_SuspendWait,           OperandShape::U32, "SuspendWait",           1, 0};
@@ -371,11 +365,7 @@ constexpr std::array<OpcodeInfo, 256> EXTENDED_INFO = [] {
     t[0x72] = {Opcode::Ext_RtCall, OperandShape::U8, "RtCall", -1, -1};
 
     // ─── Panic ─────────────────────────────────────────────────────────
-    t[0x80] = {Opcode::Ext_Panic,                    OperandShape::U32, "Panic",                    1, 0};
-    t[0x81] = {Opcode::Ext_PanicNilDeref,            OperandShape::None, "PanicNilDeref",           0, 0};
-    t[0x82] = {Opcode::Ext_PanicStaleRef,            OperandShape::None, "PanicStaleRef",           0, 0};
-    t[0x83] = {Opcode::Ext_PanicDuplicateKey,        OperandShape::None, "PanicDuplicateKey",       0, 0};
-    t[0x84] = {Opcode::Ext_PanicGenerationExhausted, OperandShape::None, "PanicGenerationExhausted", 0, 0};
+    t[0x80] = {Opcode::Ext_Panic, OperandShape::U32, "Panic",1, 0};
 
     return t;
 }();

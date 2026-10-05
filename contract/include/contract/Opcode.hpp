@@ -78,9 +78,8 @@ enum class Opcode : uint16_t {
     LoadField        = 0x0008,  ///< u16 column index; row ref on stack
     StoreField       = 0x0009,  ///< u16 column index; row ref + value on stack
     LoadRow          = 0x000A,  ///< u32 table index; row index on stack
-    StoreRow         = 0x000B,  ///< u32 table index; row index + value on stack
-    LoadIndex        = 0x000C,  ///< array + index on stack
-    StoreIndex       = 0x000D,  ///< array + index + value on stack
+    LoadIndex        = 0x000B,  ///< array + index on stack
+    StoreIndex       = 0x000C,  ///< array + index + value on stack
 
     // ─── Arithmetic — signed integers ───────────────────────────────────
     Add_I8   = 0x0010, Add_I16 = 0x0011, Add_I32 = 0x0012, Add_I64 = 0x0013,
@@ -191,14 +190,10 @@ enum class Opcode : uint16_t {
 
     // ─── Null handling ──────────────────────────────────────────────────
     Ext_IsNil    = 0x0112,  ///< pop value; push bool (is it nil?)
-    Ext_Coalesce = 0x0113,  ///< full ?? lowering (see EmitExpr)
-    Ext_CheckNil = 0x0114,  ///< pop value; panic with PanicNilDeref if nil
 
     // ─── Calls ──────────────────────────────────────────────────────────
     Ext_Call          = 0x0120,  ///< u32 function index; args on stack
     Ext_CallHost      = 0x0121,  ///< u32 host symbol index; args on stack
-    Ext_CallTableMeth = 0x0122,  ///< u8 method tag; receiver + args on stack
-    Ext_CallArrayMeth = 0x0123,  ///< u8 method tag; receiver + args on stack
 
     // ─── Aggregate — arrays ─────────────────────────────────────────────
     Ext_NewArray       = 0x0130,  ///< u32 element count
@@ -264,7 +259,6 @@ enum class Opcode : uint16_t {
     Ext_Jump         = 0x0150,  ///< i32 relative offset
     Ext_JumpIfFalse  = 0x0151,  ///< i32 relative offset
     Ext_JumpIfTrue   = 0x0152,  ///< i32 relative offset
-    Ext_SwitchMember = 0x0153,  ///< u32 row-count; comparison table follows
 
     // ─── Sequences ──────────────────────────────────────────────────────
     Ext_SuspendWait           = 0x0160,  ///< u32 resume index
@@ -290,10 +284,6 @@ enum class Opcode : uint16_t {
 
     // ─── Panic ──────────────────────────────────────────────────────────
     Ext_Panic                    = 0x0180,  ///< u32 DiagCode; msg on stack
-    Ext_PanicNilDeref            = 0x0181,
-    Ext_PanicStaleRef            = 0x0182,
-    Ext_PanicDuplicateKey        = 0x0183,
-    Ext_PanicGenerationExhausted = 0x0184,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
