@@ -250,6 +250,17 @@ private:
     struct PrimaryIndex;
     std::unique_ptr<PrimaryIndex> m_primary;
 
+    /// Look up a value in the @primary index and return the row's slot,
+    /// or UINT32_MAX if not found. A private static member (not a free
+    /// function) because it needs to name the private PrimaryIndex
+    /// struct.
+    static uint32_t findPrimary(const PrimaryIndex& idx,
+                                const Value& key,
+                                const contract::TypeDescriptor& keyType,
+                                const std::vector<Value>& cells,
+                                uint32_t cols,
+                                uint32_t primaryCol);
+
     /// The structural version. Increments on ADD, REMOVE, CLEAR.
     uint64_t m_version = 0;
 };
