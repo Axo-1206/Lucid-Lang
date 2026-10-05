@@ -11,9 +11,6 @@
 
 namespace lucid::interp {
 
-// Defined in Dispatch.cpp.
-runtime::Value dispatch(InterpreterInternal& interp);
-
 InterpreterInternal::InterpreterInternal(LoadedProgram& program,
                                          const InterpreterConfig& config)
     : m_program(program)
