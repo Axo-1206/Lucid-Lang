@@ -30,11 +30,9 @@
 
 #pragma once
 
-#include "core/diagnostics/DiagCode.hpp"
 #include "interp/LoadedProgram.hpp"
 
 #include <memory>
-#include <string>
 #include <variant>
 
 namespace lucid::bytecode {
@@ -45,13 +43,6 @@ namespace lucid::runtime {
 }
 
 namespace lucid::interp {
-
-/// @brief A load failure.
-struct LoadError {
-    diag::DiagCode code;
-    std::string    message;
-    std::string    symbol;
-};
 
 /// @brief Load a Bytecode against a host registry.
 ///

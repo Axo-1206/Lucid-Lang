@@ -46,7 +46,9 @@ public:
     Interpreter(const Interpreter&) = delete;
     Interpreter& operator=(const Interpreter&) = delete;
     Interpreter(Interpreter&&) noexcept;
-    Interpreter& operator=(Interpreter&&) noexcept;
+
+    // A reference member (LoadedProgram& m_program) cannot be
+    // reseated, so move-assignment is intentionally omitted.
 
     // ─── Calling ────────────────────────────────────────────────────────
 

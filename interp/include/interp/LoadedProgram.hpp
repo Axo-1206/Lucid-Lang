@@ -31,11 +31,14 @@
 
 #pragma once
 
+#include "core/diagnostics/DiagCode.hpp"
 #include "interp/FunctionRef.hpp"
 #include "runtime/Value.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <variant>
 #include <vector>
 
 namespace lucid::contract {
@@ -54,6 +57,13 @@ namespace lucid::interp {
 using lucid::runtime::Value;
 
 class TableObject;
+
+/// @brief A load failure.
+struct LoadError {
+    diag::DiagCode code;
+    std::string    message;
+    std::string    symbol;
+};
 
 /// @brief A resolved host function: the function pointer the host
 ///        registered, plus its signature. Produced by the loader.
@@ -120,7 +130,9 @@ public:
     runtime::HostRegistry* registry() const noexcept { return m_registry; }
 
 private:
-    friend class Loader;
+    friend std::variant<std::unique_ptr<LoadedProgram>, LoadError>
+    load(std::unique_ptr<bytecode::Bytecode> bc,
+         runtime::HostRegistry* registry);
 
     std::unique_ptr<bytecode::Bytecode> m_bytecode;
 
