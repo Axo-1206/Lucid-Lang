@@ -1,4 +1,4 @@
-/// @file bytecode/compile/Compiler.cpp
+/// @file compile/Compiler.cpp
 /// @brief The driver: walk a resolved module set, produce a Bytecode.
 
 #include "bytecode/compile/Compiler.hpp"

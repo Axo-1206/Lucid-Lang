@@ -7,7 +7,7 @@
 
 using namespace lucid::contract;
 
-namespace lucid::bytecode::compile {
+namespace lucid::bytecode {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Classification
@@ -313,4 +313,4 @@ Opcode unaryOpcode(UnaryOp op, PrimitiveKind k) {
     return Opcode::Nop;
 }
 
-} // namespace lucid::bytecode::compile
+} // namespace lucid::bytecode

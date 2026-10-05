@@ -1,5 +1,5 @@
 /**
- * @file compile/Emitcontract::BinaryOps.hpp
+ * @file emit/BinaryOps.hpp
  *
  * @responsibility The contract::Opcode-selection helpers for typed binary,
  *                 unary, and bitwise operations. Pure functions of
@@ -28,9 +28,6 @@
  * is supposed to reject a type-incorrect operator before the
  * compiler runs).
  *
- * Callers write the contract::Opcode themselves via ctx.emitcontract::Opcode(...). The
- * helpers do not emit; they select.
- *
  * ─── Design: integer family / width index ─────────────────────────────────
  * The contract::Opcode enums are laid out in contiguous groups of four (one per
  * width) for signed integers, unsigned integers, and floats. The
@@ -50,7 +47,7 @@
 
 #include <optional>
 
-namespace lucid::bytecode::compile {
+namespace lucid::bytecode {
 
 // using contract::contract::Opcode;
 // using contract::PrimitiveKind;
@@ -121,4 +118,4 @@ contract::Opcode bitwiseOpcode(BinaryOp op, PrimitiveKind k);
 /// Handles Neg, Not, BitNot.
 contract::Opcode unaryOpcode(UnaryOp op, PrimitiveKind k);
 
-} // namespace lucid::bytecode::compile
+} // namespace lucid::bytecode

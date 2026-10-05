@@ -130,6 +130,7 @@ lucid/
 ├── runtime/
 │   ├── include/runtime/
 │   │   ├── Array.hpp
+│   │   ├── Exceptions.hpp
 │   │   ├── Handle.hpp
 │   │   ├── HostRegistry.hpp
 │   │   ├── Panic.hpp
@@ -138,6 +139,7 @@ lucid/
 │   │   └── ValueOps.hpp
 │   └── src/runtime/
 │       ├── Array.cpp
+│       ├── Exceptions.cpp
 │       ├── Handle.cpp
 │       ├── HostRegistry.cpp
 │       ├── Panic.cpp
@@ -206,17 +208,18 @@ lucid/
 │   │   ├── FunctionRef.hpp
 │   │   ├── Interpreter.hpp
 │   │   ├── InterpreterConfig.hpp
+│   │   ├── InterpreterError.hpp
 │   │   ├── LoadedProgram.hpp
 │   │   ├── Loader.hpp
+│   │   ├── StackTrace.hpp
 │   │   └── TableObject.hpp
-│   └── src/interp/ (not implemented,  this is a draft)
+│   └── src/interp/
 │       ├── Interpreter.cpp
 │       ├── Frame.hpp / .cpp
 │       ├── Value.hpp / .cpp
-│       ├── Dispatch.cpp
 │       ├── ExecutionResult.hpp
 │       ├── InterpreterError.hpp
-│       └── Ops/
+│       └── ops/
 │           ├── OpsLoadStore.cpp
 │           ├── OpsArithmetic.cpp
 │           ├── OpsComparison.cpp

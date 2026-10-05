@@ -1,4 +1,4 @@
-/// @file bytecode/compile/CompilerContext.cpp
+/// @file compile/CompilerContext.cpp
 /// @brief Per-function compilation state and byte-emission primitives.
 
 #include "CompilerContext.hpp"

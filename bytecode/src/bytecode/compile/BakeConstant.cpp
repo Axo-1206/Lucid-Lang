@@ -1,4 +1,4 @@
-/// @file bytecode/compile/BakeConstant.cpp
+/// @file compile/BakeConstant.cpp
 /// @brief Translate a folded ConstantValue into a serializable Constant.
 
 #include "BakeConstant.hpp"
