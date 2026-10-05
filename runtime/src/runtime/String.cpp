@@ -4,53 +4,46 @@
  * @responsibility The refcounted string implementation.
  *
  * ─── Design: strings share a static empty buffer ──────────────────────────
- * The empty string is common (it is the default value of a string
- * cell before it is written, and it is a natural result of many
- * operations). A shared zero-length buffer avoids allocating a
- * StringObject for it. The buffer is never freed; the StringObject's
- * `data` points at it.
+ * The empty string is common. A shared zero-length buffer avoids
+ * allocating a StringObject for it. The buffer is never freed; the
+ * StringObject's `data` points at it.
  *
  * ─── Design: the byte buffer is separate from the header ──────────────────
  * A StringObject is small (16 bytes). The bytes live in a separate
  * allocation. This keeps a StringObject cheap to copy in the runtime's
- * bookkeeping (an array of them, a pool of them) and lets the bytes'
- * lifetime be independent of the header's. The release path frees
- * both.
+ * bookkeeping and lets the bytes' lifetime be independent of the
+ * header's. The release path frees both.
  *
  * ─── Design: refcount is not atomic ───────────────────────────────────────
  * The runtime is single-threaded (grammar §9.2.6). A host that runs
  * multiple interpreters on multiple threads must not share strings
- * between them. If that ever changes, this file is where atomic
- * refcounting would go.
+ * between them.
  */
 
 #include "runtime/String.hpp"
 
 #include <cstdlib>
 #include <cstring>
-#include <new>
 
 namespace lucid::runtime {
 
 namespace {
 
-// The shared empty-string buffer. Never freed.
+// The shared empty-string buffer. Never freed. One trailing null byte
+// so a host reading it as a C string gets "".
 const char kEmptyBuffer[1] = { '\0' };
 
-// ─── Allocation helpers ──────────────────────────────────────────────────
-
-/// Allocate a StringObject and a buffer of `length + 1` bytes
-/// (the +1 is for a trailing null for host convenience). The buffer
-/// is uninitialized; the caller fills it.
+/// Allocate a StringObject and a buffer of `length + 1` bytes (the +1
+/// is a trailing null for host convenience). The buffer is not
+/// initialized except for the null terminator; the caller fills the
+/// content.
 ///
-/// Returns nullptr on allocation failure. The caller checks.
+/// Returns nullptr on allocation failure.
 StringObject* allocateStringObject(uint32_t length) {
-    // Allocate the header.
     StringObject* s = static_cast<StringObject*>(
         std::malloc(sizeof(StringObject)));
     if (!s) return nullptr;
 
-    // The empty string shares the static buffer.
     if (length == 0) {
         s->refcount = 1;
         s->length   = 0;
@@ -58,7 +51,6 @@ StringObject* allocateStringObject(uint32_t length) {
         return s;
     }
 
-    // Allocate the byte buffer. +1 for the trailing null.
     char* buffer = static_cast<char*>(std::malloc(length + 1));
     if (!buffer) {
         std::free(s);
@@ -149,7 +141,6 @@ int stringCompare(const StringObject* a, const StringObject* b) noexcept {
         const int c = std::memcmp(a->data, b->data, minLen);
         if (c != 0) return c;
     }
-    // Equal up to minLen; shorter string sorts first.
     if (a->length < b->length) return -1;
     if (a->length > b->length) return 1;
     return 0;

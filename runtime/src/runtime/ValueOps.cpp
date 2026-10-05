@@ -19,10 +19,6 @@
  * dropValue walks the elements via the type descriptor stored on the
  * Value itself (for a fixed array, the array object's element type).
  * This is where the runtime's recursion meets the plan's recursion.
- *
- * ─── Dependencies ─────────────────────────────────────────────────────────
- * runtime/Value.hpp, runtime/String.hpp, runtime/Array.hpp,
- * runtime/Handle.hpp, contract/ResourcePlan.hpp.
  */
 
 #include "runtime/ValueOps.hpp"
@@ -51,10 +47,6 @@ void dropValue(const Value& v, const contract::ResourcePlan& plan) noexcept {
             return;
 
         case contract::DropKind::FreeString:
-            // The value should be a String. Defensive: if it is not,
-            // there is nothing to free (the plan and the value
-            // disagree, which would be a compiler bug, not a runtime
-            // one; ignoring is the safe response).
             if (v.tag == ValueTag::String) {
                 releaseString(v.asString());
             }
@@ -105,7 +97,6 @@ Value copyValue(const Value& v, const contract::ResourcePlan& plan) {
     switch (plan.copy) {
         case contract::CopyKind::BitCopy:
         case contract::CopyKind::Reference:
-            // No resource; a bit copy is the whole operation.
             return v;
 
         case contract::CopyKind::DeepCopyString:
@@ -128,8 +119,6 @@ Value copyValue(const Value& v, const contract::ResourcePlan& plan) {
 
         case contract::CopyKind::ElementWise: {
             // A fixed array of resources. Deep-copy every element.
-            // The result is a new fixed array of the same length,
-            // whose elements are individually copied.
             if (v.tag != ValueTag::Array) return v;
             ArrayObject* src = v.asArray();
             if (!src) return v;

@@ -26,6 +26,14 @@
  * function values. The host-handle case is resolved by calling
  * handleEquals, which looks up the type's callback via the handle's
  * own registry pointer — no registry parameter is needed.
+ *
+ * ─── Note: no SORT here ───────────────────────────────────────────────────
+ * The array's SORT method takes a comparator, and the comparator is a
+ * Lucid function value — calling it means going through the
+ * interpreter's dispatch, which the runtime cannot do. The sort lives
+ * in the interpreter (interp/Ops/OpsAggregate.cpp). The runtime
+ * provides only the buffer operations it needs (arrayAt, arraySet,
+ * arraySwap). See grammar §8.3.
  */
 
 #include "runtime/Array.hpp"
@@ -89,15 +97,14 @@ void freeBuffer(ArrayObject* a) noexcept {
     a->capacity = 0;
 }
 
-/// Bitwise equality on (tag, payload). Used as the fallback for
-/// element types whose equality is identity.
+/// Bitwise equality on (tag, payload). Used for element types whose
+/// equality is identity.
 inline bool valueBitEquals(const Value& a, const Value& b) noexcept {
     return a.tag == b.tag && a.payload == b.payload;
 }
 
 /// True if two numeric Values (same type) are numerically equal.
-/// Handles the F32/F64 NaN and signed-zero cases. Assumes both values
-/// have already been determined to be the same numeric type.
+/// Handles the F32/F64 NaN and signed-zero cases.
 inline bool numericEquals(const Value& a, const Value& b) noexcept {
     if (a.isFloat()) {
         const double da = (a.tag == ValueTag::F32) ? a.asF32() : a.asF64();
@@ -133,18 +140,13 @@ bool valueEqualsForType(const Value& a, const Value& b,
             }
         }
 
-        case TypeDescriptor::Kind::Named: {
-            // A Named element type is either a host type (opaque
-            // handle) or... actually, a Named type is always a host
-            // type at the runtime layer, because a non-host table is
-            // a bare table type, which is never an element type (the
-            // grammar rejects a bare table as a column or array
-            // element). So Named here means "host-backed type", and
-            // the Value is a HostHandle.
+        case TypeDescriptor::Kind::Named:
+            // A Named element type at the runtime layer is a host
+            // type (opaque handle). A bare table type is never an
+            // element type — the grammar rejects it.
             if (a.tag != ValueTag::HostHandle ||
                 b.tag != ValueTag::HostHandle) return false;
             return handleEquals(a.asHostHandle(), b.asHostHandle());
-        }
 
         case TypeDescriptor::Kind::RowRef:
             // Two row references are equal if they name the same row
@@ -163,10 +165,8 @@ bool valueEqualsForType(const Value& a, const Value& b,
 
         case TypeDescriptor::Kind::Array:
             // Arrays are compared structurally by the language, but
-            // at the runtime layer, "containment" of an array in
+            // at the runtime layer, containment of an array in
             // another array is by reference (the same ArrayObject).
-            // Structural equality is expressed in the language as a
-            // loop, not as CONTAINS.
             if (a.tag != ValueTag::Array ||
                 b.tag != ValueTag::Array) return false;
             return a.payload == b.payload;
@@ -268,7 +268,6 @@ ArrayObject* copyArray(const ArrayObject* a) {
     if (!result) return nullptr;
 
     if (!a->fixed) {
-        // Dynamic array: reserve the source's capacity, then copy.
         ensureCapacity(result, a->length);
         result->length = a->length;
     }
@@ -295,7 +294,6 @@ ArrayObject* copyArray(const ArrayObject* a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 void arrayAdd(ArrayObject* a, Value v) {
-    // Fixed arrays cannot grow. A caller that hits this has a bug.
     if (a->fixed) return;
 
     ensureCapacity(a, a->length + 1);
@@ -316,9 +314,7 @@ void arrayRemove(ArrayObject* a, uint32_t index) {
     }
 
     // Shift later elements down by one. This is an element-wise move,
-    // not a copy: the shifted-from slot's value is no longer live,
-    // and the shifted-to slot now owns the value. No retain/release
-    // happens — the elements move, they do not duplicate.
+    // not a copy: no retain/release happens.
     const uint32_t tailCount = a->length - index - 1;
     if (tailCount > 0) {
         std::memmove(&a->data[index], &a->data[index + 1],
@@ -364,8 +360,6 @@ void arraySet(ArrayObject* a, uint32_t index, Value v) {
 bool arrayContains(const ArrayObject* a, const Value& v) noexcept {
     if (a->length == 0) return false;
 
-    // No element type (shouldn't happen for a well-formed array, but
-    // a defensive fallback): bitwise equality on every element.
     if (!a->elementType) {
         for (uint32_t i = 0; i < a->length; ++i) {
             if (valueBitEquals(a->data[i], v)) return true;

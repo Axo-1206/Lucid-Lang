@@ -4,29 +4,29 @@
  * @responsibility The refcounted host handle implementation.
  *
  * ─── Design: the registry owns the callbacks, the handle carries the
- *                 type index ───────────────────────────────────────────────
+ *                 registry pointer ─────────────────────────────────────────
  * A HostHandle is a small wrapper: a refcount, a type index into the
- * registry, and a payload pointer. The registry is where the retain /
- * release / equality function pointers live. The handle holds the
- * registry pointer it was created with (borrowed, not owned), so it
- * can find its callbacks on release.
+ * registry, a borrowed registry pointer, and a payload pointer. The
+ * registry is where the retain / release / equality function pointers
+ * live. The handle holds the registry pointer it was created with
+ * (borrowed, not owned), so it can find its callbacks on release and
+ * on equality.
  *
  * ─── Design: the payload is the host's; we never touch it ─────────────────
  * The runtime never dereferences `payload`. It passes it to the host's
  * retain / release / equals callbacks, which do all the work. If the
- * host registered no callbacks, the payload is leaked (or the host
- * manages it elsewhere); that is the host's choice.
+ * host registered no callbacks, the payload is leaked — that is the
+ * host's choice.
  *
  * ─── Design: registry lifetime ────────────────────────────────────────────
  * The registry must outlive every handle created against it. In
  * practice, the host constructs one registry at engine startup and
  * keeps it alive for the process lifetime. A handle that outlives its
- * registry will call a dangling function pointer on release. This is
- * the same lifetime contract as the LoadedProgram and the interpreter.
+ * registry will call a dangling function pointer on release.
  */
 
 #include "runtime/Handle.hpp"
-#include "runtime/HostRegistry.hpp"   // for the callbacks
+#include "runtime/HostRegistry.hpp"
 
 #include <cstdlib>
 
@@ -37,10 +37,10 @@ HostHandle* allocHandle(HostRegistry* registry,
                         void* payload) {
     HostHandle* h = static_cast<HostHandle*>(std::malloc(sizeof(HostHandle)));
     if (!h) return nullptr;
-    h->refcount = 1;
+    h->refcount  = 1;
     h->typeIndex = typeIndex;
-    h->registry = registry;
-    h->payload = payload;
+    h->registry  = registry;
+    h->payload   = payload;
     return h;
 }
 
@@ -83,6 +83,8 @@ bool handleEquals(const HostHandle* a, const HostHandle* b) noexcept {
             a->registry->typeAt(a->typeIndex)) {
         if (t->equals) return t->equals(a->payload, b->payload);
     }
+    // Default: wrapper identity. Two distinct wrappers are not equal
+    // unless the type registered a custom equality.
     return false;
 }
 
